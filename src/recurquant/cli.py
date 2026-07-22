@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from .confirmation import verify_mbpp_confirmation
 from .evidence import verify_evidence_artifact
 from .quantization import QuantizationSpec, quantize_dequantize
 from .qwen35_quickstart import add_qwen35_arguments, run_qwen35_quickstart
@@ -44,6 +45,18 @@ def _verify_artifact(args: argparse.Namespace) -> int:
     return 0 if report["valid"] else 1
 
 
+def _verify_confirmation(args: argparse.Namespace) -> int:
+    report = verify_mbpp_confirmation(
+        args.artifact,
+        args.prepared_manifest,
+        checkpoint_path=args.checkpoint,
+        expected_artifact_sha256=args.expect_artifact_sha256,
+        expected_artifact_evidence_sha256=args.expect_artifact_evidence_sha256,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if report["valid"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="recurquant",
@@ -76,6 +89,17 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--expect-file-sha256")
     verify.add_argument("--expect-canonical-evidence-sha256")
     verify.set_defaults(handler=_verify_artifact)
+
+    confirmation = subparsers.add_parser(
+        "verify-confirmation",
+        help="Verify the frozen v0.2 MBPP confirmation and its quality decision.",
+    )
+    confirmation.add_argument("artifact", type=Path)
+    confirmation.add_argument("prepared_manifest", type=Path)
+    confirmation.add_argument("--checkpoint", type=Path)
+    confirmation.add_argument("--expect-artifact-sha256")
+    confirmation.add_argument("--expect-artifact-evidence-sha256")
+    confirmation.set_defaults(handler=_verify_confirmation)
     return parser
 
 
