@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use RecurQuant, cite this software repository."
+title: RecurQuant
+type: software
+authors:
+  - name: "Muhammad Labeeb Aryan"
+version: 0.2.0.dev0
+repository-code: "https://github.com/Labeeb2339/recurquant"
+url: "https://github.com/Labeeb2339/recurquant"
+license: Apache-2.0

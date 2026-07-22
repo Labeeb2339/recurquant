@@ -1,0 +1,105 @@
+name: Reproducible bug
+description: Report a RecurQuant defect with enough detail to reproduce it.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reducing the problem. **Do not include access tokens, authentication files, private prompts, proprietary model data, or other secrets.** Replace private inputs with a minimal public example before submitting.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Packed cache integration
+        - Quantization or byte accounting
+        - Qwen3.5 factory or generation
+        - CLI or packaging
+        - Evaluation tooling
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: recurquant_version
+    attributes:
+      label: RecurQuant version or commit
+      description: Use `python -c "import recurquant; print(recurquant.__version__)"` or provide the full commit hash.
+      placeholder: 0.2.0.dev0 or 0123456789abcdef...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include every line and replace only values that truly do not apply.
+      placeholder: |
+        OS: Windows 11
+        Python: 3.11.x
+        PyTorch: 2.x (include CUDA suffix)
+        Transformers: 5.14.1
+        Device: NVIDIA GPU model or CPU
+        Dtype: bfloat16, float16, or float32
+        Attention implementation: eager
+        Batch size: 1
+        Execution mode: direct forward, greedy generation, beam search, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: model
+    attributes:
+      label: Model and cache configuration
+      description: Give the exact model ID, revision, cache bits, group size, rounding mode, and any layer overrides. Write `not applicable` for a model-independent bug.
+      placeholder: |
+        Model: Qwen/Qwen3.5-0.8B-Base
+        Revision: dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68
+        Cache: bits=4, group_size=128, rounding=nearest
+        Layer overrides: none
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: Provide one self-contained example using public or synthetic input.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior and traceback
+      description: Paste the complete traceback or exact incorrect output. Remove secrets and private paths where possible.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the behavior you expected and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: storage_summary
+    attributes:
+      label: Storage summary
+      description: For packing or byte-accounting bugs, paste `cache.storage_summary()`. Otherwise write `not applicable`.
+      render: shell
+
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Submission check
+      options:
+        - label: I used a minimal public or synthetic input and removed secrets, access tokens, authentication files, private prompts, and proprietary data.
+          required: true
+        - label: I checked the current compatibility boundary and am not presenting an unsupported mode as validated.
+          required: true
