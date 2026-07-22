@@ -149,6 +149,11 @@ def parse_args() -> argparse.Namespace:
         help="Previously committed manifest-only artifact required for full public phases.",
     )
     parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        help="Atomic per-task checkpoint path; defaults beside --output.",
+    )
+    parser.add_argument(
         "--allow-diagnostic-calibration",
         action="store_true",
         help="Allow a non-protocol calibration artifact for calibration-split smoke runs only.",
@@ -184,6 +189,37 @@ def nvidia_driver_versions(device: torch.device) -> list[str]:
         text=True,
     )
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def load_checkpoint(path: Path, *, signature: str) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    if checkpoint.get("schema_version") != 1:
+        raise ValueError("checkpoint schema version is not supported")
+    if checkpoint.get("run_signature_sha256") != signature:
+        raise ValueError("checkpoint belongs to a different frozen evaluation run")
+    state = checkpoint.get("state")
+    if not isinstance(state, dict):
+        raise ValueError("checkpoint does not contain state")
+    if checkpoint.get("state_sha256") != sha256_bytes(canonical_json_bytes(state)):
+        raise ValueError("checkpoint state hash does not match its contents")
+    return state
+
+
+def write_checkpoint(path: Path, *, signature: str, state: dict[str, Any]) -> None:
+    state_hash = sha256_bytes(canonical_json_bytes(state))
+    checkpoint = {
+        "schema_version": 1,
+        "run_signature_sha256": signature,
+        "state_sha256": state_hash,
+        "state": state,
+    }
+    payload = canonical_json_bytes(checkpoint)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    temporary.replace(path)
 
 
 def load_calibration_artifact(
@@ -869,6 +905,26 @@ def main() -> int:
     elif phase is not MBPPPhase.CALIBRATION or args.limit is None:
         raise ValueError("protocol-eligible runs may not skip the packed/QDQ preflight")
 
+    run_signature_evidence = {
+        "phase": phase.value,
+        "model_id": args.model_id,
+        "model_revision": args.revision,
+        "repository_commit": git_commit(),
+        "calibration_evidence_sha256": calibration_artifact[
+            "canonical_evidence_sha256"
+        ],
+        "prepared_manifest_evidence_sha256": (
+            prepared_manifest["canonical_evidence_sha256"]
+            if prepared_manifest is not None
+            else None
+        ),
+        "token_manifest_sha256": token_manifest_sha256,
+        "group_size": args.group_size,
+        "candidate_plan": [asdict(candidate) for candidate in candidates],
+    }
+    run_signature = sha256_bytes(canonical_json_bytes(run_signature_evidence))
+    checkpoint_path = args.checkpoint or args.output.with_suffix(".checkpoint.json")
+
     global_values: dict[str, dict[str, list[float | bool]]] = {
         candidate.name: {
             "kl": [],
@@ -883,9 +939,38 @@ def main() -> int:
     }
     storage_by_candidate: dict[str, dict[str, Any]] | None = None
     reference_state_bytes: int | None = None
+    completed_task_ids: list[int] = []
+    elapsed_before_resume = 0.0
+    checkpoint_state = load_checkpoint(checkpoint_path, signature=run_signature)
+    if checkpoint_state is not None:
+        completed_task_ids = [int(value) for value in checkpoint_state["completed_task_ids"]]
+        expected_prefix = [task.task_id for task in tasks[: len(completed_task_ids)]]
+        if completed_task_ids != expected_prefix:
+            raise ValueError("checkpoint task IDs are not a prefix of the frozen manifest")
+        global_values = checkpoint_state["global_values"]
+        per_task = checkpoint_state["per_task"]
+        storage_by_candidate = checkpoint_state["storage_by_candidate"]
+        reference_state_bytes = checkpoint_state["reference_state_bytes"]
+        elapsed_before_resume = float(checkpoint_state["elapsed_wall_seconds"])
+        expected_candidate_names = {candidate.name for candidate in candidates}
+        if (
+            set(global_values) != expected_candidate_names
+            or set(per_task) != expected_candidate_names
+        ):
+            raise ValueError("checkpoint candidate set does not match the frozen plan")
+        if any(len(rows) != len(completed_task_ids) for rows in per_task.values()):
+            raise ValueError("checkpoint per-task rows do not match its completed task count")
+        print(
+            f"[resume] loaded {len(completed_task_ids)}/{len(tasks)} completed tasks "
+            f"from {checkpoint_path}",
+            flush=True,
+        )
+    resumed_task_count = len(completed_task_ids)
     started = time.perf_counter()
 
     for task_index, task in enumerate(tasks, start=1):
+        if task_index <= len(completed_task_ids):
+            continue
         task_fidelity, storage, task_reference_bytes = evaluate_task(
             model,
             task,
@@ -924,13 +1009,27 @@ def main() -> int:
             global_values[candidate.name]["top1"].extend(
                 bool(value) for value in fidelity.top1_agreement.flatten().tolist()
             )
+        completed_task_ids.append(task.task_id)
+        current_elapsed = elapsed_before_resume + (time.perf_counter() - started)
+        write_checkpoint(
+            checkpoint_path,
+            signature=run_signature,
+            state={
+                "completed_task_ids": completed_task_ids,
+                "global_values": global_values,
+                "per_task": per_task,
+                "storage_by_candidate": storage_by_candidate,
+                "reference_state_bytes": reference_state_bytes,
+                "elapsed_wall_seconds": current_elapsed,
+            },
+        )
         print(
             f"[{task_index}/{len(tasks)}] task={task.task_id} "
             f"prompt={len(task.prompt_ids)} code={len(task.code_ids)}",
             flush=True,
         )
 
-    elapsed_seconds = time.perf_counter() - started
+    elapsed_seconds = elapsed_before_resume + (time.perf_counter() - started)
     assert storage_by_candidate is not None
     assert reference_state_bytes is not None
     if reference_state_bytes != EXPECTED_BYTES["fp32_state"]:
@@ -1072,6 +1171,7 @@ def main() -> int:
         len(rows) == expected_count
         and args.limit is None
         and parity is not None
+        and completed_task_ids == [task.task_id for task in tasks]
         and calibration_artifact["evidence"]["claim_scope"]["protocol_eligible"] is True
     )
 
@@ -1134,6 +1234,10 @@ def main() -> int:
             "scored_first_code_token_from_prefill": True,
             "candidate_generated_tokens_fed_back": False,
             "elapsed_wall_seconds_not_a_latency_benchmark": elapsed_seconds,
+            "run_signature_sha256": run_signature,
+            "checkpoint_path": str(checkpoint_path),
+            "resumed_task_count": resumed_task_count,
+            "final_checkpoint_sha256": sha256_bytes(checkpoint_path.read_bytes()),
         },
         "validity": {
             "configured_gdn_layer_indices": list(configured_gdn_layers),
