@@ -19,6 +19,8 @@ software, so compatibility can still change between development versions.
   INT4 remains available only as an explicitly named stress baseline.
 - Machine-readable `recurquant qwen35 --json` output, a one-click Colab
   notebook, and a hash-anchored reproduction and extension guide.
+- Offline `recurquant verify-artifact` checks for strict JSON, whole-file
+  SHA256 anchors, and canonical evidence hashes.
 - Frozen MBPP calibration and development evaluation workflows with pinned
   dataset/model revisions, prepared token manifests, canonical evidence hashes,
   equal-byte baselines, and resumable per-task checkpoints.

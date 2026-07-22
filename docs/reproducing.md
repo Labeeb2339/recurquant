@@ -170,6 +170,19 @@ Their recorded source commits are respectively
 `20a5ea95a8ed692600ee1645d2913f3a4b8a6795`, and
 `44d75a2776fa36441e17cc688965c9825c4c1a1c`.
 
+Validate a committed artifact without loading the model or dataset:
+
+```powershell
+.venv\Scripts\python.exe -m recurquant.cli verify-artifact `
+  evidence\mbpp-v02-development.json `
+  --expect-file-sha256 5980fd58aa0933ad97deb896d4901fcd37350c4a57d8a80022ab218aaf77e727 `
+  --expect-canonical-evidence-sha256 301c52e194bbd23059a0040a8e94aeac97dc33de1100f13edbf17dc877755488
+```
+
+The command exits nonzero if the JSON is malformed, the recorded canonical
+hash is wrong, or either expected anchor does not match. Its report is JSON so
+the same check can run in CI.
+
 Cross-machine invariant manifest hashes are:
 
 | Phase | Dataset manifest SHA256 | Token manifest SHA256 |

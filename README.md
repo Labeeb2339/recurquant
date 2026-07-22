@@ -212,6 +212,9 @@ as confirmed.
 
 ## Research record
 
+- Validate any evidence file offline with `recurquant verify-artifact`; the
+  [reproduction guide](docs/reproducing.md) includes exact committed hashes and
+  a CI-friendly command.
 - [Frozen public evaluation protocol](research/PUBLIC_EVAL_PROTOCOL_V02.md)
 - [MBPP development report](research/DEVELOPMENT_002.md)
 - [Earlier research-status snapshot](research/STATUS.md)

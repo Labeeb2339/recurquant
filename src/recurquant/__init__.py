@@ -1,5 +1,6 @@
 """RecurQuant recurrent-state quantization primitives."""
 
+from .evidence import verify_evidence_artifact
 from .packed_cache import PackedRecurrentStateCache
 from .quantization import (
     PackedQuantizedTensor,
@@ -19,6 +20,7 @@ __all__ = [
     "create_qwen35_v02_mixed_cache",
     "quantize_dequantize",
     "quantize_pack",
+    "verify_evidence_artifact",
 ]
 
 __version__ = "0.2.0.dev0"
