@@ -10,8 +10,13 @@ import transformers
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
-from .packed_cache import PackedRecurrentStateCache
+from .packed_cache import (
+    AdaptiveMixedPackedRecurrentStateCache,
+    MixedPackedRecurrentStateCache,
+    PackedRecurrentStateCache,
+)
 from .quantization import QuantizationSpec, RoundingMode
+from .row_policy import ExactBudgetRowPlan
 
 if TYPE_CHECKING:
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
@@ -211,6 +216,101 @@ def create_qwen35_packed_cache(
         config,
         spec=spec,
         layer_specs=layer_specs,
+        record_evidence=record_evidence,
+    )
+
+
+def _validated_exact_budget_config(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+) -> object:
+    _validate_transformers_compatibility()
+    config = _validated_text_config(model_or_config)
+    geometry_fields = {
+        "linear_num_value_heads": getattr(config, "linear_num_value_heads", None),
+        "linear_key_head_dim": getattr(config, "linear_key_head_dim", None),
+        "linear_value_head_dim": getattr(config, "linear_value_head_dim", None),
+    }
+    invalid_geometry = {
+        name: value
+        for name, value in geometry_fields.items()
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0
+    }
+    if invalid_geometry:
+        raise ValueError(
+            f"The Qwen3.5 config has invalid recurrent-state geometry: {invalid_geometry}"
+        )
+
+    expected_heads = geometry_fields["linear_num_value_heads"]
+    expected_rows = geometry_fields["linear_key_head_dim"]
+    expected_group_size = geometry_fields["linear_value_head_dim"]
+    if plan.group_size != expected_group_size:
+        raise ValueError(
+            "row plan group_size must equal Qwen3.5 linear_value_head_dim: "
+            f"{plan.group_size} != {expected_group_size}"
+        )
+    incompatible_shapes = [
+        (layer_index, head_count, row_count)
+        for layer_index, head_count, row_count in plan.score_shapes
+        if head_count != expected_heads or row_count != expected_rows
+    ]
+    if incompatible_shapes:
+        raise ValueError(
+            "row plan score geometry must match Qwen3.5 recurrent states "
+            f"[heads={expected_heads}, rows={expected_rows}]; incompatible entries: "
+            f"{incompatible_shapes}"
+        )
+    return config
+
+
+def create_qwen35_exact_budget_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    rounding: RoundingMode = "nearest",
+    seed: int = 2339,
+    record_evidence: bool = False,
+) -> MixedPackedRecurrentStateCache:
+    """Create a validated row-level mixed INT4/INT8 Qwen3.5 cache.
+
+    The plan must cover every linear-attention model-layer index exactly. Its
+    ``[heads, rows]`` score geometry must equal Qwen3.5's recurrent state geometry,
+    and its group size must equal ``linear_value_head_dim`` so every state row owns
+    one independently packed group. No layer, geometry, or byte-budget adaptation
+    is performed implicitly.
+    """
+
+    return MixedPackedRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        rounding=rounding,
+        seed=seed,
+        record_evidence=record_evidence,
+    )
+
+
+def create_qwen35_adaptive_exact_budget_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    rounding: RoundingMode = "nearest",
+    seed: int = 2339,
+    record_evidence: bool = False,
+) -> AdaptiveMixedPackedRecurrentStateCache:
+    """Create the batch-one adaptive-row mixed-cache prototype for Qwen3.5.
+
+    The exact plan still fixes each layer's INT8 promotion count and resident
+    byte count. On every state write, row identities are selected by instantaneous
+    aligned INT4-versus-INT8 quantization-error reduction. This experimental
+    factory does not establish a quality, latency, or novelty result.
+    """
+
+    return AdaptiveMixedPackedRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        rounding=rounding,
+        seed=seed,
         record_evidence=record_evidence,
     )
 

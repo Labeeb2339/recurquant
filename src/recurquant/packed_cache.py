@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from dataclasses import asdict, dataclass
 
@@ -9,12 +11,16 @@ import torch
 from transformers import DynamicCache
 from transformers.cache_utils import LinearAttentionLayer
 
+from .mixed_quantization import PackedMixedQuantizedTensor, quantize_pack_mixed
 from .quantization import (
     PackedQuantizedTensor,
     QuantizationSpec,
+    RoundingMode,
+    quantize_dequantize,
     quantize_pack,
     scheduled_quantization_spec,
 )
+from .row_policy import ExactBudgetRowPlan
 
 
 class _PackedStateView(MutableMapping[int, torch.Tensor | None]):
@@ -417,3 +423,638 @@ class PackedRecurrentStateCache(DynamicCache):
                 resident > 0 and resident < full_precision_equivalent
             ),
         }
+
+
+def _validate_exact_budget_plan(
+    plan: ExactBudgetRowPlan,
+    linear_layer_indices: set[int],
+) -> dict[int, tuple[int, int]]:
+    """Validate every byte and geometry invariant needed by the mixed cache."""
+
+    if plan.low_bits != 4 or plan.high_bits != 8:
+        raise ValueError("mixed row-plan caches require low_bits=4 and high_bits=8")
+    if plan.group_size <= 0:
+        raise ValueError("row plan group_size must be positive")
+    if plan.scale_bits not in (16, 32):
+        raise ValueError("row plan scale_bits must be 16 or 32")
+
+    shapes: dict[int, tuple[int, int]] = {}
+    for layer_index, head_count, row_count in plan.score_shapes:
+        if layer_index in shapes:
+            raise ValueError(f"row plan contains duplicate geometry for layer {layer_index}")
+        if layer_index < 0 or head_count <= 0 or row_count <= 0:
+            raise ValueError(
+                "row plan layer indices must be nonnegative and dimensions must be positive"
+            )
+        shapes[layer_index] = (head_count, row_count)
+
+    plan_layers = set(shapes)
+    missing = sorted(linear_layer_indices - plan_layers)
+    extra = sorted(plan_layers - linear_layer_indices)
+    if missing or extra:
+        raise ValueError(
+            "row plan layers must exactly match linear-attention layers; "
+            f"missing={missing}, extra={extra}"
+        )
+
+    total_groups = sum(heads * rows for heads, rows in shapes.values())
+    if plan.total_groups != total_groups:
+        raise ValueError(
+            "row plan total_groups is inconsistent with score_shapes: "
+            f"{plan.total_groups} != {total_groups}"
+        )
+    expected_mask_bytes = math.ceil(total_groups / 8)
+    if plan.mask_bytes != expected_mask_bytes:
+        raise ValueError(
+            "row plan mask_bytes is inconsistent with total_groups: "
+            f"{plan.mask_bytes} != {expected_mask_bytes}"
+        )
+
+    selected = set(plan.high_precision_rows)
+    if len(selected) != plan.promoted_group_count:
+        raise ValueError("row plan contains duplicate high-precision row locations")
+    for location in selected:
+        geometry = shapes.get(location.layer_index)
+        if geometry is None:
+            raise ValueError(f"row plan promotion references unknown layer {location.layer_index}")
+        head_count, row_count = geometry
+        if not (0 <= location.head_index < head_count):
+            raise ValueError(f"row plan promotion has out-of-range head index at {location}")
+        if not (0 <= location.row_index < row_count):
+            raise ValueError(f"row plan promotion has out-of-range row index at {location}")
+
+    low_payload_bytes = math.ceil(plan.low_bits * plan.group_size / 8)
+    high_payload_bytes = math.ceil(plan.high_bits * plan.group_size / 8)
+    promotion_increment = high_payload_bytes - low_payload_bytes
+    if plan.promotion_increment_bytes != promotion_increment:
+        raise ValueError(
+            "row plan promotion_increment_bytes is inconsistent with its bit widths and "
+            f"group size: {plan.promotion_increment_bytes} != {promotion_increment}"
+        )
+    minimum_bytes = total_groups * (low_payload_bytes + plan.scale_bits // 8) + (
+        expected_mask_bytes
+    )
+    expected_resident = minimum_bytes + plan.promoted_group_count * promotion_increment
+    if plan.resident_bytes != expected_resident or plan.target_resident_bytes != expected_resident:
+        raise ValueError(
+            "row plan resident-byte fields are inconsistent with its physical layout: "
+            f"expected {expected_resident}"
+        )
+
+    # Each layer owns a separately addressable mask tensor. When a layer is not
+    # byte-aligned, independently packing those masks would exceed the selector's
+    # globally packed mask model, so reject instead of silently changing the budget.
+    per_layer_mask_bytes = sum(math.ceil(heads * rows / 8) for heads, rows in shapes.values())
+    if per_layer_mask_bytes != expected_mask_bytes:
+        raise ValueError(
+            "row plan mask accounting is incompatible with separate per-layer masks; "
+            f"plan counts {expected_mask_bytes} bytes but layers require "
+            f"{per_layer_mask_bytes}"
+        )
+    return shapes
+
+
+class _MixedPackedStateView(MutableMapping[int, torch.Tensor | None]):
+    """Compatibility view that materializes one mixed packed state when read."""
+
+    def __init__(self, owner: MixedPackedLinearAttentionLayer) -> None:
+        self._owner = owner
+
+    def __getitem__(self, key: int) -> torch.Tensor | None:
+        packed = self._owner.packed_states[key]
+        return None if packed is None else packed.dequantize()
+
+    def __setitem__(self, key: int, value: torch.Tensor | None) -> None:
+        if value is None:
+            self._owner.packed_states[key] = None
+            self._owner.is_recurrent_states_initialized[key] = False
+        else:
+            self._owner._store(value, key)
+
+    def __delitem__(self, key: int) -> None:
+        self.__setitem__(key, None)
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self._owner.packed_states)
+
+    def __len__(self) -> int:
+        return len(self._owner.packed_states)
+
+
+@dataclass(frozen=True, slots=True)
+class MixedPackedCacheUpdateEvidence:
+    update_index: int
+    layer_index: int
+    state_index: int
+    low_bits: int
+    high_bits: int
+    group_size: int
+    scale_bits: int
+    rounding: str
+    source_dtype: str
+    shape: tuple[int, ...]
+    total_groups: int
+    high_precision_groups: int
+    selection_method: str
+    high_precision_mask_sha256: str
+    baseline_bytes: int
+    payload_bytes: int
+    scale_bytes: int
+    mask_bytes: int
+    resident_bytes: int
+    relative_l2_error: float
+    mean_squared_error: float
+    max_absolute_error: float
+
+    def evidence_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+MixedUpdateCallback = Callable[
+    [int, int, torch.Tensor, PackedMixedQuantizedTensor, torch.Tensor],
+    None,
+]
+
+
+class MixedPackedLinearAttentionLayer(LinearAttentionLayer):
+    """Linear-attention cache layer with row-selected INT4/INT8 residency."""
+
+    is_compileable = False
+
+    def __init__(
+        self,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+        layer_index: int,
+        expected_heads: int,
+        expected_rows: int,
+        high_precision_group_indices: tuple[int, ...],
+        number_of_states: int = 1,
+        on_update: MixedUpdateCallback | None = None,
+    ) -> None:
+        super().__init__(number_of_states=number_of_states)
+        if low_spec.bits != 4 or high_spec.bits != 8:
+            raise ValueError("mixed packed layers require low INT4 and high INT8 specs")
+        if any(
+            getattr(low_spec, field) != getattr(high_spec, field)
+            for field in (
+                "group_size",
+                "scale_bits",
+                "flatten_last_dims",
+                "rounding",
+                "seed",
+                "epsilon",
+            )
+        ):
+            raise ValueError("mixed packed layer specs must differ only in bits")
+        if low_spec.flatten_last_dims != 2:
+            raise ValueError("mixed row-plan cache requires flatten_last_dims=2")
+        expected_groups = expected_heads * expected_rows
+        if len(set(high_precision_group_indices)) != len(high_precision_group_indices):
+            raise ValueError("high-precision group indices must be unique")
+        if any(index < 0 or index >= expected_groups for index in high_precision_group_indices):
+            raise ValueError("high-precision group index is outside the layer geometry")
+
+        self.low_spec = low_spec
+        self.high_spec = high_spec
+        self.layer_index = layer_index
+        self.expected_heads = expected_heads
+        self.expected_rows = expected_rows
+        self.high_precision_group_indices = tuple(sorted(high_precision_group_indices))
+        self.on_update = on_update
+        self.packed_states: dict[int, PackedMixedQuantizedTensor | None] = dict.fromkeys(
+            range(number_of_states)
+        )
+        self.recurrent_states = _MixedPackedStateView(self)
+        self._update_count = 0
+
+    def _selected_specs(self) -> tuple[QuantizationSpec, QuantizationSpec]:
+        return (
+            scheduled_quantization_spec(
+                self.low_spec,
+                layer_index=self.layer_index,
+                layer_update_index=self._update_count,
+            ),
+            scheduled_quantization_spec(
+                self.high_spec,
+                layer_index=self.layer_index,
+                layer_update_index=self._update_count,
+            ),
+        )
+
+    def _precision_mask(
+        self,
+        recurrent_states: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        del low_spec, high_spec
+        if recurrent_states.ndim != 4:
+            raise ValueError(
+                f"layer {self.layer_index} recurrent state must have rank 4; "
+                f"got shape {tuple(recurrent_states.shape)}"
+            )
+        expected_shape = (
+            recurrent_states.shape[0],
+            self.expected_heads,
+            self.expected_rows,
+            self.low_spec.group_size,
+        )
+        if tuple(recurrent_states.shape) != expected_shape:
+            rendered = (
+                f"[batch, {self.expected_heads}, {self.expected_rows}, {self.low_spec.group_size}]"
+            )
+            raise ValueError(
+                f"layer {self.layer_index} recurrent state must have shape {rendered}; "
+                f"got {tuple(recurrent_states.shape)}"
+            )
+        base = torch.zeros(
+            self.expected_heads * self.expected_rows,
+            dtype=torch.bool,
+            device=recurrent_states.device,
+        )
+        if self.high_precision_group_indices:
+            selected = torch.tensor(
+                self.high_precision_group_indices,
+                dtype=torch.long,
+                device=recurrent_states.device,
+            )
+            base[selected] = True
+        return base.repeat(recurrent_states.shape[0]).reshape(
+            recurrent_states.shape[0] * self.expected_heads,
+            self.expected_rows,
+        )
+
+    def _store(self, recurrent_states: torch.Tensor, state_idx: int) -> torch.Tensor:
+        if torch.is_grad_enabled() and recurrent_states.requires_grad:
+            raise RuntimeError(
+                "Mixed packed recurrent states are inference-only and cannot accept an "
+                "autograd-tracked tensor. Wrap every prefill and decode forward in "
+                "torch.inference_mode() or torch.no_grad(); model.eval() alone does "
+                "not disable autograd."
+            )
+        low_spec, high_spec = self._selected_specs()
+        mask = self._precision_mask(
+            recurrent_states,
+            low_spec=low_spec,
+            high_spec=high_spec,
+        )
+        packed = quantize_pack_mixed(
+            recurrent_states,
+            mask,
+            low_spec=low_spec,
+            high_spec=high_spec,
+        )
+        self.packed_states[state_idx] = packed
+        self.is_recurrent_states_initialized[state_idx] = True
+        if self.device is None:
+            self.dtype = recurrent_states.dtype
+            self.device = recurrent_states.device
+        materialized = packed.dequantize()
+        if self.on_update is not None:
+            self.on_update(
+                self.layer_index,
+                state_idx,
+                recurrent_states,
+                packed,
+                materialized,
+            )
+        self._update_count += 1
+        return materialized
+
+    def update_recurrent_state(
+        self,
+        recurrent_states: torch.Tensor,
+        state_idx: int = 0,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        del kwargs
+        return self._store(recurrent_states, state_idx)
+
+    def resident_payload_bytes(self) -> int:
+        return sum(
+            packed.payload_bytes for packed in self.packed_states.values() if packed is not None
+        )
+
+    def resident_scale_bytes(self) -> int:
+        return sum(
+            packed.scale_bytes for packed in self.packed_states.values() if packed is not None
+        )
+
+    def resident_mask_bytes(self) -> int:
+        return sum(
+            packed.mask_bytes for packed in self.packed_states.values() if packed is not None
+        )
+
+    def resident_recurrent_state_bytes(self) -> int:
+        return (
+            self.resident_payload_bytes()
+            + self.resident_scale_bytes()
+            + self.resident_mask_bytes()
+        )
+
+    def high_precision_group_count(self) -> int:
+        return sum(
+            packed.high_precision_groups
+            for packed in self.packed_states.values()
+            if packed is not None
+        )
+
+    def full_precision_equivalent_recurrent_state_bytes(self) -> int:
+        return sum(
+            packed.elements * torch.empty((), dtype=packed.original_dtype).element_size()
+            for packed in self.packed_states.values()
+            if packed is not None
+        )
+
+    def largest_materialized_recurrent_state_bytes(self) -> int:
+        return max(
+            (
+                packed.elements * torch.empty((), dtype=packed.original_dtype).element_size()
+                for packed in self.packed_states.values()
+                if packed is not None
+            ),
+            default=0,
+        )
+
+    def reset(self) -> None:
+        for state_idx in range(self.number_of_states):
+            if self.is_conv_states_initialized[state_idx]:
+                self.conv_states[state_idx].zero_()
+            packed = self.packed_states[state_idx]
+            if packed is not None:
+                packed.low_payload.zero_()
+                packed.high_payload.zero_()
+                packed.scales.zero_()
+            self.has_previous_state[state_idx] = False
+
+    def reorder_cache(self, beam_idx: torch.LongTensor) -> None:
+        for state_idx in range(self.number_of_states):
+            if self.is_conv_states_initialized[state_idx]:
+                self.conv_states[state_idx] = self.conv_states[state_idx].index_select(
+                    0, beam_idx.to(self.device)
+                )
+            packed = self.packed_states[state_idx]
+            if packed is not None:
+                self.packed_states[state_idx] = packed.reorder_batch(beam_idx)
+
+    def offload(self) -> None:
+        for state_idx in range(self.number_of_states):
+            if self.is_conv_states_initialized[state_idx]:
+                self.conv_states[state_idx] = self.conv_states[state_idx].to(
+                    "cpu", non_blocking=True
+                )
+            packed = self.packed_states[state_idx]
+            if packed is not None:
+                self.packed_states[state_idx] = packed.to("cpu")
+
+    def prefetch(self) -> None:
+        for state_idx in range(self.number_of_states):
+            if (
+                self.is_conv_states_initialized[state_idx]
+                and self.conv_states[state_idx].device != self.device
+            ):
+                self.conv_states[state_idx] = self.conv_states[state_idx].to(
+                    self.device, non_blocking=True
+                )
+            packed = self.packed_states[state_idx]
+            if packed is not None and packed.low_payload.device != self.device:
+                self.packed_states[state_idx] = packed.to(self.device)
+
+
+class AdaptiveMixedPackedLinearAttentionLayer(MixedPackedLinearAttentionLayer):
+    """Batch-one prototype selecting the fixed INT8 quota on each state update.
+
+    The plan determines only this layer's promotion count. The promoted rows are
+    recomputed from the incoming state using the per-row reduction in aligned
+    quantize-dequantize MSE from INT4 to INT8. Equal scores keep flattened row
+    order, making ties deterministic without changing the byte budget.
+    """
+
+    def _precision_mask(
+        self,
+        recurrent_states: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        # Reuse the static path's complete rank/geometry validation before
+        # applying the prototype's deliberately narrow batch-one contract.
+        super()._precision_mask(
+            recurrent_states,
+            low_spec=low_spec,
+            high_spec=high_spec,
+        )
+        if recurrent_states.shape[0] != 1:
+            raise ValueError(
+                "adaptive mixed cache selection currently requires batch size 1; "
+                f"got {recurrent_states.shape[0]}"
+            )
+
+        total_groups = self.expected_heads * self.expected_rows
+        quota = len(self.high_precision_group_indices)
+        mask = torch.zeros(
+            total_groups,
+            dtype=torch.bool,
+            device=recurrent_states.device,
+        )
+        if quota == 0:
+            return mask.reshape(self.expected_heads, self.expected_rows)
+        if quota == total_groups:
+            return torch.ones_like(mask).reshape(self.expected_heads, self.expected_rows)
+
+        # quantize_dequantize detaches its input. Keep the scope explicit so this
+        # selector cannot retain an autograd graph if it is called independently.
+        with torch.no_grad():
+            source = recurrent_states.detach().to(torch.float32)
+            low = quantize_dequantize(recurrent_states, low_spec).tensor.to(torch.float32)
+            high = quantize_dequantize(recurrent_states, high_spec).tensor.to(torch.float32)
+            low_mse = (low - source).square().mean(dim=-1).reshape(-1)
+            high_mse = (high - source).square().mean(dim=-1).reshape(-1)
+            benefit = low_mse - high_mse
+
+            # Stable descending sort resolves exact ties by the pre-existing
+            # flattened [head, row] order (lower index first).
+            ranked = torch.argsort(benefit, descending=True, stable=True)
+            mask[ranked[:quota]] = True
+        return mask.reshape(self.expected_heads, self.expected_rows)
+
+
+class MixedPackedRecurrentStateCache(DynamicCache):
+    """Drop-in cache driven by an exact-byte row-level INT4/INT8 plan."""
+
+    _mixed_layer_class = MixedPackedLinearAttentionLayer
+    selection_method = "static_plan"
+
+    def __init__(
+        self,
+        config: object,
+        *,
+        plan: ExactBudgetRowPlan,
+        rounding: RoundingMode = "nearest",
+        seed: int = 2339,
+        record_evidence: bool = False,
+    ) -> None:
+        super().__init__(config=config)
+        self.plan = plan
+        self.record_evidence = record_evidence
+        self.update_evidence: list[MixedPackedCacheUpdateEvidence] = []
+        self._update_index = 0
+
+        linear_layer_indices = {
+            layer_index
+            for layer_index, layer in enumerate(self.layers)
+            if isinstance(layer, LinearAttentionLayer)
+        }
+        shapes = _validate_exact_budget_plan(plan, linear_layer_indices)
+        low_spec = QuantizationSpec(
+            bits=plan.low_bits,
+            group_size=plan.group_size,
+            scale_bits=plan.scale_bits,
+            rounding=rounding,
+            seed=seed,
+        )
+        high_spec = QuantizationSpec(
+            bits=plan.high_bits,
+            group_size=plan.group_size,
+            scale_bits=plan.scale_bits,
+            rounding=rounding,
+            seed=seed,
+        )
+
+        replaced = 0
+        for layer_index, layer in enumerate(self.layers):
+            if isinstance(layer, LinearAttentionLayer):
+                expected_heads, expected_rows = shapes[layer_index]
+                self.layers[layer_index] = self._mixed_layer_class(
+                    low_spec=low_spec,
+                    high_spec=high_spec,
+                    layer_index=layer_index,
+                    expected_heads=expected_heads,
+                    expected_rows=expected_rows,
+                    high_precision_group_indices=plan.groups_for_layer(layer_index),
+                    number_of_states=layer.number_of_states,
+                    on_update=self._record_update if record_evidence else None,
+                )
+                replaced += 1
+        if replaced == 0:
+            raise TypeError("config did not create any Transformers linear-attention layers")
+
+    def _record_update(
+        self,
+        layer_index: int,
+        state_index: int,
+        source: torch.Tensor,
+        packed: PackedMixedQuantizedTensor,
+        materialized: torch.Tensor,
+    ) -> None:
+        error = materialized.to(torch.float32) - source.detach().to(torch.float32)
+        source_norm = torch.linalg.vector_norm(source.detach().to(torch.float32))
+        relative_l2 = torch.linalg.vector_norm(error) / source_norm.clamp_min(1e-12)
+        self.update_evidence.append(
+            MixedPackedCacheUpdateEvidence(
+                update_index=self._update_index,
+                layer_index=layer_index,
+                state_index=state_index,
+                low_bits=packed.low_spec.bits,
+                high_bits=packed.high_spec.bits,
+                group_size=packed.low_spec.group_size,
+                scale_bits=packed.low_spec.scale_bits,
+                rounding=packed.low_spec.rounding,
+                source_dtype=str(source.dtype),
+                shape=tuple(source.shape),
+                total_groups=packed.total_groups,
+                high_precision_groups=packed.high_precision_groups,
+                selection_method=self.selection_method,
+                high_precision_mask_sha256=hashlib.sha256(
+                    bytes(packed.precision_mask.detach().cpu().contiguous().tolist())
+                ).hexdigest(),
+                baseline_bytes=source.numel() * source.element_size(),
+                payload_bytes=packed.payload_bytes,
+                scale_bytes=packed.scale_bytes,
+                mask_bytes=packed.mask_bytes,
+                resident_bytes=packed.storage_bytes,
+                relative_l2_error=float(relative_l2.item()),
+                mean_squared_error=float(error.square().mean().item()),
+                max_absolute_error=float(error.abs().max().item()),
+            )
+        )
+        self._update_index += 1
+
+    def mixed_packed_layers(self) -> Iterator[tuple[int, MixedPackedLinearAttentionLayer]]:
+        for layer_index, layer in enumerate(self.layers):
+            if isinstance(layer, MixedPackedLinearAttentionLayer):
+                yield layer_index, layer
+
+    def resident_payload_bytes(self) -> int:
+        return sum(layer.resident_payload_bytes() for _, layer in self.mixed_packed_layers())
+
+    def resident_scale_bytes(self) -> int:
+        return sum(layer.resident_scale_bytes() for _, layer in self.mixed_packed_layers())
+
+    def resident_mask_bytes(self) -> int:
+        return sum(layer.resident_mask_bytes() for _, layer in self.mixed_packed_layers())
+
+    def resident_recurrent_state_bytes(self) -> int:
+        return (
+            self.resident_payload_bytes()
+            + self.resident_scale_bytes()
+            + self.resident_mask_bytes()
+        )
+
+    def full_precision_equivalent_recurrent_state_bytes(self) -> int:
+        return sum(
+            layer.full_precision_equivalent_recurrent_state_bytes()
+            for _, layer in self.mixed_packed_layers()
+        )
+
+    def largest_materialized_recurrent_state_bytes(self) -> int:
+        return max(
+            (
+                layer.largest_materialized_recurrent_state_bytes()
+                for _, layer in self.mixed_packed_layers()
+            ),
+            default=0,
+        )
+
+    def high_precision_group_count(self) -> int:
+        return sum(layer.high_precision_group_count() for _, layer in self.mixed_packed_layers())
+
+    def storage_summary(self) -> dict[str, int | float | bool]:
+        payload = self.resident_payload_bytes()
+        scales = self.resident_scale_bytes()
+        mask = self.resident_mask_bytes()
+        resident = payload + scales + mask
+        full_precision_equivalent = self.full_precision_equivalent_recurrent_state_bytes()
+        return {
+            "payload_bytes": payload,
+            "scale_bytes": scales,
+            "mask_bytes": mask,
+            "resident_bytes": resident,
+            "high_precision_groups": self.high_precision_group_count(),
+            "full_precision_equivalent_bytes": full_precision_equivalent,
+            "largest_materialized_state_bytes": (
+                self.largest_materialized_recurrent_state_bytes()
+            ),
+            "resident_compression_ratio": (
+                full_precision_equivalent / resident if resident else 0.0
+            ),
+            "physical_reduction_realized": (
+                resident > 0 and resident < full_precision_equivalent
+            ),
+        }
+
+
+class AdaptiveMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
+    """Exact-byte adaptive-row prototype for batch-one inference diagnostics.
+
+    Per-layer promotion quotas come from the supplied exact-budget plan, so the
+    resident representation has the same payload, scale, and mask byte counts as
+    its static counterpart. Row identities may change at every storage update.
+    This class makes no quality, speed, or novelty claim.
+    """
+
+    _mixed_layer_class = AdaptiveMixedPackedLinearAttentionLayer
+    selection_method = "instantaneous_aligned_mse_reduction"
