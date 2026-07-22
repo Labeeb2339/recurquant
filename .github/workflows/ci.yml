@@ -28,6 +28,8 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest
+      - name: Check generated README assets
+        run: python scripts/generate_readme_assets.py --check
 
   package:
     name: Build wheel and sdist

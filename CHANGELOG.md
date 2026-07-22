@@ -21,6 +21,9 @@ software, so compatibility can still change between development versions.
   notebook, and a hash-anchored reproduction and extension guide.
 - Offline `recurquant verify-artifact` checks for strict JSON, whole-file
   SHA256 anchors, and canonical evidence hashes.
+- `recurquant verify-confirmation` independently checks the frozen MBPP
+  manifest, artifact, quality gates, and optional raw checkpoint arrays. It
+  distinguishes verified pass/fail outcomes from unanchored evidence.
 - Frozen MBPP calibration and development evaluation workflows with pinned
   dataset/model revisions, prepared token manifests, canonical evidence hashes,
   equal-byte baselines, and resumable per-task checkpoints.
@@ -36,6 +39,11 @@ software, so compatibility can still change between development versions.
   package depends on that release's internal linear-attention cache contract.
 - FP16 scale storage is identified as the evaluated default. FP32 scale storage
   remains supported for experiments but is not covered by full-model evidence.
+
+### Fixed
+
+- Beam-cache reordering now permutes packed INT4/INT8 payloads and scales
+  directly instead of dequantizing and requantizing the recurrent state.
 
 ### Known limitations
 
