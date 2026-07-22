@@ -64,6 +64,18 @@ def tracked_worktree_is_clean() -> bool:
     return not result.stdout.strip()
 
 
+def nvidia_driver_versions(device: torch.device) -> list[str]:
+    if device.type != "cuda":
+        return []
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Calibrate frozen one-layer INT8 selectors on pinned MBPP train rows."
@@ -294,6 +306,7 @@ def main() -> int:
             "transformers": importlib.metadata.version("transformers"),
             "datasets": importlib.metadata.version("datasets"),
             "cuda_runtime": torch.version.cuda,
+            "nvidia_driver_versions": nvidia_driver_versions(device),
             "device": str(device),
             "device_name": (
                 torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
