@@ -189,6 +189,21 @@ resolved after this protocol commit, but they must be committed in a
 pre-quality identity amendment before model loading. No quality metric from
 `[16, 32)` may be observed before that amendment.
 
+That identity amendment is now frozen in
+[`EXPERIMENT_008_DEVELOPMENT_IDENTITY.md`](EXPERIMENT_008_DEVELOPMENT_IDENTITY.md):
+
+```text
+ordered task IDs:
+666, 795, 944, 653, 857, 884, 878, 822,
+687, 820, 920, 771, 869, 851, 728, 704
+
+content-manifest SHA-256:
+21dcc6e1955918a9f6baae3d02e7ba2781600405f91fe42bbe18eac8ca6dde5e
+
+token-manifest SHA-256:
+5a8e7b56528e3ccecc95ff83b2e59749d81dab27d0233fefafc510622a973f87
+```
+
 Ranked window `[8, 16)` remains protected. It cannot be loaded, tokenized, or
 evaluated unless every development and independent numerical prerequisite in
 this protocol passes from committed artifacts.
