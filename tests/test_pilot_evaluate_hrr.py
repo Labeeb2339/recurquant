@@ -59,7 +59,7 @@ def _selector(kind: str) -> dict[str, object]:
         },
         "dataset": {
             "manifest": manifest,
-            "manifest_sha256": evaluator.sha256_bytes(evaluator.canonical_json_bytes(manifest)),
+            "manifest_sha256": evaluator.mbpp_manifest_content_sha256(manifest),
             "tasks": [
                 {
                     "task_id": 20,
@@ -101,6 +101,65 @@ def test_artifact_generators_emit_evaluator_repository_contract(git_state) -> No
     assert repository["worktree_clean"] is (repository["status"] == [])
 
 
+@pytest.mark.parametrize(
+    ("generator", "kind", "affected_field"),
+    (
+        (pilot_hrr_rows, evaluator.HRR_ARTIFACT_KIND, "captured_decode_tokens"),
+        (
+            pilot_loss_sensitivity_rows,
+            evaluator.LOSS_ARTIFACT_KIND,
+            "scored_transitions",
+        ),
+    ),
+)
+def test_generator_manifest_hash_contract_is_accepted_and_content_authenticated(
+    generator,
+    kind: str,
+    affected_field: str,
+) -> None:
+    rows = (
+        {
+            "task_id": 10,
+            "text": "Return ten.",
+            "code": "def answer():\n    return 10",
+            "test_list": ["assert answer() == 10"],
+            "test_setup_code": "",
+            "challenge_test_list": [],
+        },
+        {
+            "task_id": 20,
+            "text": "Return twenty.",
+            "code": "def answer():\n    return 20",
+            "test_list": ["assert answer() == 20"],
+            "test_setup_code": "",
+            "challenge_test_list": [],
+        },
+    )
+    manifest = generator.mbpp_manifest(rows, phase="calibration")
+    recorded_hash = generator.mbpp_manifest_sha256(rows, phase="calibration")
+    selector = _selector(kind)
+    selector["dataset"] = {
+        "manifest": manifest,
+        "manifest_sha256": recorded_hash,
+        "tasks": [
+            {
+                "task_id": row["task_id"],
+                "prompt_tokens": 8,
+                "code_tokens": 4,
+                affected_field: 3,
+            }
+            for row in rows
+        ],
+    }
+
+    evaluator.validate_selector_contract(selector)
+    assert recorded_hash == evaluator.mbpp_manifest_content_sha256(manifest)
+
+    selector["dataset"]["manifest"]["rows"][0]["sha256"] = "tampered"
+    with pytest.raises(ValueError, match="manifest hash"):
+        evaluator.validate_selector_contract(selector)
+
+
 def _frozen_selector(kind: str, *, commit: str = "frozen-commit") -> dict[str, object]:
     selector = _selector(kind)
     affected_field = (
@@ -125,7 +184,7 @@ def _frozen_selector(kind: str, *, commit: str = "frozen-commit") -> dict[str, o
     }
     selector["dataset"] = {
         "manifest": manifest,
-        "manifest_sha256": evaluator.sha256_bytes(evaluator.canonical_json_bytes(manifest)),
+        "manifest_sha256": evaluator.mbpp_manifest_content_sha256(manifest),
         "tasks": tasks,
     }
     selector["repository"] = {

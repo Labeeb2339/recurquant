@@ -45,6 +45,7 @@ from recurquant.public_data import (
     format_mbpp_example,
     load_mbpp_rows,
     mbpp_manifest,
+    mbpp_manifest_content_sha256,
     mbpp_manifest_sha256,
 )
 from recurquant.qwen35 import (
@@ -325,7 +326,7 @@ def validate_selector_contract(evidence: dict[str, Any]) -> None:
     dataset = _require_mapping(evidence.get("dataset"), context="selector dataset")
     manifest = _require_mapping(dataset.get("manifest"), context="selector dataset manifest")
     recorded_manifest_hash = dataset.get("manifest_sha256")
-    actual_manifest_hash = sha256_bytes(canonical_json_bytes(manifest))
+    actual_manifest_hash = mbpp_manifest_content_sha256(manifest)
     if recorded_manifest_hash != actual_manifest_hash:
         raise ValueError("selector dataset manifest hash does not match its content")
     if manifest.get("formatter_version") != "recurquant.mbpp-prompt-code.v1":
@@ -1368,7 +1369,7 @@ def main() -> int:
             expected_task_ids=actual_ids,
         )
     actual_manifest_sha256 = mbpp_manifest_sha256(rows, phase="calibration")
-    if actual_manifest_sha256 != sha256_bytes(canonical_json_bytes(actual_manifest)):
+    if actual_manifest_sha256 != mbpp_manifest_content_sha256(actual_manifest):
         raise RuntimeError("calibration manifest helpers produced inconsistent hashes")
 
     horizon = int(selector["method"]["horizon"])
@@ -1634,7 +1635,7 @@ def main() -> int:
             "authenticated_selector_prefix": (
                 {
                     "manifest": selector_prefix_manifest,
-                    "manifest_sha256": sha256_bytes(canonical_json_bytes(selector_prefix_manifest)),
+                    "manifest_sha256": mbpp_manifest_content_sha256(selector_prefix_manifest),
                     "ordered_task_ids": selector_prefix_ids,
                     "token_manifest": selector_prefix_token_manifest,
                     "selector_count": len(selectors),

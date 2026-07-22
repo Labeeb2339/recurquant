@@ -225,7 +225,21 @@ def mbpp_manifest_sha256(
 ) -> str:
     """Hash a canonical, provenance-bearing MBPP phase manifest."""
 
-    return hashlib.sha256(_canonical_json(build_mbpp_manifest(rows, phase=phase))).hexdigest()
+    return mbpp_manifest_content_sha256(build_mbpp_manifest(rows, phase=phase))
+
+
+def mbpp_manifest_content_sha256(manifest: Mapping[str, Any]) -> str:
+    """Hash the exact content of an embedded MBPP manifest.
+
+    MBPP manifest hashes use compact, sorted JSON rather than the indented
+    serialization used for whole evidence artifacts.  Keeping this operation
+    public lets artifact consumers authenticate an embedded manifest with the
+    same byte contract used by :func:`mbpp_manifest_sha256`.
+    """
+
+    if not isinstance(manifest, Mapping):
+        raise TypeError("manifest must be a mapping")
+    return hashlib.sha256(_canonical_json(manifest)).hexdigest()
 
 
 def format_mbpp_prompt_code(row: Mapping[str, Any]) -> MBPPPromptCode:

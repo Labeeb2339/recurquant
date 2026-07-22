@@ -20,6 +20,7 @@ from recurquant.public_data import (
     load_mbpp_phase,
     load_mbpp_rows,
     mbpp_manifest,
+    mbpp_manifest_content_sha256,
     mbpp_manifest_sha256,
     mbpp_row_sha256,
     mbpp_source_split,
@@ -97,9 +98,22 @@ def test_manifest_hash_is_order_independent_but_phase_bound() -> None:
     assert first != confirmation
     manifest = build_mbpp_manifest(rows, phase="development")
     assert mbpp_manifest(rows, phase="development") == manifest
+    assert mbpp_manifest_content_sha256(manifest) == first
     assert manifest["source_split"] == "validation"
     assert manifest["selection_namespace"] is None
     assert [item["task_id"] for item in manifest["rows"]] == [1, 2, 3]
+
+
+def test_embedded_manifest_hash_authenticates_exact_content() -> None:
+    manifest = build_mbpp_manifest([row(1)], phase="calibration")
+    expected = mbpp_manifest_sha256([row(1)], phase="calibration")
+
+    assert mbpp_manifest_content_sha256(dict(reversed(list(manifest.items())))) == expected
+
+    changed = {**manifest, "unexpected_field": "authenticated too"}
+    assert mbpp_manifest_content_sha256(changed) != expected
+    with pytest.raises(TypeError, match="mapping"):
+        mbpp_manifest_content_sha256([manifest])  # type: ignore[arg-type]
 
 
 def test_prompt_code_formatter_keeps_target_separate_and_normalizes_newlines() -> None:
