@@ -21,9 +21,22 @@ cannot replace the frozen primary. The candidate was therefore stopped before
 its numerical prerequisite or holdout. The ranked `[8, 16)` window remains
 unopened. See [`EXPERIMENT_006_RESULT.md`](EXPERIMENT_006_RESULT.md).
 
-The next candidate will test a causal estimate of recurrent-state row read
-energy rather than another post-result fusion weight. It remains a hypothesis;
-no Experiment 007 quality result exists at this checkpoint.
+Experiment 007 tested CQER-32: a causal 32-token EMA of normalized query energy
+times exact per-write INT4-to-INT8 row reconstruction benefit, with the same
+frozen target-Fisher layer quotas. On the already inspected eight-task
+partition it lowered macro excess NLL to `0.462792`, a 6.18% descriptive
+reduction from plain adaptive MSE and 13.62% from static target-Fisher. Both
+paired 95% intervals crossed zero. The frozen gate failed because the static
+reduction was below 20% and top-1 agreement trailed the better comparator by
+`0.02690`, above the `0.01` margin. All exact-byte, causal-handshake, finiteness,
+and integrity checks passed. Experiment 007 therefore stopped before its FP64
+prerequisite or holdout; ranked `[8, 16)` remains unopened. See
+[`EXPERIMENT_007_RESULT.md`](EXPERIMENT_007_RESULT.md).
+
+Any successor must use a new protocol and development split. The nearest known
+mechanism-level comparison is MixKVQ's query-magnitude and quantization-
+difficulty channel scoring for KV caches; CQER-32 cannot be described as the
+first query-aware mixed-precision method.
 
 No v0.3 improvement, novelty, speed, or breakthrough claim is supported.
 

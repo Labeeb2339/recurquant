@@ -13,6 +13,9 @@ Last reviewed: 2026-07-23
   fewer persistent-state writes exist in current recurrent-model systems work.
 - Update residuals have been used as importance signals for bounded auxiliary
   memory in Gated DeltaNet.
+- Query magnitude combined with quantization difficulty has already been used
+  for mixed-precision KV-cache channel selection in
+  [MixKVQ](https://arxiv.org/abs/2512.19206).
 - Mixed precision and memory-budget allocation are broad existing ideas.
 
 ## Scoped v0.2 confirmation finding
@@ -52,6 +55,18 @@ ablations remain exploratory and cannot be relabelled as the primary. The
 candidate stopped before its numerical prerequisite and the ranked `[8, 16)`
 holdout remained unopened. Experiment 006 supports no improvement,
 generalization, novelty, deployment, or breakthrough claim.
+
+Experiment 007 implemented CQER-32, a causal normalized-query-energy EMA times
+exact INT4-to-INT8 reconstruction benefit for physically packed Gated DeltaNet
+recurrent-state rows. Its authenticated same-calibration diagnostic improved
+macro excess NLL by 6.18% over plain adaptive MSE and 13.62% over static
+target-Fisher, but both paired intervals crossed zero. It failed the frozen
+20% static-reduction requirement and the top-1 non-inferiority margin. The
+packed state used exactly `2,564,096` bytes, while persistent selector EMA
+state increased the resident total to `2,711,552` bytes. The FP64 prerequisite
+was not reached and ranked `[8, 16)` remained unopened. Experiment 007 supports
+no generalization, novelty, latency, deployment, state-of-the-art, or
+breakthrough claim.
 
 ## Claims prohibited without new evidence
 
