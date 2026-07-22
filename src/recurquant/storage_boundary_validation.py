@@ -93,6 +93,24 @@ def _finite_scalar(name: str, value: float) -> float:
     return converted
 
 
+def _directional_dot_float64(
+    gradient_row: torch.Tensor,
+    direction: torch.Tensor,
+) -> float:
+    """Accumulate a saved FP32 row dot product reproducibly on CPU in FP64."""
+
+    if gradient_row.shape != direction.shape:
+        raise ValueError("gradient row and direction must have the same shape")
+    if gradient_row.dtype != torch.float32 or direction.dtype != torch.float32:
+        raise TypeError("gradient row and direction must use float32 before FP64 accumulation")
+    gradient64 = gradient_row.detach().to(device="cpu", dtype=torch.float64)
+    direction64 = direction.detach().to(device="cpu", dtype=torch.float64)
+    value = float((gradient64 * direction64).sum(dtype=torch.float64).item())
+    if not math.isfinite(value):
+        raise RuntimeError("directional dot product became non-finite")
+    return value
+
+
 def _sign_agreement(left: float, right: float, *, floor: float) -> bool | None:
     if abs(left) <= floor and abs(right) <= floor:
         return None
@@ -429,7 +447,7 @@ def _autograd_directional_derivative(
             loss = _target_nll(model, cache, input_ids, targets, forward_kwargs)
             (gradient,) = torch.autograd.grad(loss, leaf, retain_graph=False, create_graph=False)
         gradient_row = gradient[0, location.head_index, location.row_index].detach()
-        directional = float((gradient_row * direction).sum().item())
+        directional = _directional_dot_float64(gradient_row, direction)
         loss_value = float(loss.detach().item())
     finally:
         for parameter, requires_grad in zip(parameters, original_requires_grad, strict=True):

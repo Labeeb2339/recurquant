@@ -175,6 +175,24 @@ def _tensor_bytes_sha256(tensor: torch.Tensor) -> str:
     return _sha256_bytes(value.view(torch.uint8).numpy().tobytes())
 
 
+def _directional_dot_float64(
+    gradient_row: torch.Tensor,
+    direction: torch.Tensor,
+) -> float:
+    """Recompute the recorded FP32 row dot on CPU with FP64 accumulation."""
+
+    if gradient_row.shape != direction.shape:
+        raise ValueError("gradient row and direction must have the same shape")
+    if gradient_row.dtype != torch.float32 or direction.dtype != torch.float32:
+        raise TypeError("gradient row and direction must use float32 before FP64 accumulation")
+    gradient64 = gradient_row.detach().to(device="cpu", dtype=torch.float64)
+    direction64 = direction.detach().to(device="cpu", dtype=torch.float64)
+    value = float((gradient64 * direction64).sum(dtype=torch.float64).item())
+    if not math.isfinite(value):
+        raise RuntimeError("directional dot product became non-finite")
+    return value
+
+
 def _tensor_record(tensor: torch.Tensor, *, include_values: bool) -> dict[str, object]:
     value = tensor.detach().to(device="cpu", dtype=torch.float64).contiguous()
     if value.numel() == 0 or not torch.isfinite(value).all().item():
@@ -640,7 +658,10 @@ def main() -> int:
             )
 
         assert reference is not None
-        dot_product = float((reference.gradient_row * reference.direction).sum().item())
+        dot_product = _directional_dot_float64(
+            reference.gradient_row,
+            reference.direction,
+        )
         if not math.isclose(
             -dot_product,
             reference.comparison.predicted_benefit_autograd,

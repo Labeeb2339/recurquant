@@ -7,6 +7,7 @@ from transformers import DynamicCache, Qwen3_5ForCausalLM
 from recurquant.quantization import QuantizationSpec
 from recurquant.storage_boundary_validation import (
     StorageRowLocation,
+    _directional_dot_float64,
     advance_uniform_int4_trajectory,
     compare_directional_benefits,
     interpolate_storage_row,
@@ -150,6 +151,10 @@ def test_multilayer_qwen_gradient_avoids_downstream_cache_copy_inplace() -> None
     )
 
     assert result.recurrent_layer_indices == (0, 1)
+    assert result.comparison.autograd_directional_derivative == _directional_dot_float64(
+        result.gradient_row,
+        result.direction,
+    )
     assert result.comparison.baseline_repeat_absolute_error < 1e-7
     assert result.comparison.autograd_directional_derivative == pytest.approx(
         result.comparison.central_directional_derivative,

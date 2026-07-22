@@ -5,9 +5,15 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 from transformers import DynamicCache
 
-from recurquant.storage_boundary_validation import StorageRowLocation
+from recurquant.storage_boundary_validation import (
+    StorageRowLocation,
+)
+from recurquant.storage_boundary_validation import (
+    _directional_dot_float64 as _module_directional_dot_float64,
+)
 from tests.test_transformers_cache import tiny_config
 
 
@@ -52,6 +58,16 @@ def test_cache_fingerprint_covers_recurrent_history_flags() -> None:
     cache.layers[0].has_previous_state[0] = True
 
     assert script._cache_fingerprint(cache) != before
+
+
+def test_saved_directional_dot_uses_matching_float64_accumulation() -> None:
+    script = _load_script()
+    gradient = torch.tensor([100_000_000.0, 1.0, -100_000_000.0], dtype=torch.float32)
+    direction = torch.ones_like(gradient)
+
+    assert float((gradient * direction).sum().item()) == 0.0
+    assert _module_directional_dot_float64(gradient, direction) == 1.0
+    assert script._directional_dot_float64(gradient, direction) == 1.0
 
 
 def _gate_rows(script, *, central_scale: float = 1.0, repeat_error: float = 0.0):
