@@ -35,8 +35,9 @@ audit and confirmatory experiments are required before stronger wording.
 - "Breakthrough," "state of the art," or "novel" based only on the pilot.
 - Authorship of Qwen3.5 or any other base model.
 
-## Authorship if the project succeeds
+## What this project contributes
 
-The defensible contribution would be the allocation method, implementation,
-evaluation protocol, and any clearly labelled derivative artifact. Qwen3.5 and
-its architecture remain credited to the Qwen team.
+RecurQuant's contribution is its allocation method, implementation, evaluation
+protocol, and clearly labelled derivative artifacts. It does not claim
+authorship of Qwen3.5 or its architecture, which remain credited to the Qwen
+team.

@@ -60,8 +60,7 @@ and compared at an equal bit budget. See
 preserves the [failed signals and replacement](research/EXPERIMENT_001_SIGNAL_PIVOT.md)
 and the [untouched confirmation](research/CONFIRMATION_001.md).
 
-The user-suggested
-[Gated DeltaNet-2 paper](https://arxiv.org/abs/2605.22791) reinforces why erase,
+[Gated DeltaNet-2](https://arxiv.org/abs/2605.22791) reinforces why erase,
 write, and decay behavior should be analyzed separately. Its non-commercial
 reference code is not a RecurQuant dependency, and the initial target remains
 Apache-2.0 Qwen3.5.
