@@ -13,7 +13,7 @@
 <p align="center">
   <a href="#60-second-setup"><b>Quickstart</b></a> ·
   <a href="#what-is-physically-smaller"><b>Storage</b></a> ·
-  <a href="#public-development-evidence"><b>Evidence</b></a> ·
+  <a href="#held-out-confirmation"><b>Evidence</b></a> ·
   <a href="docs/compatibility.md"><b>Compatibility</b></a> ·
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
@@ -22,6 +22,10 @@ RecurQuant is an alpha Python package that physically packs the persistent
 recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. Pass its cache to
 ordinary eager Transformers model calls to keep those states as grouped INT4 or
 INT8 payloads between calls.
+
+Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
+protocol: task-macro excess NLL was 72.75% lower than uniform INT4 while the
+persistent recurrent state occupied exactly 2,564,096 resident bytes.
 
 It currently targets
 [`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base).
@@ -155,32 +159,45 @@ scales, and padding.
 This is recurrent-state storage only. It is not a whole-model, peak-CUDA-memory,
 latency, or throughput result.
 
-## Public development evidence
+## Held-out confirmation
 
-On the pinned MBPP validation development split, task-macro excess negative
-log-likelihood above the FP32-state reference fell from `2.964469` for uniform
-INT4 to `0.766489` for the mixed layer-0 layout: a **74.14% reduction versus
-uniform INT4**.
+The frozen layer-0 mixed layout passed every preregistered v0.2 quality and
+integrity gate on the untouched MBPP test split. Task-macro excess negative
+log-likelihood above the FP32-state reference fell from `2.949743` for uniform
+INT4 to `0.803713`: a **72.75% reduction**.
 
-![Horizontal bars showing MBPP development task-macro excess NLL of 2.9645 for uniform INT4 and 0.7665 for the mixed layer-0 INT8 layout.](assets/mbpp-development-fidelity.svg)
+![Horizontal bars showing held-out MBPP task-macro excess NLL of 2.9497 for uniform INT4 and 0.8037 for the mixed layer-0 INT8 layout.](assets/mbpp-confirmation-fidelity.svg)
 
-The evidence covers 90 paired tasks and 5,524 teacher-forced reference-code
-tokens. The paired mixed-versus-uniform improvement was `2.1980` nats/token
-with a 95% bootstrap interval of `[2.0808, 2.3215]`. Against the mean of three
-equal-byte random high-precision layer placements, the paired improvement was
-`2.0784` with a 95% interval of `[1.9660, 2.1945]`.
+The confirmation covers 500 paired tasks and 30,244 teacher-forced reference-
+code tokens. The paired mixed-versus-uniform improvement was `2.1460`
+nats/token with a 95% bootstrap interval of `[2.0922, 2.1999]`. Against the
+mean of three exactly same-byte random high-precision layer placements, the
+paired improvement was `2.0332` with a 95% interval of `[1.9802, 2.0861]`.
+
+| Token-weighted measure | Uniform INT4 | Mixed L0 INT8 |
+|---|---:|---:|
+| Mean KL | 3.149969 | 0.914580 |
+| Worst-5% KL | 9.002207 | 4.839139 |
+| Top-1 agreement | 0.321155 | 0.665190 |
+
+The earlier 90-task development result was a 74.14% reduction; it remains
+available in
+[`evidence/mbpp-v02-development.json`](evidence/mbpp-v02-development.json) and
+[`DEVELOPMENT_002.md`](research/DEVELOPMENT_002.md).
 
 Important boundaries:
 
-- This is a **development** result from
-  [`evidence/mbpp-v02-development.json`](evidence/mbpp-v02-development.json),
-  not an untouched confirmation result.
+- The accepted result is in
+  [`evidence/mbpp-v02-confirmation.json`](evidence/mbpp-v02-confirmation.json),
+  with the full decision and interruption record in
+  [`CONFIRMATION_002.md`](research/CONFIRMATION_002.md).
 - Tokens were scored teacher-forced. Candidate-generated code was not fed back,
   executed, or graded for correctness.
-- The MSE selector also chose layer 0, so its candidate is exactly the same
-  layout and result—not an independent replication.
-- The result supports a recurrent-state fidelity claim only. It does not support
-  generated-code quality, speed, or whole-model memory claims.
+- The MSE selector also chose layer 0, so it is the exact same candidate—not
+  independent evidence that the read-risk selector is novel or superior.
+- This supports one pinned recurrent-state fidelity and resident-byte result.
+  It does not support generated-code quality, speed, peak memory, whole-model
+  memory, cross-model generality, or a breakthrough claim.
 
 ## Scope
 
@@ -202,21 +219,30 @@ hardware, model revision, generation paths, and unsupported modes.
 
 Quantizing recurrent state is not new. I built RecurQuant to test one narrower
 question: can sensitivity-guided mixed precision preserve Gated DeltaNet
-recurrent-state fidelity better than simple equal-byte placements? The current
-public result is development-only, so I am not presenting it as a breakthrough,
-a speedup, a whole-model memory reduction, or a confirmed finding.
+recurrent-state fidelity better than simple equal-byte placements? For the
+pinned Qwen3.5-0.8B-Base teacher-forced MBPP protocol, the frozen policy passed
+the held-out confirmation and beat all three tested same-byte random placements.
 
-The development result passed the frozen continuation gates. The untouched
-confirmation remains separate until its result is complete and public.
+That is a confirmed case study, not proof of novelty or general superiority.
+Q-Mamba already studies 4-bit persistent Mamba2 states, Quamba2 quantizes cached
+SSM states, and other mixed-precision and replay systems overlap parts of this
+design space. RecurQuant currently has no fused packed kernel or measured speed
+claim. I therefore do not present this release as a breakthrough, a whole-model
+memory reduction, or a cross-model result. See the
+[claim boundary](research/CLAIM_BOUNDARY.md) and
+[prior-art review](research/PRIOR_ART.md) for the exact comparison.
 
 ## Research record
 
-- Validate any evidence file offline with `recurquant verify-artifact`; the
-  [reproduction guide](docs/reproducing.md) includes exact committed hashes and
-  a CI-friendly command.
+- Independently validate the held-out decision with
+  `recurquant verify-confirmation`; the
+  [reproduction guide](docs/reproducing.md) pins both committed hashes and
+  explains optional raw-checkpoint reconstruction.
+- [Held-out MBPP confirmation report](research/CONFIRMATION_002.md) and
+  [machine-readable evidence](evidence/mbpp-v02-confirmation.json)
 - [Frozen public evaluation protocol](research/PUBLIC_EVAL_PROTOCOL_V02.md)
 - [MBPP development report](research/DEVELOPMENT_002.md)
-- [Earlier research-status snapshot](research/STATUS.md)
+- [Current research status](research/STATUS.md)
 - [Claim boundary](research/CLAIM_BOUNDARY.md) and
   [prior-art review](research/PRIOR_ART.md)
 - [Failed proxy signals and empirical-sensitivity pivot](research/EXPERIMENT_001_SIGNAL_PIVOT.md)

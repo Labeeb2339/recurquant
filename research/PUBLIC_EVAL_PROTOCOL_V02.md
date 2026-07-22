@@ -1,8 +1,15 @@
 # Public evaluation protocol v0.2
 
-Status: frozen protocol; no public-evaluation results have been run or reported
+Status: frozen protocol; evaluation completed without changing the protocol or
+gates below
 
 Date frozen: 2026-07-22
+
+> **Post-freeze outcome (2026-07-22):** The frozen quality hypothesis passed on
+> all 500 untouched confirmation tasks. See
+> [`CONFIRMATION_002.md`](CONFIRMATION_002.md) for the exact effects, integrity
+> anchors, and claim boundary. This annotation records the outcome; the protocol
+> and gates below remain unchanged.
 
 ## Purpose
 

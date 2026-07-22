@@ -7,10 +7,10 @@ This guide separates three different activities:
    not reproduce a quality result.
 2. **Reproduce development evidence** on the 90-task MBPP validation split.
    This repeats an already inspected development experiment.
-3. **Run or replicate confirmation** on the 500-task MBPP test split. An
-   "untouched" confirmation has its policy, manifest, gates, and code frozen
-   before outcomes are computed. Once those outcomes are public, later runs are
-   replications rather than new untouched confirmations.
+3. **Replicate the completed confirmation** on the 500-task MBPP test split.
+   The published v0.2 confirmation had its policy, manifest, gates, and code
+   frozen before outcomes were computed. Now that those outcomes are public,
+   later runs are replications rather than new untouched confirmations.
 
 None of these workflows establishes generated-code correctness, lower latency,
 lower whole-model or peak memory, cross-model generality, novelty, or a
@@ -188,11 +188,23 @@ policy and analysis plan:
   --output artifacts/replication-confirmation.json
 ```
 
-At the commit represented by this guide, the committed confirmation file is a
-prepared manifest with `outcomes_computed: false`; it is not a result artifact.
-Do not inspect partial candidate metrics, retune on test tasks, or rerun an
-unfavourable outcome. A rerun is valid only for a documented infrastructure or
-evaluator failure defined without reference to which method looked better.
+The frozen v0.2 run completed all 500 tasks and 30,244 reference-code tokens.
+Every preregistered quality gate passed. The complete result and its limitations
+are recorded in
+[`CONFIRMATION_002.md`](../research/CONFIRMATION_002.md); the machine-readable
+artifact is
+[`mbpp-v02-confirmation.json`](../evidence/mbpp-v02-confirmation.json).
+
+The accepted run resumed from atomic per-task checkpoints after infrastructure
+interruptions. One attempted resume stalled before evaluation because the
+streamed dataset loader had no network access, so it was stopped before the
+checkpoint changed. A later process exited during an atomic checkpoint replace
+after 370 accepted tasks; the preceding checkpoint remained intact and the
+interrupted next task was recomputed. Every resume kept the same command,
+source commit, prepared manifest, calibration artifact, candidate plan, and
+gates. No partial candidate metric was inspected and no outcome-driven rerun
+occurred. This is distinct from rerunning an unfavourable result, which the
+protocol prohibits.
 
 ## Manifests, checkpoints, and hashes
 
@@ -208,20 +220,56 @@ changed code or settings is rejected instead of silently reused.
 
 The committed integrity anchors are:
 
-| Artifact | Tasks | File SHA256 | Canonical evidence SHA256 |
-|---|---:|---|---|
-| `evidence/mbpp-v02-calibration.json` | 128 | `d3d2f9acf6113ad455cce78d1b957a265c6675236845564d855c7cb537267125` | `7aa8227dd0b19bb7494963c0b590c8ec53cee29d3b696ccd4087c71a5ac461ee` |
-| `evidence/mbpp-v02-development-manifest.json` | 90 | `7d51f732f9d0147c485d3bd3214e9bfcd16132de07df342f0c6b9696160aac3f` | `2b13dfb1799472b2fd0006cb87cea60c67a7af37825a87f1686a6fe3d8e38d7c` |
-| `evidence/mbpp-v02-development.json` | 90 | `5980fd58aa0933ad97deb896d4901fcd37350c4a57d8a80022ab218aaf77e727` | `301c52e194bbd23059a0040a8e94aeac97dc33de1100f13edbf17dc877755488` |
-| `evidence/mbpp-v02-confirmation-manifest.json` | 500 | `c6a7d0db6ef7577a66ac19fbbc0be166279488f6a6be432b364bd9eb6833f7b0` | `21a6d18c6a0887b1499d156a3d610d4bfafdd59d3557713485b62038e263b96a` |
+| Artifact | Tasks | Source commit | File SHA256 | Canonical evidence SHA256 |
+|---|---:|---|---|---|
+| `evidence/mbpp-v02-calibration.json` | 128 | `cc35f4396ef4dd475908d8f96e05fe9c559f13be` | `d3d2f9acf6113ad455cce78d1b957a265c6675236845564d855c7cb537267125` | `7aa8227dd0b19bb7494963c0b590c8ec53cee29d3b696ccd4087c71a5ac461ee` |
+| `evidence/mbpp-v02-development-manifest.json` | 90 | `3a3c4a2a11c0822f6c456a74327127f294ce67e1` | `7d51f732f9d0147c485d3bd3214e9bfcd16132de07df342f0c6b9696160aac3f` | `2b13dfb1799472b2fd0006cb87cea60c67a7af37825a87f1686a6fe3d8e38d7c` |
+| `evidence/mbpp-v02-development.json` | 90 | `20a5ea95a8ed692600ee1645d2913f3a4b8a6795` | `5980fd58aa0933ad97deb896d4901fcd37350c4a57d8a80022ab218aaf77e727` | `301c52e194bbd23059a0040a8e94aeac97dc33de1100f13edbf17dc877755488` |
+| `evidence/mbpp-v02-confirmation-manifest.json` | 500 | `44d75a2776fa36441e17cc688965c9825c4c1a1c` | `c6a7d0db6ef7577a66ac19fbbc0be166279488f6a6be432b364bd9eb6833f7b0` | `21a6d18c6a0887b1499d156a3d610d4bfafdd59d3557713485b62038e263b96a` |
+| `evidence/mbpp-v02-confirmation.json` | 500 | `6bd5bed2b61e192526ba8fdbec8232801cbea843` | `70394c419298fc872cdd08e8aec12d17d5a56aa20f7d3c9f09fe8fdbf26c6ba9` | `2a652df92f99fa81f785244d966829e909d31f200e5a1520b76e6b46fb45d3e0` |
 
-Their recorded source commits are respectively
-`cc35f4396ef4dd475908d8f96e05fe9c559f13be`,
-`3a3c4a2a11c0822f6c456a74327127f294ce67e1`,
-`20a5ea95a8ed692600ee1645d2913f3a4b8a6795`, and
-`44d75a2776fa36441e17cc688965c9825c4c1a1c`.
+The accepted confirmation checkpoint had file SHA256
+`df0040cc9cebdbc442992e75d19f9090456f9b249da062c095840e731b6c4609`,
+canonical-state SHA256
+`1293d93cb620d2193e9251f49c05d0bdaeebde16d3515c1f0e021c96b5d4fe1c`,
+and frozen run-signature SHA256
+`5d15268224357bb078315ef2c2b6e710a7eb8a2734df2527f9637b382951c78a`.
 
-Validate a committed artifact without loading the model or dataset:
+Strictly verify the published confirmation without loading the model or
+dataset:
+
+```powershell
+.venv\Scripts\python.exe -m recurquant.cli verify-confirmation `
+  evidence\mbpp-v02-confirmation.json `
+  evidence\mbpp-v02-confirmation-manifest.json `
+  --expect-artifact-sha256 70394c419298fc872cdd08e8aec12d17d5a56aa20f7d3c9f09fe8fdbf26c6ba9 `
+  --expect-artifact-evidence-sha256 2a652df92f99fa81f785244d966829e909d31f200e5a1520b76e6b46fb45d3e0
+```
+
+```bash
+.venv/bin/python -m recurquant.cli verify-confirmation \
+  evidence/mbpp-v02-confirmation.json \
+  evidence/mbpp-v02-confirmation-manifest.json \
+  --expect-artifact-sha256 70394c419298fc872cdd08e8aec12d17d5a56aa20f7d3c9f09fe8fdbf26c6ba9 \
+  --expect-artifact-evidence-sha256 2a652df92f99fa81f785244d966829e909d31f200e5a1520b76e6b46fb45d3e0
+```
+
+The committed-artifact check returns `result: pass`,
+`artifact_manifest_verified: true`, and `outcome_verified: true`. The raw
+checkpoint is excluded from Git because it expands to 34,359,541 bytes. It is
+available as the 9,098,655-byte
+[`v0.2.0a1` release attachment](https://github.com/Labeeb2339/recurquant/releases/download/v0.2.0a1/mbpp-v02-confirmation.checkpoint.json.zip),
+whose archive SHA256 is
+`fe2db8b54b0c4ae7f34f0e2b661ebd74e6134b79550c63567288c1d118d0432b`.
+Without that file, the command above warns that token arrays were not
+reconstructed. After extracting the archive, append
+`--checkpoint mbpp-v02-confirmation.checkpoint.json` (using `\` paths in
+PowerShell). The verifier checks the contained checkpoint SHA256
+`df0040cc9cebdbc442992e75d19f9090456f9b249da062c095840e731b6c4609`,
+its canonical-state hash, and then reconstructs all summaries and gates from
+the raw arrays.
+
+The generic artifact verifier remains available for the development record:
 
 ```powershell
 .venv\Scripts\python.exe -m recurquant.cli verify-artifact `

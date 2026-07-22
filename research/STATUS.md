@@ -1,10 +1,17 @@
-# Research status: v0.1 pilot archive
+# Research status
 
-This file preserves the diagnostic v0.1 snapshot. The frozen v0.2 public-data
-study is specified in
-[`PUBLIC_EVAL_PROTOCOL_V02.md`](PUBLIC_EVAL_PROTOCOL_V02.md), with development
-evidence in [`DEVELOPMENT_002.md`](DEVELOPMENT_002.md). Do not read the pilot's
-"next action" as the current project state.
+The frozen v0.2 public-data study completed on 2026-07-22. Every preregistered
+quality gate passed on all 500 untouched MBPP test tasks and 30,244 scored
+tokens. The exact result, integrity anchors, infrastructure-resume record, and
+claim boundary are in
+[`CONFIRMATION_002.md`](CONFIRMATION_002.md). The frozen design remains in
+[`PUBLIC_EVAL_PROTOCOL_V02.md`](PUBLIC_EVAL_PROTOCOL_V02.md), and the earlier
+development decision is in [`DEVELOPMENT_002.md`](DEVELOPMENT_002.md).
+
+## v0.1 pilot archive
+
+The remainder of this file preserves the diagnostic v0.1 snapshot. Do not read
+its historical "next action" as the current project state.
 
 Last updated: 2026-07-22
 

@@ -15,16 +15,22 @@ Last reviewed: 2026-07-22
   memory in Gated DeltaNet.
 - Mixed precision and memory-budget allocation are broad existing ideas.
 
-## Hypothesis that remains testable
+## Scoped v0.2 confirmation finding
 
-At an equal modeled persistent-state bit budget, Gated DeltaNet-specific
-precision allocation may reduce tail output divergence relative to uniform
-state quantization. The current candidate uses query-weighted recurrent-read
-error. Mean decay, write gate, state-update magnitude, and residual magnitude
-were tested and rejected as selectors in the diagnostic pilot.
+On the pinned `Qwen/Qwen3.5-0.8B-Base` revision, the frozen layer-0 INT8 plus
+17-layer INT4 policy passed every preregistered quality gate on all 500 untouched
+MBPP test tasks and 30,244 teacher-forced reference-code tokens. Relative to
+uniform INT4, task-macro excess NLL fell from 2.949743 to 0.803713 nats/token, a
+72.75% reduction. The paired improvement was 2.146030 nats/token with a 95%
+bootstrap interval of `[2.092249, 2.199866]`. The policy physically stored its
+persistent recurrent-state payloads and FP16 scales in exactly 2,564,096 bytes.
 
-This is a hypothesis, not a novelty or performance claim. A broader literature
-audit and confirmatory experiments are required before stronger wording.
+This confirms the frozen quality hypothesis only for the model, dataset
+construction, and teacher-forced metric in
+[`CONFIRMATION_002.md`](CONFIRMATION_002.md). It is not evidence of novelty,
+generated-code correctness, lower latency, lower whole-model or peak memory, or
+cross-model generality. Mean decay, write gate, state-update magnitude, and
+residual magnitude remain rejected diagnostic selectors from the earlier pilot.
 
 ## Claims prohibited without new evidence
 
@@ -32,15 +38,19 @@ audit and confirmatory experiments are required before stronger wording.
 - "First sub-8-bit recurrent model."
 - "First update-aware recurrent cache."
 - "Lossless" unless exact output equivalence is demonstrated in the stated mode.
-- "Reduces memory" while only storing dequantized PyTorch tensors.
-- "Speeds up inference" without a packed kernel and wall-clock comparison.
-- "Breakthrough," "state of the art," or "novel" based only on the pilot.
+- "Reduces total model memory by 7.36x." The measured ratio covers resident
+  recurrent-state payloads and scales only.
+- "Speeds up inference" without passing the separate latency gate under the
+  stated benchmark.
+- "Breakthrough," "state of the art," or "novel" based on the v0.2 evidence.
 - Authorship of Qwen3.5 or any other base model.
 
 ## What this project contributes
 
-RecurQuant evaluates a frozen per-layer allocation policy and packages its
-physical cache implementation, exact-byte controls, preregistered evaluation
-protocol, and labelled evidence artifacts. The current Python path is not a
-fused low-bit recurrence kernel. RecurQuant does not claim authorship of
-Qwen3.5 or its architecture, which remain credited to the Qwen team.
+RecurQuant packages a physical low-bit recurrent-state cache, a frozen per-layer
+allocation policy, exact-byte controls, an independently checkable confirmation
+verifier, a preregistered evaluation protocol, and labelled evidence artifacts.
+Its scoped held-out result is reproducible without expanding the claim. The
+current Python path is not a fused low-bit recurrence kernel. RecurQuant does
+not claim authorship of Qwen3.5 or its architecture, which remain credited to
+the Qwen team.

@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "research" / "EXPERIMENT_002_SCALE_CORRECTION.md"
 DEVELOPMENT_SOURCE = ROOT / "evidence" / "mbpp-v02-development.json"
+CONFIRMATION_SOURCE = ROOT / "evidence" / "mbpp-v02-confirmation.json"
 ASSETS = ROOT / "assets"
 
 
@@ -93,16 +94,10 @@ def _source_data() -> dict[str, object]:
         )
 
     evidence_hashes = {
-        "retrieval_sweep": _evidence_hash(
-            text, "Corrected retrieval sweep evidence hash"
-        ),
+        "retrieval_sweep": _evidence_hash(text, "Corrected retrieval sweep evidence hash"),
         "code_sweep": _evidence_hash(text, "Corrected code sweep evidence hash"),
-        "multilingual_qdq": _evidence_hash(
-            text, "Corrected multilingual QDQ replay evidence hash"
-        ),
-        "multilingual_packed": _evidence_hash(
-            text, "Packed multilingual replay evidence hash"
-        ),
+        "multilingual_qdq": _evidence_hash(text, "Corrected multilingual QDQ replay evidence hash"),
+        "multilingual_packed": _evidence_hash(text, "Packed multilingual replay evidence hash"),
     }
     return {
         "document_sha256": hashlib.sha256(raw).hexdigest(),
@@ -158,9 +153,7 @@ def _development_data() -> dict[str, object]:
         "teacher_forced_fidelity_only": claim_scope["teacher_forced_fidelity_only"],
         "generated_code_executed": claim_scope["generated_code_executed"],
         "speed_claim_allowed": claim_scope["speed_claim_allowed"],
-        "whole_model_memory_claim_allowed": claim_scope[
-            "whole_model_memory_claim_allowed"
-        ],
+        "whole_model_memory_claim_allowed": claim_scope["whole_model_memory_claim_allowed"],
         "task_count": schedule["row_count"],
         "token_count": primary["token_weighted"]["token_count"],
         "uniform_macro_delta_nll": uniform["task_macro"]["delta_nll"],
@@ -170,9 +163,149 @@ def _development_data() -> dict[str, object]:
         "primary_vs_mean_random_equal_byte": random_contrast["paired_bootstrap"],
         "primary_resident_bytes": primary["storage"]["resident_bytes"],
         "uniform_resident_bytes": uniform["storage"]["resident_bytes"],
-        "full_precision_equivalent_bytes": primary["storage"][
-            "full_precision_equivalent_bytes"
-        ],
+        "full_precision_equivalent_bytes": primary["storage"]["full_precision_equivalent_bytes"],
+        "primary_upgrade_layer": primary["policy"]["upgrade_layer"],
+        "mse_upgrade_layer": mse["policy"]["upgrade_layer"],
+    }
+
+
+def _reject_non_finite(value: str) -> None:
+    raise ValueError(f"Non-finite JSON constant is not permitted: {value}")
+
+
+def _confirmation_data() -> dict[str, object]:
+    raw = CONFIRMATION_SOURCE.read_bytes()
+    document = json.loads(raw, parse_constant=_reject_non_finite)
+    evidence = document["evidence"]
+    claim_scope = evidence["claim_scope"]
+    schedule = evidence["schedule"]
+    candidates = evidence["candidates"]
+    primary = candidates["read_risk_l0_nearest"]
+    mse = candidates["mse_selected_nearest"]
+    uniform = candidates["uniform_int4_nearest"]
+    primary_contrast = evidence["contrasts"]["primary_vs_uniform_int4"]
+    random_contrast = evidence["contrasts"]["primary_vs_mean_random_equal_byte"]
+    continuation = evidence["continuation_decision"]
+
+    if document["artifact_kind"] != "recurquant_mbpp_teacher_forced_evaluation":
+        raise ValueError("Unexpected MBPP confirmation artifact kind")
+    if document["schema_version"] != 1:
+        raise ValueError("Unexpected MBPP confirmation schema version")
+    canonical = hashlib.sha256(
+        (json.dumps(evidence, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    ).hexdigest()
+    if document["canonical_evidence_sha256"] != canonical:
+        raise ValueError("MBPP confirmation canonical evidence hash does not verify")
+
+    if claim_scope["phase"] != "confirmation":
+        raise ValueError("MBPP confirmation chart requires confirmation-phase evidence")
+    if not claim_scope["confirmation_touched"]:
+        raise ValueError("MBPP confirmation chart requires confirmation_touched=true")
+    if not claim_scope["protocol_eligible"]:
+        raise ValueError("MBPP confirmation chart requires protocol-eligible evidence")
+    if not claim_scope["teacher_forced_fidelity_only"]:
+        raise ValueError("MBPP confirmation chart expects teacher-forced fidelity evidence")
+    if claim_scope["generated_code_executed"]:
+        raise ValueError("MBPP confirmation chart must not imply generated-code execution")
+    if claim_scope["speed_claim_allowed"]:
+        raise ValueError("MBPP confirmation chart must not imply a speed result")
+    if claim_scope["whole_model_memory_claim_allowed"]:
+        raise ValueError("MBPP confirmation chart must not imply whole-model memory reduction")
+    if not continuation["all_gates_pass"]:
+        raise ValueError("MBPP confirmation chart requires all preregistered quality gates")
+
+    expected_task_count = 500
+    expected_token_count = 30_244
+    if schedule["phase"] != "confirmation":
+        raise ValueError("MBPP confirmation schedule phase disagrees with claim scope")
+    if schedule["row_count"] != expected_task_count:
+        raise ValueError("MBPP confirmation must contain exactly 500 held-out tasks")
+    if evidence["source"]["dataset_manifest"]["row_count"] != expected_task_count:
+        raise ValueError("MBPP confirmation dataset manifest task count disagrees")
+    for label, candidate in (
+        ("uniform INT4", uniform),
+        ("read-risk mixed", primary),
+        ("MSE mixed", mse),
+    ):
+        if candidate["task_macro"]["task_count"] != expected_task_count:
+            raise ValueError(f"{label} task count disagrees with the confirmation run")
+        if candidate["token_weighted"]["token_count"] != expected_token_count:
+            raise ValueError(f"{label} token count disagrees with the confirmation run")
+
+    if primary["policy"]["upgrade_layer"] != 0:
+        raise ValueError("MBPP confirmation chart expects the frozen policy to upgrade layer 0")
+    if mse["policy"]["upgrade_layer"] != primary["policy"]["upgrade_layer"]:
+        raise ValueError("Read-risk and MSE selectors no longer choose the same layer")
+    for result_key in ("task_macro", "token_weighted", "storage"):
+        if mse[result_key] != primary[result_key]:
+            raise ValueError(f"Coincident read-risk and MSE selectors disagree on {result_key}")
+
+    expected_storage = {
+        "uniform": 2_433_024,
+        "primary": 2_564_096,
+        "full_precision": 18_874_368,
+    }
+    for label, candidate, expected_bytes in (
+        ("uniform INT4", uniform, expected_storage["uniform"]),
+        ("mixed", primary, expected_storage["primary"]),
+    ):
+        storage = candidate["storage"]
+        if not storage["exact_byte_gate"] or not storage["physical_reduction_realized"]:
+            raise ValueError(f"{label} storage is not exact and physically realized")
+        if storage["resident_bytes"] != expected_bytes:
+            raise ValueError(f"{label} resident storage changed unexpectedly")
+        if storage["expected_resident_bytes"] != storage["resident_bytes"]:
+            raise ValueError(f"{label} measured and expected resident bytes disagree")
+        if storage["full_precision_equivalent_bytes"] != expected_storage["full_precision"]:
+            raise ValueError(f"{label} full-precision storage reference disagrees")
+    if (
+        evidence["validity"]["reference_recurrent_state_bytes"]
+        != expected_storage["full_precision"]
+    ):
+        raise ValueError("Confirmation validity record has a different storage reference")
+
+    uniform_macro = Decimal(str(uniform["task_macro"]["delta_nll"]))
+    primary_macro = Decimal(str(primary["task_macro"]["delta_nll"]))
+    relative_reduction = Decimal(str(primary_contrast["relative_reduction"]))
+    computed_reduction = (uniform_macro - primary_macro) / uniform_macro
+    if abs(relative_reduction - computed_reduction) > Decimal("1e-15"):
+        raise ValueError("MBPP confirmation relative reduction does not match candidates")
+    if f"{relative_reduction * Decimal(100):.2f}" != "72.75":
+        raise ValueError("MBPP confirmation headline reduction changed unexpectedly")
+
+    for label, contrast in (
+        ("uniform", primary_contrast["paired_bootstrap"]),
+        ("equal-byte random", random_contrast["paired_bootstrap"]),
+    ):
+        if contrast["paired_examples"] != expected_task_count:
+            raise ValueError(f"{label} bootstrap task count disagrees with confirmation")
+        if contrast["confidence"] != 0.95:
+            raise ValueError(f"{label} confirmation interval must be a 95% interval")
+        low, high = contrast["confidence_interval"]
+        if not (0 < low <= contrast["mean_improvement"] <= high):
+            raise ValueError(f"{label} paired interval does not support the chart claim")
+
+    return {
+        "document_sha256": hashlib.sha256(raw).hexdigest(),
+        "canonical_evidence_sha256": canonical,
+        "phase": claim_scope["phase"],
+        "confirmation_touched": claim_scope["confirmation_touched"],
+        "protocol_eligible": claim_scope["protocol_eligible"],
+        "teacher_forced_fidelity_only": claim_scope["teacher_forced_fidelity_only"],
+        "generated_code_executed": claim_scope["generated_code_executed"],
+        "speed_claim_allowed": claim_scope["speed_claim_allowed"],
+        "whole_model_memory_claim_allowed": claim_scope["whole_model_memory_claim_allowed"],
+        "all_quality_gates_pass": continuation["all_gates_pass"],
+        "task_count": expected_task_count,
+        "token_count": expected_token_count,
+        "uniform_macro_delta_nll": uniform["task_macro"]["delta_nll"],
+        "primary_macro_delta_nll": primary["task_macro"]["delta_nll"],
+        "relative_reduction": primary_contrast["relative_reduction"],
+        "primary_vs_uniform": primary_contrast["paired_bootstrap"],
+        "primary_vs_mean_random_equal_byte": random_contrast["paired_bootstrap"],
+        "primary_resident_bytes": primary["storage"]["resident_bytes"],
+        "uniform_resident_bytes": uniform["storage"]["resident_bytes"],
+        "full_precision_equivalent_bytes": expected_storage["full_precision"],
         "primary_upgrade_layer": primary["policy"]["upgrade_layer"],
         "mse_upgrade_layer": mse["policy"]["upgrade_layer"],
     }
@@ -248,7 +381,7 @@ def _storage_svg(data: dict[str, object]) -> str:
         f"{_number(str(mixed['ratio']))} times smaller. These are persistent state "
         "bytes only, not whole-model or peak memory."
     )
-    return f'''<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
+    return f"""<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="365" viewBox="0 0 960 365" role="img" aria-labelledby="storage-title storage-desc">
   <title id="storage-title">Resident recurrent-state storage on Qwen3.5-0.8B-Base</title>
   <desc id="storage-desc">{html.escape(storage_desc)}</desc>
@@ -283,7 +416,7 @@ def _storage_svg(data: dict[str, object]) -> str:
   <text class="note" x="28" y="340">Persistent recurrent state only; excludes model weights and six standard KV caches.</text>
   <text class="note" x="28" y="357">The Python path materializes one layer state; no peak-memory or speed claim.</text>
 </svg>
-'''
+"""
 
 
 def _diagnostic_svg(data: dict[str, object]) -> str:
@@ -347,15 +480,14 @@ def _diagnostic_svg(data: dict[str, object]) -> str:
         }
     )
     comparisons = ", ".join(
-        f"{row['uniform']} versus {row['mixed']} for {str(row['label']).lower()}"
-        for row in rows
+        f"{row['uniform']} versus {row['mixed']} for {str(row['label']).lower()}" for row in rows
     )
     diagnostic_desc = (
         "On short diagnostic traces, uniform INT4 versus layer zero INT8 and the "
         f"remaining layers INT4 produced CVaR95 KL of {comparisons}. Lower is better. "
         "These diagnostics are not a public benchmark or breakthrough evidence."
     )
-    return f'''<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
+    return f"""<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="465" viewBox="0 0 960 465" role="img" aria-labelledby="kl-title kl-desc">
   <title id="kl-title">Corrected diagnostic tail KL by recurrent-state precision policy</title>
   <desc id="kl-desc">{html.escape(diagnostic_desc)}</desc>
@@ -395,7 +527,7 @@ def _diagnostic_svg(data: dict[str, object]) -> str:
   <text class="note" x="28" y="435">Short paired diagnostics, not a public benchmark or breakthrough claim.</text>
   <text class="note" x="28" y="452">Multilingual is a correction replay; packed and QDQ token metrics matched exactly.</text>
 </svg>
-'''
+"""
 
 
 def _development_svg(data: dict[str, object]) -> str:
@@ -468,9 +600,7 @@ def _development_svg(data: dict[str, object]) -> str:
             "teacher_forced_fidelity_only": data["teacher_forced_fidelity_only"],
             "generated_code_executed": data["generated_code_executed"],
             "speed_claim_allowed": data["speed_claim_allowed"],
-            "whole_model_memory_claim_allowed": data[
-                "whole_model_memory_claim_allowed"
-            ],
+            "whole_model_memory_claim_allowed": data["whole_model_memory_claim_allowed"],
             "task_count": task_count,
             "token_count": token_count,
             "uniform_macro_delta_nll": data["uniform_macro_delta_nll"],
@@ -493,7 +623,7 @@ def _development_svg(data: dict[str, object]) -> str:
         f"teacher-forced development evidence over {token_count} reference code tokens, "
         "not confirmation or generated-code correctness evidence."
     )
-    return f'''<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
+    return f"""<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="430" viewBox="0 0 960 430" role="img" aria-labelledby="mbpp-title mbpp-desc">
   <title id="mbpp-title">MBPP development task-macro excess negative log likelihood</title>
   <desc id="mbpp-desc">{html.escape(description)}</desc>
@@ -529,16 +659,158 @@ def _development_svg(data: dict[str, object]) -> str:
   <text class="note" x="28" y="386">MBPP validation development split &#183; {task_count} tasks &#183; {token_count:,} teacher-forced reference code tokens.</text>
   <text class="note" x="28" y="410">Development evidence only; no confirmation, generated-code correctness, speed, or whole-model memory claim.</text>
 </svg>
-'''
+"""
+
+
+def _confirmation_svg(data: dict[str, object]) -> str:
+    uniform = Decimal(str(data["uniform_macro_delta_nll"]))
+    primary = Decimal(str(data["primary_macro_delta_nll"]))
+    reduction = Decimal(str(data["relative_reduction"])) * Decimal(100)
+    primary_contrast = data["primary_vs_uniform"]
+    random_contrast = data["primary_vs_mean_random_equal_byte"]
+    assert isinstance(primary_contrast, dict)
+    assert isinstance(random_contrast, dict)
+
+    task_count = int(data["task_count"])
+    token_count = int(data["token_count"])
+    uniform_ci = [Decimal(str(value)) for value in primary_contrast["confidence_interval"]]
+    random_ci = [Decimal(str(value)) for value in random_contrast["confidence_interval"]]
+    uniform_mean = Decimal(str(primary_contrast["mean_improvement"]))
+    random_mean = Decimal(str(random_contrast["mean_improvement"]))
+
+    axis_max = Decimal("3.2")
+    bar_x = Decimal(250)
+    plot_width = Decimal(600)
+    rows = (
+        (
+            "Uniform INT4",
+            "all 18 recurrent layers INT4",
+            uniform,
+            "uniform",
+            Decimal(110),
+        ),
+        (
+            "Mixed L0 INT8",
+            "layer 0 INT8; other 17 layers INT4",
+            primary,
+            "mixed",
+            Decimal(190),
+        ),
+    )
+    row_markup = []
+    for label, detail, value, color, y in rows:
+        bar_width = value / axis_max * plot_width
+        row_markup.append(
+            f'''  <g>
+    <text class="label" x="232" y="{y + 13}" text-anchor="end">{label}</text>
+    <text class="muted" x="232" y="{y + 32}" text-anchor="end">{detail}</text>
+    <rect class="bar {color}" x="{bar_x}" y="{y}" width="{bar_width:.2f}" height="34">
+      <title>{label}: {value:.6f} task-macro excess NLL</title>
+    </rect>
+    <text class="value" x="{bar_x + bar_width + 9:.2f}" y="{y + 22}">{value:.4f}</text>
+  </g>'''
+        )
+
+    ticks = []
+    for tick in range(4):
+        x = bar_x + Decimal(tick) / axis_max * plot_width
+        ticks.append(
+            f'''  <line class="grid" x1="{x:.2f}" y1="88" x2="{x:.2f}" y2="245" />
+  <text class="tick" x="{x:.2f}" y="265" text-anchor="middle">{tick}</text>'''
+        )
+
+    exact_storage = {
+        "mixed_resident_bytes": data["primary_resident_bytes"],
+        "uniform_int4_resident_bytes": data["uniform_resident_bytes"],
+        "fp32_recurrent_reference_bytes": data["full_precision_equivalent_bytes"],
+    }
+    metadata = _metadata(
+        {
+            "chart": "mbpp-confirmation-task-macro-excess-nll",
+            "source_document_sha256": data["document_sha256"],
+            "canonical_evidence_sha256": data["canonical_evidence_sha256"],
+            "phase": data["phase"],
+            "confirmation_touched": data["confirmation_touched"],
+            "protocol_eligible": data["protocol_eligible"],
+            "teacher_forced_fidelity_only": data["teacher_forced_fidelity_only"],
+            "generated_code_executed": data["generated_code_executed"],
+            "speed_claim_allowed": data["speed_claim_allowed"],
+            "whole_model_memory_claim_allowed": data["whole_model_memory_claim_allowed"],
+            "all_quality_gates_pass": data["all_quality_gates_pass"],
+            "task_count": task_count,
+            "token_count": token_count,
+            "uniform_macro_delta_nll": data["uniform_macro_delta_nll"],
+            "primary_macro_delta_nll": data["primary_macro_delta_nll"],
+            "relative_reduction": data["relative_reduction"],
+            "primary_vs_uniform": primary_contrast,
+            "primary_vs_mean_random_equal_byte": random_contrast,
+            "exact_storage": exact_storage,
+            "primary_upgrade_layer": data["primary_upgrade_layer"],
+            "mse_upgrade_layer": data["mse_upgrade_layer"],
+        },
+        source_document="evidence/mbpp-v02-confirmation.json",
+    )
+    description = (
+        f"On the held-out MBPP confirmation split, uniform INT4 had task-macro "
+        f"excess negative log likelihood {uniform:.6f}, while keeping recurrent layer "
+        f"zero at INT8 and the other 17 recurrent layers at INT4 had {primary:.6f}, "
+        f"a {reduction:.2f} percent reduction. Across {task_count} paired tasks, the "
+        f"mean improvement was {uniform_mean:.6f} nats per token with a 95 percent "
+        f"bootstrap interval from {uniform_ci[0]:.6f} to {uniform_ci[1]:.6f}. This is "
+        f"teacher-forced fidelity evidence over {token_count} reference code tokens. "
+        "Generated code was not executed, and the evidence supports no speed or "
+        "whole-model memory claim."
+    )
+    return f"""<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480" viewBox="0 0 960 480" role="img" aria-labelledby="mbpp-confirmation-title mbpp-confirmation-desc">
+  <title id="mbpp-confirmation-title">MBPP held-out confirmation task-macro excess negative log likelihood</title>
+  <desc id="mbpp-confirmation-desc">{html.escape(description)}</desc>
+  <metadata id="recurquant-provenance">{metadata}</metadata>
+  <style>
+    svg {{ background-color: #ffffff; }}
+    text {{ font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172033; }}
+    .title {{ font-size: 22px; font-weight: 500; }}
+    .subtitle, .muted, .tick, .note {{ fill: #556176; }}
+    .subtitle {{ font-size: 14px; }}
+    .label, .value, .result {{ font-size: 14px; font-weight: 500; }}
+    .muted, .tick, .note {{ font-size: 12px; }}
+    .grid {{ stroke: #d5dae3; stroke-width: 1; }}
+    .bar {{ shape-rendering: geometricPrecision; }}
+    .uniform {{ fill: #2563eb; }}
+    .mixed {{ fill: #d97706; }}
+    @media (prefers-color-scheme: dark) {{
+      svg {{ background-color: #0d1117; }}
+      text {{ fill: #e6edf3; }}
+      .subtitle, .muted, .tick, .note {{ fill: #a9b4c2; }}
+      .grid {{ stroke: #3a4555; }}
+      .uniform {{ fill: #60a5fa; }}
+      .mixed {{ fill: #fbbf24; }}
+    }}
+  </style>
+  <text class="title" x="28" y="30">MBPP held-out confirmation fidelity</text>
+  <text class="subtitle" x="28" y="54">Task-macro excess NLL (nats/token) &#183; teacher-forced &#183; lower is better</text>
+{chr(10).join(ticks)}
+{chr(10).join(row_markup)}
+  <text class="result" x="28" y="302">{reduction:.2f}% lower macro excess NLL</text>
+  <text class="note" x="28" y="328">Paired mixed-vs-uniform improvement: {uniform_mean:.4f}; 95% bootstrap CI {uniform_ci[0]:.4f}&#8211;{uniform_ci[1]:.4f}.</text>
+  <text class="note" x="28" y="352">Equal-byte mixed-vs-mean-random improvement: {random_mean:.4f}; 95% bootstrap CI {random_ci[0]:.4f}&#8211;{random_ci[1]:.4f}.</text>
+  <text class="note" x="28" y="382">Read-risk and MSE selectors both chose recurrent layer 0.</text>
+  <text class="note" x="28" y="406">Exact resident recurrent-state bytes: mixed {int(data["primary_resident_bytes"]):,}; uniform INT4 {int(data["uniform_resident_bytes"]):,}; FP32 reference {int(data["full_precision_equivalent_bytes"]):,}.</text>
+  <text class="note" x="28" y="436">Held-out MBPP confirmation &#183; {task_count} tasks &#183; {token_count:,} teacher-forced reference code tokens.</text>
+  <text class="note" x="28" y="460">Generated code was not executed; no speed or whole-model memory claim.</text>
+</svg>
+"""
 
 
 def _outputs() -> dict[Path, str]:
     data = _source_data()
     development_data = _development_data()
+    confirmation_data = _confirmation_data()
     return {
         ASSETS / "recurrent-state-storage.svg": _storage_svg(data),
         ASSETS / "diagnostic-tail-kl.svg": _diagnostic_svg(data),
         ASSETS / "mbpp-development-fidelity.svg": _development_svg(development_data),
+        ASSETS / "mbpp-confirmation-fidelity.svg": _confirmation_svg(confirmation_data),
     }
 
 

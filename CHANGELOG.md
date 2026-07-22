@@ -27,6 +27,13 @@ software, so compatibility can still change between development versions.
 - Frozen MBPP calibration and development evaluation workflows with pinned
   dataset/model revisions, prepared token manifests, canonical evidence hashes,
   equal-byte baselines, and resumable per-task checkpoints.
+- Held-out confirmation evidence on all 500 frozen MBPP test tasks and 30,244
+  teacher-forced reference-code tokens. The mixed layer-0 INT8 plus 17-layer
+  INT4 layout reduced task-macro excess NLL by 72.75% relative to uniform INT4
+  while using exactly 2,564,096 resident recurrent-state bytes; every
+  preregistered quality gate passed.
+- A compressed release attachment containing the retained raw confirmation
+  checkpoint for independent reconstruction of every reported gate.
 - Unit coverage for packing parity, byte accounting, cache integration, public
   data split discipline, and the supported Qwen3.5 factory path.
 
@@ -53,5 +60,6 @@ software, so compatibility can still change between development versions.
 - Full-model evidence is currently limited to the pinned
   `Qwen/Qwen3.5-0.8B-Base` revision and the environment described in
   [docs/compatibility.md](docs/compatibility.md).
-- The MBPP confirmation manifest is frozen, but this entry makes no held-out
-  confirmation or generated-code-correctness claim.
+- The held-out result is limited to teacher-forced likelihood on the pinned
+  Qwen3.5 checkpoint and MBPP construction. It does not establish generated-code
+  correctness, novelty, cross-model generality, or a breakthrough.

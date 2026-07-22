@@ -9,14 +9,18 @@ model quality, speed, or production readiness.
 
 | Area | Current evidence | Support boundary |
 |---|---|---|
-| Python | The full MBPP development run used Python `3.11.15`. Packaging CI is configured to smoke-test Python `3.11` and `3.13` on Linux, plus Python `3.11` on Windows. | Python `>=3.11` is declared. Full-model numerical evidence is limited to `3.11.15`. |
+| Python | The full MBPP development and confirmation runs used Python `3.11.15`. Packaging CI is configured to smoke-test Python `3.11` and `3.13` on Linux, plus Python `3.11` on Windows. | Python `>=3.11` is declared. Full-model numerical evidence is limited to `3.11.15`. |
 | Transformers | `5.14.1` | The alpha dependency is deliberately pinned to `transformers==5.14.1`. Every other release is unsupported until its internal cache contract is tested. |
 | Model | `Qwen/Qwen3.5-0.8B-Base` at revision `dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68` | No other checkpoint, revision, model family, or recurrent architecture has full-model evidence. |
 | Model execution | BF16 weights, batch size one, evaluation mode, `trust_remote_code=False`, eager attention | Use `attn_implementation="eager"`. Flash, SDPA, and other attention implementations are not validated. |
 | Full-run environment | PyTorch `2.11.0+cu128`, CUDA runtime `12.8`, NVIDIA driver `592.15`, NVIDIA GeForce RTX 5070 Laptop GPU, recorded platform `Windows-10-10.0.26200-SP0` | CPU and other accelerator support is limited to unit or API smoke tests; the public numerical result was not replicated there. |
 | Packed formats | Physical INT4 and INT8 recurrent-state payloads. FP16 scales are the evaluated default. | FP32 scales are supported for experiments but have no full-model fidelity evidence. The packed cache does not accept other payload widths. |
 
-The exact model and software provenance is recorded in
+The latest full-model evidence and exact provenance are recorded in
+[`evidence/mbpp-v02-confirmation.json`](../evidence/mbpp-v02-confirmation.json),
+with the human-readable result and claim boundary in
+[`research/CONFIRMATION_002.md`](../research/CONFIRMATION_002.md). The earlier
+development record remains available in
 [`evidence/mbpp-v02-development.json`](../evidence/mbpp-v02-development.json).
 
 ## Installed quickstart
@@ -38,7 +42,8 @@ The following paths have direct evidence:
 - Explicit eager `model(...)` calls with
   `past_key_values=PackedRecurrentStateCache(...)` and `use_cache=True`.
 - Batch-one prompt prefill followed by one-token teacher-forced decode calls on
-  the pinned full model.
+  the pinned full model across all 500 frozen MBPP confirmation tasks and
+  30,244 scored reference-code tokens.
 - Prefill plus a short multi-token continuation on a tiny randomly initialized
   Qwen3.5 configuration in the unit suite.
 - Batch-one greedy generation and beam search through `model.generate(...)` on
@@ -48,6 +53,14 @@ The following paths have direct evidence:
 The local generation smoke used Python `3.11.15`, PyTorch `2.13.0+cpu`, and
 Transformers `5.14.1`. It generated three new tokens in greedy and two-beam
 modes without downloading model weights.
+
+The release-candidate full-checkpoint smoke used the pinned Qwen3.5 revision,
+Python `3.11.15`, PyTorch `2.11.0+cu128`, BF16 weights, and eager CUDA decoding.
+It generated a two-token continuation through the installed `recurquant qwen35`
+path and reported 2,564,096 resident bytes, 18,874,368 FP32-reference bytes, a
+1,048,576-byte largest single state materialization, and physical reduction
+realized. This is a functional integration check, not a quality or latency
+benchmark.
 
 The following paths are unsupported or not yet validated:
 

@@ -104,11 +104,14 @@ storing the persistent recurrent state in 2,564,096 bytes.
 - Prepared-manifest canonical evidence SHA256:
   `21a6d18c6a0887b1499d156a3d610d4bfafdd59d3557713485b62038e263b96a`
 
+Using the retained local checkpoint,
 `recurquant verify-confirmation` independently reconstructed the per-task and
-token summaries from the final checkpoint arrays, re-ran every gate, verified
-the source and manifest anchors, and returned `result: pass`,
-`checkpoint_verified: true`, and `outcome_verified: true` with no warnings or
-errors.
+token summaries from the final arrays, re-ran every gate, verified the source
+and manifest anchors, and returned `result: pass`, `checkpoint_verified: true`,
+and `outcome_verified: true` with no warnings or errors. The raw checkpoint is
+not committed to Git; a compressed copy is distributed with the `v0.2.0a1`
+release so this verification mode remains available without enlarging the
+repository.
 
 ## Infrastructure record
 
