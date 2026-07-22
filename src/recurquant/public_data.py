@@ -272,6 +272,7 @@ def load_mbpp_phase(
         MBPP_CONFIG,
         revision=MBPP_REVISION,
         split=mbpp_source_split(normalized_phase),
+        streaming=True,
     )
     if normalized_phase is MBPPPhase.CALIBRATION:
         return select_mbpp_calibration(loaded, size=calibration_size)

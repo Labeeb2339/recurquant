@@ -133,7 +133,7 @@ def test_loader_is_pinned_and_calibration_is_selected_after_lazy_call() -> None:
     assert calls == [
         (
             (MBPP_DATASET_ID, MBPP_CONFIG),
-            {"revision": MBPP_REVISION, "split": "train"},
+            {"revision": MBPP_REVISION, "split": "train", "streaming": True},
         )
     ]
 

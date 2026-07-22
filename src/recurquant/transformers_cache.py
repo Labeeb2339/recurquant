@@ -50,11 +50,13 @@ class RecurrentStateQDQCache(DynamicCache):
         spec: QuantizationSpec,
         layer_specs: Mapping[int, QuantizationSpec] | None = None,
         enabled_layers: Iterable[int] | None = None,
+        record_evidence: bool = True,
     ) -> None:
         super().__init__(config=config)
         self.spec = spec
         self.layer_specs = dict(layer_specs or {})
         self.enabled_layers = None if enabled_layers is None else frozenset(enabled_layers)
+        self.record_evidence = record_evidence
         self.update_evidence: list[CacheUpdateEvidence] = []
         self._update_index = 0
         self._layer_update_counts: dict[int, int] = {}
@@ -99,23 +101,24 @@ class RecurrentStateQDQCache(DynamicCache):
             )
             result = quantize_dequantize(recurrent_states, selected_spec)
             stored = result.tensor
-            self.update_evidence.append(
-                CacheUpdateEvidence(
-                    update_index=self._update_index,
-                    layer_index=layer_idx,
-                    state_index=state_idx,
-                    shape=tuple(recurrent_states.shape),
-                    source_dtype=str(recurrent_states.dtype),
-                    bits=selected_spec.bits,
-                    group_size=selected_spec.group_size,
-                    rounding=selected_spec.rounding,
-                    baseline_bytes=result.baseline_bytes,
-                    estimated_bytes=result.estimated_bytes,
-                    relative_l2_error=result.relative_l2_error,
-                    mean_squared_error=result.mean_squared_error,
-                    max_absolute_error=result.max_absolute_error,
+            if self.record_evidence:
+                self.update_evidence.append(
+                    CacheUpdateEvidence(
+                        update_index=self._update_index,
+                        layer_index=layer_idx,
+                        state_index=state_idx,
+                        shape=tuple(recurrent_states.shape),
+                        source_dtype=str(recurrent_states.dtype),
+                        bits=selected_spec.bits,
+                        group_size=selected_spec.group_size,
+                        rounding=selected_spec.rounding,
+                        baseline_bytes=result.baseline_bytes,
+                        estimated_bytes=result.estimated_bytes,
+                        relative_l2_error=result.relative_l2_error,
+                        mean_squared_error=result.mean_squared_error,
+                        max_absolute_error=result.max_absolute_error,
+                    )
                 )
-            )
             self._layer_update_counts[layer_idx] = layer_update_index + 1
         self._update_index += 1
         return super().update_recurrent_state(stored, layer_idx, state_idx, **kwargs)
