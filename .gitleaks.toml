@@ -1,13 +1,21 @@
-title = "RecurQuant secret scanning"
+title = "RecurQuant secret-scanning configuration"
 
 [extend]
 useDefault = true
 
 [[allowlists]]
-description = "Reproducibility hashes whose field names contain the word token"
+description = "Public model revision and evidence digest fields"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''"token_ids_sha256":\s*"[0-9a-f]{64}"''',
+  '''"tokenizer_revision":\s*"[0-9a-f]{40}"''',
+]
+
+[[allowlists]]
+description = "Prepared-manifest token ID digests"
 targetRules = ["generic-api-key"]
 regexTarget = "line"
 regexes = [
   '''"(?:code_token_ids_sha256|prompt_token_ids_sha256|token_manifest_sha256)"\s*:\s*"[0-9a-f]{64}"''',
-  '''"tokenizer_revision"\s*:\s*"[0-9a-f]{40}"''',
 ]
