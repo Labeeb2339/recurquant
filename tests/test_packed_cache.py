@@ -158,6 +158,38 @@ def test_layer_override_changes_physical_payload_width() -> None:
     assert packed.storage_bytes == 144
 
 
+def test_int8_bfloat16_reorder_preserves_dequantized_state_exactly() -> None:
+    state = (
+        torch.randn((3, 2, 8, 8), generator=torch.Generator().manual_seed(9)) * 1e-4
+    ).to(torch.bfloat16)
+    layer = PackedLinearAttentionLayer(
+        spec=QuantizationSpec(bits=8, group_size=16),
+        layer_index=0,
+    )
+    before = layer.update_recurrent_state(state).clone()
+    beam_idx = torch.tensor([2, 0, 1])
+
+    layer.reorder_cache(beam_idx)
+
+    assert torch.equal(layer.recurrent_states[0], before.index_select(0, beam_idx))
+
+
+def test_int4_odd_nibble_reorder_preserves_dequantized_state_exactly() -> None:
+    state = (
+        torch.randn((3, 1, 3, 3), generator=torch.Generator().manual_seed(17)) * 1e-3
+    ).to(torch.bfloat16)
+    layer = PackedLinearAttentionLayer(
+        spec=QuantizationSpec(bits=4, group_size=3),
+        layer_index=0,
+    )
+    before = layer.update_recurrent_state(state).clone()
+    beam_idx = torch.tensor([2, 2, 0])
+
+    layer.reorder_cache(beam_idx)
+
+    assert torch.equal(layer.recurrent_states[0], before.index_select(0, beam_idx))
+
+
 def test_packed_cache_rejects_non_linear_and_unknown_overrides() -> None:
     config = tiny_config()
 

@@ -72,6 +72,82 @@ UpdateCallback = Callable[
 ]
 
 
+def _reorder_packed_batch(
+    packed: PackedQuantizedTensor,
+    beam_idx: torch.LongTensor,
+) -> PackedQuantizedTensor:
+    """Select packed batch entries without another quantization round trip."""
+
+    if len(packed.original_shape) <= packed.spec.flatten_last_dims:
+        raise RuntimeError(
+            "Cannot reorder a packed state when its quantization groups include the "
+            "batch dimension. Use flatten_last_dims smaller than the state rank."
+        )
+
+    batch_size = packed.original_shape[0]
+    if packed.rows % batch_size:
+        raise RuntimeError("packed row metadata is inconsistent with its batch dimension")
+    rows_per_batch = packed.rows // batch_size
+    selected = beam_idx.to(packed.payload.device)
+    selected_batch_size = selected.numel()
+
+    scales = packed.scales.reshape(
+        batch_size,
+        rows_per_batch,
+        packed.groups_per_row,
+    )
+    reordered_scales = scales.index_select(0, selected).reshape(
+        selected_batch_size * rows_per_batch,
+        packed.groups_per_row,
+    )
+
+    codes_per_batch = rows_per_batch * packed.padded_size
+    if packed.spec.bits == 8:
+        codes = packed.payload.reshape(batch_size, codes_per_batch)
+        reordered_payload = codes.index_select(0, selected).reshape(-1)
+    elif packed.spec.bits == 4:
+        payload = packed.payload.reshape(-1)
+        low = torch.bitwise_and(payload, 0x0F)
+        high = torch.bitwise_right_shift(payload, 4)
+        nibbles = torch.empty(
+            payload.numel() * 2,
+            dtype=torch.uint8,
+            device=payload.device,
+        )
+        nibbles[0::2] = low
+        nibbles[1::2] = high
+        codes = nibbles[: packed.rows * packed.padded_size].reshape(
+            batch_size,
+            codes_per_batch,
+        )
+        reordered_codes = codes.index_select(0, selected).reshape(-1)
+        if reordered_codes.numel() % 2:
+            reordered_codes = torch.cat(
+                [
+                    reordered_codes,
+                    torch.zeros(1, dtype=torch.uint8, device=reordered_codes.device),
+                ]
+            )
+        reordered_payload = torch.bitwise_or(
+            reordered_codes[0::2],
+            torch.bitwise_left_shift(reordered_codes[1::2], 4),
+        )
+    else:
+        raise RuntimeError(f"Packed reordering does not support INT{packed.spec.bits}")
+
+    return PackedQuantizedTensor(
+        payload=reordered_payload.contiguous(),
+        scales=reordered_scales.contiguous(),
+        spec=packed.spec,
+        original_shape=(selected_batch_size, *packed.original_shape[1:]),
+        original_dtype=packed.original_dtype,
+        flattened_size=packed.flattened_size,
+        padded_size=packed.padded_size,
+        rows=selected_batch_size * rows_per_batch,
+        groups_per_row=packed.groups_per_row,
+    )
+
+
 class PackedLinearAttentionLayer(LinearAttentionLayer):
     """Linear-attention cache layer with integer recurrent-state residency."""
 
@@ -186,8 +262,7 @@ class PackedLinearAttentionLayer(LinearAttentionLayer):
                 )
             packed = self.packed_states[state_idx]
             if packed is not None:
-                reordered = packed.dequantize().index_select(0, beam_idx.to(packed.payload.device))
-                self.packed_states[state_idx] = quantize_pack(reordered, packed.spec)
+                self.packed_states[state_idx] = _reorder_packed_batch(packed, beam_idx)
 
     def offload(self) -> None:
         for state_idx in range(self.number_of_states):
