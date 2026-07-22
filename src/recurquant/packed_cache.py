@@ -105,6 +105,13 @@ class PackedLinearAttentionLayer(LinearAttentionLayer):
         )
 
     def _store(self, recurrent_states: torch.Tensor, state_idx: int) -> torch.Tensor:
+        if torch.is_grad_enabled() and recurrent_states.requires_grad:
+            raise RuntimeError(
+                "Packed recurrent states are inference-only and cannot accept an "
+                "autograd-tracked tensor. Wrap every prefill and decode forward in "
+                "torch.inference_mode() or torch.no_grad(); model.eval() alone does "
+                "not disable autograd."
+            )
         selected_spec = self._selected_spec()
         packed = quantize_pack(recurrent_states, selected_spec)
         self.packed_states[state_idx] = packed
@@ -145,7 +152,13 @@ class PackedLinearAttentionLayer(LinearAttentionLayer):
             if packed is not None
         )
 
-    def largest_transient_recurrent_state_bytes(self) -> int:
+    def largest_materialized_recurrent_state_bytes(self) -> int:
+        """Return bytes in the largest single dequantized recurrent state.
+
+        This is an exact tensor-size count, not a device allocator peak or a
+        measurement of the layer's total temporary workspace.
+        """
+
         return max(
             (
                 packed.elements * torch.empty((), dtype=packed.original_dtype).element_size()
@@ -203,9 +216,11 @@ class PackedLinearAttentionLayer(LinearAttentionLayer):
 class PackedRecurrentStateCache(DynamicCache):
     """Drop-in Qwen3.5 cache that keeps Gated DeltaNet states physically packed.
 
-    The current PyTorch implementation realizes persistent-state storage savings
-    but materializes one recurrent state while its layer executes. It makes no
-    speed claim and is not compatible with ``torch.compile``.
+    Whether physical packing reduces resident bytes depends on the state shape and
+    quantization spec; inspect ``storage_summary()`` after a cache update. The
+    current PyTorch implementation materializes one recurrent state while its layer
+    executes. It makes no speed or whole-model peak-memory claim and is not
+    compatible with ``torch.compile``.
     """
 
     def __init__(
@@ -297,10 +312,15 @@ class PackedRecurrentStateCache(DynamicCache):
             for _, layer in self.packed_layers()
         )
 
-    def largest_transient_recurrent_state_bytes(self) -> int:
+    def largest_materialized_recurrent_state_bytes(self) -> int:
+        """Return bytes in the largest single dequantized recurrent state.
+
+        This does not measure allocator peak memory or the full layer workspace.
+        """
+
         return max(
             (
-                layer.largest_transient_recurrent_state_bytes()
+                layer.largest_materialized_recurrent_state_bytes()
                 for _, layer in self.packed_layers()
             ),
             default=0,
@@ -312,7 +332,9 @@ class PackedRecurrentStateCache(DynamicCache):
         return {
             "resident_bytes": resident,
             "full_precision_equivalent_bytes": full_precision_equivalent,
-            "largest_transient_state_bytes": self.largest_transient_recurrent_state_bytes(),
+            "largest_materialized_state_bytes": (
+                self.largest_materialized_recurrent_state_bytes()
+            ),
             "resident_compression_ratio": (
                 full_precision_equivalent / resident if resident else 0.0
             ),

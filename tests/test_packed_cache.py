@@ -39,7 +39,7 @@ def test_packed_cache_runs_prefill_and_decode_with_integer_residency() -> None:
     summary = cache.storage_summary()
     assert summary["resident_bytes"] == 80
     assert summary["full_precision_equivalent_bytes"] == 512
-    assert summary["largest_transient_state_bytes"] == 512
+    assert summary["largest_materialized_state_bytes"] == 512
     assert summary["resident_compression_ratio"] == 6.4
     assert summary["physical_reduction_realized"] is True
 
@@ -56,6 +56,38 @@ def test_packed_cache_does_not_collect_unbounded_evidence_by_default() -> None:
 
     assert cache.update_evidence == []
     assert cache.layers[0].is_compileable is False
+
+
+def test_packed_cache_reports_when_group_padding_outweighs_packing() -> None:
+    cache = PackedRecurrentStateCache(
+        tiny_config(),
+        spec=QuantizationSpec(bits=4, group_size=1024),
+    )
+
+    cache.update_recurrent_state(torch.ones(1, 2, 8, 8), layer_idx=0)
+
+    assert cache.storage_summary() == {
+        "resident_bytes": 1028,
+        "full_precision_equivalent_bytes": 512,
+        "largest_materialized_state_bytes": 512,
+        "resident_compression_ratio": 512 / 1028,
+        "physical_reduction_realized": False,
+    }
+
+
+def test_packed_cache_rejects_autograd_tracked_state_but_allows_no_grad() -> None:
+    cache = PackedRecurrentStateCache(
+        tiny_config(),
+        spec=QuantizationSpec(bits=4, group_size=16),
+    )
+    state = torch.linspace(-1, 1, 128, requires_grad=True).reshape(1, 2, 8, 8)
+
+    with pytest.raises(RuntimeError, match=r"torch\.inference_mode\(\).*torch\.no_grad\(\)"):
+        cache.update_recurrent_state(state, layer_idx=0)
+
+    with torch.no_grad():
+        materialized = cache.update_recurrent_state(state, layer_idx=0)
+    assert materialized.requires_grad is False
 
 
 def test_packed_cache_matches_qdq_cache_numerically() -> None:
