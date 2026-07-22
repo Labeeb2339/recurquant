@@ -7,15 +7,25 @@ the search before any paper or novelty statement.
 
 ## Persistent recurrent-state quantization
 
-- [Quamba2](https://arxiv.org/abs/2503.22879) stores calibrated grouped Mamba
-  cached states at INT8. RecurQuant cannot claim the first recurrent-state or
-  first INT8 SSM cache quantizer.
+- [Q-Mamba](https://aclanthology.org/2025.findings-acl.551/) evaluates
+  `W8A8H4`, including 4-bit persistent Mamba2 state caches with decoupled
+  state/channel scaling and selectivity reconstruction. RecurQuant cannot
+  claim the first 4-bit or sub-8-bit persistent SSM-state quantizer.
+- [Quamba2](https://arxiv.org/abs/2503.22879) and its
+  [official implementation](https://github.com/enyac-group/Quamba) load and
+  store calibrated Mamba cached states at INT8 in sequence kernels. Quamba2
+  also searches mixed W4A8/A16 blocks, although that search is not the same as
+  RecurQuant's per-recurrent-layer cache layout. RecurQuant cannot claim the
+  first INT8 SSM cache, broad sensitivity-guided SSM quantization, or a first
+  packed recurrent kernel.
 - [Nemotron 3 Super](https://arxiv.org/abs/2604.12374) studies recurrent rounding
-  accumulation and stochastic rounding.
+  accumulation and uses FP16 stochastic rounding in its released deployment
+  path.
 - [Nemotron 3 Ultra](https://arxiv.org/abs/2606.15007) evaluates FP16, INT8, and
   FP8 recurrent states with block scaling, stochastic rounding, checkpoints,
-  and activation replay. These are prior art and mandatory stability baselines
-  for RecurQuant.
+  and cached-input replay. Its reported INT8/FP8 checkpoint experiments were
+  emulated while optimized 8-bit kernels were still under development. These
+  methods remain prior art and mandatory stability baselines for RecurQuant.
 
 ## Existing Gated DeltaNet systems work
 
@@ -34,6 +44,22 @@ the search before any paper or novelty statement.
 - [AVMP](https://arxiv.org/abs/2605.22416) dynamically rebalances KV and SSM
   memory pools.
 
+## Mixed-precision cache allocation
+
+- [KVTuner](https://arxiv.org/abs/2502.04420),
+  [KVmix](https://arxiv.org/abs/2506.08018), and
+  [Quantize What Counts](https://arxiv.org/abs/2502.15075) already use
+  layer-wise sensitivity or loss signals to allocate cache precision under
+  hardware or memory constraints.
+- [RateQuant](https://arxiv.org/abs/2605.06675),
+  [PM-KVQ](https://arxiv.org/abs/2505.18610), and
+  [SpectrumKV](https://arxiv.org/abs/2606.08635) cover fixed-average-bit,
+  progressive, or per-token mixed-precision KV policies.
+
+These works target transformer KV caches rather than Gated DeltaNet recurrent
+matrices, but they preclude broad claims that sensitivity-guided, per-layer,
+dynamic, or equal-budget cache precision allocation is new.
+
 ## Architecture evidence
 
 - [Gated DeltaNet-2](https://arxiv.org/abs/2605.22791) separates channel-wise
@@ -45,7 +71,7 @@ the search before any paper or novelty statement.
   to use sparse reads and writes over a larger state. RecurQuant instead studies
   post-training storage of an existing model's state.
 
-## Narrow lane under test
+## Audited gap, not a novelty claim
 
 The scan did not locate a published implementation combining all three:
 
@@ -53,7 +79,16 @@ The scan did not locate a published implementation combining all three:
 2. Gated DeltaNet-specific read/sensitivity-based precision allocation; and
 3. a packed end-to-end runtime kernel with measured quality and latency.
 
-That negative search is not a novelty claim. A defensible result would still
-need to beat uniform per-head/per-block quantization, Quamba2-style calibration,
-Nemotron stochastic/checkpoint baselines, ReplaySSM/KVBuffer, magnitude and
-update-residual scoring, and ordinary KV-cache quantization.
+That negative search is not proof of firstness, and the current RecurQuant
+alpha does not satisfy item 3: it physically stores the cache in packed form
+but materializes one recurrent state for each layer call and has no fused
+recurrence kernel or latency result.
+
+The frozen v0.2 protocol compares uniform INT4, one uniform INT8 reference,
+three same-byte random layer placements, MSE-selected placement, nearest and
+stochastic rounding, and the prespecified layer-0 policy. It does **not**
+compare against Q-Mamba's DSQ method, Nemotron checkpoint/replay, ReplaySSM,
+KVBuffer, per-head/per-block allocation, or fused-kernel baselines. A later
+claim of novelty or general superiority would require those comparisons,
+multiple models and tasks, a repeated prior-art search, and measured end-to-end
+latency.
