@@ -3,7 +3,7 @@
 This file records user-visible package changes. RecurQuant is pre-release
 software, so compatibility can still change between development versions.
 
-## [0.2.0.dev0] - Unreleased alpha
+## [0.2.0a1] - 2026-07-22
 
 ### Added
 

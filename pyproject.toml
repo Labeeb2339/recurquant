@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "recurquant"
-version = "0.2.0.dev0"
+version = "0.2.0a1"
 description = "Packed recurrent-state quantization for Gated DeltaNet language models."
 readme = "README.md"
 requires-python = ">=3.11"

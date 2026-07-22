@@ -1,6 +1,6 @@
 # Compatibility and support
 
-RecurQuant `0.2.0.dev0` is an alpha research package. The supported surface is
+RecurQuant `0.2.0a1` is an alpha research package. The supported surface is
 intentionally narrow because `PackedRecurrentStateCache` subclasses an internal
 Transformers cache layer. A passing import or smoke test is not evidence of
 model quality, speed, or production readiness.

@@ -47,10 +47,20 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev,eval]"
 .venv\Scripts\python.exe -m ruff check .
 ```
 
+Linux or macOS:
+
+```bash
+uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python -e ".[dev,eval]"
+.venv/bin/python -m pytest
+.venv/bin/python -m ruff check .
+```
+
 The package pins Transformers `5.14.1`; the other exact reference versions
 above are provenance pins, not the full range declared by `pyproject.toml`.
-Record the versions actually resolved for a replication. On Linux or macOS,
-replace `.venv\Scripts\python.exe` with `.venv/bin/python` below.
+Record the versions actually resolved for a replication. PowerShell and Bash
+commands are shown separately below so their path and continuation syntax can
+be copied directly.
 
 The scripts download the pinned model and dataset by default. Add
 `--local-files-only` only when the model and tokenizer are already cached. It
@@ -66,6 +76,13 @@ FP16 scales, and nearest rounding.
 .venv\Scripts\python.exe -m recurquant.cli qwen35 `
   --device cuda `
   --max-new-tokens 32 `
+  --prompt "Explain recurrent-state quantization in two sentences."
+```
+
+```bash
+.venv/bin/python -m recurquant.cli qwen35 \
+  --device cuda \
+  --max-new-tokens 32 \
   --prompt "Explain recurrent-state quantization in two sentences."
 ```
 
@@ -98,6 +115,16 @@ frozen 90-task method matrix:
   --output artifacts\replication-development.json
 ```
 
+```bash
+.venv/bin/python scripts/evaluate_mbpp.py \
+  --phase development \
+  --calibration-artifact evidence/mbpp-v02-calibration.json \
+  --prepared-manifest evidence/mbpp-v02-development-manifest.json \
+  --device cuda \
+  --checkpoint artifacts/replication-development.checkpoint.json \
+  --output artifacts/replication-development.json
+```
+
 To regenerate each input instead of trusting the committed copies, run the
 full calibration and then prepare an outcome-free token manifest:
 
@@ -112,6 +139,19 @@ full calibration and then prepare an outcome-free token manifest:
   --manifest-only `
   --device cuda `
   --output artifacts\replication-development-manifest.json
+```
+
+```bash
+.venv/bin/python scripts/calibrate_mbpp_layers.py \
+  --device cuda \
+  --output artifacts/replication-calibration.json
+
+.venv/bin/python scripts/evaluate_mbpp.py \
+  --phase development \
+  --calibration-artifact artifacts/replication-calibration.json \
+  --manifest-only \
+  --device cuda \
+  --output artifacts/replication-development-manifest.json
 ```
 
 Then substitute those two artifact paths in the first command. A full
@@ -135,6 +175,17 @@ policy and analysis plan:
   --device cuda `
   --checkpoint artifacts\replication-confirmation.checkpoint.json `
   --output artifacts\replication-confirmation.json
+```
+
+```bash
+.venv/bin/python scripts/evaluate_mbpp.py \
+  --phase confirmation \
+  --calibration-artifact evidence/mbpp-v02-calibration.json \
+  --prepared-manifest evidence/mbpp-v02-confirmation-manifest.json \
+  --confirmation-lock recurquant:unlock-mbpp-confirmation:rq-v0.2 \
+  --device cuda \
+  --checkpoint artifacts/replication-confirmation.checkpoint.json \
+  --output artifacts/replication-confirmation.json
 ```
 
 At the commit represented by this guide, the committed confirmation file is a
@@ -179,6 +230,13 @@ Validate a committed artifact without loading the model or dataset:
   --expect-canonical-evidence-sha256 301c52e194bbd23059a0040a8e94aeac97dc33de1100f13edbf17dc877755488
 ```
 
+```bash
+.venv/bin/python -m recurquant.cli verify-artifact \
+  evidence/mbpp-v02-development.json \
+  --expect-file-sha256 5980fd58aa0933ad97deb896d4901fcd37350c4a57d8a80022ab218aaf77e727 \
+  --expect-canonical-evidence-sha256 301c52e194bbd23059a0040a8e94aeac97dc33de1100f13edbf17dc877755488
+```
+
 The command exits nonzero if the JSON is malformed, the recorded canonical
 hash is wrong, or either expected anchor does not match. Its report is JSON so
 the same check can run in CI.
@@ -214,6 +272,17 @@ one or more promoted recurrent layers without touching MBPP:
   --prompt-profile code `
   --device cuda `
   --output artifacts\policy-layer6-diagnostic.json
+```
+
+```bash
+.venv/bin/python scripts/run_qwen35_smoke.py \
+  --cache-mode packed \
+  --low-bits 4 \
+  --high-bits 8 \
+  --upgrade-layers 6 \
+  --prompt-profile code \
+  --device cuda \
+  --output artifacts/policy-layer6-diagnostic.json
 ```
 
 Use `--sensitivity-sweep` instead of `--upgrade-layers` to evaluate every Gated

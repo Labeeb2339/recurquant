@@ -26,7 +26,7 @@ body:
     attributes:
       label: RecurQuant version or commit
       description: Use `python -c "import recurquant; print(recurquant.__version__)"` or provide the full commit hash.
-      placeholder: 0.2.0.dev0 or 0123456789abcdef...
+      placeholder: 0.2.0a1 or 0123456789abcdef...
     validations:
       required: true
 

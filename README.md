@@ -41,7 +41,7 @@ path.
 Windows PowerShell:
 
 ```powershell
-git clone https://github.com/Labeeb2339/recurquant.git
+git clone --branch v0.2.0a1 --depth 1 https://github.com/Labeeb2339/recurquant.git
 cd recurquant
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
@@ -51,7 +51,7 @@ py -3.11 -m venv .venv
 macOS or Linux:
 
 ```bash
-git clone https://github.com/Labeeb2339/recurquant.git
+git clone --branch v0.2.0a1 --depth 1 https://github.com/Labeeb2339/recurquant.git
 cd recurquant
 python3.11 -m venv .venv
 .venv/bin/python -m pip install .

@@ -4,7 +4,8 @@ title: RecurQuant
 type: software
 authors:
   - name: "Muhammad Labeeb Aryan"
-version: 0.2.0.dev0
+version: 0.2.0a1
+date-released: 2026-07-22
 repository-code: "https://github.com/Labeeb2339/recurquant"
 url: "https://github.com/Labeeb2339/recurquant"
 license: Apache-2.0

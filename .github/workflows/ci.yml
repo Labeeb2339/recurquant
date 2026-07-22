@@ -84,5 +84,5 @@ jobs:
           subprocess.check_call([sys.executable, '-m', 'pip', 'install', str(wheel)])"
       - name: Validate import and console entry point
         run: |
-          python -c "import importlib.metadata as m, recurquant; assert m.version('recurquant') == recurquant.__version__ == '0.2.0.dev0'; print(recurquant.__version__)"
+          python -c "import importlib.metadata as m, recurquant; assert m.version('recurquant') == recurquant.__version__ == '0.2.0a1'; print(recurquant.__version__)"
           recurquant demo --bits 4 --group-size 16
