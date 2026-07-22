@@ -8,7 +8,7 @@ from .quantization import (
     quantize_dequantize,
     quantize_pack,
 )
-from .qwen35 import create_qwen35_packed_cache
+from .qwen35 import create_qwen35_packed_cache, create_qwen35_v02_mixed_cache
 
 __all__ = [
     "PackedQuantizedTensor",
@@ -16,6 +16,7 @@ __all__ = [
     "QuantizationResult",
     "QuantizationSpec",
     "create_qwen35_packed_cache",
+    "create_qwen35_v02_mixed_cache",
     "quantize_dequantize",
     "quantize_pack",
 ]

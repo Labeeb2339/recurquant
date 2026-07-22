@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 else:
     Qwen35Source = object
 
-_SUPPORTED_TRANSFORMERS_REQUIREMENT = "transformers>=5.14.1,<5.15"
-_SUPPORTED_TRANSFORMERS_SPEC = SpecifierSet(">=5.14.1,<5.15")
+_SUPPORTED_TRANSFORMERS_REQUIREMENT = "transformers==5.14.1"
+_SUPPORTED_TRANSFORMERS_SPEC = SpecifierSet("==5.14.1")
 _SUPPORTED_LAYER_TYPES = frozenset({"linear_attention", "full_attention"})
 
 
@@ -41,9 +41,9 @@ def _validate_transformers_compatibility() -> Version:
         or parsed not in _SUPPORTED_TRANSFORMERS_SPEC
     ):
         raise RuntimeError(
-            "RecurQuant's Qwen3.5 cache is tested only with stable releases in "
+            "RecurQuant's Qwen3.5 cache is tested only with "
             f"{_SUPPORTED_TRANSFORMERS_REQUIREMENT}; "
-            f"found transformers=={installed}. Install the tested range before creating "
+            f"found transformers=={installed}. Install the tested release before creating "
             "the cache."
         )
     return parsed
@@ -177,7 +177,7 @@ def create_qwen35_packed_cache(
     """Create a validated packed recurrent-state cache for Qwen3.5 inference.
 
     This factory covers text-only ``Qwen3_5ForCausalLM`` models on the tested stable
-    Transformers minor release. Passing a model additionally validates evaluation
+    Transformers release. Passing a model additionally validates evaluation
     mode, eager attention, and single-device materialization. Passing only a config
     validates its layer structure; it cannot validate the eventual model runtime.
     Every model forward must run under ``torch.inference_mode()`` or
@@ -211,5 +211,38 @@ def create_qwen35_packed_cache(
         config,
         spec=spec,
         layer_specs=layer_specs,
+        record_evidence=record_evidence,
+    )
+
+
+def create_qwen35_v02_mixed_cache(
+    model_or_config: Qwen35Source,
+    *,
+    record_evidence: bool = False,
+) -> PackedRecurrentStateCache:
+    """Create the frozen v0.2 mixed-precision Qwen3.5 cache.
+
+    The policy stores model layer 0 at INT8 and every other supported recurrent
+    layer at INT4, with group size 128, FP16 scales, nearest rounding, and seed
+    2339. It is the fixed development policy reported by the repository, not an
+    automatic selector for other checkpoints.
+    """
+
+    return create_qwen35_packed_cache(
+        model_or_config,
+        bits=4,
+        group_size=128,
+        scale_bits=16,
+        rounding="nearest",
+        seed=2339,
+        layer_specs={
+            0: QuantizationSpec(
+                bits=8,
+                group_size=128,
+                scale_bits=16,
+                rounding="nearest",
+                seed=2339,
+            )
+        },
         record_evidence=record_evidence,
     )

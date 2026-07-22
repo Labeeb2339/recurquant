@@ -20,25 +20,40 @@ The commands are short; the first run still needs to download the pinned model
 and tokenizer. Python 3.11 and a CUDA GPU are recommended for the evaluated
 path.
 
+Windows PowerShell:
+
 ```powershell
 git clone https://github.com/Labeeb2339/recurquant.git
 cd recurquant
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
-.\.venv\Scripts\python.exe examples\qwen35_quickstart.py --max-new-tokens 16
+.\.venv\Scripts\recurquant.exe qwen35 --max-new-tokens 16
 ```
 
-On macOS or Linux, replace `.\.venv\Scripts\python.exe` with
-`.venv/bin/python`. The runnable source is
-[`examples/qwen35_quickstart.py`](examples/qwen35_quickstart.py); read the
+macOS or Linux:
+
+```bash
+git clone https://github.com/Labeeb2339/recurquant.git
+cd recurquant
+python3.11 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/recurquant qwen35 --max-new-tokens 16
+```
+
+The installed command and
+[`examples/qwen35_quickstart.py`](examples/qwen35_quickstart.py) call the same
+implementation. The default is the frozen v0.2 mixed policy: layer 0 at INT8
+and the remaining recurrent layers at INT4. Uniform INT4 is retained only as an
+explicit stress baseline via `--policy uniform-int4-stress`. Read the
 [compatibility contract](docs/compatibility.md) before using a different model,
 Transformers version, device layout, or generation mode.
 
 ## Use it in Python
 
-This example keeps Gated DeltaNet layer 0 at INT8 and the other 17 recurrent
-layers at INT4, matching the frozen development policy. Remove `layer_specs`
-for uniform INT4.
+This example uses the reusable frozen v0.2 helper, which keeps Gated DeltaNet
+layer 0 at INT8 and the other 17 recurrent layers at INT4. The generic
+`create_qwen35_packed_cache()` factory remains available for controlled policy
+experiments.
 
 ```python
 import warnings
@@ -46,7 +61,7 @@ import warnings
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from recurquant import QuantizationSpec, create_qwen35_packed_cache
+from recurquant import create_qwen35_v02_mixed_cache
 
 MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
 REVISION = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
@@ -74,12 +89,7 @@ model = AutoModelForCausalLM.from_pretrained(
 ).to(device)
 model.eval()
 
-cache = create_qwen35_packed_cache(
-    model,
-    bits=4,
-    group_size=128,
-    layer_specs={0: QuantizationSpec(bits=8, group_size=128)},
-)
+cache = create_qwen35_v02_mixed_cache(model)
 inputs = tokenizer("Explain recurrent-state quantization simply.", return_tensors="pt")
 inputs = inputs.to(device)
 continuation = []
@@ -102,10 +112,11 @@ print(tokenizer.decode(generated_ids[0], skip_special_tokens=True))
 print(cache.storage_summary())
 ```
 
-`create_qwen35_packed_cache()` rejects unsupported Transformers versions,
-non-eager attention, training mode, multi-device placement, and incompatible
-Qwen configurations early. The returned cache exposes exact live tensor byte
-accounting through `storage_summary()`.
+`create_qwen35_v02_mixed_cache()` and `create_qwen35_packed_cache()` reject
+unsupported Transformers versions, non-eager attention, training mode,
+multi-device placement, and incompatible Qwen configurations early. The
+returned cache exposes exact live tensor byte accounting through
+`storage_summary()`.
 
 ## What is physically smaller
 
@@ -150,10 +161,12 @@ Important boundaries:
 
 The supported public surface is deliberately narrow:
 
-- Python `>=3.11` and `transformers>=5.14.1,<5.15`;
+- Python `>=3.11` and exactly `transformers==5.14.1` for this alpha;
 - text-only Qwen3.5 hybrid models with `linear_attention` and `full_attention`
   layer types;
-- physical INT4 or INT8 recurrent-state payloads with FP16 scales;
+- physical INT4 or INT8 recurrent-state payloads; FP16 scales are the evaluated
+  default, while FP32 scales are supported as an experimental, unevaluated
+  option;
 - eager, evaluation-only, single-device inference; and
 - explicit `past_key_values=cache` model calls.
 

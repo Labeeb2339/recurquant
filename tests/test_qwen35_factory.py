@@ -5,9 +5,19 @@ import torch
 from transformers import GPT2Config, Qwen3_5ForCausalLM
 
 import recurquant.qwen35 as qwen35_module
-from examples.qwen35_quickstart import _model_dtype
-from recurquant import PackedRecurrentStateCache, create_qwen35_packed_cache
+from recurquant import (
+    PackedRecurrentStateCache,
+    create_qwen35_packed_cache,
+    create_qwen35_v02_mixed_cache,
+)
+from recurquant.cli import build_parser
 from recurquant.packed_cache import PackedLinearAttentionLayer
+from recurquant.qwen35_quickstart import (
+    MIXED_POLICY,
+    UNIFORM_INT4_STRESS_POLICY,
+    _model_dtype,
+    run_qwen35_quickstart,
+)
 from tests.test_transformers_cache import tiny_config
 
 
@@ -122,6 +132,19 @@ def test_config_only_factory_validates_structure_not_runtime() -> None:
     assert isinstance(cache, PackedRecurrentStateCache)
 
 
+def test_frozen_v02_helper_applies_the_exact_mixed_policy() -> None:
+    cache = create_qwen35_v02_mixed_cache(
+        tiny_config(["linear_attention", "linear_attention", "full_attention"])
+    )
+
+    specs = {layer_index: layer.spec for layer_index, layer in cache.packed_layers()}
+    assert {layer_index: spec.bits for layer_index, spec in specs.items()} == {0: 8, 1: 4}
+    assert all(spec.group_size == 128 for spec in specs.values())
+    assert all(spec.scale_bits == 16 for spec in specs.values())
+    assert all(spec.rounding == "nearest" for spec in specs.values())
+    assert all(spec.seed == 2339 for spec in specs.values())
+
+
 def test_model_factory_rejects_untested_attention_backend() -> None:
     model = _tiny_model()
     model.config._attn_implementation = "sdpa"
@@ -156,13 +179,16 @@ def test_eval_model_forward_requires_disabled_autograd() -> None:
         model(torch.tensor([[1, 2, 3, 4]]), past_key_values=cache, use_cache=True)
 
 
-@pytest.mark.parametrize("version", ["5.15.0", "5.14.2rc1", "5.14.2.dev1"])
+@pytest.mark.parametrize(
+    "version",
+    ["5.14.0", "5.14.2", "5.14.2rc1", "5.14.2.dev1", "5.15.0"],
+)
 def test_public_factory_rejects_untested_or_prerelease_transformers(
     version: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(qwen35_module.transformers, "__version__", version)
-    with pytest.raises(RuntimeError, match=r"transformers>=5\.14\.1,<5\.15"):
+    with pytest.raises(RuntimeError, match=r"transformers==5\.14\.1"):
         create_qwen35_packed_cache(tiny_config())
 
 
@@ -188,3 +214,18 @@ def test_quickstart_dtype_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
     with pytest.warns(RuntimeWarning, match="not been validated for FP16"):
         assert _model_dtype(torch.device("cuda")) is torch.float16
+
+
+def test_installed_qwen35_command_uses_shared_mixed_policy_defaults() -> None:
+    parser = build_parser()
+
+    default_args = parser.parse_args(["qwen35"])
+    assert default_args.handler is run_qwen35_quickstart
+    assert default_args.policy == MIXED_POLICY
+    assert default_args.max_new_tokens == 32
+
+    stress_args = parser.parse_args(
+        ["qwen35", "--policy", UNIFORM_INT4_STRESS_POLICY, "--local-files-only"]
+    )
+    assert stress_args.policy == UNIFORM_INT4_STRESS_POLICY
+    assert stress_args.local_files_only is True

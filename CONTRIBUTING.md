@@ -53,7 +53,7 @@ In particular:
   them.
 
 The current supported package boundary is recorded in
-[docs/compatibility.md](docs/compatibility.md). A new model, Transformers minor
+[docs/compatibility.md](docs/compatibility.md). A new model, Transformers
 release, execution backend, generation mode, or hardware target is unsupported
 until it has a regression test and clearly scoped full-model evidence.
 

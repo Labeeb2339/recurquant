@@ -1,4 +1,4 @@
-"""Command-line entry points that do not require a model download."""
+"""Command-line entry points for RecurQuant."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 import torch
 
 from .quantization import QuantizationSpec, quantize_dequantize
+from .qwen35_quickstart import add_qwen35_arguments, run_qwen35_quickstart
 
 
 def _demo(args: argparse.Namespace) -> int:
@@ -47,6 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--key-dim", type=int, default=16)
     demo.add_argument("--value-dim", type=int, default=16)
     demo.set_defaults(handler=_demo)
+
+    qwen35 = subparsers.add_parser(
+        "qwen35",
+        help="Run the pinned Qwen3.5 model with the packed recurrent-state cache.",
+    )
+    add_qwen35_arguments(qwen35)
+    qwen35.set_defaults(handler=run_qwen35_quickstart)
     return parser
 
 

@@ -10,14 +10,26 @@ model quality, speed, or production readiness.
 | Area | Current evidence | Support boundary |
 |---|---|---|
 | Python | The full MBPP development run used Python `3.11.15`. Packaging CI is configured to smoke-test Python `3.11` and `3.13` on Linux, plus Python `3.11` on Windows. | Python `>=3.11` is declared. Full-model numerical evidence is limited to `3.11.15`. |
-| Transformers | `5.14.1` | The dependency is deliberately constrained to `transformers>=5.14.1,<5.15`. Other minor versions are unsupported until their internal cache contract is tested. |
+| Transformers | `5.14.1` | The alpha dependency is deliberately pinned to `transformers==5.14.1`. Every other release is unsupported until its internal cache contract is tested. |
 | Model | `Qwen/Qwen3.5-0.8B-Base` at revision `dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68` | No other checkpoint, revision, model family, or recurrent architecture has full-model evidence. |
 | Model execution | BF16 weights, batch size one, evaluation mode, `trust_remote_code=False`, eager attention | Use `attn_implementation="eager"`. Flash, SDPA, and other attention implementations are not validated. |
 | Full-run environment | PyTorch `2.11.0+cu128`, CUDA runtime `12.8`, NVIDIA driver `592.15`, NVIDIA GeForce RTX 5070 Laptop GPU, recorded platform `Windows-10-10.0.26200-SP0` | CPU and other accelerator support is limited to unit or API smoke tests; the public numerical result was not replicated there. |
-| Packed formats | Physical INT4 and INT8 recurrent-state payloads with FP16 scales | The packed cache does not accept other payload widths. |
+| Packed formats | Physical INT4 and INT8 recurrent-state payloads. FP16 scales are the evaluated default. | FP32 scales are supported for experiments but have no full-model fidelity evidence. The packed cache does not accept other payload widths. |
 
 The exact model and software provenance is recorded in
 [`evidence/mbpp-v02-development.json`](../evidence/mbpp-v02-development.json).
+
+## Installed quickstart
+
+`recurquant qwen35` and `examples/qwen35_quickstart.py` use one shared
+implementation. Both default to the frozen v0.2 mixed policy: model layer 0 at
+INT8 and every other recurrent layer at INT4, with group size 128 and FP16
+scales. `--policy uniform-int4-stress` is retained only for reproducing the
+uniform INT4 stress baseline.
+
+The command downloads the pinned model and tokenizer unless
+`--local-files-only` is supplied. It performs manual greedy decoding; the
+full-checkpoint quality of free-running generations has not been evaluated.
 
 ## Generation and cache modes
 

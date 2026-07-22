@@ -12,8 +12,11 @@ software, so compatibility can still change between development versions.
 - `PackedRecurrentStateCache` for keeping recurrent states packed between layer
   calls, with opt-in evidence recording and exact resident-byte accounting.
 - A guarded Qwen3.5 cache factory, pinned Qwen3.5 quickstart, and compatibility
-  checks for the tested Transformers minor release and eager, single-device
+  checks for the tested Transformers release and eager, single-device
   inference path.
+- A reusable frozen v0.2 mixed-policy cache helper and an installed
+  `recurquant qwen35` workflow shared with the source-tree quickstart. Uniform
+  INT4 remains available only as an explicitly named stress baseline.
 - Frozen MBPP calibration and development evaluation workflows with pinned
   dataset/model revisions, prepared token manifests, canonical evidence hashes,
   equal-byte baselines, and resumable per-task checkpoints.
@@ -25,9 +28,10 @@ software, so compatibility can still change between development versions.
 - Scale-storage emulation now uses the declared physical FP16 or FP32 format;
   superseding diagnostic results retain the earlier record instead of rewriting
   it.
-- The Transformers dependency is constrained to `>=5.14.1,<5.15` while the
-  package depends on that minor release's internal linear-attention cache
-  contract.
+- The Transformers dependency is pinned to exactly `5.14.1` while the alpha
+  package depends on that release's internal linear-attention cache contract.
+- FP16 scale storage is identified as the evaluated default. FP32 scale storage
+  remains supported for experiments but is not covered by full-model evidence.
 
 ### Known limitations
 

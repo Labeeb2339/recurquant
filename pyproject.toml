@@ -36,8 +36,8 @@ dependencies = [
   "safetensors>=0.5",
   "torch>=2.7",
   # PackedRecurrentStateCache subclasses an internal cache layer. Keep the
-  # tested minor pinned until its compatibility contract is covered in CI.
-  "transformers>=5.14.1,<5.15",
+  # alpha on the exact tested release until another release is covered in CI.
+  "transformers==5.14.1",
 ]
 
 [project.optional-dependencies]
