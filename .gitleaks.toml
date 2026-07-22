@@ -1,0 +1,13 @@
+title = "RecurQuant secret-scanning configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public model revision and evidence digest fields"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''"token_ids_sha256":\s*"[0-9a-f]{64}"''',
+  '''"tokenizer_revision":\s*"[0-9a-f]{40}"''',
+]
