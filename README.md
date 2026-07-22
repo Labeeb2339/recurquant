@@ -1,19 +1,21 @@
 # RecurQuant
 
-RecurQuant is a reproducible research harness for **persistent recurrent-state
-quantization in Gated DeltaNet language models**.
+RecurQuant is an experimental drop-in cache for **physically packed persistent
+recurrent states in Gated DeltaNet language models**.
 
-> **Current status:** the frozen diagnostic candidate passed its untouched
-> confirmation trace. This is not yet a validated general method, realized
-> memory reduction, speedup, or novelty result.
+> **Current status:** INT4 and INT8 recurrent-state payloads now remain packed
+> between layer calls. On Qwen3.5-0.8B-Base, the frozen mixed layout occupies
+> 2,564,096 resident state bytes instead of 18,874,368 FP32-state bytes. This is
+> a recurrent-state-only result; the Python path still materializes one state
+> while its layer executes and makes no speed or whole-model memory claim.
 
-The first calibration/development pilot found substantial layer heterogeneity.
-At a 4.22-bit average payload, retaining only Gated DeltaNet layer 0 at INT8 and
-using INT4 for the other 17 layers reduced worst-5% token KL by 79.8% on a
-retrieval-style trace and 62.2% on a code-style trace relative to uniform INT4.
-On the untouched multilingual trace, the same frozen plan reduced worst-5%
-token KL by 77.8% and increased top-1 agreement from 25.0% to 59.4%. These are
-short synthetic traces, not a benchmark or generalization result.
+After correcting v0.1 to emulate its declared FP16 scale storage, retaining only
+Gated DeltaNet layer 0 at INT8 and using INT4 for the other 17 layers reduced
+worst-5% token KL by 83.1% on a retrieval trace, 62.7% on a code trace, and
+75.2% on a multilingual correction replay relative to uniform INT4. These are
+short diagnostics, not a public benchmark or a breakthrough claim. The frozen
+[MBPP public-evaluation protocol](research/PUBLIC_EVAL_PROTOCOL_V02.md) is the
+next credibility gate.
 
 ## Research question
 
@@ -30,18 +32,39 @@ caches across 24 layers.
 ## What this repository measures
 
 - Deterministic grouped INT8, INT6, and INT4 state round trips.
+- Physical INT4 nibble packing and INT8 payload storage with FP16/FP32 scales.
+- A `transformers` cache that keeps Gated DeltaNet states packed between calls.
 - Per-layer state size and numerical error.
 - Paired token-level KL divergence and top-1 agreement against an FP32-state run.
 - Tail error rather than only average perplexity.
 - State-update magnitude for later sensitivity analysis.
 - Query-weighted recurrent-read error, which measures the effect of state error
   on the actual `q^T S` read.
-- Modeled storage, with scale overhead included.
+- Exact resident payload and scale bytes, including group padding.
 
-The current simulator dequantizes states before the next model step. It can test
-quality and error accumulation, but it **does not reduce PyTorch memory or prove
-faster inference**. Those require a packed runtime kernel after the numerical
-hypothesis passes.
+The current implementation reduces the resident tensors used for persistent
+recurrent-state storage. It dequantizes one state for the unmodified layer
+kernel, so it **does not prove lower peak CUDA memory or faster inference**. A
+fused quantized recurrent kernel is still required for those systems claims.
+
+## Use the packed cache
+
+```python
+from recurquant import PackedRecurrentStateCache, QuantizationSpec
+
+cache = PackedRecurrentStateCache(
+    model.config,
+    spec=QuantizationSpec(bits=4, group_size=128),
+    layer_specs={0: QuantizationSpec(bits=8, group_size=128)},
+)
+output = model(input_ids, past_key_values=cache, use_cache=True)
+print(cache.storage_summary())
+```
+
+This v0.2 development release targets
+`transformers>=5.14.1,<5.15` because it integrates with that version's linear
+attention cache contract. The default cache does not retain per-token evidence,
+so its bookkeeping remains bounded with sequence length.
 
 ## Claim boundary
 
@@ -59,6 +82,8 @@ and compared at an equal bit budget. See
 [pilot protocol](research/PILOT_PROTOCOL.md). The documented experiment trail
 preserves the [failed signals and replacement](research/EXPERIMENT_001_SIGNAL_PIVOT.md)
 and the [untouched confirmation](research/CONFIRMATION_001.md).
+The later [scale-format correction and packed parity record](research/EXPERIMENT_002_SCALE_CORRECTION.md)
+supersedes the original numerical headline while preserving its history.
 
 The user-suggested
 [Gated DeltaNet-2 paper](https://arxiv.org/abs/2605.22791) reinforces why erase,
@@ -73,7 +98,7 @@ Windows with an NVIDIA GPU:
 ```powershell
 uv venv --python 3.11 .venv
 uv pip install --python .venv\Scripts\python.exe torch --index-url https://download.pytorch.org/whl/cu128
-uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
+uv pip install --python .venv\Scripts\python.exe -e ".[dev,eval]"
 .venv\Scripts\python.exe -m pytest
 .venv\Scripts\recurquant.exe demo --bits 4 --group-size 128
 ```
@@ -90,6 +115,7 @@ state layout, metrics, and canonical evidence hash:
 .venv\Scripts\python.exe scripts\run_qwen35_smoke.py `
   --upgrade-layers 0 --low-bits 4 --high-bits 8 `
   --group-size 128 --rounding nearest `
+  --cache-mode packed `
   --prefill-tokens 32 --decode-tokens 32 `
   --prompt-profile multilingual `
   --output artifacts\multilingual-confirmation.json

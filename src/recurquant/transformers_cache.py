@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 
 import torch
 from transformers import DynamicCache
+from transformers.cache_utils import LinearAttentionLayer
 
-from .quantization import QuantizationSpec, quantize_dequantize
+from .quantization import (
+    QuantizationSpec,
+    quantize_dequantize,
+    scheduled_quantization_spec,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +57,28 @@ class RecurrentStateQDQCache(DynamicCache):
         self.enabled_layers = None if enabled_layers is None else frozenset(enabled_layers)
         self.update_evidence: list[CacheUpdateEvidence] = []
         self._update_index = 0
+        self._layer_update_counts: dict[int, int] = {}
+
+        linear_layer_indices = {
+            layer_index
+            for layer_index, layer in enumerate(self.layers)
+            if isinstance(layer, LinearAttentionLayer)
+        }
+        if any(isinstance(index, bool) or not isinstance(index, int) for index in self.layer_specs):
+            raise TypeError("layer_specs keys must be integer model-layer indices")
+        invalid_overrides = set(self.layer_specs) - linear_layer_indices
+        if invalid_overrides:
+            raise ValueError(
+                "layer_specs contains non-linear or unknown layer indices: "
+                f"{sorted(invalid_overrides)}"
+            )
+        if self.enabled_layers is not None:
+            invalid_enabled = set(self.enabled_layers) - linear_layer_indices
+            if invalid_enabled:
+                raise ValueError(
+                    "enabled_layers contains non-linear or unknown layer indices: "
+                    f"{sorted(invalid_enabled)}"
+                )
 
     def update_recurrent_state(
         self,
@@ -64,11 +91,12 @@ class RecurrentStateQDQCache(DynamicCache):
         stored = recurrent_states
         if enabled:
             selected_spec = self.layer_specs.get(layer_idx, self.spec)
-            if selected_spec.rounding == "stochastic":
-                selected_spec = replace(
-                    selected_spec,
-                    seed=selected_spec.seed + self._update_index,
-                )
+            layer_update_index = self._layer_update_counts.get(layer_idx, 0)
+            selected_spec = scheduled_quantization_spec(
+                selected_spec,
+                layer_index=layer_idx,
+                layer_update_index=layer_update_index,
+            )
             result = quantize_dequantize(recurrent_states, selected_spec)
             stored = result.tensor
             self.update_evidence.append(
@@ -88,5 +116,6 @@ class RecurrentStateQDQCache(DynamicCache):
                     max_absolute_error=result.max_absolute_error,
                 )
             )
+            self._layer_update_counts[layer_idx] = layer_update_index + 1
         self._update_index += 1
         return super().update_recurrent_state(stored, layer_idx, state_idx, **kwargs)

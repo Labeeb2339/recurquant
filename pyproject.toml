@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "recurquant"
-version = "0.1.0.dev0"
-description = "Research harness for persistent-state quantization in Gated DeltaNet language models."
+version = "0.2.0.dev0"
+description = "Packed recurrent-state quantization for Gated DeltaNet language models."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -17,7 +17,9 @@ dependencies = [
   "numpy>=2.0",
   "safetensors>=0.5",
   "torch>=2.7",
-  "transformers>=5.14.1,<6",
+  # PackedRecurrentStateCache subclasses an internal cache layer. Keep the
+  # tested minor pinned until its compatibility contract is covered in CI.
+  "transformers>=5.14.1,<5.15",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,9 @@ dev = [
   "pytest>=8.4",
   "pytest-cov>=6.2",
   "ruff>=0.12",
+]
+eval = [
+  "datasets>=4.3,<5",
 ]
 
 [project.scripts]
