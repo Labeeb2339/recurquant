@@ -129,6 +129,18 @@ INT8 rows. Every other row is INT4.
 The quota vector is fixed; only row identities may change at a state write.
 This isolates the within-layer read-importance hypothesis.
 
+The exact `(layer_index: promoted_rows)` allocation is:
+
+```text
+0:355, 1:380, 2:269, 4:179, 5:185, 6:105,
+8:80, 9:43, 10:84, 12:30, 13:62, 14:54,
+16:45, 17:27, 18:7, 20:9, 21:7, 22:55
+```
+
+The evaluator must compare against this independent vector. It must not derive
+both the candidate allocation and the expected gate allocation from the same
+selector object.
+
 ## Stage-and-consume causality contract
 
 The observer and cache use one fail-closed record per layer write:
@@ -197,6 +209,20 @@ ranked offset: 0
 task count: 8
 task IDs: 945, 794, 657, 702, 651, 720, 903, 918
 ```
+
+Before the first quality run, the exact selector evidence identities were also
+pinned to remove an ambiguity found during pre-run audit:
+
+```text
+HRR canonical evidence SHA-256:
+7970961fd88b522998189ad64f26b333aed9c88ff5f653de5449fd9e01d8cbc8
+
+loss-sensitivity canonical evidence SHA-256:
+bff4e33253990b8115e1f35e74516c4975c2fe4aac5066475afe968eb8a64609
+```
+
+This is a protocol-precision amendment, not a response to quality results: no
+Experiment 007 task had been evaluated when these identities were added.
 
 This data already influenced the target-Fisher quotas and prior hypotheses. A
 result on it can reject an implementation or candidate but cannot establish
