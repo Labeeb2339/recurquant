@@ -41,12 +41,17 @@ same-calibration adaptive-MSE postmortem was promising but achieved only a
 selector, with a paired 95% interval crossing zero. The ranked `[8, 16)`
 holdout remained unopened.
 
-Experiment 006 currently defines and implements deterministic rank fusion of
-offline target-directional sensitivity and causal per-write reconstruction
-benefit at the same exact byte budget. It has no GPU quality result at this
-checkpoint, and its heldout path remains disabled until a candidate-aligned
-numeric and packing prerequisite passes. It supports an experiment, not an
-improvement, novelty, deployment, or breakthrough claim.
+Experiment 006 implemented deterministic rank fusion of offline
+target-directional sensitivity and causal per-write reconstruction benefit at
+the same exact byte budget. Its authenticated same-calibration GPU diagnostic
+rejected the frozen equal-rank primary: macro excess NLL was `0.514873` versus
+`0.493302` for plain adaptive MSE, and the paired interval crossed zero. Its
+3.90% point improvement over the strongest static method was below the frozen
+20% requirement, again with an interval crossing zero. Better predeclared
+ablations remain exploratory and cannot be relabelled as the primary. The
+candidate stopped before its numerical prerequisite and the ranked `[8, 16)`
+holdout remained unopened. Experiment 006 supports no improvement,
+generalization, novelty, deployment, or breakthrough claim.
 
 ## Claims prohibited without new evidence
 

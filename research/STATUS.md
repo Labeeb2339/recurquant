@@ -10,15 +10,20 @@ failure, authenticated artifact, and same-calibration postmortem are recorded
 in [`EXPERIMENT_005_RESULT.md`](EXPERIMENT_005_RESULT.md). The ranked MBPP
 calibration window `[8, 16)` was not opened.
 
-Experiment 006 freezes one successor hypothesis: within the same exact
-per-layer quotas, combine the offline target-directional sensitivity rank with
-the causal per-write INT4-to-INT8 reconstruction-benefit rank. Equal rank
-fusion (`lambda = 0.5`) is the immutable primary; `0.25` and `0.75` are
-report-only ablations. The implementation and protocol are complete for a
-same-calibration diagnostic, but no rank-fusion GPU result or heldout result
-exists at this checkpoint. The holdout remains fail-closed pending a passing
-candidate-aligned numerical/packing gate. See
-[`EXPERIMENT_006_RANK_FUSION_PROTOCOL_DRAFT.md`](EXPERIMENT_006_RANK_FUSION_PROTOCOL_DRAFT.md).
+Experiment 006 tested deterministic ordinal-rank fusion of offline
+target-directional sensitivity and causal per-write reconstruction benefit at
+the same exact byte budget. On the already inspected eight-task selector
+partition, its frozen `lambda = 0.5` primary had macro excess NLL `0.514873`,
+worse by point estimate than plain adaptive MSE at `0.493302`; the paired 95%
+interval crossed zero. It improved only 3.90% over the strongest static method,
+also with an interval crossing zero. The better `0.25` and `0.75` ablations
+cannot replace the frozen primary. The candidate was therefore stopped before
+its numerical prerequisite or holdout. The ranked `[8, 16)` window remains
+unopened. See [`EXPERIMENT_006_RESULT.md`](EXPERIMENT_006_RESULT.md).
+
+The next candidate will test a causal estimate of recurrent-state row read
+energy rather than another post-result fusion weight. It remains a hypothesis;
+no Experiment 007 quality result exists at this checkpoint.
 
 No v0.3 improvement, novelty, speed, or breakthrough claim is supported.
 
