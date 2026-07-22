@@ -18,6 +18,7 @@ import platform
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,7 @@ from recurquant.packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
+    QueryEmaMixedPackedRecurrentStateCache,
     RankFusedMixedPackedRecurrentStateCache,
 )
 from recurquant.public_data import (
@@ -49,10 +51,12 @@ from recurquant.public_data import (
     mbpp_manifest_content_sha256,
     mbpp_manifest_sha256,
 )
+from recurquant.query_energy import Qwen35QueryEnergyObserver
 from recurquant.qwen35 import (
     create_qwen35_adaptive_exact_budget_cache,
     create_qwen35_exact_budget_cache,
     create_qwen35_packed_cache,
+    create_qwen35_query_ema_exact_budget_cache,
     create_qwen35_rank_fused_exact_budget_cache,
     create_qwen35_v02_mixed_cache,
 )
@@ -72,6 +76,8 @@ RANK_FUSION_METHODS = (
     ("rank_fusion_l075_target_fisher_adaptive_mse", 0.75),
 )
 RANK_FUSION_PRIMARY = "rank_fusion_l050_target_fisher_adaptive_mse"
+QUERY_EMA_PRIMARY = "query_ema32_weighted_mse_target_fisher_quota"
+QUERY_EMA_HALF_LIFE = 32
 LOSS_SCORE_NAMES = (
     LOSS_SELECTOR_PRIMARY,
     "target_directional_fisher_difference_int4",
@@ -91,8 +97,35 @@ FROZEN_HOLDOUT_OFFSET = 8
 FROZEN_HOLDOUT_LIMIT = 8
 FROZEN_HRR_HORIZON = 32
 FROZEN_BOOTSTRAP_SAMPLES = 10_000
+CQER_DEVELOPMENT_LIMIT = 8
+CQER_DEVELOPMENT_TASK_IDS = (945, 794, 657, 702, 651, 720, 903, 918)
+CQER_FROZEN_SELECTOR_CANONICAL_SHA256S = (
+    "7970961fd88b522998189ad64f26b333aed9c88ff5f653de5449fd9e01d8cbc8",
+    "bff4e33253990b8115e1f35e74516c4975c2fe4aac5066475afe968eb8a64609",
+)
+CQER_FROZEN_LAYER_QUOTAS = (
+    (0, 355),
+    (1, 380),
+    (2, 269),
+    (4, 179),
+    (5, 185),
+    (6, 105),
+    (8, 80),
+    (9, 43),
+    (10, 84),
+    (12, 30),
+    (13, 62),
+    (14, 54),
+    (16, 45),
+    (17, 27),
+    (18, 7),
+    (20, 9),
+    (21, 7),
+    (22, 55),
+)
 TARGET_RESIDENT_BYTES = 2_564_096
 MIN_RELATIVE_NLL_REDUCTION = 0.20
+CQER_MIN_RELATIVE_NLL_REDUCTION_VS_ADAPTIVE = 0.05
 TOP1_DISADVANTAGE_MARGIN = 0.01
 CVAR95_DISADVANTAGE_MARGIN = 0.10
 MAX_PER_TASK_NLL_DISADVANTAGE = 1.0
@@ -113,6 +146,7 @@ EVALUATOR_SOURCE_FILES = (
     "src/recurquant/mixed_quantization.py",
     "src/recurquant/packed_cache.py",
     "src/recurquant/public_data.py",
+    "src/recurquant/query_energy.py",
     "src/recurquant/quantization.py",
     "src/recurquant/qwen35.py",
     "src/recurquant/row_policy.py",
@@ -131,20 +165,22 @@ class _TokenAccumulator:
     reference_nll: list[torch.Tensor]
     candidate_nll: list[torch.Tensor]
     top1_agreement: list[torch.Tensor]
+    outputs_finite: list[torch.Tensor]
 
     @classmethod
     def empty(cls) -> _TokenAccumulator:
-        return cls([], [], [], [])
+        return cls([], [], [], [], [])
 
-    def append(self, values: TokenFidelity) -> None:
+    def append(self, values: TokenFidelity, *, outputs_finite: torch.Tensor) -> None:
         cpu = values.to_cpu()
         self.kl.append(cpu.kl.reshape(-1))
         self.reference_nll.append(cpu.reference_nll.reshape(-1))
         self.candidate_nll.append(cpu.candidate_nll.reshape(-1))
         self.top1_agreement.append(cpu.top1_agreement.reshape(-1))
+        self.outputs_finite.append(outputs_finite.detach().to("cpu").reshape(()))
 
     def summary(self) -> dict[str, float | int]:
-        return fidelity_summary(
+        summary = fidelity_summary(
             TokenFidelity(
                 kl=torch.cat(self.kl),
                 reference_nll=torch.cat(self.reference_nll),
@@ -152,6 +188,8 @@ class _TokenAccumulator:
                 top1_agreement=torch.cat(self.top1_agreement),
             )
         )
+        summary["all_logits_finite"] = bool(torch.stack(self.outputs_finite).all().item())
+        return summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -171,6 +209,15 @@ def parse_args() -> argparse.Namespace:
             "Run the frozen Experiment 006 same-calibration rank-fusion primary "
             "and its predeclared 0.25/0.75 ablations. Positive offsets remain "
             "disabled until the separate Experiment 006 prerequisite is implemented."
+        ),
+    )
+    parser.add_argument(
+        "--query-ema",
+        action="store_true",
+        help=(
+            "Run the frozen Experiment 007 CQER-32 same-calibration primary. "
+            "Positive offsets remain disabled until the candidate-aligned "
+            "Experiment 007 prerequisite is implemented and passes."
         ),
     )
     parser.add_argument("--output", type=Path, required=True)
@@ -496,6 +543,7 @@ def validate_frozen_holdout_request(
     loss_selector_present: bool,
     storage_boundary_present: bool,
     rank_fusion_enabled: bool = False,
+    query_ema_enabled: bool = False,
 ) -> None:
     """Refuse any positive-offset run outside Experiment 005's frozen request."""
 
@@ -505,6 +553,11 @@ def validate_frozen_holdout_request(
         raise ValueError(
             "Experiment 006 rank-fusion holdout remains closed until its separate "
             "candidate-aligned numeric prerequisite and frozen gate are implemented"
+        )
+    if query_ema_enabled:
+        raise ValueError(
+            "Experiment 007 CQER-32 holdout remains closed until its development "
+            "rule and candidate-aligned numeric prerequisite pass"
         )
     if offset != FROZEN_HOLDOUT_OFFSET or limit != FROZEN_HOLDOUT_LIMIT:
         raise ValueError(
@@ -541,6 +594,100 @@ def validate_frozen_holdout_request(
                 "each Experiment 005 selector must contain exactly "
                 f"{FROZEN_HOLDOUT_LIMIT} tasks; found {task_count}"
             )
+
+
+def validate_cqer_development_request(
+    *,
+    enabled: bool,
+    offset: int,
+    limit: int,
+    bootstrap_samples: int,
+) -> None:
+    """Freeze Experiment 007 to the complete inspected selector partition."""
+
+    if not enabled:
+        return
+    if (
+        offset != 0
+        or limit != CQER_DEVELOPMENT_LIMIT
+        or bootstrap_samples != FROZEN_BOOTSTRAP_SAMPLES
+    ):
+        raise ValueError(
+            "Experiment 007 CQER-32 development requires offset 0, exactly 8 tasks, "
+            "and exactly 10000 bootstrap samples"
+        )
+
+
+def validate_cqer_selector_artifacts(
+    *,
+    enabled: bool,
+    selectors: Sequence[Mapping[str, Any]],
+) -> None:
+    """Require CQER selectors to be the exact preregistered evidence pair."""
+
+    if not enabled:
+        return
+    if len(selectors) != 2:
+        raise ValueError(
+            "Experiment 007 CQER-32 requires exactly two authenticated "
+            "eight-task selector artifacts"
+        )
+    kinds = tuple(selector.get("artifact_kind") for selector in selectors)
+    if kinds != (HRR_ARTIFACT_KIND, LOSS_ARTIFACT_KIND):
+        raise ValueError("Experiment 007 CQER-32 requires HRR then loss selectors")
+    token_contracts = tuple(_selector_token_contract(selector) for selector in selectors)
+    if any(len(contract) != CQER_DEVELOPMENT_LIMIT for contract in token_contracts):
+        raise ValueError(
+            "Experiment 007 CQER-32 requires exactly two authenticated "
+            "eight-task selector artifacts"
+        )
+    task_id_orders = tuple(
+        tuple(int(record["task_id"]) for record in contract)
+        for contract in token_contracts
+    )
+    if any(task_ids != CQER_DEVELOPMENT_TASK_IDS for task_ids in task_id_orders):
+        raise ValueError(
+            "Experiment 007 CQER-32 selector task IDs do not match the frozen order"
+        )
+    canonical_hashes = tuple(
+        sha256_bytes(canonical_json_bytes(selector)) for selector in selectors
+    )
+    if canonical_hashes != CQER_FROZEN_SELECTOR_CANONICAL_SHA256S:
+        raise ValueError(
+            "Experiment 007 CQER-32 selector canonical hashes do not match the "
+            "frozen artifacts"
+        )
+
+
+def validate_cqer_development_task_ids(
+    *,
+    enabled: bool,
+    task_ids: Sequence[int],
+) -> None:
+    """Pin the exact ordered development tasks before model execution."""
+
+    if enabled and tuple(int(task_id) for task_id in task_ids) != CQER_DEVELOPMENT_TASK_IDS:
+        raise ValueError(
+            "Experiment 007 CQER-32 task IDs do not match the frozen ordered prefix"
+        )
+
+
+def validate_cqer_layer_quotas(
+    *,
+    enabled: bool,
+    quotas: Mapping[int, int],
+) -> None:
+    """Pin the preregistered target-Fisher layer allocation."""
+
+    if not enabled:
+        return
+    normalized = tuple(sorted((int(layer), int(quota)) for layer, quota in quotas.items()))
+    expected = tuple(sorted(CQER_FROZEN_LAYER_QUOTAS))
+    if normalized != expected or sum(quota for _, quota in normalized) != 1_976:
+        raise ValueError(
+            "Experiment 007 CQER-32 layer quotas do not match the frozen "
+            "target-Fisher allocation"
+        )
 
 
 def authenticate_selector_prefix(
@@ -885,9 +1032,273 @@ def evaluate_frozen_holdout_gate(
     }
 
 
+def evaluate_cqer_development_gate(
+    *,
+    aggregates: Mapping[str, Mapping[str, float | int]],
+    per_task: Mapping[str, Sequence[Mapping[str, float | int]]],
+    per_task_full_code: Mapping[str, Sequence[Mapping[str, float | int]]],
+    storage: Mapping[str, Mapping[str, int | float | bool]],
+    query_ema_diagnostics: Mapping[str, Sequence[Mapping[str, object]]],
+    expected_quotas: Mapping[int, int],
+    expected_packed_bytes: int,
+    expected_selector_auxiliary_bytes: int,
+) -> dict[str, Any]:
+    """Evaluate Experiment 007's frozen same-calibration advancement filter."""
+
+    required = (
+        QUERY_EMA_PRIMARY,
+        ADAPTIVE_TARGET_FISHER,
+        "target_directional_fisher_difference_int4",
+    )
+    for name in required:
+        if (
+            name not in aggregates
+            or name not in per_task
+            or name not in per_task_full_code
+            or name not in storage
+        ):
+            raise ValueError(f"CQER development gate lacks required method {name}")
+    diagnostic_tasks = query_ema_diagnostics.get(QUERY_EMA_PRIMARY)
+    if (
+        not isinstance(diagnostic_tasks, Sequence)
+        or len(diagnostic_tasks) != CQER_DEVELOPMENT_LIMIT
+    ):
+        raise ValueError(
+            "CQER development gate requires query-EMA diagnostics for exactly "
+            f"{CQER_DEVELOPMENT_LIMIT} tasks"
+        )
+    for name in required:
+        if (
+            len(per_task[name]) != CQER_DEVELOPMENT_LIMIT
+            or len(per_task_full_code[name]) != CQER_DEVELOPMENT_LIMIT
+        ):
+            raise ValueError(
+                "CQER development gate requires aligned and full-code metrics for "
+                f"exactly {CQER_DEVELOPMENT_LIMIT} tasks per required method"
+            )
+
+    primary = aggregates[QUERY_EMA_PRIMARY]
+    adaptive = aggregates[ADAPTIVE_TARGET_FISHER]
+    static_name = "target_directional_fisher_difference_int4"
+    static = aggregates[static_name]
+    primary_nll = _finite_float(primary["macro_delta_nll"], context="CQER macro_delta_nll")
+    adaptive_nll = _finite_float(
+        adaptive["macro_delta_nll"],
+        context="adaptive target-Fisher macro_delta_nll",
+    )
+    static_nll = _finite_float(
+        static["macro_delta_nll"],
+        context="static target-Fisher macro_delta_nll",
+    )
+    relative_vs_adaptive = (
+        (adaptive_nll - primary_nll) / adaptive_nll if adaptive_nll > 0 else None
+    )
+    relative_vs_static = (
+        (static_nll - primary_nll) / static_nll if static_nll > 0 else None
+    )
+
+    primary_top1 = _finite_float(
+        primary["macro_top1_agreement"],
+        context="CQER macro_top1_agreement",
+    )
+    better_comparator_top1 = max(
+        _finite_float(
+            adaptive["macro_top1_agreement"],
+            context="adaptive target-Fisher macro_top1_agreement",
+        ),
+        _finite_float(
+            static["macro_top1_agreement"],
+            context="static target-Fisher macro_top1_agreement",
+        ),
+    )
+    primary_cvar = _finite_float(
+        primary["macro_cvar95_kl"],
+        context="CQER macro_cvar95_kl",
+    )
+    lower_comparator_cvar = min(
+        _finite_float(
+            adaptive["macro_cvar95_kl"],
+            context="adaptive target-Fisher macro_cvar95_kl",
+        ),
+        _finite_float(
+            static["macro_cvar95_kl"],
+            context="static target-Fisher macro_cvar95_kl",
+        ),
+    )
+
+    expected_layers = dict(sorted(expected_quotas.items()))
+    layer_audit: list[dict[str, object]] = []
+    selector_contract_passed = True
+    finite_diagnostics = True
+    for task_record in diagnostic_tasks:
+        task_id = int(task_record.get("task_id", -1))
+        raw_layers = task_record.get("layers")
+        if not isinstance(raw_layers, list):
+            selector_contract_passed = False
+            layer_audit.append({"task_id": task_id, "error": "layers must be an array"})
+            continue
+        observed_layers: dict[int, Mapping[str, object]] = {}
+        for raw_layer in raw_layers:
+            if not isinstance(raw_layer, Mapping):
+                selector_contract_passed = False
+                continue
+            layer_index = int(raw_layer.get("layer_index", -1))
+            if layer_index in observed_layers:
+                selector_contract_passed = False
+                continue
+            observed_layers[layer_index] = raw_layer
+        task_passed = set(observed_layers) == set(expected_layers)
+        observations = 0
+        state_updates = 0
+        for layer_index, quota in expected_layers.items():
+            record = observed_layers.get(layer_index)
+            if record is None:
+                task_passed = False
+                continue
+            observed_quota = int(record.get("quota", -1))
+            selected = int(record.get("current_selected_count", -1))
+            committed = int(record.get("observations_committed", -1))
+            updates = int(record.get("state_updates", -2))
+            auxiliary = int(record.get("selector_auxiliary_bytes", -1))
+            mask_sha256 = record.get("current_mask_sha256")
+            pending = record.get("pending_observation")
+            cutoff = record.get("last_cutoff_score_margin")
+            if cutoff is not None:
+                try:
+                    _finite_float(cutoff, context="CQER cutoff score margin")
+                except ValueError:
+                    finite_diagnostics = False
+            observations += max(committed, 0)
+            state_updates += max(updates, 0)
+            task_passed = task_passed and all(
+                (
+                    observed_quota == quota,
+                    selected == quota,
+                    committed == updates,
+                    committed > 0,
+                    auxiliary > 0,
+                    isinstance(mask_sha256, str) and len(mask_sha256) == 64,
+                    pending is False,
+                )
+            )
+        selector_contract_passed = selector_contract_passed and task_passed
+        layer_audit.append(
+            {
+                "task_id": task_id,
+                "passed": task_passed,
+                "observations_committed": observations,
+                "state_updates": state_updates,
+            }
+        )
+
+    summary = storage[QUERY_EMA_PRIMARY]
+    observed_packed_bytes = int(summary.get("resident_bytes", -1))
+    observed_auxiliary_bytes = int(summary.get("selector_auxiliary_bytes", -1))
+    observed_total_bytes = int(summary.get("resident_bytes_including_selector", -1))
+    observed_promotions = int(summary.get("high_precision_groups", -1))
+    expected_promotions = sum(expected_layers.values())
+
+    all_metrics_finite = finite_diagnostics
+    for metric_partition in (per_task, per_task_full_code):
+        for method_rows in metric_partition.values():
+            for row in method_rows:
+                logits_finite = row.get("all_logits_finite")
+                if logits_finite is not True:
+                    all_metrics_finite = False
+                for key, value in row.items():
+                    if key in ("task_id", "all_logits_finite"):
+                        continue
+                    try:
+                        _finite_float(value, context=f"per-task metric {key}")
+                    except ValueError:
+                        all_metrics_finite = False
+
+    checks: dict[str, dict[str, Any]] = {
+        "exact_per_layer_quotas": {
+            "passed": selector_contract_passed and observed_promotions == expected_promotions,
+            "expected_quotas": {str(key): value for key, value in expected_layers.items()},
+            "expected_total_promotions": expected_promotions,
+            "observed_total_promotions": observed_promotions,
+            "task_audit": layer_audit,
+        },
+        "exact_packed_and_selector_bytes": {
+            "passed": (
+                observed_packed_bytes == expected_packed_bytes
+                and observed_auxiliary_bytes == expected_selector_auxiliary_bytes
+                and observed_total_bytes
+                == expected_packed_bytes + expected_selector_auxiliary_bytes
+            ),
+            "expected_packed_bytes": expected_packed_bytes,
+            "observed_packed_bytes": observed_packed_bytes,
+            "expected_selector_auxiliary_bytes": expected_selector_auxiliary_bytes,
+            "observed_selector_auxiliary_bytes": observed_auxiliary_bytes,
+            "expected_total_bytes": (
+                expected_packed_bytes + expected_selector_auxiliary_bytes
+            ),
+            "observed_total_bytes": observed_total_bytes,
+        },
+        "lower_nll_than_both_components": {
+            "passed": primary_nll < adaptive_nll and primary_nll < static_nll,
+            "primary": primary_nll,
+            "adaptive_component": adaptive_nll,
+            "static_component": static_nll,
+        },
+        "relative_nll_reduction_vs_plain_adaptive": {
+            "passed": (
+                relative_vs_adaptive is not None
+                and relative_vs_adaptive >= CQER_MIN_RELATIVE_NLL_REDUCTION_VS_ADAPTIVE
+            ),
+            "observed": relative_vs_adaptive,
+            "minimum": CQER_MIN_RELATIVE_NLL_REDUCTION_VS_ADAPTIVE,
+        },
+        "relative_nll_reduction_vs_strongest_static": {
+            "passed": (
+                relative_vs_static is not None
+                and relative_vs_static >= MIN_RELATIVE_NLL_REDUCTION
+            ),
+            "observed": relative_vs_static,
+            "minimum": MIN_RELATIVE_NLL_REDUCTION,
+        },
+        "top1_disadvantage_margin": {
+            "passed": primary_top1 >= better_comparator_top1 - TOP1_DISADVANTAGE_MARGIN,
+            "observed_disadvantage": better_comparator_top1 - primary_top1,
+            "maximum": TOP1_DISADVANTAGE_MARGIN,
+        },
+        "cvar95_disadvantage_margin": {
+            "passed": primary_cvar <= lower_comparator_cvar + CVAR95_DISADVANTAGE_MARGIN,
+            "observed_disadvantage": primary_cvar - lower_comparator_cvar,
+            "maximum": CVAR95_DISADVANTAGE_MARGIN,
+        },
+        "all_values_finite": {
+            "passed": all_metrics_finite,
+        },
+        "exact_stage_consume_handshake": {
+            "passed": selector_contract_passed,
+            "task_audit": layer_audit,
+        },
+    }
+    return {
+        "schema": "recurquant.experiment007-cqer32-development-gate.v1",
+        "applicable": True,
+        "passed": all(check["passed"] is True for check in checks.values()),
+        "primary": QUERY_EMA_PRIMARY,
+        "comparators": {
+            "plain_adaptive": ADAPTIVE_TARGET_FISHER,
+            "static": static_name,
+        },
+        "checks": checks,
+    }
+
+
 def primary_claim_text(primary_name: str) -> str:
     """Describe the actual primary without implying a missing loss selector."""
 
+    if primary_name == QUERY_EMA_PRIMARY:
+        return (
+            "The actual primary uses target-directional-Fisher per-layer quotas "
+            "and causally weights each per-write aligned INT4-to-INT8 row-MSE "
+            "reduction by a normalized-query-energy EMA with a 32-token half-life."
+        )
     if primary_name == RANK_FUSION_PRIMARY:
         return (
             "The actual primary uses target-directional-Fisher per-layer quotas "
@@ -989,11 +1400,13 @@ def make_caches(
     plans: dict[str, ExactBudgetRowPlan],
     adaptive_plans: dict[str, ExactBudgetRowPlan],
     rank_fusion_specs: Mapping[str, RankFusionCacheSpec] | None = None,
+    query_ema_plans: Mapping[str, ExactBudgetRowPlan] | None = None,
 ) -> dict[
     str,
     PackedRecurrentStateCache
     | MixedPackedRecurrentStateCache
     | AdaptiveMixedPackedRecurrentStateCache
+    | QueryEmaMixedPackedRecurrentStateCache
     | RankFusedMixedPackedRecurrentStateCache,
 ]:
     caches: dict[
@@ -1001,6 +1414,7 @@ def make_caches(
         PackedRecurrentStateCache
         | MixedPackedRecurrentStateCache
         | AdaptiveMixedPackedRecurrentStateCache
+        | QueryEmaMixedPackedRecurrentStateCache
         | RankFusedMixedPackedRecurrentStateCache,
     ] = {
         "uniform_int4": create_qwen35_packed_cache(model, bits=4),
@@ -1026,6 +1440,10 @@ def make_caches(
             static_scores_by_layer=scores_on_device,
             static_rank_weight=static_rank_weight,
         )
+    for name, plan in (query_ema_plans or {}).items():
+        if name in caches:
+            raise ValueError(f"query-EMA cache name duplicates another method: {name}")
+        caches[name] = create_qwen35_query_ema_exact_budget_cache(model, plan=plan)
     return caches
 
 
@@ -1035,8 +1453,12 @@ def _append_metrics(
     candidate_logits: dict[str, torch.Tensor],
     target: torch.Tensor,
 ) -> None:
+    reference_finite = torch.isfinite(reference_logits).all()
     for name, logits in candidate_logits.items():
-        accumulators[name].append(token_fidelity(reference_logits, logits, target))
+        accumulators[name].append(
+            token_fidelity(reference_logits, logits, target),
+            outputs_finite=reference_finite & torch.isfinite(logits).all(),
+        )
 
 
 def evaluate_task(
@@ -1047,10 +1469,12 @@ def evaluate_task(
     plans: dict[str, ExactBudgetRowPlan],
     adaptive_plans: dict[str, ExactBudgetRowPlan],
     rank_fusion_specs: Mapping[str, RankFusionCacheSpec] | None = None,
+    query_ema_plans: Mapping[str, ExactBudgetRowPlan] | None = None,
 ) -> tuple[
     dict[str, dict[str, float | int]],
     dict[str, dict[str, float | int]],
     dict[str, dict[str, int | float | bool]],
+    dict[str, object],
     int,
 ]:
     reference_cache = DynamicCache(config=model.config)
@@ -1059,44 +1483,31 @@ def evaluate_task(
         plans=plans,
         adaptive_plans=adaptive_plans,
         rank_fusion_specs=rank_fusion_specs,
+        query_ema_plans=query_ema_plans,
     )
     aligned_accumulators = {name: _TokenAccumulator.empty() for name in caches}
     full_code_accumulators = {name: _TokenAccumulator.empty() for name in caches}
 
-    reference_output = model(
-        prompt_ids,
-        past_key_values=reference_cache,
-        use_cache=True,
-        logits_to_keep=1,
-    )
-    candidate_outputs = {
-        name: model(
-            prompt_ids,
-            past_key_values=cache,
-            use_cache=True,
-            logits_to_keep=1,
-        )
+    query_ema_caches = {
+        name: cache
         for name, cache in caches.items()
+        if isinstance(cache, QueryEmaMixedPackedRecurrentStateCache)
     }
-    _append_metrics(
-        full_code_accumulators,
-        reference_output.logits,
-        {name: output.logits for name, output in candidate_outputs.items()},
-        code_ids[:, :1],
+    observer_context = (
+        Qwen35QueryEnergyObserver(model, caches=list(query_ema_caches.values()))
+        if query_ema_caches
+        else nullcontext()
     )
-
-    for token_index in range(code_ids.shape[1] - 1):
-        input_token = code_ids[:, token_index : token_index + 1]
-        target_token = code_ids[:, token_index + 1 : token_index + 2]
+    with observer_context:
         reference_output = model(
-            input_token,
+            prompt_ids,
             past_key_values=reference_cache,
             use_cache=True,
             logits_to_keep=1,
         )
         candidate_outputs = {
             name: model(
-                input_token,
+                prompt_ids,
                 past_key_values=cache,
                 use_cache=True,
                 logits_to_keep=1,
@@ -1104,17 +1515,42 @@ def evaluate_task(
             for name, cache in caches.items()
         }
         _append_metrics(
-            aligned_accumulators,
-            reference_output.logits,
-            {name: output.logits for name, output in candidate_outputs.items()},
-            target_token,
-        )
-        _append_metrics(
             full_code_accumulators,
             reference_output.logits,
             {name: output.logits for name, output in candidate_outputs.items()},
-            target_token,
+            code_ids[:, :1],
         )
+
+        for token_index in range(code_ids.shape[1] - 1):
+            input_token = code_ids[:, token_index : token_index + 1]
+            target_token = code_ids[:, token_index + 1 : token_index + 2]
+            reference_output = model(
+                input_token,
+                past_key_values=reference_cache,
+                use_cache=True,
+                logits_to_keep=1,
+            )
+            candidate_outputs = {
+                name: model(
+                    input_token,
+                    past_key_values=cache,
+                    use_cache=True,
+                    logits_to_keep=1,
+                )
+                for name, cache in caches.items()
+            }
+            _append_metrics(
+                aligned_accumulators,
+                reference_output.logits,
+                {name: output.logits for name, output in candidate_outputs.items()},
+                target_token,
+            )
+            _append_metrics(
+                full_code_accumulators,
+                reference_output.logits,
+                {name: output.logits for name, output in candidate_outputs.items()},
+                target_token,
+            )
 
     reference_bytes = sum(
         state.tensor.numel() * state.tensor.element_size()
@@ -1124,6 +1560,7 @@ def evaluate_task(
         {name: accumulator.summary() for name, accumulator in aligned_accumulators.items()},
         {name: accumulator.summary() for name, accumulator in full_code_accumulators.items()},
         {name: cache.storage_summary() for name, cache in caches.items()},
+        {name: cache.query_ema_diagnostics() for name, cache in query_ema_caches.items()},
         reference_bytes,
     )
 
@@ -1338,6 +1775,8 @@ def main() -> int:
         raise ValueError("--calibration-offset must be non-negative")
     if args.bootstrap_samples <= 0:
         raise ValueError("--bootstrap-samples must be positive")
+    if args.rank_fusion and args.query_ema:
+        raise ValueError("--rank-fusion and --query-ema are mutually exclusive")
     heldout_calibration = args.calibration_offset > 0
     repository_root = Path(__file__).resolve().parents[1]
     repository_start = git_state()
@@ -1358,6 +1797,8 @@ def main() -> int:
         validate_compatible_selector(selector, loss_selector)
     if args.rank_fusion and loss_selector is None:
         raise ValueError("--rank-fusion requires --loss-selector-artifact")
+    if args.query_ema and loss_selector is None:
+        raise ValueError("--query-ema requires --loss-selector-artifact")
     storage_boundary: dict[str, Any] | None = None
     storage_boundary_sha256: str | None = None
     if args.storage_boundary_artifact is not None:
@@ -1368,10 +1809,17 @@ def main() -> int:
     selectors: list[dict[str, Any]] = [selector]
     if loss_selector is not None:
         selectors.append(loss_selector)
+    validate_cqer_selector_artifacts(enabled=args.query_ema, selectors=selectors)
     all_selector_task_ids = selector_task_ids(selectors)
     task_records = selector["dataset"]["tasks"]
     available_tasks = len(task_records)
     limit = available_tasks if args.limit is None else args.limit
+    validate_cqer_development_request(
+        enabled=args.query_ema,
+        offset=args.calibration_offset,
+        limit=limit,
+        bootstrap_samples=args.bootstrap_samples,
+    )
     validate_frozen_holdout_request(
         offset=args.calibration_offset,
         limit=limit,
@@ -1380,6 +1828,7 @@ def main() -> int:
         loss_selector_present=loss_selector is not None,
         storage_boundary_present=storage_boundary is not None,
         rank_fusion_enabled=args.rank_fusion,
+        query_ema_enabled=args.query_ema,
     )
     if heldout_calibration:
         validate_heldout_repository_start(repository_start, selectors)
@@ -1402,7 +1851,7 @@ def main() -> int:
         )
     ranked_rows = load_mbpp_rows("calibration", limit=window_stop)
     selector_prefix_rows = tuple(ranked_rows[:FROZEN_HOLDOUT_LIMIT])
-    if heldout_calibration:
+    if heldout_calibration or args.query_ema:
         selector_prefix_ids = [int(row["task_id"]) for row in selector_prefix_rows]
         selector_prefix_manifest = mbpp_manifest(selector_prefix_rows, phase="calibration")
         for selector_evidence in selectors:
@@ -1418,6 +1867,7 @@ def main() -> int:
         selectors=selectors,
     )
     actual_ids = [row["task_id"] for row in rows]
+    validate_cqer_development_task_ids(enabled=args.query_ema, task_ids=actual_ids)
     if args.calibration_offset == 0:
         expected_ids = [int(record["task_id"]) for record in task_records[:limit]]
         if actual_ids != expected_ids:
@@ -1446,6 +1896,7 @@ def main() -> int:
     }
     adaptive_plans = {ADAPTIVE_H1: h1_plan}
     rank_fusion_specs: dict[str, RankFusionCacheSpec] = {}
+    query_ema_plans: dict[str, ExactBudgetRowPlan] = {}
     primary_name = hrr_primary_name
     primary_plan = hrr_primary_plan
     if loss_selector is not None:
@@ -1463,6 +1914,14 @@ def main() -> int:
                 for name, weight in RANK_FUSION_METHODS
             }
             primary_name = RANK_FUSION_PRIMARY
+        if args.query_ema:
+            query_ema_plans = {QUERY_EMA_PRIMARY: primary_plan}
+            primary_name = QUERY_EMA_PRIMARY
+    cqer_plan_quotas = {
+        layer_index: len(primary_plan.groups_for_layer(layer_index))
+        for layer_index, _, _ in primary_plan.score_shapes
+    }
+    validate_cqer_layer_quotas(enabled=args.query_ema, quotas=cqer_plan_quotas)
 
     torch.manual_seed(SEED)
     device = select_device(args.device)
@@ -1495,13 +1954,22 @@ def main() -> int:
     )
 
     encoded_tasks, token_manifest = encode_task_rows(tokenizer, rows)
-    if heldout_calibration:
+    authenticated_selector_prefix: dict[str, object] | None = None
+    if heldout_calibration or args.query_ema:
         _, selector_prefix_token_manifest = encode_task_rows(tokenizer, selector_prefix_rows)
         for selector_evidence in selectors:
             validate_actual_token_manifest(
                 selector_evidence,
                 selector_prefix_token_manifest,
             )
+        authenticated_selector_prefix = {
+            "manifest": selector_prefix_manifest,
+            "manifest_sha256": mbpp_manifest_content_sha256(selector_prefix_manifest),
+            "ordered_task_ids": selector_prefix_ids,
+            "token_manifest": selector_prefix_token_manifest,
+            "selector_count": len(selectors),
+            "all_selectors_matched": True,
+        }
     else:
         validate_actual_token_manifest(selector, token_manifest)
         if loss_selector is not None:
@@ -1520,19 +1988,27 @@ def main() -> int:
 
     per_task: dict[str, list[dict[str, float | int]]] = {}
     per_task_full_code: dict[str, list[dict[str, float | int]]] = {}
+    per_task_query_ema_diagnostics: dict[str, list[dict[str, object]]] = {}
     storage_anchor: dict[str, dict[str, int | float | bool]] | None = None
     reference_state_bytes: int | None = None
     with torch.inference_mode():
         for task_number, (row, prompt_cpu, code_cpu) in enumerate(encoded_tasks, start=1):
             prompt_ids = prompt_cpu.to(device)
             code_ids = code_cpu.to(device)
-            summaries, full_code_summaries, storage, task_reference_bytes = evaluate_task(
+            (
+                summaries,
+                full_code_summaries,
+                storage,
+                query_ema_diagnostics,
+                task_reference_bytes,
+            ) = evaluate_task(
                 model,
                 prompt_ids=prompt_ids,
                 code_ids=code_ids,
                 plans=plans,
                 adaptive_plans=adaptive_plans,
                 rank_fusion_specs=rank_fusion_specs,
+                query_ema_plans=query_ema_plans,
             )
             if storage_anchor is None:
                 storage_anchor = storage
@@ -1544,6 +2020,10 @@ def main() -> int:
             for name, summary in full_code_summaries.items():
                 per_task_full_code.setdefault(name, []).append(
                     {"task_id": row["task_id"], **summary}
+                )
+            for name, diagnostics in query_ema_diagnostics.items():
+                per_task_query_ema_diagnostics.setdefault(name, []).append(
+                    {"task_id": row["task_id"], "layers": diagnostics}
                 )
             print(
                 f"[{task_number}/{len(rows)}] task={row['task_id']} "
@@ -1565,6 +2045,20 @@ def main() -> int:
         summary = storage_anchor[name]
         if summary["resident_bytes"] != plan.resident_bytes:
             raise RuntimeError(f"{name} did not realize its exact resident-byte plan")
+    expected_selector_auxiliary_bytes = sum(
+        heads * rows * torch.empty((), dtype=torch.float32).element_size()
+        for _, heads, rows in primary_plan.score_shapes
+    )
+    for name, plan in query_ema_plans.items():
+        summary = storage_anchor[name]
+        if summary["resident_bytes"] != plan.resident_bytes:
+            raise RuntimeError(f"{name} did not realize its exact packed-state byte plan")
+        if summary["selector_auxiliary_bytes"] != expected_selector_auxiliary_bytes:
+            raise RuntimeError(f"{name} did not realize the frozen selector auxiliary bytes")
+        if summary["resident_bytes_including_selector"] != (
+            plan.resident_bytes + expected_selector_auxiliary_bytes
+        ):
+            raise RuntimeError(f"{name} selector-aware resident byte total is inconsistent")
     if storage_anchor["v02_layer0_static"]["resident_bytes"] != primary_plan.resident_bytes:
         raise RuntimeError("v0.2 static and the primary row plan are not equal-byte")
 
@@ -1584,6 +2078,41 @@ def main() -> int:
     }
     repository_end = git_state()
     source_hashes_end = source_file_hashes(repository_root)
+    development_gate: dict[str, Any] | None = None
+    if args.query_ema:
+        expected_quotas = dict(CQER_FROZEN_LAYER_QUOTAS)
+        development_gate = evaluate_cqer_development_gate(
+            aggregates=aggregates,
+            per_task=per_task,
+            per_task_full_code=per_task_full_code,
+            storage=storage_anchor,
+            query_ema_diagnostics=per_task_query_ema_diagnostics,
+            expected_quotas=expected_quotas,
+            expected_packed_bytes=primary_plan.resident_bytes,
+            expected_selector_auxiliary_bytes=expected_selector_auxiliary_bytes,
+        )
+        development_gate["checks"]["authenticated_repository_sources_and_manifests"] = {
+            "passed": (
+                repository_start["commit"] == repository_end["commit"]
+                and repository_start["worktree_clean"] is True
+                and repository_end["worktree_clean"] is True
+                and source_hashes_start == source_hashes_end
+            ),
+            "repository_commit_stable": (
+                repository_start["commit"] == repository_end["commit"]
+            ),
+            "worktree_clean_at_start_and_end": (
+                repository_start["worktree_clean"] is True
+                and repository_end["worktree_clean"] is True
+            ),
+            "source_hashes_stable": source_hashes_start == source_hashes_end,
+            "selector_artifacts_authenticated": True,
+            "evaluation_manifest_authenticated": True,
+        }
+        development_gate["passed"] = all(
+            check["passed"] is True
+            for check in development_gate["checks"].values()
+        )
     if heldout_calibration:
         validate_heldout_repository_end(
             start_repository=repository_start,
@@ -1613,17 +2142,26 @@ def main() -> int:
     else:
         heldout_gate = {
             "schema": (
-                "recurquant.experiment006-heldout-gate.v1"
-                if args.rank_fusion
-                else "recurquant.experiment005-heldout-gate.v1"
+                "recurquant.experiment007-heldout-gate.v1"
+                if args.query_ema
+                else (
+                    "recurquant.experiment006-heldout-gate.v1"
+                    if args.rank_fusion
+                    else "recurquant.experiment005-heldout-gate.v1"
+                )
             ),
             "applicable": False,
             "passed": None,
             "reason": (
-                "same-calibration diagnostics cannot satisfy the frozen Experiment 006 "
-                "holdout gate; rank-fusion positive offsets remain disabled"
-                if args.rank_fusion
-                else "same-calibration diagnostics cannot satisfy the frozen holdout gate"
+                "same-calibration diagnostics cannot satisfy the frozen Experiment 007 "
+                "holdout gate; CQER-32 positive offsets remain disabled"
+                if args.query_ema
+                else (
+                    "same-calibration diagnostics cannot satisfy the frozen Experiment 006 "
+                    "holdout gate; rank-fusion positive offsets remain disabled"
+                    if args.rank_fusion
+                    else "same-calibration diagnostics cannot satisfy the frozen holdout gate"
+                )
             ),
         }
     selector_artifacts = {
@@ -1653,6 +2191,8 @@ def main() -> int:
         )
     if args.rank_fusion:
         quality_artifact_kind = "recurquant_rank_fusion_same_calibration_quality_diagnostic"
+    if args.query_ema:
+        quality_artifact_kind = "recurquant_cqer32_same_calibration_quality_diagnostic"
     prerequisite_artifacts: dict[str, dict[str, Any]] = {}
     if storage_boundary is not None:
         assert args.storage_boundary_artifact is not None
@@ -1720,18 +2260,7 @@ def main() -> int:
             "selector_task_ids": sorted(all_selector_task_ids),
             "selector_task_prefix": not heldout_calibration and limit < available_tasks,
             "disjoint_from_all_selector_artifacts": (True if heldout_calibration else None),
-            "authenticated_selector_prefix": (
-                {
-                    "manifest": selector_prefix_manifest,
-                    "manifest_sha256": mbpp_manifest_content_sha256(selector_prefix_manifest),
-                    "ordered_task_ids": selector_prefix_ids,
-                    "token_manifest": selector_prefix_token_manifest,
-                    "selector_count": len(selectors),
-                    "all_selectors_matched": True,
-                }
-                if heldout_calibration
-                else None
-            ),
+            "authenticated_selector_prefix": authenticated_selector_prefix,
         },
         "metric_contract": {
             "primary": "calibration-aligned code transitions after recurrent-state storage",
@@ -1782,6 +2311,28 @@ def main() -> int:
                 }
                 for name, (plan, _, weight) in rank_fusion_specs.items()
             },
+            **{
+                name: {
+                    "selection": (
+                        "causal normalized-query-energy EMA multiplied by per-write "
+                        "aligned INT4-to-INT8 row-MSE reduction"
+                    ),
+                    "query_normalization": "q / sqrt(sum(q^2) + 1e-6), computed in FP32",
+                    "query_energy_half_life_tokens": QUERY_EMA_HALF_LIFE,
+                    "query_energy_decay": 2.0 ** (-1.0 / QUERY_EMA_HALF_LIFE),
+                    "initial_query_energy": "uniform 1 / key-row count",
+                    "layer_quota_source": (
+                        "target_directional_fisher_difference_int4 selector plan"
+                    ),
+                    "batch_size": 1,
+                    "packed_recurrent_state_bytes": plan.resident_bytes,
+                    "selector_auxiliary_bytes": expected_selector_auxiliary_bytes,
+                    "resident_bytes_including_selector": (
+                        plan.resident_bytes + expected_selector_auxiliary_bytes
+                    ),
+                }
+                for name, plan in query_ema_plans.items()
+            },
         },
         "storage": {
             "fp32_reference_recurrent_state_bytes": reference_state_bytes,
@@ -1791,8 +2342,10 @@ def main() -> int:
         "aggregates_full_code_secondary": aggregates_full_code,
         "contrasts_baseline_minus_primary_aligned_delta_nll": contrasts,
         "heldout_gate": heldout_gate,
+        "development_gate": development_gate,
         "per_task": per_task,
         "per_task_full_code_secondary": per_task_full_code,
+        "query_ema_diagnostics": per_task_query_ema_diagnostics,
         "environment": {
             "python": sys.version,
             "platform": platform.platform(),
@@ -1834,6 +2387,7 @@ def main() -> int:
                 "artifact_sha256": sha256_bytes(payload),
                 "primary": primary_name,
                 "heldout_gate": heldout_gate,
+                "development_gate": development_gate,
                 "aggregates": aggregates,
                 "contrasts": contrasts,
             },

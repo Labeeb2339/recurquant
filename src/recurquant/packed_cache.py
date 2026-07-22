@@ -883,6 +883,410 @@ class AdaptiveMixedPackedLinearAttentionLayer(MixedPackedLinearAttentionLayer):
         return mask.reshape(self.expected_heads, self.expected_rows)
 
 
+_QUERY_EMA_DECAY = 2.0 ** (-1.0 / 32.0)
+_QUERY_L2NORM_EPS = 1e-6
+_QUERY_EMA_CHUNK_ATOL = 2e-8
+_QUERY_EMA_CHUNK_RTOL = 2e-6
+
+
+@dataclass(slots=True)
+class _PendingQueryObservation:
+    update_index: int
+    token_count: int
+    candidate_ema: torch.Tensor
+    consumed: bool = False
+
+
+class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttentionLayer):
+    """Select rows by causal query-read energy times aligned MSE benefit.
+
+    A query observation must be staged immediately before every recurrent-state
+    write. The persistent FP32 EMA is committed only after the corresponding
+    mixed-precision state was packed successfully. The layer deliberately fails
+    closed instead of falling back to the MSE-only adaptive selector.
+    """
+
+    query_ema_decay = _QUERY_EMA_DECAY
+    query_l2norm_eps = _QUERY_L2NORM_EPS
+    query_ema_chunk_atol = _QUERY_EMA_CHUNK_ATOL
+    query_ema_chunk_rtol = _QUERY_EMA_CHUNK_RTOL
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.query_energy_ema: torch.Tensor | None = None
+        self._pending_query_observation: _PendingQueryObservation | None = None
+        self.query_observations_committed = 0
+        self.query_tokens_observed = 0
+        self.last_query_token_count: int | None = None
+        self.last_cutoff_score_margin: float | None = None
+        self.last_mask_overlap: int | None = None
+        self.last_mask_churn: int | None = None
+        self._candidate_cutoff_score_margin: float | None = None
+        self._has_query_selection_history = False
+
+    def stage_query_observation(
+        self,
+        query: torch.Tensor,
+        *,
+        l2norm_eps: float = _QUERY_L2NORM_EPS,
+    ) -> None:
+        """Stage one ``[1, tokens, heads, rows]`` causal query observation."""
+
+        if self._pending_query_observation is not None:
+            self.discard_pending_query_observation()
+            raise RuntimeError(
+                f"layer {self.layer_index} received a duplicate query observation; "
+                "the pending observation was discarded"
+            )
+        if isinstance(l2norm_eps, bool) or not isinstance(l2norm_eps, Real):
+            raise TypeError("l2norm_eps must be a real number")
+        epsilon = float(l2norm_eps)
+        if not math.isfinite(epsilon) or epsilon != _QUERY_L2NORM_EPS:
+            raise ValueError("query EMA l2norm_eps is frozen at 1e-6")
+        if not isinstance(query, torch.Tensor):
+            raise TypeError("query observation must be a tensor")
+        expected_shape = f"[1, tokens, {self.expected_heads}, {self.expected_rows}]"
+        if query.ndim != 4:
+            raise ValueError(
+                f"layer {self.layer_index} query observation must have shape "
+                f"{expected_shape}; got {tuple(query.shape)}"
+            )
+        if (
+            query.shape[0] != 1
+            or query.shape[1] <= 0
+            or query.shape[2] != self.expected_heads
+            or query.shape[3] != self.expected_rows
+        ):
+            raise ValueError(
+                f"layer {self.layer_index} query observation must have shape "
+                f"{expected_shape}; got {tuple(query.shape)}"
+            )
+        if not query.is_floating_point():
+            raise TypeError(f"layer {self.layer_index} query observation must be floating point")
+        if query.device.type == "meta":
+            raise ValueError(f"layer {self.layer_index} query observation must be materialized")
+        if not torch.isfinite(query).all().item():
+            raise ValueError(f"layer {self.layer_index} query observation must be finite")
+        if self.query_energy_ema is not None and self.query_energy_ema.device != query.device:
+            raise ValueError(
+                f"layer {self.layer_index} query observation and query EMA must use "
+                "the same device"
+            )
+        if self.device is not None and torch.device(self.device) != query.device:
+            raise ValueError(
+                f"layer {self.layer_index} query observation and recurrent state must use "
+                "the same device"
+            )
+
+        with torch.no_grad():
+            source = query.detach().to(torch.float32)
+            squared = source.square()
+            energy = squared / (squared.sum(dim=-1, keepdim=True) + epsilon)
+            energy = energy.squeeze(0)
+            token_count = energy.shape[0]
+            previous = self.query_energy_ema
+            if previous is None:
+                previous = torch.full(
+                    (self.expected_heads, self.expected_rows),
+                    1.0 / self.expected_rows,
+                    dtype=torch.float32,
+                    device=query.device,
+                )
+
+            # This closed form is the exact mathematical recurrence for applying
+            # the frozen EMA sequentially over the staged token dimension.
+            exponents = torch.arange(
+                token_count - 1,
+                -1,
+                -1,
+                dtype=torch.float32,
+                device=query.device,
+            )
+            weights = torch.pow(
+                torch.tensor(_QUERY_EMA_DECAY, dtype=torch.float32, device=query.device),
+                exponents,
+            )
+            candidate = (
+                (_QUERY_EMA_DECAY**token_count) * previous
+                + (1.0 - _QUERY_EMA_DECAY)
+                * (energy * weights[:, None, None]).sum(dim=0)
+            )
+            if not torch.isfinite(candidate).all().item():
+                raise RuntimeError(
+                    f"layer {self.layer_index} query EMA update produced non-finite values"
+                )
+
+        self._pending_query_observation = _PendingQueryObservation(
+            update_index=self._update_count,
+            token_count=token_count,
+            candidate_ema=candidate,
+        )
+
+    def discard_pending_query_observation(self) -> None:
+        """Discard a staged observation; safe to call during exception cleanup."""
+
+        self._pending_query_observation = None
+        self._candidate_cutoff_score_margin = None
+
+    def _precision_mask(
+        self,
+        recurrent_states: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        # Use the static base for complete recurrent-state geometry checks while
+        # deliberately bypassing the MSE-only adaptive selector.
+        MixedPackedLinearAttentionLayer._precision_mask(
+            self,
+            recurrent_states,
+            low_spec=low_spec,
+            high_spec=high_spec,
+        )
+        if recurrent_states.shape[0] != 1:
+            raise ValueError(
+                "query-EMA mixed cache selection currently requires batch size 1; "
+                f"got {recurrent_states.shape[0]}"
+            )
+
+        pending = self._pending_query_observation
+        if pending is None:
+            raise RuntimeError(
+                f"layer {self.layer_index} has no staged query observation for "
+                f"state update {self._update_count}"
+            )
+        try:
+            if pending.consumed:
+                raise RuntimeError(
+                    f"layer {self.layer_index} query observation was consumed more than once"
+                )
+            if pending.update_index != self._update_count:
+                raise RuntimeError(
+                    f"layer {self.layer_index} has a stale query observation for update "
+                    f"{pending.update_index}; expected {self._update_count}"
+                )
+            if pending.candidate_ema.device != recurrent_states.device:
+                raise ValueError(
+                    f"layer {self.layer_index} query observation and recurrent state must use "
+                    "the same device"
+                )
+            expected_ema_shape = (self.expected_heads, self.expected_rows)
+            if tuple(pending.candidate_ema.shape) != expected_ema_shape:
+                raise RuntimeError(
+                    f"layer {self.layer_index} staged query EMA must have shape "
+                    f"{expected_ema_shape}; got {tuple(pending.candidate_ema.shape)}"
+                )
+            if pending.candidate_ema.dtype != torch.float32:
+                raise RuntimeError(
+                    f"layer {self.layer_index} staged query EMA must use torch.float32"
+                )
+            if not torch.isfinite(pending.candidate_ema).all().item():
+                raise RuntimeError(
+                    f"layer {self.layer_index} staged query EMA must be finite"
+                )
+
+            total_groups = self.expected_heads * self.expected_rows
+            quota = len(self.high_precision_group_indices)
+            mask = torch.zeros(
+                total_groups,
+                dtype=torch.bool,
+                device=recurrent_states.device,
+            )
+            pending.consumed = True
+            self._candidate_cutoff_score_margin = None
+            if quota == 0:
+                return mask.reshape(self.expected_heads, self.expected_rows)
+            if quota == total_groups:
+                return torch.ones_like(mask).reshape(
+                    self.expected_heads,
+                    self.expected_rows,
+                )
+
+            with torch.no_grad():
+                source = recurrent_states.detach().to(torch.float32)
+                low = quantize_dequantize(recurrent_states, low_spec).tensor.to(torch.float32)
+                high = quantize_dequantize(recurrent_states, high_spec).tensor.to(torch.float32)
+                benefit = (
+                    (low - source).square().mean(dim=-1)
+                    - (high - source).square().mean(dim=-1)
+                ).reshape(self.expected_heads, self.expected_rows)
+                scores = (pending.candidate_ema * benefit).reshape(-1)
+                if not torch.isfinite(scores).all().item():
+                    raise RuntimeError(
+                        f"layer {self.layer_index} query-weighted selector scores "
+                        "must be finite"
+                    )
+                ranked = torch.argsort(scores, descending=True, stable=True)
+                mask[ranked[:quota]] = True
+                self._candidate_cutoff_score_margin = float(
+                    (scores[ranked[quota - 1]] - scores[ranked[quota]]).item()
+                )
+            return mask.reshape(self.expected_heads, self.expected_rows)
+        except Exception:
+            self.discard_pending_query_observation()
+            raise
+
+    def _store(self, recurrent_states: torch.Tensor, state_idx: int) -> torch.Tensor:
+        if state_idx not in self.packed_states:
+            self.discard_pending_query_observation()
+            raise IndexError(
+                f"layer {self.layer_index} state_idx {state_idx} is outside "
+                f"[0, {self.number_of_states})"
+            )
+        previous = self.packed_states[state_idx]
+        previous_initialized = self.is_recurrent_states_initialized[state_idx]
+        previous_dtype = self.dtype
+        previous_device = self.device
+        previous_update_count = self._update_count
+        previous_history = self._has_query_selection_history
+        callback = self.on_update
+        try:
+            previous_mask = (
+                previous.high_precision_mask().reshape(-1)
+                if previous is not None and previous_history
+                else None
+            )
+            # Defer the cache-level evidence callback until packing and every
+            # query-specific postcondition have succeeded. This keeps a failed
+            # transaction from appending evidence for a state that is rolled back.
+            self.on_update = None
+            try:
+                materialized = super()._store(recurrent_states, state_idx)
+            finally:
+                self.on_update = callback
+            pending = self._pending_query_observation
+            if pending is None or not pending.consumed:
+                raise RuntimeError(
+                    f"layer {self.layer_index} packed a state without consuming exactly "
+                    "one query observation"
+                )
+            current = self.packed_states[state_idx]
+            if current is None:
+                raise RuntimeError(f"layer {self.layer_index} packed state disappeared")
+            current_mask = current.high_precision_mask().reshape(-1)
+            overlap = (
+                None
+                if previous_mask is None
+                else int((previous_mask & current_mask).sum().item())
+            )
+            churn = (
+                None
+                if previous_mask is None
+                else int((previous_mask ^ current_mask).sum().item())
+            )
+            if callback is not None:
+                callback(
+                    self.layer_index,
+                    state_idx,
+                    recurrent_states,
+                    current,
+                    materialized,
+                )
+        except Exception:
+            # Base packing assigns the new representation before materialization.
+            # Roll back every base field if any later operation fails so a caller
+            # can never observe a new packed state paired with an old query EMA or
+            # generation counter.
+            self.on_update = callback
+            self.packed_states[state_idx] = previous
+            self.is_recurrent_states_initialized[state_idx] = previous_initialized
+            self.dtype = previous_dtype
+            self.device = previous_device
+            self._update_count = previous_update_count
+            self._has_query_selection_history = previous_history
+            self.discard_pending_query_observation()
+            raise
+
+        self.query_energy_ema = pending.candidate_ema
+        self.query_observations_committed += 1
+        self.query_tokens_observed += pending.token_count
+        self.last_query_token_count = pending.token_count
+        self.last_cutoff_score_margin = self._candidate_cutoff_score_margin
+        self.last_mask_overlap = overlap
+        self.last_mask_churn = churn
+        self._has_query_selection_history = True
+        self.discard_pending_query_observation()
+        return materialized
+
+    def selector_auxiliary_bytes(self) -> int:
+        if self.query_energy_ema is None:
+            return 0
+        return self.query_energy_ema.numel() * self.query_energy_ema.element_size()
+
+    def query_ema_diagnostics(self) -> dict[str, int | float | bool | str | None]:
+        packed = self.packed_states[0]
+        if packed is None:
+            current_mask_sha256 = None
+            current_selected_count = 0
+        else:
+            current_mask_sha256 = hashlib.sha256(
+                bytes(packed.precision_mask.detach().cpu().contiguous().tolist())
+            ).hexdigest()
+            current_selected_count = packed.high_precision_groups
+        return {
+            "layer_index": self.layer_index,
+            "quota": len(self.high_precision_group_indices),
+            "ema_decay": self.query_ema_decay,
+            "l2norm_eps": self.query_l2norm_eps,
+            "initial_ema_value": 1.0 / self.expected_rows,
+            "chunk_equivalence_atol": self.query_ema_chunk_atol,
+            "chunk_equivalence_rtol": self.query_ema_chunk_rtol,
+            "state_updates": self._update_count,
+            "observations_committed": self.query_observations_committed,
+            "tokens_observed": self.query_tokens_observed,
+            "last_query_token_count": self.last_query_token_count,
+            "last_cutoff_score_margin": self.last_cutoff_score_margin,
+            "last_mask_overlap": self.last_mask_overlap,
+            "last_mask_churn": self.last_mask_churn,
+            "current_selected_count": current_selected_count,
+            "current_mask_sha256": current_mask_sha256,
+            "pending_observation": self._pending_query_observation is not None,
+            "selector_auxiliary_bytes": self.selector_auxiliary_bytes(),
+        }
+
+    def reset(self) -> None:
+        super().reset()
+        self.discard_pending_query_observation()
+        if self.query_energy_ema is not None:
+            self.query_energy_ema.fill_(1.0 / self.expected_rows)
+        self._update_count = 0
+        self._has_query_selection_history = False
+        self.query_observations_committed = 0
+        self.query_tokens_observed = 0
+        self.last_query_token_count = None
+        self.last_cutoff_score_margin = None
+        self.last_mask_overlap = None
+        self.last_mask_churn = None
+
+    def _reject_pending_transfer(self, operation: str) -> None:
+        if self._pending_query_observation is None:
+            return
+        self.discard_pending_query_observation()
+        raise RuntimeError(
+            f"layer {self.layer_index} cannot {operation} with a pending query "
+            "observation; it was discarded"
+        )
+
+    def offload(self) -> None:
+        self._reject_pending_transfer("offload")
+        super().offload()
+        if self.query_energy_ema is not None:
+            self.query_energy_ema = self.query_energy_ema.to("cpu")
+
+    def prefetch(self) -> None:
+        self._reject_pending_transfer("prefetch")
+        super().prefetch()
+        if (
+            self.query_energy_ema is not None
+            and self.device is not None
+            and self.query_energy_ema.device != torch.device(self.device)
+        ):
+            self.query_energy_ema = self.query_energy_ema.to(
+                self.device,
+                non_blocking=True,
+            )
+
+
 def _validate_static_rank_weight(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError("static_rank_weight must be a real number")
@@ -1174,6 +1578,86 @@ class AdaptiveMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
 
     _mixed_layer_class = AdaptiveMixedPackedLinearAttentionLayer
     selection_method = "instantaneous_aligned_mse_reduction"
+
+
+class QueryEmaMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
+    """Exact-byte packed-state cache with causal query-energy row selection.
+
+    ``resident_bytes`` continues to describe only the physically packed recurrent
+    states fixed by the supplied plan. Persistent FP32 EMA metadata is reported
+    separately as ``selector_auxiliary_bytes`` and included only in
+    ``resident_bytes_including_selector``.
+    """
+
+    _mixed_layer_class = QueryEmaMixedPackedLinearAttentionLayer
+    selection_method = "query_ema32_weighted_aligned_mse_reduction"
+
+    def _query_ema_layer(self, layer_index: int) -> QueryEmaMixedPackedLinearAttentionLayer:
+        if isinstance(layer_index, bool) or not isinstance(layer_index, int):
+            raise TypeError("layer_index must be an integer")
+        if layer_index < 0 or layer_index >= len(self.layers):
+            raise IndexError(f"layer_index {layer_index} is outside this cache")
+        layer = self.layers[layer_index]
+        if not isinstance(layer, QueryEmaMixedPackedLinearAttentionLayer):
+            raise ValueError(
+                f"layer {layer_index} is not a query-EMA linear-attention layer"
+            )
+        return layer
+
+    def stage_query_observation(
+        self,
+        layer_index: int,
+        query: torch.Tensor,
+        *,
+        l2norm_eps: float = _QUERY_L2NORM_EPS,
+    ) -> None:
+        """Stage one causal query tensor for the layer's next state write."""
+
+        self._query_ema_layer(layer_index).stage_query_observation(
+            query,
+            l2norm_eps=l2norm_eps,
+        )
+
+    def discard_pending_query_observation(self, layer_index: int) -> None:
+        """Idempotently discard one layer's pending query observation."""
+
+        self._query_ema_layer(layer_index).discard_pending_query_observation()
+
+    def selector_auxiliary_bytes(self) -> int:
+        return sum(
+            layer.selector_auxiliary_bytes()
+            for _, layer in self.mixed_packed_layers()
+            if isinstance(layer, QueryEmaMixedPackedLinearAttentionLayer)
+        )
+
+    def query_ema_diagnostics(
+        self,
+    ) -> list[dict[str, int | float | bool | str | None]]:
+        return [
+            layer.query_ema_diagnostics()
+            for _, layer in self.mixed_packed_layers()
+            if isinstance(layer, QueryEmaMixedPackedLinearAttentionLayer)
+        ]
+
+    def storage_summary(self) -> dict[str, int | float | bool]:
+        summary = super().storage_summary()
+        auxiliary = self.selector_auxiliary_bytes()
+        resident = int(summary["resident_bytes"])
+        total = resident + auxiliary
+        full_precision_equivalent = int(summary["full_precision_equivalent_bytes"])
+        summary.update(
+            {
+                "selector_auxiliary_bytes": auxiliary,
+                "resident_bytes_including_selector": total,
+                "resident_compression_ratio_including_selector": (
+                    full_precision_equivalent / total if total else 0.0
+                ),
+                "physical_reduction_realized_including_selector": (
+                    total > 0 and total < full_precision_equivalent
+                ),
+            }
+        )
+        return summary
 
 
 class RankFusedMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):

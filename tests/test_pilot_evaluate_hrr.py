@@ -4,10 +4,12 @@ from copy import deepcopy
 
 import pytest
 import torch
+from transformers import Qwen3_5ForCausalLM
 
 from scripts import pilot_evaluate_hrr as evaluator
 from scripts import pilot_hrr_rows, pilot_loss_sensitivity_rows
 from scripts import pilot_validate_storage_boundary as storage_validator
+from tests.test_transformers_cache import tiny_config
 
 
 def _quantizers() -> dict[str, object]:
@@ -493,6 +495,136 @@ def test_experiment006_rank_fusion_holdout_remains_fail_closed() -> None:
         )
 
 
+def test_experiment007_query_ema_holdout_remains_fail_closed() -> None:
+    selectors = [
+        _frozen_selector(evaluator.HRR_ARTIFACT_KIND),
+        _frozen_selector(evaluator.LOSS_ARTIFACT_KIND),
+    ]
+
+    with pytest.raises(ValueError, match="CQER-32 holdout remains closed"):
+        evaluator.validate_frozen_holdout_request(
+            offset=8,
+            limit=8,
+            bootstrap_samples=10_000,
+            selectors=selectors,
+            loss_selector_present=True,
+            storage_boundary_present=True,
+            query_ema_enabled=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"offset": 1},
+        {"limit": 7},
+        {"bootstrap_samples": 9999},
+    ],
+)
+def test_experiment007_development_request_refuses_partial_or_drifted_runs(
+    changes: dict[str, int],
+) -> None:
+    arguments = {
+        "enabled": True,
+        "offset": 0,
+        "limit": 8,
+        "bootstrap_samples": 10_000,
+    }
+    arguments.update(changes)
+
+    with pytest.raises(ValueError, match="offset 0, exactly 8 tasks"):
+        evaluator.validate_cqer_development_request(**arguments)
+
+    evaluator.validate_cqer_development_request(
+        enabled=False,
+        offset=99,
+        limit=1,
+        bootstrap_samples=1,
+    )
+
+
+def test_experiment007_requires_exact_eight_task_selector_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selectors = [
+        _frozen_selector(evaluator.HRR_ARTIFACT_KIND),
+        _frozen_selector(evaluator.LOSS_ARTIFACT_KIND),
+    ]
+    monkeypatch.setattr(
+        evaluator,
+        "CQER_DEVELOPMENT_TASK_IDS",
+        tuple(range(100, 108)),
+    )
+    monkeypatch.setattr(
+        evaluator,
+        "CQER_FROZEN_SELECTOR_CANONICAL_SHA256S",
+        tuple(
+            evaluator.sha256_bytes(evaluator.canonical_json_bytes(selector))
+            for selector in selectors
+        ),
+    )
+    evaluator.validate_cqer_selector_artifacts(enabled=True, selectors=selectors)
+
+    selectors[1]["dataset"]["tasks"].append(
+        {
+            "task_id": 999,
+            "prompt_tokens": 1,
+            "code_tokens": 2,
+            "scored_transitions": 1,
+        }
+    )
+    with pytest.raises(ValueError, match="eight-task selector artifacts"):
+        evaluator.validate_cqer_selector_artifacts(enabled=True, selectors=selectors)
+
+
+def test_experiment007_rejects_selector_content_with_drifted_canonical_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selectors = [
+        _frozen_selector(evaluator.HRR_ARTIFACT_KIND),
+        _frozen_selector(evaluator.LOSS_ARTIFACT_KIND),
+    ]
+    monkeypatch.setattr(
+        evaluator,
+        "CQER_DEVELOPMENT_TASK_IDS",
+        tuple(range(100, 108)),
+    )
+    monkeypatch.setattr(
+        evaluator,
+        "CQER_FROZEN_SELECTOR_CANONICAL_SHA256S",
+        tuple(
+            evaluator.sha256_bytes(evaluator.canonical_json_bytes(selector))
+            for selector in selectors
+        ),
+    )
+    selectors[1]["byte_budget"]["target_resident_bytes"] = 999
+
+    with pytest.raises(ValueError, match="canonical hashes"):
+        evaluator.validate_cqer_selector_artifacts(enabled=True, selectors=selectors)
+
+
+def test_experiment007_pins_ordered_task_ids_and_layer_quotas() -> None:
+    evaluator.validate_cqer_development_task_ids(
+        enabled=True,
+        task_ids=evaluator.CQER_DEVELOPMENT_TASK_IDS,
+    )
+    evaluator.validate_cqer_layer_quotas(
+        enabled=True,
+        quotas=dict(evaluator.CQER_FROZEN_LAYER_QUOTAS),
+    )
+
+    with pytest.raises(ValueError, match="frozen ordered prefix"):
+        evaluator.validate_cqer_development_task_ids(
+            enabled=True,
+            task_ids=tuple(reversed(evaluator.CQER_DEVELOPMENT_TASK_IDS)),
+        )
+    drifted = dict(evaluator.CQER_FROZEN_LAYER_QUOTAS)
+    drifted[0] -= 1
+    drifted[1] += 1
+    with pytest.raises(ValueError, match="frozen target-Fisher allocation"):
+        evaluator.validate_cqer_layer_quotas(enabled=True, quotas=drifted)
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -781,15 +913,182 @@ def test_frozen_holdout_gate_reports_each_threshold_failure(mutation, failed_che
     assert gate["checks"][failed_check]["passed"] is False
 
 
+def _passing_cqer_development_inputs() -> dict[str, object]:
+    methods = {
+        evaluator.QUERY_EMA_PRIMARY: {
+            "macro_delta_nll": 0.40,
+            "macro_mean_kl": 0.40,
+            "macro_cvar95_kl": 1.00,
+            "macro_top1_agreement": 0.80,
+            "task_count": 1,
+            "token_count": 10,
+        },
+        evaluator.ADAPTIVE_TARGET_FISHER: {
+            "macro_delta_nll": 0.50,
+            "macro_mean_kl": 0.50,
+            "macro_cvar95_kl": 0.95,
+            "macro_top1_agreement": 0.795,
+            "task_count": 1,
+            "token_count": 10,
+        },
+        "target_directional_fisher_difference_int4": {
+            "macro_delta_nll": 0.60,
+            "macro_mean_kl": 0.60,
+            "macro_cvar95_kl": 1.10,
+            "macro_top1_agreement": 0.805,
+            "task_count": 1,
+            "token_count": 10,
+        },
+    }
+    per_task = {
+        name: [
+            {
+                "task_id": task_id,
+                "delta_nll": values["macro_delta_nll"],
+                "mean_kl": values["macro_mean_kl"],
+                "cvar95_kl": values["macro_cvar95_kl"],
+                "top1_agreement": values["macro_top1_agreement"],
+                "token_count": 10,
+                "candidate_nll": 1.0,
+                "reference_nll": 0.5,
+                "max_kl": 1.5,
+                "all_logits_finite": True,
+            }
+            for task_id in range(8)
+        ]
+        for name, values in methods.items()
+    }
+    storage = {
+        name: {
+            "resident_bytes": 100,
+            "high_precision_groups": 2,
+        }
+        for name in methods
+    }
+    storage[evaluator.QUERY_EMA_PRIMARY].update(
+        selector_auxiliary_bytes=8,
+        resident_bytes_including_selector=108,
+    )
+    diagnostics = {
+        evaluator.QUERY_EMA_PRIMARY: [
+            {
+                "task_id": task_id,
+                "layers": [
+                    {
+                        "layer_index": 0,
+                        "quota": 2,
+                        "current_selected_count": 2,
+                        "observations_committed": 3,
+                        "state_updates": 3,
+                        "selector_auxiliary_bytes": 8,
+                        "current_mask_sha256": "a" * 64,
+                        "pending_observation": False,
+                        "last_cutoff_score_margin": 0.01,
+                    }
+                ],
+            }
+            for task_id in range(8)
+        ]
+    }
+    return {
+        "aggregates": methods,
+        "per_task": per_task,
+        "per_task_full_code": deepcopy(per_task),
+        "storage": storage,
+        "query_ema_diagnostics": diagnostics,
+        "expected_quotas": {0: 2},
+        "expected_packed_bytes": 100,
+        "expected_selector_auxiliary_bytes": 8,
+    }
+
+
+def test_cqer_development_gate_passes_only_the_frozen_conjunction() -> None:
+    inputs = _passing_cqer_development_inputs()
+
+    gate = evaluator.evaluate_cqer_development_gate(**inputs)
+
+    assert gate["passed"] is True
+    assert all(check["passed"] is True for check in gate["checks"].values())
+
+    inputs = _passing_cqer_development_inputs()
+    inputs["aggregates"][evaluator.QUERY_EMA_PRIMARY]["macro_delta_nll"] = 0.49
+    gate = evaluator.evaluate_cqer_development_gate(**inputs)
+    assert gate["passed"] is False
+    assert gate["checks"]["relative_nll_reduction_vs_plain_adaptive"]["passed"] is False
+    assert gate["checks"]["relative_nll_reduction_vs_strongest_static"]["passed"] is False
+
+
+def test_cqer_development_gate_rejects_stale_stage_consume_state() -> None:
+    inputs = _passing_cqer_development_inputs()
+    layer = inputs["query_ema_diagnostics"][evaluator.QUERY_EMA_PRIMARY][0]["layers"][0]
+    layer["pending_observation"] = True
+
+    gate = evaluator.evaluate_cqer_development_gate(**inputs)
+
+    assert gate["passed"] is False
+    assert gate["checks"]["exact_stage_consume_handshake"]["passed"] is False
+
+    inputs = _passing_cqer_development_inputs()
+    inputs["per_task_full_code"][evaluator.QUERY_EMA_PRIMARY][0][
+        "all_logits_finite"
+    ] = False
+    gate = evaluator.evaluate_cqer_development_gate(**inputs)
+    assert gate["passed"] is False
+    assert gate["checks"]["all_values_finite"]["passed"] is False
+
+
+def test_evaluator_runs_cqer_observer_through_prefill_and_decode() -> None:
+    torch.manual_seed(443)
+    config = tiny_config()
+    model = Qwen3_5ForCausalLM._from_config(
+        config,
+        attn_implementation="eager",
+    ).eval()
+    scores = {0: torch.arange(16, dtype=torch.float32).reshape(2, 8)}
+    plan = evaluator.select_rows_exact_budget(
+        scores,
+        target_resident_bytes=118,
+        group_size=8,
+    )
+    prompt_ids = torch.randint(0, config.vocab_size, (1, 4))
+    code_ids = torch.randint(0, config.vocab_size, (1, 3))
+
+    with torch.inference_mode():
+        summaries, _, storage, diagnostics, reference_bytes = evaluator.evaluate_task(
+            model,
+            prompt_ids=prompt_ids,
+            code_ids=code_ids,
+            plans={},
+            adaptive_plans={},
+            query_ema_plans={evaluator.QUERY_EMA_PRIMARY: plan},
+        )
+
+    query_summary = summaries[evaluator.QUERY_EMA_PRIMARY]
+    query_storage = storage[evaluator.QUERY_EMA_PRIMARY]
+    layer = diagnostics[evaluator.QUERY_EMA_PRIMARY][0]
+    assert query_summary["token_count"] == 2
+    assert query_storage["resident_bytes"] == plan.resident_bytes
+    assert query_storage["selector_auxiliary_bytes"] == 64
+    assert layer["observations_committed"] == 3
+    assert layer["state_updates"] == 3
+    assert layer["tokens_observed"] == 6
+    assert layer["pending_observation"] is False
+    assert reference_bytes > 0
+
+
 def test_claim_and_exit_code_follow_actual_primary_and_gate() -> None:
     static_claim = evaluator.primary_claim_text("hrr_h32")
     adaptive_claim = evaluator.primary_claim_text(evaluator.ADAPTIVE_TARGET_FISHER)
     fusion_claim = evaluator.primary_claim_text(evaluator.RANK_FUSION_PRIMARY)
+    query_ema_claim = evaluator.primary_claim_text(evaluator.QUERY_EMA_PRIMARY)
 
     assert "static HRR" in static_claim
     assert "no loss-selector" in static_claim
     assert "target-directional-Fisher" in adaptive_claim
     assert "equal-weight ordinal rank fusion" in fusion_claim
+    assert "normalized-query-energy EMA" in query_ema_claim
+    assert "32-token half-life" in query_ema_claim
+    assert evaluator.QUERY_EMA_HALF_LIFE == 32
     assert evaluator.RANK_FUSION_METHODS == (
         ("rank_fusion_l025_target_fisher_adaptive_mse", 0.25),
         ("rank_fusion_l050_target_fisher_adaptive_mse", 0.50),

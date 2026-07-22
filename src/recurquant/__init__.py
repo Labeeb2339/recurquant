@@ -47,6 +47,8 @@ from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
+    QueryEmaMixedPackedLinearAttentionLayer,
+    QueryEmaMixedPackedRecurrentStateCache,
     RankFusedMixedPackedRecurrentStateCache,
 )
 from .quantization import (
@@ -56,10 +58,12 @@ from .quantization import (
     quantize_dequantize,
     quantize_pack,
 )
+from .query_energy import Qwen35QueryEnergyObserver
 from .qwen35 import (
     create_qwen35_adaptive_exact_budget_cache,
     create_qwen35_exact_budget_cache,
     create_qwen35_packed_cache,
+    create_qwen35_query_ema_exact_budget_cache,
     create_qwen35_rank_fused_exact_budget_cache,
     create_qwen35_v02_mixed_cache,
 )
@@ -80,6 +84,9 @@ __all__ = [
     "PackedMixedQuantizedTensor",
     "PackedQuantizedTensor",
     "PackedRecurrentStateCache",
+    "QueryEmaMixedPackedLinearAttentionLayer",
+    "QueryEmaMixedPackedRecurrentStateCache",
+    "Qwen35QueryEnergyObserver",
     "RankFusedMixedPackedRecurrentStateCache",
     "PhysicalMetricRun",
     "PhysicalRowPromotionOracleResult",
@@ -98,6 +105,7 @@ __all__ = [
     "create_qwen35_adaptive_exact_budget_cache",
     "create_qwen35_exact_budget_cache",
     "create_qwen35_packed_cache",
+    "create_qwen35_query_ema_exact_budget_cache",
     "create_qwen35_rank_fused_exact_budget_cache",
     "create_qwen35_v02_mixed_cache",
     "finite_horizon_row_read_risk",

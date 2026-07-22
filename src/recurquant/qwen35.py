@@ -14,6 +14,7 @@ from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
+    QueryEmaMixedPackedRecurrentStateCache,
     RankFusedMixedPackedRecurrentStateCache,
 )
 from .quantization import QuantizationSpec, RoundingMode
@@ -308,6 +309,32 @@ def create_qwen35_adaptive_exact_budget_cache(
     """
 
     return AdaptiveMixedPackedRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        rounding=rounding,
+        seed=seed,
+        record_evidence=record_evidence,
+    )
+
+
+def create_qwen35_query_ema_exact_budget_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    rounding: RoundingMode = "nearest",
+    seed: int = 2339,
+    record_evidence: bool = False,
+) -> QueryEmaMixedPackedRecurrentStateCache:
+    """Create the frozen half-life-32 query-EMA mixed cache for Qwen3.5.
+
+    The exact plan continues to fix each layer's promotion quota and packed-state
+    bytes. Before every recurrent-state update, a matching post-convolution query
+    must be supplied through ``stage_query_observation`` (normally by the Qwen3.5
+    query observer). Missing or invalid observations fail closed. Persistent FP32
+    EMA metadata is reported separately from packed recurrent-state storage.
+    """
+
+    return QueryEmaMixedPackedRecurrentStateCache(
         _validated_exact_budget_config(model_or_config, plan=plan),
         plan=plan,
         rounding=rounding,
