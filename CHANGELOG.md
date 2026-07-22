@@ -17,6 +17,8 @@ software, so compatibility can still change between development versions.
 - A reusable frozen v0.2 mixed-policy cache helper and an installed
   `recurquant qwen35` workflow shared with the source-tree quickstart. Uniform
   INT4 remains available only as an explicitly named stress baseline.
+- Machine-readable `recurquant qwen35 --json` output, a one-click Colab
+  notebook, and a hash-anchored reproduction and extension guide.
 - Frozen MBPP calibration and development evaluation workflows with pinned
   dataset/model revisions, prepared token manifests, canonical evidence hashes,
   equal-byte baselines, and resumable per-task checkpoints.

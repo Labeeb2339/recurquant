@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import warnings
 from collections.abc import Sequence
 
@@ -37,6 +38,11 @@ def add_qwen35_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
         "--local-files-only",
         action="store_true",
         help="Use an already-cached copy of the pinned model and tokenizer.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print one machine-readable JSON document instead of human-readable output.",
     )
     return parser
 
@@ -130,10 +136,25 @@ def run_qwen35_quickstart(args: argparse.Namespace) -> int:
             )
 
     generated_ids = torch.cat(generated, dim=1)
-    print(f"policy={args.policy}")
-    print(tokenizer.decode(generated_ids[0], skip_special_tokens=True))
-
+    generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
     summary = cache.storage_summary()
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "generated_text": generated_text,
+                    "model_id": MODEL_ID,
+                    "model_revision": MODEL_REVISION,
+                    "policy": args.policy,
+                    "storage_summary": summary,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    print(f"policy={args.policy}")
+    print(generated_text)
     print(f"resident_recurrent_state_bytes={summary['resident_bytes']}")
     print(
         "full_precision_equivalent_recurrent_state_bytes="

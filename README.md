@@ -1,4 +1,22 @@
-# RecurQuant
+<p align="center">
+  <img src="assets/recurquant-hero.png" width="100%" alt="RecurQuant — packed recurrent state for Qwen3.5">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Labeeb2339/recurquant/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Labeeb2339/recurquant/ci.yml?branch=main&amp;label=tests" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-6cc5bd" alt="Apache-2.0 license"></a>
+  <img src="https://img.shields.io/badge/python-%E2%89%A53.11-3776ab" alt="Python 3.11 or newer">
+  <img src="https://img.shields.io/badge/transformers-5.14.1-ffd21e" alt="Transformers 5.14.1">
+  <a href="https://colab.research.google.com/github/Labeeb2339/recurquant/blob/main/notebooks/recurquant_qwen35_colab.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab"></a>
+</p>
+
+<p align="center">
+  <a href="#60-second-setup"><b>Quickstart</b></a> ·
+  <a href="#what-is-physically-smaller"><b>Storage</b></a> ·
+  <a href="#public-development-evidence"><b>Evidence</b></a> ·
+  <a href="docs/compatibility.md"><b>Compatibility</b></a> ·
+  <a href="docs/reproducing.md"><b>Reproduce</b></a>
+</p>
 
 RecurQuant is an alpha Python package that physically packs the persistent
 recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. Pass its cache to
@@ -40,11 +58,18 @@ python3.11 -m venv .venv
 .venv/bin/recurquant qwen35 --max-new-tokens 16
 ```
 
+To verify the installation without downloading a model, run `recurquant demo`
+with the platform-specific executable path above. It performs a deterministic
+synthetic state round-trip and reports physical payload bytes, compression
+ratio, and quantization error.
+
 The installed command and
 [`examples/qwen35_quickstart.py`](examples/qwen35_quickstart.py) call the same
 implementation. The default is the frozen v0.2 mixed policy: layer 0 at INT8
 and the remaining recurrent layers at INT4. Uniform INT4 is retained only as an
-explicit stress baseline via `--policy uniform-int4-stress`. Read the
+explicit stress baseline via `--policy uniform-int4-stress`. Add `--json` for
+one machine-readable result containing the generated text, pinned model
+provenance, selected policy, and raw storage counters. Read the
 [compatibility contract](docs/compatibility.md) before using a different model,
 Transformers version, device layout, or generation mode.
 
