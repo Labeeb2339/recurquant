@@ -85,10 +85,10 @@ Accepted file SHA256:
 
 During an earlier one-task diagnostic smoke, the non-streaming Hugging Face
 Datasets builder prepared local cache files for all four MBPP splits even though
-RecurQuant requested `train`. No validation or test rows were returned to the
-calibration code, inspected for method outcomes, or scored. The loader was then
-changed to request streaming explicitly, and both accepted full calibration
-runs received only the pinned training split. The confirmation guard still
+the loader was called with `split="train"`. No validation or test rows were
+returned to the calibration code, inspected for method outcomes, or scored. The
+loader was then changed to request streaming explicitly, and both accepted full
+calibration runs received only the pinned training split. The confirmation guard still
 rejects partial access and requires an explicit acknowledgement token before
 the test split can be returned.
 

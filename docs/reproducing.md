@@ -7,10 +7,10 @@ This guide separates three different activities:
    not reproduce a quality result.
 2. **Reproduce development evidence** on the 90-task MBPP validation split.
    This repeats an already inspected development experiment.
-3. **Run or replicate confirmation** on the 500-task MBPP test split. The
-   original project run is "untouched" only because its policy, manifest, gates,
-   and code were frozen before outcomes were computed. Once outcomes are
-   public, another run is a replication, not a new untouched confirmation.
+3. **Run or replicate confirmation** on the 500-task MBPP test split. An
+   "untouched" confirmation has its policy, manifest, gates, and code frozen
+   before outcomes are computed. Once those outcomes are public, later runs are
+   replications rather than new untouched confirmations.
 
 None of these workflows establishes generated-code correctness, lower latency,
 lower whole-model or peak memory, cross-model generality, novelty, or a

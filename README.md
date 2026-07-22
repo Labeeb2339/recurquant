@@ -28,7 +28,7 @@ It currently targets
 RecurQuant does not quantize model weights or ordinary attention KV caches, and
 its current Python path dequantizes one recurrent state while that layer runs.
 
-Created and maintained by
+I built and maintain RecurQuant as an open research project. —
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
 [Apache-2.0](LICENSE).
 
@@ -200,15 +200,14 @@ hardware, model revision, generation paths, and unsupported modes.
 
 ## Claim boundary
 
-Quantizing recurrent state is not new, and RecurQuant does not claim a
-breakthrough, faster inference, lower whole-model memory, or a fused quantized
-kernel. Its narrower research question is whether sensitivity-guided
-mixed-precision allocation can preserve Gated DeltaNet recurrent-state fidelity
-better than simple equal-byte placements.
+Quantizing recurrent state is not new. I built RecurQuant to test one narrower
+question: can sensitivity-guided mixed precision preserve Gated DeltaNet
+recurrent-state fidelity better than simple equal-byte placements? The current
+public result is development-only, so I am not presenting it as a breakthrough,
+a speedup, a whole-model memory reduction, or a confirmed finding.
 
-The public development result passed the repository's frozen continuation
-gates. A confirmation result must remain separate before that finding is treated
-as confirmed.
+The development result passed the frozen continuation gates. The untouched
+confirmation remains separate until its result is complete and public.
 
 ## Research record
 
@@ -227,8 +226,8 @@ as confirmed.
 
 ## Contributing
 
-Reproducible compatibility reports, additional model-family adapters, and work
-toward a fused packed recurrent kernel are welcome. Open an
+I welcome reproducible compatibility reports, additional model-family adapters,
+and work toward a fused packed recurrent kernel. Open an
 [issue](https://github.com/Labeeb2339/recurquant/issues) with a minimal
 reproducer and `cache.storage_summary()`; never include access tokens, private
 prompts, or authentication files.

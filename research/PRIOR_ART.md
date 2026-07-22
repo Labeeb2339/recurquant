@@ -14,8 +14,8 @@ the search before any paper or novelty statement.
   accumulation and stochastic rounding.
 - [Nemotron 3 Ultra](https://arxiv.org/abs/2606.15007) evaluates FP16, INT8, and
   FP8 recurrent states with block scaling, stochastic rounding, checkpoints,
-  and activation replay. These are mandatory stability baselines, not new ideas
-  available for RecurQuant to claim.
+  and activation replay. These are prior art and mandatory stability baselines
+  for RecurQuant.
 
 ## Existing Gated DeltaNet systems work
 
@@ -36,8 +36,8 @@ the search before any paper or novelty statement.
 
 ## Architecture evidence
 
-- [Gated DeltaNet-2](https://arxiv.org/abs/2605.22791), suggested during this
-  project, separates channel-wise erase and write gates. It motivates analyzing
+- [Gated DeltaNet-2](https://arxiv.org/abs/2605.22791) separates channel-wise
+  erase and write gates. That distinction motivates analyzing
   the two state axes separately but does not establish precision allocation.
   Its [official code](https://github.com/NVlabs/GatedDeltaNet-2) uses the NVIDIA
   Source Code License-NC and is not copied into this Apache-2.0 repository.
