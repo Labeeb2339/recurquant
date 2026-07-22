@@ -17,8 +17,9 @@ Last reviewed: 2026-07-22
 
 At an equal modeled persistent-state bit budget, Gated DeltaNet-specific
 precision allocation may reduce tail output divergence relative to uniform
-state quantization. Candidate signals may include per-layer decay, write gate,
-state-update magnitude, and observed error accumulation.
+state quantization. The current candidate uses query-weighted recurrent-read
+error. Mean decay, write gate, state-update magnitude, and residual magnitude
+were tested and rejected as selectors in the diagnostic pilot.
 
 This is a hypothesis, not a novelty or performance claim. A broader literature
 audit and confirmatory experiments are required before stronger wording.

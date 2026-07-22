@@ -2,7 +2,7 @@
 
 Date: 2026-07-22
 
-Status: original hypothesis rejected; replacement promising but not confirmed
+Status: original hypothesis rejected; replacement passed diagnostic confirmation
 
 ## Question
 
@@ -110,3 +110,8 @@ condition on the untouched profile and the canonical evidence reproduces. The
 research question remains open until the method is evaluated on public tasks,
 longer contexts, another model or checkpoint, stronger baselines, and a packed
 runtime.
+
+Candidate v0.1 passed those diagnostic conditions on 2026-07-22, and its repeat
+matched the canonical evidence hash. The immediate selector failure is therefore
+fixed for this pilot; the broader research question remains open. See
+[Confirmation 001](CONFIRMATION_001.md).

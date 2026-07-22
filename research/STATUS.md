@@ -10,7 +10,7 @@ Last updated: 2026-07-22
   `dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68`.
 - Captured 18 recurrent states at `[1, 16, 128, 128]`, FP32, totalling 18 MiB.
 - QDQ occurs once after prefill and after every teacher-forced decode token.
-- Unit/integration suite and lint are green.
+- All 26 unit/integration tests and lint are green.
 
 ## Calibration and development evidence
 
@@ -55,7 +55,23 @@ Canonical evidence hashes:
 - The complete negative-to-pivot record is preserved in
   [Experiment 001](EXPERIMENT_001_SIGNAL_PIVOT.md).
 
-## Frozen next action
+## Untouched confirmation
 
-Run candidate v0.1—layer 0 INT8, all other Gated DeltaNet states INT4—on the
-untouched multilingual confirmation profile. Do not run a layer sweep first.
+Candidate v0.1 was committed before evaluation, then run once on the untouched
+multilingual profile without a layer sweep.
+
+| Measure | Uniform INT4 | Layer 0 INT8, rest INT4 | Change |
+|---|---:|---:|---:|
+| Worst-5% token KL | 6.13459 | 1.36093 | -77.82% |
+| Mean token KL | 2.85262 | 0.43382 | -84.79% |
+| Top-1 agreement | 0.25000 | 0.59375 | +0.34375 |
+
+The deterministic repeat matched canonical evidence hash
+`1961ecc395d138cf505a20e55c3465260dcfded8b1ac3a9c95c40af775d2d722`.
+Gate C passed. See [Confirmation 001](CONFIRMATION_001.md).
+
+## Next action
+
+Move from synthetic diagnostics to a preregistered public-data evaluation with
+longer horizons, multiple seeds, sequence NLL, equal-byte baselines, and no
+confirmation-set policy tuning.
