@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a small paired FP32-state versus QDQ-state Qwen3.5 smoke experiment."""
+"""Run a paired FP32-state versus quantized-state Qwen3.5 experiment."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from recurquant.metrics import (
     token_kl_divergence,
     top1_agreement,
 )
+from recurquant.packed_cache import PackedRecurrentStateCache
 from recurquant.quantization import QuantizationSpec
 from recurquant.signals import GatedDeltaSignalRecorder
 from recurquant.transformers_cache import RecurrentStateQDQCache
@@ -74,6 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bits", type=int, nargs="+", default=[8, 4])
     parser.add_argument("--group-size", type=int, default=128)
     parser.add_argument("--rounding", choices=("nearest", "stochastic"), default="nearest")
+    parser.add_argument("--cache-mode", choices=("qdq", "packed"), default="qdq")
     parser.add_argument("--sensitivity-sweep", action="store_true")
     parser.add_argument("--low-bits", type=int, default=4)
     parser.add_argument("--high-bits", type=int, default=8)
@@ -222,11 +224,15 @@ def main() -> int:
             }
 
     reference_cache = DynamicCache(config=model.config)
+    cache_class = (
+        PackedRecurrentStateCache if args.cache_mode == "packed" else RecurrentStateQDQCache
+    )
     candidates = {
-        label: RecurrentStateQDQCache(
+        label: cache_class(
             model.config,
             spec=definition["default_spec"],
             layer_specs=definition["layer_specs"],
+            **({"record_evidence": True} if args.cache_mode == "packed" else {}),
         )
         for label, definition in candidate_definitions.items()
     }
@@ -287,6 +293,9 @@ def main() -> int:
             first_by_layer.setdefault(row.layer_index, row)
         total_baseline = sum(row.baseline_bytes for row in first_by_layer.values())
         total_estimated = sum(row.estimated_bytes for row in first_by_layer.values())
+        physical_reduction_realized = (
+            args.cache_mode == "packed" and total_estimated < total_baseline
+        )
         definition = candidate_definitions[label]
         default_spec = definition["default_spec"]
         layer_specs = definition["layer_specs"]
@@ -306,7 +315,9 @@ def main() -> int:
                 "estimated_bytes": total_estimated,
                 "compression_ratio": total_baseline / total_estimated,
                 "includes_scale_overhead": True,
-                "physical_reduction_realized": False,
+                "resident_bytes": total_estimated if args.cache_mode == "packed" else None,
+                "physical_reduction_realized": physical_reduction_realized,
+                "scope": "persistent_recurrent_state_payload_and_scales",
             },
             "first_update_by_layer": [
                 row.evidence_dict()
@@ -321,7 +332,11 @@ def main() -> int:
     evidence: dict[str, object] = {
         "claim_scope": {
             "diagnostic_only": True,
-            "memory_reduction_realized": False,
+            "memory_reduction_realized": all(
+                result["persistent_state_storage"]["physical_reduction_realized"]
+                for result in candidate_results.values()
+            ),
+            "memory_scope": "persistent recurrent-state payload and scales only",
             "latency_claim_allowed": False,
             "research_result": False,
         },
@@ -347,6 +362,7 @@ def main() -> int:
             "candidate_order": list(candidate_definitions),
             "group_size": args.group_size,
             "rounding": args.rounding,
+            "cache_mode": args.cache_mode,
             "prompt_profile": args.prompt_profile,
             "requested_upgrade_layers": args.upgrade_layers,
             "token_ids_sha256": sha256_bytes(tokens.detach().cpu().numpy().tobytes()),
@@ -462,7 +478,11 @@ def main() -> int:
     canonical_evidence_sha256 = sha256_bytes(canonical_json_bytes(evidence))
     artifact: dict[str, object] = {
         "schema_version": 1,
-        "artifact_kind": "qwen35_recurrent_state_qdq_smoke",
+        "artifact_kind": (
+            "qwen35_recurrent_state_packed_smoke"
+            if args.cache_mode == "packed"
+            else "qwen35_recurrent_state_qdq_smoke"
+        ),
         "created_at_utc": datetime.now(UTC).isoformat(),
         "canonical_evidence_sha256": canonical_evidence_sha256,
         "evidence": evidence,

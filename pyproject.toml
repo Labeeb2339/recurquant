@@ -4,20 +4,40 @@ build-backend = "hatchling.build"
 
 [project]
 name = "recurquant"
-version = "0.1.0.dev0"
-description = "Research harness for persistent-state quantization in Gated DeltaNet language models."
+version = "0.2.0a1"
+description = "Packed recurrent-state quantization for Gated DeltaNet language models."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
   { name = "Muhammad Labeeb Aryan" },
+]
+keywords = [
+  "gated-deltanet",
+  "language-model-inference",
+  "quantization",
+  "recurrent-state",
+  "transformers",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
   "huggingface-hub>=0.36",
   "numpy>=2.0",
+  "packaging>=24",
   "safetensors>=0.5",
   "torch>=2.7",
-  "transformers>=5.14.1,<6",
+  # PackedRecurrentStateCache subclasses an internal cache layer. Keep the
+  # alpha on the exact tested release until another release is covered in CI.
+  "transformers==5.14.1",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +46,15 @@ dev = [
   "pytest-cov>=6.2",
   "ruff>=0.12",
 ]
+eval = [
+  "datasets>=4.3,<5",
+]
+
+[project.urls]
+Homepage = "https://github.com/Labeeb2339/recurquant"
+Repository = "https://github.com/Labeeb2339/recurquant"
+Issues = "https://github.com/Labeeb2339/recurquant/issues"
+"Compatibility and support" = "https://github.com/Labeeb2339/recurquant/blob/main/docs/compatibility.md"
 
 [project.scripts]
 recurquant = "recurquant.cli:main"

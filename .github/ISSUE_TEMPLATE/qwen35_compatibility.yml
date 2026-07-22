@@ -1,0 +1,104 @@
+name: Qwen3.5 compatibility report
+description: Record a reproducible working, partial, or failing Qwen3.5 configuration.
+title: "[Qwen3.5] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form maps real compatibility; it does not certify output quality or production readiness. **Never paste access tokens, authentication files, private prompts, proprietary model data, or other secrets.** Use a short public or synthetic prompt.
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - Works for the reported path
+        - Partially works or gives incorrect behavior
+        - Fails with an exception
+    validations:
+      required: true
+
+  - type: input
+    id: recurquant_version
+    attributes:
+      label: RecurQuant version or commit
+      placeholder: 0.2.0a1 or full commit hash
+    validations:
+      required: true
+
+  - type: input
+    id: checkpoint
+    attributes:
+      label: Exact Qwen3.5 checkpoint and revision
+      description: Include both the model ID and immutable revision hash.
+      placeholder: Qwen/Qwen3.5-0.8B-Base @ dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Software and hardware
+      placeholder: |
+        OS: Windows 11
+        Python: 3.11.x
+        PyTorch: 2.x (include CUDA suffix)
+        Transformers: 5.14.1
+        Device: NVIDIA GPU model or CPU
+        CUDA runtime and driver: version or not applicable
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: execution
+    attributes:
+      label: Execution configuration
+      description: Report values even when the run succeeds.
+      placeholder: |
+        Dtype: bfloat16
+        Attention implementation: eager
+        Device map or placement: one CUDA device
+        Batch size: 1
+        Path: direct forward, greedy generation, beam search, etc.
+        Prefill tokens: 32
+        Decode or generated tokens: 32
+        Cache: bits=4, group_size=128, rounding=nearest
+        Layer overrides: none
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal public reproducer
+      description: Use a public or synthetic prompt and include model loading, cache creation, and the failing or working call.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: Result
+      description: For a failure, include the complete traceback. For a working path, state exactly what completed; do not infer quality, speed, or memory improvements.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: storage_summary
+    attributes:
+      label: Cache storage summary
+      description: Paste `cache.storage_summary()` after at least one cache update when available.
+      render: shell
+
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Submission check
+      options:
+        - label: I used a public or synthetic prompt and removed secrets, access tokens, authentication files, private prompts, and proprietary data.
+          required: true
+        - label: I reported the exact checkpoint revision and did not turn a successful run into a quality, speed, peak-memory, or production-readiness claim.
+          required: true

@@ -1,115 +1,259 @@
-# RecurQuant
+<p align="center">
+  <img src="assets/recurquant-hero.png" width="100%" alt="RecurQuant — packed recurrent state for Qwen3.5">
+</p>
 
-RecurQuant is a reproducible research harness for **persistent recurrent-state
-quantization in Gated DeltaNet language models**.
+<p align="center">
+  <a href="https://github.com/Labeeb2339/recurquant/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Labeeb2339/recurquant/ci.yml?branch=main&amp;label=tests" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-6cc5bd" alt="Apache-2.0 license"></a>
+  <img src="https://img.shields.io/badge/python-%E2%89%A53.11-3776ab" alt="Python 3.11 or newer">
+  <img src="https://img.shields.io/badge/transformers-5.14.1-ffd21e" alt="Transformers 5.14.1">
+  <a href="https://colab.research.google.com/github/Labeeb2339/recurquant/blob/main/notebooks/recurquant_qwen35_colab.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open in Colab"></a>
+</p>
 
-> **Current status:** the frozen diagnostic candidate passed its untouched
-> confirmation trace. This is not yet a validated general method, realized
-> memory reduction, speedup, or novelty result.
+<p align="center">
+  <a href="#60-second-setup"><b>Quickstart</b></a> ·
+  <a href="#what-is-physically-smaller"><b>Storage</b></a> ·
+  <a href="#held-out-confirmation"><b>Evidence</b></a> ·
+  <a href="docs/compatibility.md"><b>Compatibility</b></a> ·
+  <a href="docs/reproducing.md"><b>Reproduce</b></a>
+</p>
 
-The first calibration/development pilot found substantial layer heterogeneity.
-At a 4.22-bit average payload, retaining only Gated DeltaNet layer 0 at INT8 and
-using INT4 for the other 17 layers reduced worst-5% token KL by 79.8% on a
-retrieval-style trace and 62.2% on a code-style trace relative to uniform INT4.
-On the untouched multilingual trace, the same frozen plan reduced worst-5%
-token KL by 77.8% and increased top-1 agreement from 25.0% to 59.4%. These are
-short synthetic traces, not a benchmark or generalization result.
+RecurQuant is an alpha Python package that physically packs the persistent
+recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. Pass its cache to
+ordinary eager Transformers model calls to keep those states as grouped INT4 or
+INT8 payloads between calls.
 
-## Research question
+Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
+protocol: task-macro excess NLL was 72.75% lower than uniform INT4 while the
+persistent recurrent state occupied exactly 2,564,096 resident bytes.
 
-Can sub-8-bit storage of Gated DeltaNet's fixed recurrent matrix state allocate
-precision from query-weighted read sensitivity to preserve difficult
-long-context behavior better than uniform quantization at the same modeled bit
-budget?
+It currently targets
+[`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base).
+RecurQuant does not quantize model weights or ordinary attention KV caches, and
+its current Python path dequantizes one recurrent state while that layer runs.
 
-[Qwen3.5-0.8B-Base](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base) is the first
-target. Its language model repeats three Gated DeltaNet layers followed by one
-full-attention layer, giving 18 persistent recurrent states and six ordinary KV
-caches across 24 layers.
+I built and maintain RecurQuant as an open research project. —
+[Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
+[Apache-2.0](LICENSE).
 
-## What this repository measures
+## 60-second setup
 
-- Deterministic grouped INT8, INT6, and INT4 state round trips.
-- Per-layer state size and numerical error.
-- Paired token-level KL divergence and top-1 agreement against an FP32-state run.
-- Tail error rather than only average perplexity.
-- State-update magnitude for later sensitivity analysis.
-- Query-weighted recurrent-read error, which measures the effect of state error
-  on the actual `q^T S` read.
-- Modeled storage, with scale overhead included.
+The commands are short; the first run still needs to download the pinned model
+and tokenizer. Python 3.11 and a CUDA GPU are recommended for the evaluated
+path.
 
-The current simulator dequantizes states before the next model step. It can test
-quality and error accumulation, but it **does not reduce PyTorch memory or prove
-faster inference**. Those require a packed runtime kernel after the numerical
-hypothesis passes.
+Windows PowerShell:
+
+```powershell
+git clone --branch v0.2.0a1 --depth 1 https://github.com/Labeeb2339/recurquant.git
+cd recurquant
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\recurquant.exe qwen35 --max-new-tokens 16
+```
+
+macOS or Linux:
+
+```bash
+git clone --branch v0.2.0a1 --depth 1 https://github.com/Labeeb2339/recurquant.git
+cd recurquant
+python3.11 -m venv .venv
+.venv/bin/python -m pip install .
+.venv/bin/recurquant qwen35 --max-new-tokens 16
+```
+
+To verify the installation without downloading a model, run `recurquant demo`
+with the platform-specific executable path above. It performs a deterministic
+synthetic state round-trip and reports physical payload bytes, compression
+ratio, and quantization error.
+
+The installed command and
+[`examples/qwen35_quickstart.py`](examples/qwen35_quickstart.py) call the same
+implementation. The default is the frozen v0.2 mixed policy: layer 0 at INT8
+and the remaining recurrent layers at INT4. Uniform INT4 is retained only as an
+explicit stress baseline via `--policy uniform-int4-stress`. Add `--json` for
+one machine-readable result containing the generated text, pinned model
+provenance, selected policy, and raw storage counters. Read the
+[compatibility contract](docs/compatibility.md) before using a different model,
+Transformers version, device layout, or generation mode.
+
+## Use it in Python
+
+This example uses the reusable frozen v0.2 helper, which keeps Gated DeltaNet
+layer 0 at INT8 and the other 17 recurrent layers at INT4. The generic
+`create_qwen35_packed_cache()` factory remains available for controlled policy
+experiments.
+
+```python
+import warnings
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from recurquant import create_qwen35_v02_mixed_cache
+
+MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
+REVISION = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if device.type != "cuda":
+    dtype = torch.float32
+elif torch.cuda.is_bf16_supported():
+    dtype = torch.bfloat16
+else:
+    warnings.warn(
+        "CUDA BF16 is unavailable; falling back to FP16. RecurQuant's public "
+        "full-model fidelity evidence has not been validated for FP16 weights.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    dtype = torch.float16
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=REVISION)
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_ID,
+    revision=REVISION,
+    dtype=dtype,
+    attn_implementation="eager",
+).to(device)
+model.eval()
+
+cache = create_qwen35_v02_mixed_cache(model)
+inputs = tokenizer("Explain recurrent-state quantization simply.", return_tensors="pt")
+inputs = inputs.to(device)
+continuation = []
+
+with torch.inference_mode():
+    output = model(**inputs, past_key_values=cache, use_cache=True)
+    for step in range(32):
+        next_token = output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        continuation.append(next_token)
+        reached_eos = (
+            tokenizer.eos_token_id is not None
+            and bool((next_token == tokenizer.eos_token_id).all().item())
+        )
+        if reached_eos or step == 31:
+            break
+        output = model(input_ids=next_token, past_key_values=cache, use_cache=True)
+
+generated_ids = torch.cat(continuation, dim=1)
+print(tokenizer.decode(generated_ids[0], skip_special_tokens=True))
+print(cache.storage_summary())
+```
+
+`create_qwen35_v02_mixed_cache()` and `create_qwen35_packed_cache()` reject
+unsupported Transformers versions, non-eager attention, training mode,
+multi-device placement, and incompatible Qwen configurations early. The
+returned cache exposes exact live tensor byte accounting through
+`storage_summary()`.
+
+## What is physically smaller
+
+For batch-one Qwen3.5-0.8B-Base recurrent states, the frozen mixed layout stores
+2,564,096 resident bytes instead of 18,874,368 FP32-state bytes. Uniform INT4
+stores 2,433,024 bytes. These figures include packed payloads, FP16 group
+scales, and padding.
+
+![Horizontal bars showing 18,874,368 bytes for FP32 recurrent states, 2,433,024 for uniform INT4, and 2,564,096 for the mixed layer-0 INT8 layout.](assets/recurrent-state-storage.svg)
+
+This is recurrent-state storage only. It is not a whole-model, peak-CUDA-memory,
+latency, or throughput result.
+
+## Held-out confirmation
+
+The frozen layer-0 mixed layout passed every preregistered v0.2 quality and
+integrity gate on the untouched MBPP test split. Task-macro excess negative
+log-likelihood above the FP32-state reference fell from `2.949743` for uniform
+INT4 to `0.803713`: a **72.75% reduction**.
+
+![Horizontal bars showing held-out MBPP task-macro excess NLL of 2.9497 for uniform INT4 and 0.8037 for the mixed layer-0 INT8 layout.](assets/mbpp-confirmation-fidelity.svg)
+
+The confirmation covers 500 paired tasks and 30,244 teacher-forced reference-
+code tokens. The paired mixed-versus-uniform improvement was `2.1460`
+nats/token with a 95% bootstrap interval of `[2.0922, 2.1999]`. Against the
+mean of three exactly same-byte random high-precision layer placements, the
+paired improvement was `2.0332` with a 95% interval of `[1.9802, 2.0861]`.
+
+| Token-weighted measure | Uniform INT4 | Mixed L0 INT8 |
+|---|---:|---:|
+| Mean KL | 3.149969 | 0.914580 |
+| Worst-5% KL | 9.002207 | 4.839139 |
+| Top-1 agreement | 0.321155 | 0.665190 |
+
+The earlier 90-task development result was a 74.14% reduction; it remains
+available in
+[`evidence/mbpp-v02-development.json`](evidence/mbpp-v02-development.json) and
+[`DEVELOPMENT_002.md`](research/DEVELOPMENT_002.md).
+
+Important boundaries:
+
+- The accepted result is in
+  [`evidence/mbpp-v02-confirmation.json`](evidence/mbpp-v02-confirmation.json),
+  with the full decision and interruption record in
+  [`CONFIRMATION_002.md`](research/CONFIRMATION_002.md).
+- Tokens were scored teacher-forced. Candidate-generated code was not fed back,
+  executed, or graded for correctness.
+- The MSE selector also chose layer 0, so it is the exact same candidate—not
+  independent evidence that the read-risk selector is novel or superior.
+- This supports one pinned recurrent-state fidelity and resident-byte result.
+  It does not support generated-code quality, speed, peak memory, whole-model
+  memory, cross-model generality, or a breakthrough claim.
+
+## Scope
+
+The supported public surface is deliberately narrow:
+
+- Python `>=3.11` and exactly `transformers==5.14.1` for this alpha;
+- text-only Qwen3.5 hybrid models with `linear_attention` and `full_attention`
+  layer types;
+- physical INT4 or INT8 recurrent-state payloads; FP16 scales are the evaluated
+  default, while FP32 scales are supported as an experimental, unevaluated
+  option;
+- eager, evaluation-only, single-device inference; and
+- explicit `past_key_values=cache` model calls.
+
+See [`docs/compatibility.md`](docs/compatibility.md) for the validated software,
+hardware, model revision, generation paths, and unsupported modes.
 
 ## Claim boundary
 
-Quantizing recurrent states is not new. Existing SSM work includes
-[Quamba2](https://arxiv.org/abs/2503.22879), while newer systems use quantized
-state checkpoints, stochastic rounding, and replay. Gated DeltaNet work also
-uses update residuals to manage auxiliary memory. RecurQuant therefore does not
-claim to be the first recurrent-cache quantizer, update-aware memory method, or
-state-replay system.
+Quantizing recurrent state is not new. I built RecurQuant to test one narrower
+question: can sensitivity-guided mixed precision preserve Gated DeltaNet
+recurrent-state fidelity better than simple equal-byte placements? For the
+pinned Qwen3.5-0.8B-Base teacher-forced MBPP protocol, the frozen policy passed
+the held-out confirmation and beat all three tested same-byte random placements.
 
-The narrower hypothesis under investigation is **precision allocation for the
-persistent Gated DeltaNet matrix state**, conditioned on Gated DeltaNet dynamics
-and compared at an equal bit budget. See
-[the claim boundary](research/CLAIM_BOUNDARY.md) and
-[pilot protocol](research/PILOT_PROTOCOL.md). The documented experiment trail
-preserves the [failed signals and replacement](research/EXPERIMENT_001_SIGNAL_PIVOT.md)
-and the [untouched confirmation](research/CONFIRMATION_001.md).
+That is a confirmed case study, not proof of novelty or general superiority.
+Q-Mamba already studies 4-bit persistent Mamba2 states, Quamba2 quantizes cached
+SSM states, and other mixed-precision and replay systems overlap parts of this
+design space. RecurQuant currently has no fused packed kernel or measured speed
+claim. I therefore do not present this release as a breakthrough, a whole-model
+memory reduction, or a cross-model result. See the
+[claim boundary](research/CLAIM_BOUNDARY.md) and
+[prior-art review](research/PRIOR_ART.md) for the exact comparison.
 
-[Gated DeltaNet-2](https://arxiv.org/abs/2605.22791) reinforces why erase,
-write, and decay behavior should be analyzed separately. Its non-commercial
-reference code is not a RecurQuant dependency, and the initial target remains
-Apache-2.0 Qwen3.5.
+## Research record
 
-## Local setup
+- Independently validate the held-out decision with
+  `recurquant verify-confirmation`; the
+  [reproduction guide](docs/reproducing.md) pins both committed hashes and
+  explains optional raw-checkpoint reconstruction.
+- [Held-out MBPP confirmation report](research/CONFIRMATION_002.md) and
+  [machine-readable evidence](evidence/mbpp-v02-confirmation.json)
+- [Frozen public evaluation protocol](research/PUBLIC_EVAL_PROTOCOL_V02.md)
+- [MBPP development report](research/DEVELOPMENT_002.md)
+- [Current research status](research/STATUS.md)
+- [Claim boundary](research/CLAIM_BOUNDARY.md) and
+  [prior-art review](research/PRIOR_ART.md)
+- [Failed proxy signals and empirical-sensitivity pivot](research/EXPERIMENT_001_SIGNAL_PIVOT.md)
+- [Scale-format correction and packed/QDQ parity](research/EXPERIMENT_002_SCALE_CORRECTION.md)
+- [Earlier pilot protocol](research/PILOT_PROTOCOL.md) and
+  [v0.1 diagnostic confirmation archive](research/CONFIRMATION_001.md)
 
-Windows with an NVIDIA GPU:
+## Contributing
 
-```powershell
-uv venv --python 3.11 .venv
-uv pip install --python .venv\Scripts\python.exe torch --index-url https://download.pytorch.org/whl/cu128
-uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
-.venv\Scripts\python.exe -m pytest
-.venv\Scripts\recurquant.exe demo --bits 4 --group-size 128
-```
-
-The model experiment is intentionally separate from the unit-test suite because
-it downloads approximately 1.75 GB of public model weights.
-
-## Reproduce the frozen confirmation
-
-The script pins the model revision and records the environment, token digest,
-state layout, metrics, and canonical evidence hash:
-
-```powershell
-.venv\Scripts\python.exe scripts\run_qwen35_smoke.py `
-  --upgrade-layers 0 --low-bits 4 --high-bits 8 `
-  --group-size 128 --rounding nearest `
-  --prefill-tokens 32 --decode-tokens 32 `
-  --prompt-profile multilingual `
-  --output artifacts\multilingual-confirmation.json
-```
-
-This reruns the already disclosed confirmation profile; it is a reproducibility
-check, not a new held-out test. The recorded result and its limitations are in
-[Confirmation 001](research/CONFIRMATION_001.md).
-
-## Research discipline
-
-- Model and tokenizer revisions are pinned in evidence artifacts.
-- Calibration, development, and confirmation prompts must remain separate.
-- Static baselines run before any adaptive policy is tuned.
-- Simple averages of decay, write, update norm, and residual magnitude are kept
-  as negative pilot evidence; they did not predict layer sensitivity reliably.
-- Real latency is reported only after a packed kernel exists.
-- Failed gates and negative results remain visible.
-- Derived checkpoints must retain the base model's name, license, and lineage.
-
-## License
-
-RecurQuant code is licensed under Apache-2.0. Referenced papers, models, datasets,
-and repositories retain their own licenses.
+I welcome reproducible compatibility reports, additional model-family adapters,
+and work toward a fused packed recurrent kernel. Open an
+[issue](https://github.com/Labeeb2339/recurquant/issues) with a minimal
+reproducer and `cache.storage_summary()`; never include access tokens, private
+prompts, or authentication files.

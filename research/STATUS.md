@@ -1,5 +1,18 @@
 # Research status
 
+The frozen v0.2 public-data study completed on 2026-07-22. Every preregistered
+quality gate passed on all 500 untouched MBPP test tasks and 30,244 scored
+tokens. The exact result, integrity anchors, infrastructure-resume record, and
+claim boundary are in
+[`CONFIRMATION_002.md`](CONFIRMATION_002.md). The frozen design remains in
+[`PUBLIC_EVAL_PROTOCOL_V02.md`](PUBLIC_EVAL_PROTOCOL_V02.md), and the earlier
+development decision is in [`DEVELOPMENT_002.md`](DEVELOPMENT_002.md).
+
+## v0.1 pilot archive
+
+The remainder of this file preserves the diagnostic v0.1 snapshot. Do not read
+its historical "next action" as the current project state.
+
 Last updated: 2026-07-22
 
 ## Confirmed implementation
@@ -10,7 +23,7 @@ Last updated: 2026-07-22
   `dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68`.
 - Captured 18 recurrent states at `[1, 16, 128, 128]`, FP32, totalling 18 MiB.
 - QDQ occurs once after prefill and after every teacher-forced decode token.
-- All 26 unit/integration tests and lint are green.
+- At this snapshot, all 26 unit/integration tests and lint were green.
 
 ## Calibration and development evidence
 
@@ -70,7 +83,7 @@ The deterministic repeat matched canonical evidence hash
 `1961ecc395d138cf505a20e55c3465260dcfded8b1ac3a9c95c40af775d2d722`.
 Gate C passed. See [Confirmation 001](CONFIRMATION_001.md).
 
-## Next action
+## Historical next action
 
 Move from synthetic diagnostics to a preregistered public-data evaluation with
 longer horizons, multiple seeds, sequence NLL, equal-byte baselines, and no

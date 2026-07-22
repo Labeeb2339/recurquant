@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 
@@ -7,12 +8,14 @@ from recurquant.quantization import QuantizationSpec
 from recurquant.transformers_cache import RecurrentStateQDQCache
 
 
-def tiny_config() -> Qwen3_5TextConfig:
+def tiny_config(layer_types: list[str] | None = None) -> Qwen3_5TextConfig:
+    if layer_types is None:
+        layer_types = ["linear_attention", "full_attention"]
     return Qwen3_5TextConfig(
         vocab_size=128,
         hidden_size=64,
         intermediate_size=128,
-        num_hidden_layers=2,
+        num_hidden_layers=len(layer_types),
         num_attention_heads=4,
         num_key_value_heads=2,
         head_dim=16,
@@ -23,7 +26,7 @@ def tiny_config() -> Qwen3_5TextConfig:
         linear_value_head_dim=8,
         linear_num_key_heads=2,
         linear_num_value_heads=2,
-        layer_types=["linear_attention", "full_attention"],
+        layer_types=layer_types,
         rope_parameters={
             "rope_type": "default",
             "rope_theta": 10_000.0,
@@ -90,3 +93,13 @@ def test_layer_specific_spec_overrides_default() -> None:
     cache.update_recurrent_state(state, layer_idx=0)
 
     assert cache.update_evidence[0].bits == 8
+
+
+def test_qdq_cache_rejects_non_linear_or_unknown_configuration() -> None:
+    config = tiny_config()
+    spec = QuantizationSpec(bits=4, group_size=16)
+
+    with pytest.raises(ValueError, match="non-linear or unknown"):
+        RecurrentStateQDQCache(config, spec=spec, layer_specs={1: spec})
+    with pytest.raises(ValueError, match="non-linear or unknown"):
+        RecurrentStateQDQCache(config, spec=spec, enabled_layers=[99])
