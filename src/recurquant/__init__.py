@@ -47,6 +47,7 @@ from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
+    RankFusedMixedPackedRecurrentStateCache,
 )
 from .quantization import (
     PackedQuantizedTensor,
@@ -59,6 +60,7 @@ from .qwen35 import (
     create_qwen35_adaptive_exact_budget_cache,
     create_qwen35_exact_budget_cache,
     create_qwen35_packed_cache,
+    create_qwen35_rank_fused_exact_budget_cache,
     create_qwen35_v02_mixed_cache,
 )
 from .row_policy import ExactBudgetRowPlan, RowLocation, select_rows_exact_budget
@@ -78,6 +80,7 @@ __all__ = [
     "PackedMixedQuantizedTensor",
     "PackedQuantizedTensor",
     "PackedRecurrentStateCache",
+    "RankFusedMixedPackedRecurrentStateCache",
     "PhysicalMetricRun",
     "PhysicalRowPromotionOracleResult",
     "QuantizationResult",
@@ -95,6 +98,7 @@ __all__ = [
     "create_qwen35_adaptive_exact_budget_cache",
     "create_qwen35_exact_budget_cache",
     "create_qwen35_packed_cache",
+    "create_qwen35_rank_fused_exact_budget_cache",
     "create_qwen35_v02_mixed_cache",
     "finite_horizon_row_read_risk",
     "finite_horizon_row_read_risk_from_energies",

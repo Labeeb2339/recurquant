@@ -1,5 +1,29 @@
 # Research status
 
+## v0.3 experimental track
+
+Last updated: 2026-07-23
+
+Experiment 005 stopped before holdout after its frozen real-storage-boundary
+sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
+failure, authenticated artifact, and same-calibration postmortem are recorded
+in [`EXPERIMENT_005_RESULT.md`](EXPERIMENT_005_RESULT.md). The ranked MBPP
+calibration window `[8, 16)` was not opened.
+
+Experiment 006 freezes one successor hypothesis: within the same exact
+per-layer quotas, combine the offline target-directional sensitivity rank with
+the causal per-write INT4-to-INT8 reconstruction-benefit rank. Equal rank
+fusion (`lambda = 0.5`) is the immutable primary; `0.25` and `0.75` are
+report-only ablations. The implementation and protocol are complete for a
+same-calibration diagnostic, but no rank-fusion GPU result or heldout result
+exists at this checkpoint. The holdout remains fail-closed pending a passing
+candidate-aligned numerical/packing gate. See
+[`EXPERIMENT_006_RANK_FUSION_PROTOCOL_DRAFT.md`](EXPERIMENT_006_RANK_FUSION_PROTOCOL_DRAFT.md).
+
+No v0.3 improvement, novelty, speed, or breakthrough claim is supported.
+
+## v0.2 confirmed release
+
 The frozen v0.2 public-data study completed on 2026-07-22. Every preregistered
 quality gate passed on all 500 untouched MBPP test tasks and 30,244 scored
 tokens. The exact result, integrity anchors, infrastructure-resume record, and
@@ -13,7 +37,7 @@ development decision is in [`DEVELOPMENT_002.md`](DEVELOPMENT_002.md).
 The remainder of this file preserves the diagnostic v0.1 snapshot. Do not read
 its historical "next action" as the current project state.
 
-Last updated: 2026-07-22
+Snapshot date: 2026-07-22
 
 ## Confirmed implementation
 

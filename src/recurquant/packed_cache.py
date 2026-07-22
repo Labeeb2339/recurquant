@@ -6,6 +6,7 @@ import hashlib
 import math
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from dataclasses import asdict, dataclass
+from numbers import Real
 
 import torch
 from transformers import DynamicCache
@@ -882,6 +883,121 @@ class AdaptiveMixedPackedLinearAttentionLayer(MixedPackedLinearAttentionLayer):
         return mask.reshape(self.expected_heads, self.expected_rows)
 
 
+def _validate_static_rank_weight(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError("static_rank_weight must be a real number")
+    weight = float(value)
+    if not math.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise ValueError("static_rank_weight must be finite and in [0, 1]")
+    return weight
+
+
+def _descending_rank_positions(values: torch.Tensor) -> torch.Tensor:
+    """Return deterministic zero-best ordinal rank positions."""
+
+    flat = values.reshape(-1)
+    order = torch.argsort(flat, descending=True, stable=True)
+    ranks = torch.empty(flat.numel(), dtype=torch.int64, device=flat.device)
+    ranks[order] = torch.arange(flat.numel(), dtype=torch.int64, device=flat.device)
+    return ranks
+
+
+class RankFusedMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttentionLayer):
+    """Fuse calibrated static ranks with causal per-write MSE-benefit ranks."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.static_rank_weight: float | None = None
+        self.static_rank_positions: torch.Tensor | None = None
+
+    def configure_rank_fusion(
+        self,
+        static_scores: torch.Tensor,
+        *,
+        static_rank_weight: float,
+    ) -> None:
+        expected_shape = (self.expected_heads, self.expected_rows)
+        if tuple(static_scores.shape) != expected_shape:
+            raise ValueError(
+                f"layer {self.layer_index} static scores must have shape {expected_shape}; "
+                f"got {tuple(static_scores.shape)}"
+            )
+        if not static_scores.is_floating_point():
+            raise TypeError(f"layer {self.layer_index} static scores must be floating point")
+        if static_scores.device.type == "meta":
+            raise ValueError(f"layer {self.layer_index} static scores must be materialized")
+        if not torch.isfinite(static_scores).all().item():
+            raise ValueError(f"layer {self.layer_index} static scores must be finite")
+        self.static_rank_weight = _validate_static_rank_weight(static_rank_weight)
+        with torch.no_grad():
+            self.static_rank_positions = _descending_rank_positions(
+                static_scores.detach().clone()
+            )
+
+    def _precision_mask(
+        self,
+        recurrent_states: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        # Reuse the complete geometry checks without applying the static mask.
+        MixedPackedLinearAttentionLayer._precision_mask(
+            self,
+            recurrent_states,
+            low_spec=low_spec,
+            high_spec=high_spec,
+        )
+        if recurrent_states.shape[0] != 1:
+            raise ValueError(
+                "rank-fused mixed cache selection currently requires batch size 1; "
+                f"got {recurrent_states.shape[0]}"
+            )
+        if self.static_rank_weight is None or self.static_rank_positions is None:
+            raise RuntimeError(f"layer {self.layer_index} rank fusion was not configured")
+        if self.static_rank_positions.device != recurrent_states.device:
+            raise ValueError(
+                f"layer {self.layer_index} static scores and recurrent state must use "
+                "the same device"
+            )
+
+        total_groups = self.expected_heads * self.expected_rows
+        quota = len(self.high_precision_group_indices)
+        mask = torch.zeros(
+            total_groups,
+            dtype=torch.bool,
+            device=recurrent_states.device,
+        )
+        if quota == 0:
+            return mask.reshape(self.expected_heads, self.expected_rows)
+        if quota == total_groups:
+            return torch.ones_like(mask).reshape(self.expected_heads, self.expected_rows)
+
+        with torch.no_grad():
+            source = recurrent_states.detach().to(torch.float32)
+            low = quantize_dequantize(recurrent_states, low_spec).tensor.to(torch.float32)
+            high = quantize_dequantize(recurrent_states, high_spec).tensor.to(torch.float32)
+            dynamic_benefit = (
+                (low - source).square().mean(dim=-1)
+                - (high - source).square().mean(dim=-1)
+            ).reshape(-1)
+            dynamic_rank = _descending_rank_positions(dynamic_benefit)
+            quarter_units = self.static_rank_weight * 4.0
+            if quarter_units.is_integer():
+                static_units = int(quarter_units)
+                fused_cost = (
+                    static_units * self.static_rank_positions
+                    + (4 - static_units) * dynamic_rank
+                )
+            else:
+                fused_cost = self.static_rank_weight * self.static_rank_positions + (
+                    1.0 - self.static_rank_weight
+                ) * dynamic_rank
+            ranked = torch.argsort(fused_cost, descending=False, stable=True)
+            mask[ranked[:quota]] = True
+        return mask.reshape(self.expected_heads, self.expected_rows)
+
+
 class MixedPackedRecurrentStateCache(DynamicCache):
     """Drop-in cache driven by an exact-byte row-level INT4/INT8 plan."""
 
@@ -1058,3 +1174,84 @@ class AdaptiveMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
 
     _mixed_layer_class = AdaptiveMixedPackedLinearAttentionLayer
     selection_method = "instantaneous_aligned_mse_reduction"
+
+
+class RankFusedMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
+    """Exact-byte cache fusing static selector and instantaneous MSE ranks."""
+
+    _mixed_layer_class = RankFusedMixedPackedLinearAttentionLayer
+    selection_method = "quota_preserving_static_dynamic_rank_fusion"
+
+    def __init__(
+        self,
+        config: object,
+        *,
+        plan: ExactBudgetRowPlan,
+        static_scores_by_layer: Mapping[int, torch.Tensor],
+        static_rank_weight: float,
+        rounding: RoundingMode = "nearest",
+        seed: int = 2339,
+        record_evidence: bool = False,
+    ) -> None:
+        weight = _validate_static_rank_weight(static_rank_weight)
+        if not isinstance(static_scores_by_layer, Mapping) or not static_scores_by_layer:
+            raise ValueError("static_scores_by_layer must be a non-empty mapping")
+        if any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in static_scores_by_layer
+        ):
+            raise ValueError("static score layer indices must be non-negative integers")
+
+        expected_shapes = {
+            layer_index: (head_count, row_count)
+            for layer_index, head_count, row_count in plan.score_shapes
+        }
+        actual_layers = set(static_scores_by_layer)
+        expected_layers = set(expected_shapes)
+        if actual_layers != expected_layers:
+            missing = sorted(expected_layers - actual_layers)
+            extra = sorted(actual_layers - expected_layers)
+            raise ValueError(
+                "static score layers must exactly match the row plan; "
+                f"missing={missing}, extra={extra}"
+            )
+
+        validated_scores: dict[int, torch.Tensor] = {}
+        score_devices: set[torch.device] = set()
+        for layer_index in sorted(expected_layers):
+            scores = static_scores_by_layer[layer_index]
+            if not isinstance(scores, torch.Tensor):
+                raise TypeError(f"layer {layer_index} static scores must be a tensor")
+            expected_shape = expected_shapes[layer_index]
+            if tuple(scores.shape) != expected_shape:
+                raise ValueError(
+                    f"layer {layer_index} static scores must have shape {expected_shape}; "
+                    f"got {tuple(scores.shape)}"
+                )
+            if not scores.is_floating_point():
+                raise TypeError(f"layer {layer_index} static scores must be floating point")
+            if scores.device.type == "meta":
+                raise ValueError(f"layer {layer_index} static scores must be materialized")
+            if not torch.isfinite(scores).all().item():
+                raise ValueError(f"layer {layer_index} static scores must be finite")
+            validated_scores[layer_index] = scores.detach().clone()
+            score_devices.add(scores.device)
+        if len(score_devices) != 1:
+            raise ValueError("all static score tensors must use the same device")
+
+        self.static_rank_weight = weight
+        self.static_scores_by_layer = validated_scores
+        super().__init__(
+            config,
+            plan=plan,
+            rounding=rounding,
+            seed=seed,
+            record_evidence=record_evidence,
+        )
+        for layer_index, layer in self.mixed_packed_layers():
+            if not isinstance(layer, RankFusedMixedPackedLinearAttentionLayer):
+                raise RuntimeError(f"layer {layer_index} is not rank-fusion capable")
+            layer.configure_rank_fusion(
+                validated_scores[layer_index],
+                static_rank_weight=weight,
+            )

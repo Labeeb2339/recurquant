@@ -14,6 +14,7 @@ from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
+    RankFusedMixedPackedRecurrentStateCache,
 )
 from .quantization import QuantizationSpec, RoundingMode
 from .row_policy import ExactBudgetRowPlan
@@ -309,6 +310,35 @@ def create_qwen35_adaptive_exact_budget_cache(
     return AdaptiveMixedPackedRecurrentStateCache(
         _validated_exact_budget_config(model_or_config, plan=plan),
         plan=plan,
+        rounding=rounding,
+        seed=seed,
+        record_evidence=record_evidence,
+    )
+
+
+def create_qwen35_rank_fused_exact_budget_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    static_scores_by_layer: Mapping[int, torch.Tensor],
+    static_rank_weight: float,
+    rounding: RoundingMode = "nearest",
+    seed: int = 2339,
+    record_evidence: bool = False,
+) -> RankFusedMixedPackedRecurrentStateCache:
+    """Create an exact-byte static/dynamic rank-fusion cache for Qwen3.5.
+
+    The row plan fixes each layer's promotion quota. Within that quota, one
+    global weight fuses calibrated static-score ranks with causal per-write ranks
+    of aligned INT4-to-INT8 MSE reduction. Static score tensors must cover the
+    plan's layers exactly and reside on the same device as recurrent states.
+    """
+
+    return RankFusedMixedPackedRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        static_scores_by_layer=static_scores_by_layer,
+        static_rank_weight=static_rank_weight,
         rounding=rounding,
         seed=seed,
         record_evidence=record_evidence,

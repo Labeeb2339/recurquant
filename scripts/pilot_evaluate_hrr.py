@@ -39,6 +39,7 @@ from recurquant.packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
+    RankFusedMixedPackedRecurrentStateCache,
 )
 from recurquant.public_data import (
     MBPP_CALIBRATION_SIZE,
@@ -52,6 +53,7 @@ from recurquant.qwen35 import (
     create_qwen35_adaptive_exact_budget_cache,
     create_qwen35_exact_budget_cache,
     create_qwen35_packed_cache,
+    create_qwen35_rank_fused_exact_budget_cache,
     create_qwen35_v02_mixed_cache,
 )
 from recurquant.row_policy import ExactBudgetRowPlan, select_rows_exact_budget
@@ -64,6 +66,12 @@ STORAGE_BOUNDARY_ARTIFACT_KIND = "recurquant_storage_boundary_taylor_diagnostic"
 LOSS_SELECTOR_PRIMARY = "signed_taylor_next_int4"
 ADAPTIVE_H1 = "adaptive_mse_hrr_h1_quota"
 ADAPTIVE_TARGET_FISHER = "adaptive_mse_target_directional_fisher_quota"
+RANK_FUSION_METHODS = (
+    ("rank_fusion_l025_target_fisher_adaptive_mse", 0.25),
+    ("rank_fusion_l050_target_fisher_adaptive_mse", 0.50),
+    ("rank_fusion_l075_target_fisher_adaptive_mse", 0.75),
+)
+RANK_FUSION_PRIMARY = "rank_fusion_l050_target_fisher_adaptive_mse"
 LOSS_SCORE_NAMES = (
     LOSS_SELECTOR_PRIMARY,
     "target_directional_fisher_difference_int4",
@@ -110,6 +118,12 @@ EVALUATOR_SOURCE_FILES = (
     "src/recurquant/row_policy.py",
 )
 
+RankFusionCacheSpec = tuple[
+    ExactBudgetRowPlan,
+    Mapping[int, torch.Tensor],
+    float,
+]
+
 
 @dataclass(slots=True)
 class _TokenAccumulator:
@@ -150,6 +164,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selector-artifact", type=Path, required=True)
     parser.add_argument("--loss-selector-artifact", type=Path)
     parser.add_argument("--storage-boundary-artifact", type=Path)
+    parser.add_argument(
+        "--rank-fusion",
+        action="store_true",
+        help=(
+            "Run the frozen Experiment 006 same-calibration rank-fusion primary "
+            "and its predeclared 0.25/0.75 ablations. Positive offsets remain "
+            "disabled until the separate Experiment 006 prerequisite is implemented."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int)
     parser.add_argument(
@@ -472,11 +495,17 @@ def validate_frozen_holdout_request(
     selectors: Sequence[Mapping[str, Any]],
     loss_selector_present: bool,
     storage_boundary_present: bool,
+    rank_fusion_enabled: bool = False,
 ) -> None:
     """Refuse any positive-offset run outside Experiment 005's frozen request."""
 
     if offset == 0:
         return
+    if rank_fusion_enabled:
+        raise ValueError(
+            "Experiment 006 rank-fusion holdout remains closed until its separate "
+            "candidate-aligned numeric prerequisite and frozen gate are implemented"
+        )
     if offset != FROZEN_HOLDOUT_OFFSET or limit != FROZEN_HOLDOUT_LIMIT:
         raise ValueError(
             "Experiment 005 heldout-calibration requires the exact ranked window "
@@ -859,6 +888,12 @@ def evaluate_frozen_holdout_gate(
 def primary_claim_text(primary_name: str) -> str:
     """Describe the actual primary without implying a missing loss selector."""
 
+    if primary_name == RANK_FUSION_PRIMARY:
+        return (
+            "The actual primary uses target-directional-Fisher per-layer quotas "
+            "and equal-weight ordinal rank fusion between calibrated static row "
+            "sensitivity and causal per-write INT4-to-INT8 MSE reduction."
+        )
     if primary_name == ADAPTIVE_TARGET_FISHER:
         return (
             "The actual primary uses target-directional-Fisher per-layer quotas "
@@ -953,17 +988,20 @@ def make_caches(
     *,
     plans: dict[str, ExactBudgetRowPlan],
     adaptive_plans: dict[str, ExactBudgetRowPlan],
+    rank_fusion_specs: Mapping[str, RankFusionCacheSpec] | None = None,
 ) -> dict[
     str,
     PackedRecurrentStateCache
     | MixedPackedRecurrentStateCache
-    | AdaptiveMixedPackedRecurrentStateCache,
+    | AdaptiveMixedPackedRecurrentStateCache
+    | RankFusedMixedPackedRecurrentStateCache,
 ]:
     caches: dict[
         str,
         PackedRecurrentStateCache
         | MixedPackedRecurrentStateCache
-        | AdaptiveMixedPackedRecurrentStateCache,
+        | AdaptiveMixedPackedRecurrentStateCache
+        | RankFusedMixedPackedRecurrentStateCache,
     ] = {
         "uniform_int4": create_qwen35_packed_cache(model, bits=4),
         "v02_layer0_static": create_qwen35_v02_mixed_cache(model),
@@ -974,6 +1012,20 @@ def make_caches(
         if name in caches:
             raise ValueError(f"adaptive cache name duplicates another method: {name}")
         caches[name] = create_qwen35_adaptive_exact_budget_cache(model, plan=plan)
+    score_device = next(model.parameters()).device
+    for name, (plan, static_scores, static_rank_weight) in (rank_fusion_specs or {}).items():
+        if name in caches:
+            raise ValueError(f"rank-fusion cache name duplicates another method: {name}")
+        scores_on_device = {
+            layer_index: scores.to(score_device)
+            for layer_index, scores in static_scores.items()
+        }
+        caches[name] = create_qwen35_rank_fused_exact_budget_cache(
+            model,
+            plan=plan,
+            static_scores_by_layer=scores_on_device,
+            static_rank_weight=static_rank_weight,
+        )
     return caches
 
 
@@ -994,6 +1046,7 @@ def evaluate_task(
     code_ids: torch.Tensor,
     plans: dict[str, ExactBudgetRowPlan],
     adaptive_plans: dict[str, ExactBudgetRowPlan],
+    rank_fusion_specs: Mapping[str, RankFusionCacheSpec] | None = None,
 ) -> tuple[
     dict[str, dict[str, float | int]],
     dict[str, dict[str, float | int]],
@@ -1001,7 +1054,12 @@ def evaluate_task(
     int,
 ]:
     reference_cache = DynamicCache(config=model.config)
-    caches = make_caches(model, plans=plans, adaptive_plans=adaptive_plans)
+    caches = make_caches(
+        model,
+        plans=plans,
+        adaptive_plans=adaptive_plans,
+        rank_fusion_specs=rank_fusion_specs,
+    )
     aligned_accumulators = {name: _TokenAccumulator.empty() for name in caches}
     full_code_accumulators = {name: _TokenAccumulator.empty() for name in caches}
 
@@ -1298,6 +1356,8 @@ def main() -> int:
             expected_kind=LOSS_ARTIFACT_KIND,
         )
         validate_compatible_selector(selector, loss_selector)
+    if args.rank_fusion and loss_selector is None:
+        raise ValueError("--rank-fusion requires --loss-selector-artifact")
     storage_boundary: dict[str, Any] | None = None
     storage_boundary_sha256: str | None = None
     if args.storage_boundary_artifact is not None:
@@ -1319,6 +1379,7 @@ def main() -> int:
         selectors=selectors,
         loss_selector_present=loss_selector is not None,
         storage_boundary_present=storage_boundary is not None,
+        rank_fusion_enabled=args.rank_fusion,
     )
     if heldout_calibration:
         validate_heldout_repository_start(repository_start, selectors)
@@ -1384,6 +1445,7 @@ def main() -> int:
         "random_rows_s1101": random_plan_like(hrr_primary_plan),
     }
     adaptive_plans = {ADAPTIVE_H1: h1_plan}
+    rank_fusion_specs: dict[str, RankFusionCacheSpec] = {}
     primary_name = hrr_primary_name
     primary_plan = hrr_primary_plan
     if loss_selector is not None:
@@ -1391,6 +1453,16 @@ def main() -> int:
         adaptive_plans[ADAPTIVE_TARGET_FISHER] = plans["target_directional_fisher_difference_int4"]
         primary_name = ADAPTIVE_TARGET_FISHER
         primary_plan = adaptive_plans[primary_name]
+        if args.rank_fusion:
+            target_fisher_scores = scores_from_artifact(
+                loss_selector,
+                "target_directional_fisher_difference_int4",
+            )
+            rank_fusion_specs = {
+                name: (primary_plan, target_fisher_scores, weight)
+                for name, weight in RANK_FUSION_METHODS
+            }
+            primary_name = RANK_FUSION_PRIMARY
 
     torch.manual_seed(SEED)
     device = select_device(args.device)
@@ -1460,6 +1532,7 @@ def main() -> int:
                 code_ids=code_ids,
                 plans=plans,
                 adaptive_plans=adaptive_plans,
+                rank_fusion_specs=rank_fusion_specs,
             )
             if storage_anchor is None:
                 storage_anchor = storage
@@ -1487,6 +1560,10 @@ def main() -> int:
     for name in adaptive_plans:
         summary = storage_anchor[name]
         if summary["resident_bytes"] != adaptive_plans[name].resident_bytes:
+            raise RuntimeError(f"{name} did not realize its exact resident-byte plan")
+    for name, (plan, _, _) in rank_fusion_specs.items():
+        summary = storage_anchor[name]
+        if summary["resident_bytes"] != plan.resident_bytes:
             raise RuntimeError(f"{name} did not realize its exact resident-byte plan")
     if storage_anchor["v02_layer0_static"]["resident_bytes"] != primary_plan.resident_bytes:
         raise RuntimeError("v0.2 static and the primary row plan are not equal-byte")
@@ -1535,10 +1612,19 @@ def main() -> int:
         )
     else:
         heldout_gate = {
-            "schema": "recurquant.experiment005-heldout-gate.v1",
+            "schema": (
+                "recurquant.experiment006-heldout-gate.v1"
+                if args.rank_fusion
+                else "recurquant.experiment005-heldout-gate.v1"
+            ),
             "applicable": False,
             "passed": None,
-            "reason": "same-calibration diagnostics cannot satisfy the frozen holdout gate",
+            "reason": (
+                "same-calibration diagnostics cannot satisfy the frozen Experiment 006 "
+                "holdout gate; rank-fusion positive offsets remain disabled"
+                if args.rank_fusion
+                else "same-calibration diagnostics cannot satisfy the frozen holdout gate"
+            ),
         }
     selector_artifacts = {
         "hrr": {
@@ -1565,6 +1651,8 @@ def main() -> int:
             if heldout_calibration
             else "recurquant_adaptive_row_packing_same_calibration_quality_diagnostic"
         )
+    if args.rank_fusion:
+        quality_artifact_kind = "recurquant_rank_fusion_same_calibration_quality_diagnostic"
     prerequisite_artifacts: dict[str, dict[str, Any]] = {}
     if storage_boundary is not None:
         assert args.storage_boundary_artifact is not None
@@ -1675,6 +1763,25 @@ def main() -> int:
                 if loss_selector is not None
                 else {}
             ),
+            **{
+                name: {
+                    "selection": (
+                        "per-layer ordinal rank fusion of calibrated target-directional-"
+                        "Fisher scores and per-write aligned INT4-to-INT8 row MSE reduction"
+                    ),
+                    "static_rank_weight": weight,
+                    "dynamic_rank_weight": 1.0 - weight,
+                    "rank_normalization": (
+                        "zero-best ordinal positions, stable flattened row ties"
+                    ),
+                    "layer_quota_source": (
+                        "target_directional_fisher_difference_int4 selector plan"
+                    ),
+                    "batch_size": 1,
+                    "resident_bytes": plan.resident_bytes,
+                }
+                for name, (plan, _, weight) in rank_fusion_specs.items()
+            },
         },
         "storage": {
             "fp32_reference_recurrent_state_bytes": reference_state_bytes,

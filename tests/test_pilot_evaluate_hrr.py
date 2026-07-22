@@ -475,6 +475,24 @@ def test_frozen_holdout_request_requires_exact_window_and_two_eight_task_selecto
     )
 
 
+def test_experiment006_rank_fusion_holdout_remains_fail_closed() -> None:
+    selectors = [
+        _frozen_selector(evaluator.HRR_ARTIFACT_KIND),
+        _frozen_selector(evaluator.LOSS_ARTIFACT_KIND),
+    ]
+
+    with pytest.raises(ValueError, match="rank-fusion holdout remains closed"):
+        evaluator.validate_frozen_holdout_request(
+            offset=8,
+            limit=8,
+            bootstrap_samples=10_000,
+            selectors=selectors,
+            loss_selector_present=True,
+            storage_boundary_present=True,
+            rank_fusion_enabled=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -766,10 +784,17 @@ def test_frozen_holdout_gate_reports_each_threshold_failure(mutation, failed_che
 def test_claim_and_exit_code_follow_actual_primary_and_gate() -> None:
     static_claim = evaluator.primary_claim_text("hrr_h32")
     adaptive_claim = evaluator.primary_claim_text(evaluator.ADAPTIVE_TARGET_FISHER)
+    fusion_claim = evaluator.primary_claim_text(evaluator.RANK_FUSION_PRIMARY)
 
     assert "static HRR" in static_claim
     assert "no loss-selector" in static_claim
     assert "target-directional-Fisher" in adaptive_claim
+    assert "equal-weight ordinal rank fusion" in fusion_claim
+    assert evaluator.RANK_FUSION_METHODS == (
+        ("rank_fusion_l025_target_fisher_adaptive_mse", 0.25),
+        ("rank_fusion_l050_target_fisher_adaptive_mse", 0.50),
+        ("rank_fusion_l075_target_fisher_adaptive_mse", 0.75),
+    )
     assert evaluator.diagnostic_exit_code(heldout_calibration=True, gate_passed=False) == 2
     assert evaluator.diagnostic_exit_code(heldout_calibration=True, gate_passed=True) == 0
     assert evaluator.diagnostic_exit_code(heldout_calibration=False, gate_passed=False) == 0

@@ -1,6 +1,6 @@
 # Claim boundary
 
-Last reviewed: 2026-07-22
+Last reviewed: 2026-07-23
 
 ## What is already established
 
@@ -31,6 +31,22 @@ construction, and teacher-forced metric in
 generated-code correctness, lower latency, lower whole-model or peak memory, or
 cross-model generality. Mean decay, write gate, state-update magnitude, and
 residual magnitude remain rejected diagnostic selectors from the earlier pilot.
+
+## Current v0.3 research boundary
+
+Experiment 005 permanently failed its frozen numerical prerequisite before
+holdout (`13/16 = 0.8125` sign agreement versus a required `0.95`). Its later
+same-calibration adaptive-MSE postmortem was promising but achieved only a
+7.93% descriptive excess-NLL reduction against the strongest static empirical
+selector, with a paired 95% interval crossing zero. The ranked `[8, 16)`
+holdout remained unopened.
+
+Experiment 006 currently defines and implements deterministic rank fusion of
+offline target-directional sensitivity and causal per-write reconstruction
+benefit at the same exact byte budget. It has no GPU quality result at this
+checkpoint, and its heldout path remains disabled until a candidate-aligned
+numeric and packing prerequisite passes. It supports an experiment, not an
+improvement, novelty, deployment, or breakthrough claim.
 
 ## Claims prohibited without new evidence
 
