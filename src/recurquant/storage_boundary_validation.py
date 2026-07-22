@@ -381,7 +381,7 @@ def _autograd_directional_derivative(
     leaf = state.detach().clone().requires_grad_(True)
     cache.layers[location.layer_index].recurrent_states[0] = leaf
 
-    original_update = cache.update_recurrent_state
+    recurrent_layers = frozenset(recurrent_layer_indices(cache))
     had_instance_update = "update_recurrent_state" in cache.__dict__
     previous_instance_update = cache.__dict__.get("update_recurrent_state")
 
@@ -392,18 +392,29 @@ def _autograd_directional_derivative(
         state_idx: int = 0,
         **update_kwargs: Any,
     ) -> torch.Tensor:
-        if layer_idx != location.layer_index:
-            return original_update(
-                recurrent_states,
-                layer_idx,
-                state_idx=state_idx,
-                **update_kwargs,
+        del update_kwargs
+        if layer_idx not in recurrent_layers:
+            raise ValueError(
+                f"unexpected recurrent-state update for unprepared layer {layer_idx}"
             )
         if state_idx != 0:
             raise ValueError("Qwen3.5 storage-boundary validation supports state_idx=0 only")
         layer = working_cache.layers[layer_idx]
+        states = getattr(layer, "recurrent_states", None)
+        initialized = getattr(layer, "is_recurrent_states_initialized", None)
+        if not isinstance(states, dict) or not isinstance(initialized, dict):
+            raise RuntimeError(f"cache layer {layer_idx} lost recurrent-state metadata")
+        if not initialized.get(state_idx, False):
+            raise RuntimeError(f"cache layer {layer_idx} was not warm at the measured boundary")
+
+        # Transformers normally copy_()s every updated GDN state into its warm
+        # cache tensor to preserve a static address. During this differentiable
+        # diagnostic, later GDN updates can depend on the selected leaf. Their
+        # CopyBackwards destinations would overwrite tensors saved by the
+        # recurrent kernels before autograd runs. Assignment preserves the exact
+        # value stored for the next token without mutating any current-token
+        # input in place. Only ``leaf`` remains a differentiation target.
         layer.recurrent_states[state_idx] = recurrent_states
-        layer.is_recurrent_states_initialized[state_idx] = True
         return recurrent_states
 
     parameters = tuple(model.parameters())

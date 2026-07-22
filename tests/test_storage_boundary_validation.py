@@ -124,6 +124,45 @@ def test_real_tiny_qwen_storage_boundary_matches_central_difference() -> None:
     assert all(parameter.grad is None for parameter in model.parameters())
 
 
+def test_multilayer_qwen_gradient_avoids_downstream_cache_copy_inplace() -> None:
+    torch.manual_seed(2341)
+    model = Qwen3_5ForCausalLM._from_config(
+        tiny_config(["linear_attention", "linear_attention", "full_attention"]),
+        attn_implementation="eager",
+    ).eval()
+    cache = _warm_cache(model, torch.tensor([[2, 3, 5, 7]]))
+    raw_before = {
+        layer_index: cache.layers[layer_index].recurrent_states[0].clone()
+        for layer_index in (0, 1)
+    }
+
+    result = validate_qwen_storage_boundary_row(
+        model,
+        cache,
+        torch.tensor([[11]]),
+        torch.tensor([[13]]),
+        location=StorageRowLocation(layer_index=0, head_index=1, row_index=3),
+        int4_spec=_spec(4),
+        int8_spec=_spec(8),
+        epsilon=0.25,
+        sign_floor=1e-9,
+        forward_kwargs={"logits_to_keep": 1},
+    )
+
+    assert result.recurrent_layer_indices == (0, 1)
+    assert result.comparison.baseline_repeat_absolute_error < 1e-7
+    assert result.comparison.autograd_directional_derivative == pytest.approx(
+        result.comparison.central_directional_derivative,
+        rel=5e-2,
+        abs=2e-6,
+    )
+    assert all(
+        torch.equal(cache.layers[layer_index].recurrent_states[0], raw_before[layer_index])
+        for layer_index in (0, 1)
+    )
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+
 def test_advancing_prior_token_stops_on_raw_update() -> None:
     model = _tiny_model()
     prompt = torch.tensor([[3, 4, 5]])
