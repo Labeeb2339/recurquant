@@ -68,6 +68,14 @@ was not reached and ranked `[8, 16)` remained unopened. Experiment 007 supports
 no generalization, novelty, latency, deployment, state-of-the-art, or
 breakthrough claim.
 
+Experiment 008 preregisters CORA-C2 on a separate `[16, 32)` development
+window. Its implementation combines a causal diagonal approximation to the
+Gated DeltaNet error-transition observability recurrence, exact Q4-to-Q8 row
+squared-error benefit, fixed target-Fisher layer quotas, and Confirmation-2.
+That combination is a testable mechanism hypothesis, not an established novel
+method. No Experiment 008 quality result has yet been observed, and ranked
+`[8, 16)` remains protected.
+
 ## Claims prohibited without new evidence
 
 - "First recurrent-state quantization method."

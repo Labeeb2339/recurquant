@@ -208,6 +208,11 @@ Ranked window `[8, 16)` remains protected. It cannot be loaded, tokenized, or
 evaluated unless every development and independent numerical prerequisite in
 this protocol passes from committed artifacts.
 
+The pre-quality implementation meaning of dataset-loader access versus retained
+evaluation rows is recorded in
+[`EXPERIMENT_008_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_008_DATA_ACCESS_CLARIFICATION.md).
+No protected row is retained, canonicalized, formatted, tokenized, or evaluated.
+
 ## Frozen methods and ablations
 
 All methods use the same model revision, quantizers, per-layer quotas, packed-

@@ -40,11 +40,13 @@ def _cache(
     promotions: int = 1,
     *,
     record_evidence: bool = False,
+    confirmation_two: bool = False,
 ) -> QueryEmaMixedPackedRecurrentStateCache:
     return create_qwen35_query_ema_exact_budget_cache(
         tiny_config(),
         plan=_plan(promotions),
         record_evidence=record_evidence,
+        confirmation_two=confirmation_two,
     )
 
 
@@ -159,6 +161,40 @@ def test_query_scaling_preserves_row_selection() -> None:
     second.update_recurrent_state(state, layer_idx=0)
 
     assert torch.equal(_packed_mask(first), _packed_mask(second))
+
+
+def test_query_ema_confirmation_two_requires_two_consecutive_raw_hits() -> None:
+    cache = _cache(promotions=1, confirmation_two=True)
+    for row, expected in zip((0, 1, 1), (0, 0, 1), strict=True):
+        cache.stage_query_observation(0, _query(row, tokens=256))
+        cache.update_recurrent_state(_difficult_state(), layer_idx=0)
+        assert _packed_mask(cache).nonzero().flatten().tolist() == [expected]
+
+    diagnostics = cache.query_ema_diagnostics()[0]
+    assert _packed_mask(cache).nonzero().flatten().tolist() == [1]
+    assert diagnostics["confirmation_two"] is True
+    assert diagnostics["observations_staged"] == 3
+    assert diagnostics["observations_committed"] == 3
+    assert diagnostics["mask_transition_count"] == 2
+    assert diagnostics["raw_xor_churn_total"] == 2
+    assert diagnostics["committed_xor_churn_total"] == 2
+    assert diagnostics["admissions_total"] == 1
+    assert diagnostics["dwell_total"] == 1
+    assert diagnostics["previous_raw_mask_bytes"] == 2
+    assert diagnostics["selector_auxiliary_bytes"] == 66
+    assert isinstance(diagnostics["raw_mask_sha256"], str)
+    assert isinstance(diagnostics["committed_mask_sha256"], str)
+
+    cache.reset()
+    reset = cache.query_ema_diagnostics()[0]
+    assert reset["observations_staged"] == 0
+    assert reset["observations_committed"] == 0
+    assert reset["mask_transition_count"] == 0
+    assert reset["raw_xor_churn_total"] == 0
+    assert reset["committed_xor_churn_total"] == 0
+    assert reset["previous_raw_mask_bytes"] == 0
+    assert reset["last_raw_cutoff_score"] is None
+    assert reset["last_committed_normalized_gap"] is None
 
 
 def test_missing_and_duplicate_query_observations_fail_closed() -> None:
@@ -284,10 +320,12 @@ def test_pending_observation_is_discarded_if_transfer_is_attempted() -> None:
     layer.discard_pending_query_observation()
 
 
+@pytest.mark.parametrize("confirmation_two", [False, True])
 def test_failed_materialization_rolls_back_packed_state_ema_and_generation(
     monkeypatch: pytest.MonkeyPatch,
+    confirmation_two: bool,
 ) -> None:
-    cache = _cache(promotions=2)
+    cache = _cache(promotions=2, confirmation_two=confirmation_two)
     layer = _layer(cache)
     cache.stage_query_observation(0, _query(0, 1, tokens=2))
     cache.update_recurrent_state(_difficult_state(), layer_idx=0)

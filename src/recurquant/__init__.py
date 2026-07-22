@@ -45,6 +45,8 @@ from .model_fisher import (
 )
 from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
+    CoraMixedPackedLinearAttentionLayer,
+    CoraMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
     QueryEmaMixedPackedLinearAttentionLayer,
@@ -61,6 +63,7 @@ from .quantization import (
 from .query_energy import Qwen35QueryEnergyObserver
 from .qwen35 import (
     create_qwen35_adaptive_exact_budget_cache,
+    create_qwen35_cora_exact_budget_cache,
     create_qwen35_exact_budget_cache,
     create_qwen35_packed_cache,
     create_qwen35_query_ema_exact_budget_cache,
@@ -68,10 +71,13 @@ from .qwen35 import (
     create_qwen35_v02_mixed_cache,
 )
 from .row_policy import ExactBudgetRowPlan, RowLocation, select_rows_exact_budget
+from .transition_observer import Qwen35TransitionObserver
 
 __all__ = [
     "AdaptiveMixedPackedRecurrentStateCache",
     "BitwidthHorizonReadRisk",
+    "CoraMixedPackedLinearAttentionLayer",
+    "CoraMixedPackedRecurrentStateCache",
     "DirectionalDerivativeCheck",
     "ExactBudgetRowPlan",
     "FiniteDifferencePoint",
@@ -87,6 +93,7 @@ __all__ = [
     "QueryEmaMixedPackedLinearAttentionLayer",
     "QueryEmaMixedPackedRecurrentStateCache",
     "Qwen35QueryEnergyObserver",
+    "Qwen35TransitionObserver",
     "RankFusedMixedPackedRecurrentStateCache",
     "PhysicalMetricRun",
     "PhysicalRowPromotionOracleResult",
@@ -103,6 +110,7 @@ __all__ = [
     "TaskMacroSensitivitySummary",
     "check_directional_derivative",
     "create_qwen35_adaptive_exact_budget_cache",
+    "create_qwen35_cora_exact_budget_cache",
     "create_qwen35_exact_budget_cache",
     "create_qwen35_packed_cache",
     "create_qwen35_query_ema_exact_budget_cache",

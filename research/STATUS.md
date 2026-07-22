@@ -33,6 +33,15 @@ and integrity checks passed. Experiment 007 therefore stopped before its FP64
 prerequisite or holdout; ranked `[8, 16)` remains unopened. See
 [`EXPERIMENT_007_RESULT.md`](EXPERIMENT_007_RESULT.md).
 
+Experiment 008 is preregistered as CORA-C2: a causal diagonal observability
+predictor derived from the actual Gated DeltaNet error transition, multiplied
+by physical Q4-to-Q8 row squared-error benefit, with a two-consecutive-hit
+admission rule. Its exact `[16, 32)` development identity, six methods, storage
+contract, and 13-condition advancement rule were frozen before model loading.
+The implementation and fail-closed evaluator are ready, but no Experiment 008
+quality result has been observed yet. Ranked `[8, 16)` remains protected. See
+[`EXPERIMENT_008_CORA_C2_PROTOCOL.md`](EXPERIMENT_008_CORA_C2_PROTOCOL.md).
+
 Any successor must use a new protocol and development split. The nearest known
 mechanism-level comparison is MixKVQ's query-magnitude and quantization-
 difficulty channel scoring for KV caches; CQER-32 cannot be described as the

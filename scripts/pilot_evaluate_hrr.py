@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Evaluate frozen row-selector plans on calibration rows as a diagnostic.
 
-The script deliberately refuses development and confirmation data. Offset zero
-checks the selector-task prefix; a positive offset checks a ranked calibration
-holdout that must be disjoint from every selector artifact. Neither mode is
-confirmation evidence.
+Offset zero checks the selector-task prefix. Experiment 008 has one separately
+frozen development window at offset 16. Other positive offsets are reserved for
+the Experiment 005 holdout contract. No mode is confirmation evidence.
 """
 
 from __future__ import annotations
@@ -38,6 +37,7 @@ from recurquant.evaluation import (
 from recurquant.evidence import canonical_json_bytes, verify_evidence_artifact
 from recurquant.packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
+    CoraMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
     QueryEmaMixedPackedRecurrentStateCache,
@@ -47,6 +47,7 @@ from recurquant.public_data import (
     MBPP_CALIBRATION_SIZE,
     format_mbpp_example,
     load_mbpp_rows,
+    load_mbpp_rows_by_task_ids,
     mbpp_manifest,
     mbpp_manifest_content_sha256,
     mbpp_manifest_sha256,
@@ -54,6 +55,7 @@ from recurquant.public_data import (
 from recurquant.query_energy import Qwen35QueryEnergyObserver
 from recurquant.qwen35 import (
     create_qwen35_adaptive_exact_budget_cache,
+    create_qwen35_cora_exact_budget_cache,
     create_qwen35_exact_budget_cache,
     create_qwen35_packed_cache,
     create_qwen35_query_ema_exact_budget_cache,
@@ -61,6 +63,7 @@ from recurquant.qwen35 import (
     create_qwen35_v02_mixed_cache,
 )
 from recurquant.row_policy import ExactBudgetRowPlan, select_rows_exact_budget
+from recurquant.transition_observer import Qwen35TransitionObserver
 
 SEED = 2339
 RANDOM_ROW_SEED = 1101
@@ -78,6 +81,9 @@ RANK_FUSION_METHODS = (
 RANK_FUSION_PRIMARY = "rank_fusion_l050_target_fisher_adaptive_mse"
 QUERY_EMA_PRIMARY = "query_ema32_weighted_mse_target_fisher_quota"
 QUERY_EMA_HALF_LIFE = 32
+CORA_C2_PRIMARY = "causal_observability_confirm2_mse_target_fisher_quota"
+CORA_RAW = "causal_observability_mse_target_fisher_quota"
+QUERY_EMA_C2 = "query_ema32_confirm2_mse_target_fisher_quota"
 LOSS_SCORE_NAMES = (
     LOSS_SELECTOR_PRIMARY,
     "target_directional_fisher_difference_int4",
@@ -123,9 +129,43 @@ CQER_FROZEN_LAYER_QUOTAS = (
     (21, 7),
     (22, 55),
 )
+E008_DEVELOPMENT_OFFSET = 16
+E008_DEVELOPMENT_LIMIT = 16
+E008_DEVELOPMENT_TASK_IDS = (
+    666,
+    795,
+    944,
+    653,
+    857,
+    884,
+    878,
+    822,
+    687,
+    820,
+    920,
+    771,
+    869,
+    851,
+    728,
+    704,
+)
+E008_DEVELOPMENT_CONTENT_MANIFEST_SHA256 = (
+    "21dcc6e1955918a9f6baae3d02e7ba2781600405f91fe42bbe18eac8ca6dde5e"
+)
+E008_DEVELOPMENT_TOKEN_MANIFEST_SHA256 = (
+    "5a8e7b56528e3ccecc95ff83b2e59749d81dab27d0233fefafc510622a973f87"
+)
 TARGET_RESIDENT_BYTES = 2_564_096
+QUERY_SELECTOR_AUXILIARY_BYTES = 147_456
+C2_PREVIOUS_RAW_MASK_BYTES = 4_608
+CORA_SELECTOR_AUXILIARY_BYTES = 152_064
 MIN_RELATIVE_NLL_REDUCTION = 0.20
 CQER_MIN_RELATIVE_NLL_REDUCTION_VS_ADAPTIVE = 0.05
+CORA_MIN_RELATIVE_NLL_REDUCTION_VS_ADAPTIVE = 0.05
+CORA_MIN_RELATIVE_NLL_REDUCTION_VS_CQER = 0.05
+CORA_RAW_MIN_RELATIVE_NLL_REDUCTION_VS_CQER = 0.03
+CORA_C2_MIN_NORMALIZED_CHURN_REDUCTION = 0.50
+CORA_C2_MAX_RELATIVE_NLL_WORSENING_VS_RAW = 0.01
 TOP1_DISADVANTAGE_MARGIN = 0.01
 CVAR95_DISADVANTAGE_MARGIN = 0.10
 MAX_PER_TASK_NLL_DISADVANTAGE = 1.0
@@ -147,6 +187,7 @@ EVALUATOR_SOURCE_FILES = (
     "src/recurquant/packed_cache.py",
     "src/recurquant/public_data.py",
     "src/recurquant/query_energy.py",
+    "src/recurquant/transition_observer.py",
     "src/recurquant/quantization.py",
     "src/recurquant/qwen35.py",
     "src/recurquant/row_policy.py",
@@ -157,6 +198,7 @@ RankFusionCacheSpec = tuple[
     Mapping[int, torch.Tensor],
     float,
 ]
+CoraCacheSpec = tuple[ExactBudgetRowPlan, bool]
 
 
 @dataclass(slots=True)
@@ -218,6 +260,15 @@ def parse_args() -> argparse.Namespace:
             "Run the frozen Experiment 007 CQER-32 same-calibration primary. "
             "Positive offsets remain disabled until the candidate-aligned "
             "Experiment 007 prerequisite is implemented and passes."
+        ),
+    )
+    parser.add_argument(
+        "--cora-c2",
+        action="store_true",
+        help=(
+            "Run the frozen Experiment 008 CORA-C2 development diagnostic on "
+            "the exact ranked calibration window [16, 32). The protected "
+            "window [8, 16) remains disabled unless every prerequisite passes."
         ),
     )
     parser.add_argument("--output", type=Path, required=True)
@@ -544,11 +595,23 @@ def validate_frozen_holdout_request(
     storage_boundary_present: bool,
     rank_fusion_enabled: bool = False,
     query_ema_enabled: bool = False,
+    cora_c2_enabled: bool = False,
 ) -> None:
-    """Refuse any positive-offset run outside Experiment 005's frozen request."""
+    """Refuse unauthorized positive offsets, including E008's protected window."""
 
     if offset == 0:
         return
+    if cora_c2_enabled:
+        if (
+            offset == E008_DEVELOPMENT_OFFSET
+            and limit == E008_DEVELOPMENT_LIMIT
+            and bootstrap_samples == FROZEN_BOOTSTRAP_SAMPLES
+        ):
+            return
+        raise ValueError(
+            "Experiment 008 CORA-C2 may bypass the heldout contract only for its "
+            "exact development window [16, 32); protected window [8, 16) remains closed"
+        )
     if rank_fusion_enabled:
         raise ValueError(
             "Experiment 006 rank-fusion holdout remains closed until its separate "
@@ -594,6 +657,10 @@ def validate_frozen_holdout_request(
                 "each Experiment 005 selector must contain exactly "
                 f"{FROZEN_HOLDOUT_LIMIT} tasks; found {task_count}"
             )
+    raise ValueError(
+        "ranked window [8, 16) is now protected by Experiment 008 and cannot be "
+        "loaded or evaluated through the legacy Experiment 005 path"
+    )
 
 
 def validate_cqer_development_request(
@@ -686,6 +753,115 @@ def validate_cqer_layer_quotas(
     if normalized != expected or sum(quota for _, quota in normalized) != 1_976:
         raise ValueError(
             "Experiment 007 CQER-32 layer quotas do not match the frozen "
+            "target-Fisher allocation"
+        )
+
+
+def validate_cora_development_request(
+    *,
+    enabled: bool,
+    offset: int,
+    limit: int,
+    bootstrap_samples: int,
+) -> None:
+    """Freeze Experiment 008 to its predeclared development window."""
+
+    if not enabled:
+        return
+    if (
+        offset != E008_DEVELOPMENT_OFFSET
+        or limit != E008_DEVELOPMENT_LIMIT
+        or bootstrap_samples != FROZEN_BOOTSTRAP_SAMPLES
+    ):
+        raise ValueError(
+            "Experiment 008 CORA-C2 development requires ranked window [16, 32), "
+            "exactly 16 tasks, and exactly 10000 bootstrap samples; protected "
+            "window [8, 16) remains closed"
+        )
+
+
+def validate_cora_selector_artifacts(
+    *,
+    enabled: bool,
+    selectors: Sequence[Mapping[str, Any]],
+) -> None:
+    """Authenticate the exact selector pair frozen before Experiment 008."""
+
+    if not enabled:
+        return
+    if len(selectors) != 2:
+        raise ValueError(
+            "Experiment 008 CORA-C2 requires exactly two authenticated selector artifacts"
+        )
+    kinds = tuple(selector.get("artifact_kind") for selector in selectors)
+    if kinds != (HRR_ARTIFACT_KIND, LOSS_ARTIFACT_KIND):
+        raise ValueError("Experiment 008 CORA-C2 requires HRR then loss selectors")
+    token_contracts = tuple(_selector_token_contract(selector) for selector in selectors)
+    if any(len(contract) != CQER_DEVELOPMENT_LIMIT for contract in token_contracts):
+        raise ValueError(
+            "Experiment 008 CORA-C2 requires the exact authenticated eight-task "
+            "selector pair"
+        )
+    task_id_orders = tuple(
+        tuple(int(record["task_id"]) for record in contract)
+        for contract in token_contracts
+    )
+    if any(task_ids != CQER_DEVELOPMENT_TASK_IDS for task_ids in task_id_orders):
+        raise ValueError(
+            "Experiment 008 CORA-C2 selector task IDs do not match the frozen order"
+        )
+    canonical_hashes = tuple(
+        sha256_bytes(canonical_json_bytes(selector)) for selector in selectors
+    )
+    if canonical_hashes != CQER_FROZEN_SELECTOR_CANONICAL_SHA256S:
+        raise ValueError(
+            "Experiment 008 CORA-C2 selector canonical hashes do not match the "
+            "frozen artifacts"
+        )
+
+
+def validate_cora_development_identity(
+    *,
+    enabled: bool,
+    task_ids: Sequence[int],
+    content_manifest_sha256: str,
+    token_manifest_sha256: str | None = None,
+) -> None:
+    """Fail closed on any change to Experiment 008's pinned data identity."""
+
+    if not enabled:
+        return
+    if tuple(int(task_id) for task_id in task_ids) != E008_DEVELOPMENT_TASK_IDS:
+        raise ValueError(
+            "Experiment 008 CORA-C2 task IDs do not match the frozen [16, 32) order"
+        )
+    if content_manifest_sha256 != E008_DEVELOPMENT_CONTENT_MANIFEST_SHA256:
+        raise ValueError(
+            "Experiment 008 CORA-C2 content manifest does not match the frozen identity"
+        )
+    if (
+        token_manifest_sha256 is not None
+        and token_manifest_sha256 != E008_DEVELOPMENT_TOKEN_MANIFEST_SHA256
+    ):
+        raise ValueError(
+            "Experiment 008 CORA-C2 token manifest does not match the frozen identity"
+        )
+
+
+def validate_cora_layer_quotas(
+    *,
+    enabled: bool,
+    quotas: Mapping[int, int],
+) -> None:
+    """Pin CORA to the authenticated target-Fisher layer allocation."""
+
+    if not enabled:
+        return
+    normalized = tuple(sorted((int(layer), int(quota)) for layer, quota in quotas.items()))
+    expected = tuple(sorted(CQER_FROZEN_LAYER_QUOTAS))
+    if normalized != expected or sum(quota for _, quota in normalized) != 1_976:
+        raise ValueError(
+            "Experiment 008 CORA-C2 layer quotas do not match the frozen "
             "target-Fisher allocation"
         )
 
@@ -814,6 +990,7 @@ def aggregate_task_rows(
             "macro_delta_nll": fmean(float(row["delta_nll"]) for row in task_rows),
             "macro_mean_kl": fmean(float(row["mean_kl"]) for row in task_rows),
             "macro_cvar95_kl": fmean(float(row["cvar95_kl"]) for row in task_rows),
+            "maximum_kl": max(float(row["max_kl"]) for row in task_rows),
             "macro_top1_agreement": fmean(float(row["top1_agreement"]) for row in task_rows),
             "token_count": sum(int(row["token_count"]) for row in task_rows),
         }
@@ -1290,9 +1467,718 @@ def evaluate_cqer_development_gate(
     }
 
 
+def _diagnostic_int(
+    record: Mapping[str, object],
+    *names: str,
+    default: int = -1,
+) -> int:
+    """Read one non-boolean diagnostic integer using compatible field aliases."""
+
+    for name in names:
+        value = record.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return default
+
+
+def _mask_hash_is_valid(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _audit_e008_selector_diagnostics(
+    *,
+    selector_diagnostics: Mapping[str, Sequence[Mapping[str, object]]],
+    expected_quotas: Mapping[int, int],
+    token_manifest: Sequence[Mapping[str, int]],
+) -> dict[str, Any]:
+    """Audit exact-quota handshakes and aggregate frozen churn diagnostics."""
+
+    selector_methods = (
+        QUERY_EMA_PRIMARY,
+        CORA_RAW,
+        QUERY_EMA_C2,
+        CORA_C2_PRIMARY,
+    )
+    expected_layers = dict(sorted((int(k), int(v)) for k, v in expected_quotas.items()))
+    if len(token_manifest) != E008_DEVELOPMENT_LIMIT:
+        raise ValueError(
+            "CORA-C2 diagnostic audit requires the exact 16-task token manifest"
+        )
+    expected_task_contract: dict[int, tuple[int, int]] = {}
+    for index, record in enumerate(token_manifest):
+        task_id = int(record["task_id"])
+        prompt_tokens = int(record["prompt_tokens"])
+        code_tokens = int(record["code_tokens"])
+        aligned_tokens = int(record["aligned_scored_tokens"])
+        if (
+            task_id != E008_DEVELOPMENT_TASK_IDS[index]
+            or prompt_tokens < 1
+            or code_tokens < 2
+            or aligned_tokens != code_tokens - 1
+            or task_id in expected_task_contract
+        ):
+            raise ValueError("CORA-C2 token manifest does not match the frozen task contract")
+        expected_task_contract[task_id] = (
+            code_tokens,
+            prompt_tokens + aligned_tokens,
+        )
+    quota_contract = True
+    handshake_contract = True
+    finite_diagnostics = True
+    method_audits: dict[str, list[dict[str, object]]] = {}
+    churn: dict[str, dict[str, float | int | None]] = {}
+
+    for method in selector_methods:
+        tasks = selector_diagnostics.get(method)
+        if not isinstance(tasks, Sequence) or len(tasks) != E008_DEVELOPMENT_LIMIT:
+            quota_contract = False
+            handshake_contract = False
+            method_audits[method] = [
+                {
+                    "error": (
+                        "diagnostics must contain exactly "
+                        f"{E008_DEVELOPMENT_LIMIT} task records"
+                    )
+                }
+            ]
+            continue
+
+        task_audits: list[dict[str, object]] = []
+        churn_numerator = 0
+        churn_denominator = 0
+        for task_index, task_record in enumerate(tasks):
+            task_id = _diagnostic_int(task_record, "task_id")
+            task_identity_passed = task_id == E008_DEVELOPMENT_TASK_IDS[task_index]
+            expected_updates, expected_tokens = expected_task_contract.get(task_id, (-1, -1))
+            quota_contract = quota_contract and task_identity_passed
+            handshake_contract = handshake_contract and task_identity_passed
+            raw_layers = task_record.get("layers")
+            if not isinstance(raw_layers, list):
+                quota_contract = False
+                handshake_contract = False
+                task_audits.append({"task_id": task_id, "error": "layers must be an array"})
+                continue
+            observed_layers: dict[int, Mapping[str, object]] = {}
+            for raw_layer in raw_layers:
+                if not isinstance(raw_layer, Mapping):
+                    quota_contract = False
+                    handshake_contract = False
+                    continue
+                layer_index = _diagnostic_int(raw_layer, "layer_index")
+                if layer_index in observed_layers:
+                    quota_contract = False
+                    handshake_contract = False
+                    continue
+                observed_layers[layer_index] = raw_layer
+
+            task_quota_passed = (
+                task_identity_passed and set(observed_layers) == set(expected_layers)
+            )
+            task_handshake_passed = task_quota_passed
+            task_updates = 0
+            task_tokens = 0
+            task_committed_churn = 0
+            task_transition_count = 0
+            for layer_index, quota in expected_layers.items():
+                record = observed_layers.get(layer_index)
+                if record is None:
+                    task_quota_passed = False
+                    task_handshake_passed = False
+                    continue
+                observed_quota = _diagnostic_int(record, "quota")
+                selected = _diagnostic_int(record, "current_selected_count")
+                updates = _diagnostic_int(record, "state_updates")
+                committed = _diagnostic_int(
+                    record,
+                    "observations_committed",
+                    "transition_observations_committed",
+                )
+                staged = _diagnostic_int(
+                    record,
+                    "observations_staged",
+                    "transition_observations_staged",
+                )
+                tokens = _diagnostic_int(
+                    record,
+                    "tokens_observed",
+                    "transition_tokens_observed",
+                )
+                pending = record.get("pending_observation")
+                current_hash = record.get(
+                    "committed_mask_sha256",
+                    record.get("current_mask_sha256"),
+                )
+                expected_confirmation_two = method in (QUERY_EMA_C2, CORA_C2_PRIMARY)
+                task_quota_passed = task_quota_passed and all(
+                    (
+                        observed_quota == quota,
+                        selected == quota,
+                        _mask_hash_is_valid(current_hash),
+                        record.get("confirmation_two") is expected_confirmation_two,
+                    )
+                )
+                if method in (CORA_RAW, CORA_C2_PRIMARY):
+                    task_quota_passed = task_quota_passed and (
+                        record.get("selection_method") == method
+                    )
+                task_handshake_passed = task_handshake_passed and all(
+                    (
+                        staged == committed,
+                        committed == updates,
+                        committed == expected_updates,
+                        tokens == expected_tokens,
+                        pending is False,
+                    )
+                )
+                task_updates += max(updates, 0)
+                task_tokens += max(tokens, 0)
+
+                for key, value in record.items():
+                    if (
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        and not math.isfinite(float(value))
+                    ):
+                        finite_diagnostics = False
+                    if key in {
+                        "last_raw_cutoff_score",
+                        "last_raw_score_gap",
+                        "last_raw_normalized_gap",
+                        "last_committed_cutoff_score",
+                        "last_committed_score_gap",
+                        "last_committed_normalized_gap",
+                        "last_cutoff_score_margin",
+                        "raw_normalized_churn",
+                        "committed_normalized_churn",
+                        "observability_trace",
+                        "observability_min",
+                        "observability_max",
+                    } and value is not None:
+                        try:
+                            _finite_float(value, context=f"{method} {key}")
+                        except ValueError:
+                            finite_diagnostics = False
+
+                try:
+                    l2norm_eps = _finite_float(
+                        record.get("l2norm_eps"),
+                        context=f"{method} l2norm_eps",
+                    )
+                except ValueError:
+                    l2norm_eps = -1.0
+                    finite_diagnostics = False
+                if l2norm_eps != 1e-6:
+                    task_handshake_passed = False
+                if method in (QUERY_EMA_PRIMARY, QUERY_EMA_C2):
+                    try:
+                        ema_decay = _finite_float(
+                            record.get("ema_decay"),
+                            context=f"{method} EMA decay",
+                        )
+                    except ValueError:
+                        ema_decay = -1.0
+                        finite_diagnostics = False
+                    if not math.isclose(
+                        ema_decay,
+                        2.0 ** (-1.0 / QUERY_EMA_HALF_LIFE),
+                        rel_tol=0.0,
+                        abs_tol=1e-15,
+                    ):
+                        task_handshake_passed = False
+
+                if method in (CORA_RAW, QUERY_EMA_C2, CORA_C2_PRIMARY):
+                    raw_hash = record.get("raw_mask_sha256")
+                    if not _mask_hash_is_valid(raw_hash):
+                        task_quota_passed = False
+                if method in (CORA_RAW, CORA_C2_PRIMARY):
+                    try:
+                        observability_trace = _finite_float(
+                            record.get("observability_trace"),
+                            context=f"{method} observability trace",
+                        )
+                        observability_min = _finite_float(
+                            record.get("observability_min"),
+                            context=f"{method} observability minimum",
+                        )
+                        observability_max = _finite_float(
+                            record.get("observability_max"),
+                            context=f"{method} observability maximum",
+                        )
+                    except ValueError:
+                        observability_trace = -1.0
+                        observability_min = -1.0
+                        observability_max = -1.0
+                        finite_diagnostics = False
+                    if not all(
+                        (
+                            math.isclose(
+                                observability_trace,
+                                1.0,
+                                rel_tol=0.0,
+                                abs_tol=5e-6,
+                            ),
+                            0.0 <= observability_min <= observability_max <= 1.0,
+                            record.get("observability_dtype") == "torch.float32",
+                            _diagnostic_int(record, "observability_diagonal_bytes") > 0,
+                            _diagnostic_int(record, "previous_raw_mask_bytes") > 0,
+                            _diagnostic_int(record, "selector_auxiliary_bytes") > 0,
+                        )
+                    ):
+                        task_handshake_passed = False
+                    transitions = _diagnostic_int(
+                        record,
+                        "mask_transition_count",
+                        "selection_transitions",
+                        "transition_count",
+                    )
+                    raw_churn = _diagnostic_int(
+                        record,
+                        "raw_xor_churn_total",
+                        "cumulative_raw_xor_churn",
+                        "total_raw_mask_churn",
+                    )
+                    committed_churn = _diagnostic_int(
+                        record,
+                        "committed_xor_churn_total",
+                        "cumulative_committed_xor_churn",
+                        "total_committed_mask_churn",
+                    )
+                    admissions = _diagnostic_int(record, "admissions_total")
+                    dwell = _diagnostic_int(record, "dwell_total")
+                    denominator = 2 * quota * max(transitions, 0)
+                    expected_raw_normalized = (
+                        raw_churn / denominator if denominator > 0 else None
+                    )
+                    expected_committed_normalized = (
+                        committed_churn / denominator if denominator > 0 else None
+                    )
+                    try:
+                        observed_raw_normalized = _finite_float(
+                            record.get("raw_normalized_churn"),
+                            context=f"{method} raw normalized churn",
+                        )
+                        observed_committed_normalized = _finite_float(
+                            record.get("committed_normalized_churn"),
+                            context=f"{method} committed normalized churn",
+                        )
+                    except ValueError:
+                        observed_raw_normalized = None
+                        observed_committed_normalized = None
+                        finite_diagnostics = False
+                    if (
+                        transitions != max(updates - 1, 0)
+                        or raw_churn < 0
+                        or committed_churn < 0
+                        or raw_churn > 2 * quota * transitions
+                        or committed_churn > 2 * quota * transitions
+                        or admissions < 0
+                        or dwell < 0
+                        or admissions * 2 != committed_churn
+                        or dwell + admissions != quota * transitions
+                        or expected_raw_normalized is None
+                        or expected_committed_normalized is None
+                        or observed_raw_normalized is None
+                        or observed_committed_normalized is None
+                        or not math.isclose(
+                            observed_raw_normalized,
+                            expected_raw_normalized,
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
+                        )
+                        or not math.isclose(
+                            observed_committed_normalized,
+                            expected_committed_normalized,
+                            rel_tol=0.0,
+                            abs_tol=1e-12,
+                        )
+                        or (method == CORA_RAW and raw_churn != committed_churn)
+                    ):
+                        task_handshake_passed = False
+                    task_committed_churn += max(committed_churn, 0)
+                    task_transition_count += max(transitions, 0)
+                    churn_denominator += 2 * quota * max(transitions, 0)
+
+            quota_contract = quota_contract and task_quota_passed
+            handshake_contract = handshake_contract and task_handshake_passed
+            churn_numerator += task_committed_churn
+            task_audits.append(
+                {
+                    "task_id": task_id,
+                    "quota_passed": task_quota_passed,
+                    "handshake_passed": task_handshake_passed,
+                    "state_updates": task_updates,
+                    "tokens_observed": task_tokens,
+                    "committed_xor_churn": task_committed_churn,
+                    "mask_transition_count": task_transition_count,
+                }
+            )
+        method_audits[method] = task_audits
+        if method in (CORA_RAW, CORA_C2_PRIMARY):
+            normalized = (
+                churn_numerator / churn_denominator if churn_denominator > 0 else None
+            )
+            churn[method] = {
+                "committed_xor_churn_total": churn_numerator,
+                "normalization_denominator": churn_denominator,
+                "normalized_committed_churn": normalized,
+            }
+
+    return {
+        "quota_contract_passed": quota_contract,
+        "handshake_contract_passed": handshake_contract,
+        "finite_diagnostics": finite_diagnostics,
+        "method_audits": method_audits,
+        "churn": churn,
+    }
+
+
+def evaluate_cora_c2_development_gate(
+    *,
+    aggregates: Mapping[str, Mapping[str, float | int]],
+    aggregates_full_code: Mapping[str, Mapping[str, float | int]],
+    per_task: Mapping[str, Sequence[Mapping[str, float | int]]],
+    per_task_full_code: Mapping[str, Sequence[Mapping[str, float | int]]],
+    storage: Mapping[str, Mapping[str, int | float | bool]],
+    selector_diagnostics: Mapping[str, Sequence[Mapping[str, object]]],
+    contrasts: Mapping[str, Mapping[str, Any]],
+    token_manifest: Sequence[Mapping[str, int]],
+    expected_quotas: Mapping[int, int],
+    expected_packed_bytes: int,
+    expected_query_auxiliary_bytes: int,
+    expected_cora_auxiliary_bytes: int,
+) -> dict[str, Any]:
+    """Evaluate the complete frozen Experiment 008 development conjunction."""
+
+    static_name = "target_directional_fisher_difference_int4"
+    required = (
+        static_name,
+        ADAPTIVE_TARGET_FISHER,
+        QUERY_EMA_PRIMARY,
+        CORA_RAW,
+        QUERY_EMA_C2,
+        CORA_C2_PRIMARY,
+    )
+    expected_method_set = set(required)
+    for partition_name, partition in (
+        ("aggregates", aggregates),
+        ("aggregates_full_code", aggregates_full_code),
+        ("per_task", per_task),
+        ("per_task_full_code", per_task_full_code),
+        ("storage", storage),
+    ):
+        if set(partition) != expected_method_set:
+            raise ValueError(
+                "CORA-C2 development "
+                f"{partition_name} methods do not match the frozen six-method set"
+            )
+    expected_selector_methods = {
+        QUERY_EMA_PRIMARY,
+        CORA_RAW,
+        QUERY_EMA_C2,
+        CORA_C2_PRIMARY,
+    }
+    if set(selector_diagnostics) != expected_selector_methods:
+        raise ValueError(
+            "CORA-C2 selector diagnostics do not match the frozen four dynamic methods"
+        )
+    for name in required:
+        if any(
+            name not in partition
+            for partition in (aggregates, per_task, per_task_full_code, storage)
+        ):
+            raise ValueError(f"CORA-C2 development gate lacks required method {name}")
+        if (
+            len(per_task[name]) != E008_DEVELOPMENT_LIMIT
+            or len(per_task_full_code[name]) != E008_DEVELOPMENT_LIMIT
+        ):
+            raise ValueError(
+                "CORA-C2 development gate requires exactly "
+                f"{E008_DEVELOPMENT_LIMIT} aligned tasks per required method"
+            )
+
+    expected_ids = tuple(int(record["task_id"]) for record in token_manifest)
+    aligned_tokens_by_id = {
+        int(record["task_id"]): int(record["aligned_scored_tokens"])
+        for record in token_manifest
+    }
+    full_tokens_by_id = {
+        int(record["task_id"]): int(record["full_code_scored_tokens"])
+        for record in token_manifest
+    }
+    expected_aligned_total = sum(aligned_tokens_by_id.values())
+    expected_full_total = sum(full_tokens_by_id.values())
+    for name in required:
+        aligned_rows = per_task[name]
+        full_rows = per_task_full_code[name]
+        if tuple(int(row["task_id"]) for row in aligned_rows) != expected_ids:
+            raise ValueError(f"{name} aligned task IDs do not match the token manifest")
+        if tuple(int(row["task_id"]) for row in full_rows) != expected_ids:
+            raise ValueError(f"{name} full-code task IDs do not match the token manifest")
+        if any(
+            int(row["token_count"]) != aligned_tokens_by_id[int(row["task_id"])]
+            for row in aligned_rows
+        ):
+            raise ValueError(f"{name} aligned token counts do not match the token manifest")
+        if any(
+            int(row["token_count"]) != full_tokens_by_id[int(row["task_id"])]
+            for row in full_rows
+        ):
+            raise ValueError(f"{name} full-code token counts do not match the token manifest")
+        if (
+            int(aggregates[name].get("task_count", -1)) != E008_DEVELOPMENT_LIMIT
+            or int(aggregates[name].get("token_count", -1)) != expected_aligned_total
+            or int(aggregates_full_code[name].get("task_count", -1))
+            != E008_DEVELOPMENT_LIMIT
+            or int(aggregates_full_code[name].get("token_count", -1))
+            != expected_full_total
+        ):
+            raise ValueError(f"{name} aggregate task/token counts do not match the manifest")
+
+    audit = _audit_e008_selector_diagnostics(
+        selector_diagnostics=selector_diagnostics,
+        expected_quotas=expected_quotas,
+        token_manifest=token_manifest,
+    )
+    expected_promotions = sum(int(value) for value in expected_quotas.values())
+    expected_auxiliary = {
+        QUERY_EMA_PRIMARY: expected_query_auxiliary_bytes,
+        CORA_RAW: expected_cora_auxiliary_bytes,
+        QUERY_EMA_C2: expected_cora_auxiliary_bytes,
+        CORA_C2_PRIMARY: expected_cora_auxiliary_bytes,
+    }
+    storage_audit: dict[str, dict[str, int]] = {}
+    exact_storage = True
+    exact_promotions = True
+    for method, auxiliary_bytes in expected_auxiliary.items():
+        summary = storage[method]
+        observed_packed = int(summary.get("resident_bytes", -1))
+        observed_auxiliary = int(summary.get("selector_auxiliary_bytes", -1))
+        observed_total = int(summary.get("resident_bytes_including_selector", -1))
+        observed_promotions = int(summary.get("high_precision_groups", -1))
+        exact_storage = exact_storage and all(
+            (
+                observed_packed == expected_packed_bytes,
+                observed_auxiliary == auxiliary_bytes,
+                observed_total == expected_packed_bytes + auxiliary_bytes,
+            )
+        )
+        exact_promotions = exact_promotions and observed_promotions == expected_promotions
+        storage_audit[method] = {
+            "packed_bytes": observed_packed,
+            "selector_auxiliary_bytes": observed_auxiliary,
+            "resident_bytes_including_selector": observed_total,
+            "high_precision_groups": observed_promotions,
+        }
+
+    all_values_finite = bool(audit["finite_diagnostics"])
+    for name in required:
+        for aggregate_partition in (aggregates, aggregates_full_code):
+            for key, value in aggregate_partition[name].items():
+                try:
+                    _finite_float(value, context=f"{name} aggregate {key}")
+                except ValueError:
+                    all_values_finite = False
+        for partition in (per_task, per_task_full_code):
+            for row in partition[name]:
+                if row.get("all_logits_finite") is not True:
+                    all_values_finite = False
+                for key, value in row.items():
+                    if key in ("task_id", "all_logits_finite"):
+                        continue
+                    try:
+                        _finite_float(value, context=f"{name} per-task {key}")
+                    except ValueError:
+                        all_values_finite = False
+
+    primary = aggregates[CORA_C2_PRIMARY]
+    static = aggregates[static_name]
+    adaptive = aggregates[ADAPTIVE_TARGET_FISHER]
+    cqer = aggregates[QUERY_EMA_PRIMARY]
+    raw = aggregates[CORA_RAW]
+    primary_nll = _finite_float(primary["macro_delta_nll"], context="CORA-C2 NLL")
+    static_nll = _finite_float(static["macro_delta_nll"], context="static NLL")
+    adaptive_nll = _finite_float(adaptive["macro_delta_nll"], context="adaptive NLL")
+    cqer_nll = _finite_float(cqer["macro_delta_nll"], context="CQER-32 NLL")
+    raw_nll = _finite_float(raw["macro_delta_nll"], context="raw CORA NLL")
+
+    def reduction(baseline: float, candidate: float) -> float | None:
+        return (baseline - candidate) / baseline if baseline > 0 else None
+
+    relative_static = reduction(static_nll, primary_nll)
+    relative_adaptive = reduction(adaptive_nll, primary_nll)
+    relative_cqer = reduction(cqer_nll, primary_nll)
+    raw_relative_cqer = reduction(cqer_nll, raw_nll)
+    c2_worsening_raw = (
+        (primary_nll - raw_nll) / raw_nll if raw_nll > 0 else None
+    )
+
+    primary_top1 = _finite_float(
+        primary["macro_top1_agreement"], context="CORA-C2 top1"
+    )
+    static_top1 = _finite_float(static["macro_top1_agreement"], context="static top1")
+    adaptive_top1 = _finite_float(
+        adaptive["macro_top1_agreement"], context="adaptive top1"
+    )
+    cqer_top1 = _finite_float(cqer["macro_top1_agreement"], context="CQER-32 top1")
+    raw_top1 = _finite_float(raw["macro_top1_agreement"], context="raw CORA top1")
+    primary_cvar = _finite_float(primary["macro_cvar95_kl"], context="CORA-C2 CVaR95")
+    static_cvar = _finite_float(static["macro_cvar95_kl"], context="static CVaR95")
+    adaptive_cvar = _finite_float(
+        adaptive["macro_cvar95_kl"], context="adaptive CVaR95"
+    )
+    static_lower = _paired_lower_bound(contrasts, static_name)
+    cqer_lower = _paired_lower_bound(contrasts, QUERY_EMA_PRIMARY)
+
+    churn = audit["churn"]
+    raw_churn_record = churn.get(CORA_RAW, {})
+    c2_churn_record = churn.get(CORA_C2_PRIMARY, {})
+    raw_normalized_churn = raw_churn_record.get("normalized_committed_churn")
+    c2_normalized_churn = c2_churn_record.get("normalized_committed_churn")
+    churn_reduction = (
+        (float(raw_normalized_churn) - float(c2_normalized_churn))
+        / float(raw_normalized_churn)
+        if isinstance(raw_normalized_churn, (int, float))
+        and not isinstance(raw_normalized_churn, bool)
+        and isinstance(c2_normalized_churn, (int, float))
+        and not isinstance(c2_normalized_churn, bool)
+        and float(raw_normalized_churn) > 0
+        else None
+    )
+
+    checks: dict[str, dict[str, Any]] = {
+        "exact_per_layer_quotas": {
+            "passed": bool(audit["quota_contract_passed"]) and exact_promotions,
+            "expected_quotas": {str(key): value for key, value in sorted(expected_quotas.items())},
+            "expected_total_promotions": expected_promotions,
+            "method_audits": audit["method_audits"],
+        },
+        "exact_packed_and_selector_bytes": {
+            "passed": exact_storage,
+            "expected_packed_bytes": expected_packed_bytes,
+            "expected_query_auxiliary_bytes": expected_query_auxiliary_bytes,
+            "expected_cora_auxiliary_bytes": expected_cora_auxiliary_bytes,
+            "observed": storage_audit,
+        },
+        "exact_stage_consume_handshake": {
+            "passed": bool(audit["handshake_contract_passed"]),
+            "method_audits": audit["method_audits"],
+        },
+        "all_values_finite": {"passed": all_values_finite},
+        "lower_nll_than_primary_comparators": {
+            "passed": primary_nll < min(static_nll, adaptive_nll, cqer_nll),
+            "primary": primary_nll,
+            "static": static_nll,
+            "adaptive": adaptive_nll,
+            "cqer": cqer_nll,
+        },
+        "relative_nll_reduction_vs_static": {
+            "passed": relative_static is not None and relative_static >= MIN_RELATIVE_NLL_REDUCTION,
+            "observed": relative_static,
+            "minimum": MIN_RELATIVE_NLL_REDUCTION,
+        },
+        "relative_nll_reduction_vs_adaptive": {
+            "passed": relative_adaptive is not None
+            and relative_adaptive >= CORA_MIN_RELATIVE_NLL_REDUCTION_VS_ADAPTIVE,
+            "observed": relative_adaptive,
+            "minimum": CORA_MIN_RELATIVE_NLL_REDUCTION_VS_ADAPTIVE,
+        },
+        "relative_nll_reduction_vs_cqer": {
+            "passed": relative_cqer is not None
+            and relative_cqer >= CORA_MIN_RELATIVE_NLL_REDUCTION_VS_CQER,
+            "observed": relative_cqer,
+            "minimum": CORA_MIN_RELATIVE_NLL_REDUCTION_VS_CQER,
+        },
+        "paired_lower_ci_vs_static": {
+            "passed": static_lower is not None and static_lower > 0,
+            "observed_lower_bound": static_lower,
+            "required": "strictly greater than zero",
+        },
+        "paired_lower_ci_vs_cqer": {
+            "passed": cqer_lower is not None and cqer_lower > 0,
+            "observed_lower_bound": cqer_lower,
+            "required": "strictly greater than zero",
+        },
+        "top1_margin_vs_static_adaptive": {
+            "passed": primary_top1 >= max(static_top1, adaptive_top1) - TOP1_DISADVANTAGE_MARGIN,
+            "observed_disadvantage": max(static_top1, adaptive_top1) - primary_top1,
+            "maximum": TOP1_DISADVANTAGE_MARGIN,
+        },
+        "top1_not_lower_than_cqer": {
+            "passed": primary_top1 >= cqer_top1,
+            "primary": primary_top1,
+            "cqer": cqer_top1,
+        },
+        "cvar95_margin_vs_static_adaptive": {
+            "passed": primary_cvar <= min(static_cvar, adaptive_cvar) + CVAR95_DISADVANTAGE_MARGIN,
+            "observed_disadvantage": primary_cvar - min(static_cvar, adaptive_cvar),
+            "maximum": CVAR95_DISADVANTAGE_MARGIN,
+        },
+        "raw_cora_relative_nll_reduction_vs_cqer": {
+            "passed": raw_relative_cqer is not None
+            and raw_relative_cqer >= CORA_RAW_MIN_RELATIVE_NLL_REDUCTION_VS_CQER,
+            "observed": raw_relative_cqer,
+            "minimum": CORA_RAW_MIN_RELATIVE_NLL_REDUCTION_VS_CQER,
+        },
+        "c2_churn_reduction_vs_raw": {
+            "passed": churn_reduction is not None
+            and churn_reduction >= CORA_C2_MIN_NORMALIZED_CHURN_REDUCTION,
+            "observed": churn_reduction,
+            "minimum": CORA_C2_MIN_NORMALIZED_CHURN_REDUCTION,
+            "raw": raw_churn_record,
+            "c2": c2_churn_record,
+        },
+        "c2_top1_not_lower_than_raw": {
+            "passed": primary_top1 >= raw_top1,
+            "primary": primary_top1,
+            "raw": raw_top1,
+        },
+        "c2_nll_worsening_vs_raw": {
+            "passed": c2_worsening_raw is not None
+            and c2_worsening_raw <= CORA_C2_MAX_RELATIVE_NLL_WORSENING_VS_RAW,
+            "observed": c2_worsening_raw,
+            "maximum": CORA_C2_MAX_RELATIVE_NLL_WORSENING_VS_RAW,
+        },
+    }
+    return {
+        "schema": "recurquant.experiment008-cora-c2-development-gate.v1",
+        "applicable": True,
+        "passed": all(check["passed"] is True for check in checks.values()),
+        "primary": CORA_C2_PRIMARY,
+        "comparators": {
+            "static": static_name,
+            "adaptive": ADAPTIVE_TARGET_FISHER,
+            "cqer": QUERY_EMA_PRIMARY,
+            "raw_cora": CORA_RAW,
+            "cqer_c2_ablation": QUERY_EMA_C2,
+        },
+        "checks": checks,
+    }
+
+
 def primary_claim_text(primary_name: str) -> str:
     """Describe the actual primary without implying a missing loss selector."""
 
+    if primary_name == CORA_C2_PRIMARY:
+        return (
+            "The actual primary uses a causal diagonal observability predictor "
+            "derived from the Gated DeltaNet state transition, multiplies it by "
+            "aligned INT4-to-INT8 row squared-error reduction, and applies the frozen "
+            "Confirmation-2 admission rule under target-Fisher layer quotas."
+        )
+    if primary_name == CORA_RAW:
+        return (
+            "This ablation uses the same causal diagonal observability predictor "
+            "and row squared-error benefit as CORA-C2 without Confirmation-2."
+        )
+    if primary_name == QUERY_EMA_C2:
+        return (
+            "This ablation applies Confirmation-2 to the CQER-32 normalized-query-"
+            "energy EMA selector under the same fixed layer quotas."
+        )
     if primary_name == QUERY_EMA_PRIMARY:
         return (
             "The actual primary uses target-directional-Fisher per-layer quotas "
@@ -1401,11 +2287,15 @@ def make_caches(
     adaptive_plans: dict[str, ExactBudgetRowPlan],
     rank_fusion_specs: Mapping[str, RankFusionCacheSpec] | None = None,
     query_ema_plans: Mapping[str, ExactBudgetRowPlan] | None = None,
+    query_ema_c2_plans: Mapping[str, ExactBudgetRowPlan] | None = None,
+    cora_specs: Mapping[str, CoraCacheSpec] | None = None,
+    include_default_baselines: bool = True,
 ) -> dict[
     str,
     PackedRecurrentStateCache
     | MixedPackedRecurrentStateCache
     | AdaptiveMixedPackedRecurrentStateCache
+    | CoraMixedPackedRecurrentStateCache
     | QueryEmaMixedPackedRecurrentStateCache
     | RankFusedMixedPackedRecurrentStateCache,
 ]:
@@ -1414,12 +2304,17 @@ def make_caches(
         PackedRecurrentStateCache
         | MixedPackedRecurrentStateCache
         | AdaptiveMixedPackedRecurrentStateCache
+        | CoraMixedPackedRecurrentStateCache
         | QueryEmaMixedPackedRecurrentStateCache
         | RankFusedMixedPackedRecurrentStateCache,
-    ] = {
-        "uniform_int4": create_qwen35_packed_cache(model, bits=4),
-        "v02_layer0_static": create_qwen35_v02_mixed_cache(model),
-    }
+    ] = (
+        {
+            "uniform_int4": create_qwen35_packed_cache(model, bits=4),
+            "v02_layer0_static": create_qwen35_v02_mixed_cache(model),
+        }
+        if include_default_baselines
+        else {}
+    )
     for name, plan in plans.items():
         caches[name] = create_qwen35_exact_budget_cache(model, plan=plan)
     for name, plan in adaptive_plans.items():
@@ -1444,6 +2339,22 @@ def make_caches(
         if name in caches:
             raise ValueError(f"query-EMA cache name duplicates another method: {name}")
         caches[name] = create_qwen35_query_ema_exact_budget_cache(model, plan=plan)
+    for name, plan in (query_ema_c2_plans or {}).items():
+        if name in caches:
+            raise ValueError(f"query-EMA C2 cache name duplicates another method: {name}")
+        caches[name] = create_qwen35_query_ema_exact_budget_cache(
+            model,
+            plan=plan,
+            confirmation_two=True,
+        )
+    for name, (plan, confirmation_two) in (cora_specs or {}).items():
+        if name in caches:
+            raise ValueError(f"CORA cache name duplicates another method: {name}")
+        caches[name] = create_qwen35_cora_exact_budget_cache(
+            model,
+            plan=plan,
+            confirmation_two=confirmation_two,
+        )
     return caches
 
 
@@ -1470,6 +2381,9 @@ def evaluate_task(
     adaptive_plans: dict[str, ExactBudgetRowPlan],
     rank_fusion_specs: Mapping[str, RankFusionCacheSpec] | None = None,
     query_ema_plans: Mapping[str, ExactBudgetRowPlan] | None = None,
+    query_ema_c2_plans: Mapping[str, ExactBudgetRowPlan] | None = None,
+    cora_specs: Mapping[str, CoraCacheSpec] | None = None,
+    include_default_baselines: bool = True,
 ) -> tuple[
     dict[str, dict[str, float | int]],
     dict[str, dict[str, float | int]],
@@ -1484,6 +2398,9 @@ def evaluate_task(
         adaptive_plans=adaptive_plans,
         rank_fusion_specs=rank_fusion_specs,
         query_ema_plans=query_ema_plans,
+        query_ema_c2_plans=query_ema_c2_plans,
+        cora_specs=cora_specs,
+        include_default_baselines=include_default_baselines,
     )
     aligned_accumulators = {name: _TokenAccumulator.empty() for name in caches}
     full_code_accumulators = {name: _TokenAccumulator.empty() for name in caches}
@@ -1493,12 +2410,22 @@ def evaluate_task(
         for name, cache in caches.items()
         if isinstance(cache, QueryEmaMixedPackedRecurrentStateCache)
     }
-    observer_context = (
+    cora_caches = {
+        name: cache
+        for name, cache in caches.items()
+        if isinstance(cache, CoraMixedPackedRecurrentStateCache)
+    }
+    query_observer_context = (
         Qwen35QueryEnergyObserver(model, caches=list(query_ema_caches.values()))
         if query_ema_caches
         else nullcontext()
     )
-    with observer_context:
+    transition_observer_context = (
+        Qwen35TransitionObserver(model, caches=list(cora_caches.values()))
+        if cora_caches
+        else nullcontext()
+    )
+    with query_observer_context, transition_observer_context:
         reference_output = model(
             prompt_ids,
             past_key_values=reference_cache,
@@ -1560,7 +2487,16 @@ def evaluate_task(
         {name: accumulator.summary() for name, accumulator in aligned_accumulators.items()},
         {name: accumulator.summary() for name, accumulator in full_code_accumulators.items()},
         {name: cache.storage_summary() for name, cache in caches.items()},
-        {name: cache.query_ema_diagnostics() for name, cache in query_ema_caches.items()},
+        {
+            **{
+                name: cache.query_ema_diagnostics()
+                for name, cache in query_ema_caches.items()
+            },
+            **{
+                name: cache.observability_diagnostics()
+                for name, cache in cora_caches.items()
+            },
+        },
         reference_bytes,
     )
 
@@ -1629,6 +2565,21 @@ def validate_heldout_repository_start(
             raise ValueError("selector artifact was not generated from a clean worktree")
 
 
+def validate_cora_development_repository_start(
+    repository: Mapping[str, object],
+) -> None:
+    """Require committed, clean E008 code before spending its frozen window."""
+
+    commit = repository.get("commit")
+    if not isinstance(commit, str) or len(commit) != 40:
+        raise ValueError("Experiment 008 requires a resolved 40-character Git commit")
+    if repository.get("worktree_clean") is not True or repository.get("status") != []:
+        raise ValueError(
+            "Experiment 008 development requires a clean committed worktree before "
+            "dataset loading, tokenization, or model execution"
+        )
+
+
 def validate_heldout_output_path(output: Path, repository_root: Path) -> None:
     """Require heldout output to stay outside Git state or under an ignore rule."""
 
@@ -1664,6 +2615,23 @@ def validate_heldout_repository_end(
         raise RuntimeError("worktree changed during heldout-calibration")
     if dict(end_source_hashes) != dict(start_source_hashes):
         raise RuntimeError("evaluator source files changed during heldout-calibration")
+
+
+def validate_cora_development_repository_end(
+    *,
+    start_repository: Mapping[str, object],
+    end_repository: Mapping[str, object],
+    start_source_hashes: Mapping[str, str],
+    end_source_hashes: Mapping[str, str],
+) -> None:
+    """Abort E008 evidence if its committed implementation changes mid-run."""
+
+    if end_repository.get("commit") != start_repository.get("commit"):
+        raise RuntimeError("Experiment 008 repository commit changed during evaluation")
+    if end_repository.get("worktree_clean") is not True or end_repository.get("status") != []:
+        raise RuntimeError("Experiment 008 worktree changed during evaluation")
+    if dict(end_source_hashes) != dict(start_source_hashes):
+        raise RuntimeError("Experiment 008 evaluator sources changed during evaluation")
 
 
 def validate_storage_boundary_prerequisite(
@@ -1775,9 +2743,10 @@ def main() -> int:
         raise ValueError("--calibration-offset must be non-negative")
     if args.bootstrap_samples <= 0:
         raise ValueError("--bootstrap-samples must be positive")
-    if args.rank_fusion and args.query_ema:
-        raise ValueError("--rank-fusion and --query-ema are mutually exclusive")
-    heldout_calibration = args.calibration_offset > 0
+    if sum(bool(value) for value in (args.rank_fusion, args.query_ema, args.cora_c2)) > 1:
+        raise ValueError("--rank-fusion, --query-ema, and --cora-c2 are mutually exclusive")
+    cora_development = bool(args.cora_c2)
+    heldout_calibration = args.calibration_offset > 0 and not cora_development
     repository_root = Path(__file__).resolve().parents[1]
     repository_start = git_state()
     source_hashes_start = source_file_hashes(repository_root)
@@ -1797,8 +2766,8 @@ def main() -> int:
         validate_compatible_selector(selector, loss_selector)
     if args.rank_fusion and loss_selector is None:
         raise ValueError("--rank-fusion requires --loss-selector-artifact")
-    if args.query_ema and loss_selector is None:
-        raise ValueError("--query-ema requires --loss-selector-artifact")
+    if (args.query_ema or args.cora_c2) and loss_selector is None:
+        raise ValueError("--query-ema and --cora-c2 require --loss-selector-artifact")
     storage_boundary: dict[str, Any] | None = None
     storage_boundary_sha256: str | None = None
     if args.storage_boundary_artifact is not None:
@@ -1810,12 +2779,23 @@ def main() -> int:
     if loss_selector is not None:
         selectors.append(loss_selector)
     validate_cqer_selector_artifacts(enabled=args.query_ema, selectors=selectors)
+    validate_cora_selector_artifacts(enabled=args.cora_c2, selectors=selectors)
     all_selector_task_ids = selector_task_ids(selectors)
     task_records = selector["dataset"]["tasks"]
     available_tasks = len(task_records)
-    limit = available_tasks if args.limit is None else args.limit
+    limit = (
+        E008_DEVELOPMENT_LIMIT
+        if args.cora_c2 and args.limit is None
+        else available_tasks if args.limit is None else args.limit
+    )
     validate_cqer_development_request(
         enabled=args.query_ema,
+        offset=args.calibration_offset,
+        limit=limit,
+        bootstrap_samples=args.bootstrap_samples,
+    )
+    validate_cora_development_request(
+        enabled=args.cora_c2,
         offset=args.calibration_offset,
         limit=limit,
         bootstrap_samples=args.bootstrap_samples,
@@ -1829,6 +2809,7 @@ def main() -> int:
         storage_boundary_present=storage_boundary is not None,
         rank_fusion_enabled=args.rank_fusion,
         query_ema_enabled=args.query_ema,
+        cora_c2_enabled=args.cora_c2,
     )
     if heldout_calibration:
         validate_heldout_repository_start(repository_start, selectors)
@@ -1839,6 +2820,9 @@ def main() -> int:
             expected_commit=str(repository_start["commit"]),
             expected_model=selector["model"],
         )
+    if cora_development:
+        validate_cora_development_repository_start(repository_start)
+        validate_heldout_output_path(args.output, repository_root)
     if args.calibration_offset == 0 and limit > available_tasks:
         raise ValueError(
             f"--limit={limit} exceeds the selector's {available_tasks} calibration tasks"
@@ -1849,9 +2833,23 @@ def main() -> int:
             "calibration window exceeds the frozen ranked calibration population: "
             f"{window_stop} > {MBPP_CALIBRATION_SIZE}"
         )
-    ranked_rows = load_mbpp_rows("calibration", limit=window_stop)
-    selector_prefix_rows = tuple(ranked_rows[:FROZEN_HOLDOUT_LIMIT])
-    if heldout_calibration or args.query_ema:
+    if cora_development:
+        targeted_rows = load_mbpp_rows_by_task_ids(
+            "calibration",
+            task_ids=(*CQER_DEVELOPMENT_TASK_IDS, *E008_DEVELOPMENT_TASK_IDS),
+        )
+        selector_prefix_rows = tuple(targeted_rows[:FROZEN_HOLDOUT_LIMIT])
+        rows = tuple(targeted_rows[FROZEN_HOLDOUT_LIMIT:])
+    else:
+        ranked_rows = load_mbpp_rows("calibration", limit=window_stop)
+        selector_prefix_rows = tuple(ranked_rows[:FROZEN_HOLDOUT_LIMIT])
+        rows = select_calibration_window(
+            ranked_rows,
+            offset=args.calibration_offset,
+            limit=limit,
+            selectors=selectors,
+        )
+    if heldout_calibration or args.query_ema or args.cora_c2:
         selector_prefix_ids = [int(row["task_id"]) for row in selector_prefix_rows]
         selector_prefix_manifest = mbpp_manifest(selector_prefix_rows, phase="calibration")
         for selector_evidence in selectors:
@@ -1860,12 +2858,6 @@ def main() -> int:
                 ranked_prefix_manifest=selector_prefix_manifest,
                 ranked_prefix_task_ids=selector_prefix_ids,
             )
-    rows = select_calibration_window(
-        ranked_rows,
-        offset=args.calibration_offset,
-        limit=limit,
-        selectors=selectors,
-    )
     actual_ids = [row["task_id"] for row in rows]
     validate_cqer_development_task_ids(enabled=args.query_ema, task_ids=actual_ids)
     if args.calibration_offset == 0:
@@ -1882,6 +2874,11 @@ def main() -> int:
     actual_manifest_sha256 = mbpp_manifest_sha256(rows, phase="calibration")
     if actual_manifest_sha256 != mbpp_manifest_content_sha256(actual_manifest):
         raise RuntimeError("calibration manifest helpers produced inconsistent hashes")
+    validate_cora_development_identity(
+        enabled=args.cora_c2,
+        task_ids=actual_ids,
+        content_manifest_sha256=actual_manifest_sha256,
+    )
 
     horizon = int(selector["method"]["horizon"])
     hrr_primary_name = f"hrr_h{horizon}"
@@ -1897,6 +2894,8 @@ def main() -> int:
     adaptive_plans = {ADAPTIVE_H1: h1_plan}
     rank_fusion_specs: dict[str, RankFusionCacheSpec] = {}
     query_ema_plans: dict[str, ExactBudgetRowPlan] = {}
+    query_ema_c2_plans: dict[str, ExactBudgetRowPlan] = {}
+    cora_specs: dict[str, CoraCacheSpec] = {}
     primary_name = hrr_primary_name
     primary_plan = hrr_primary_plan
     if loss_selector is not None:
@@ -1917,11 +2916,26 @@ def main() -> int:
         if args.query_ema:
             query_ema_plans = {QUERY_EMA_PRIMARY: primary_plan}
             primary_name = QUERY_EMA_PRIMARY
+        if args.cora_c2:
+            # Experiment 008 freezes exactly six methods. Do not spend its
+            # preregistered window on inherited exploratory baselines.
+            plans = {
+                "target_directional_fisher_difference_int4": primary_plan,
+            }
+            adaptive_plans = {ADAPTIVE_TARGET_FISHER: primary_plan}
+            query_ema_plans = {QUERY_EMA_PRIMARY: primary_plan}
+            query_ema_c2_plans = {QUERY_EMA_C2: primary_plan}
+            cora_specs = {
+                CORA_RAW: (primary_plan, False),
+                CORA_C2_PRIMARY: (primary_plan, True),
+            }
+            primary_name = CORA_C2_PRIMARY
     cqer_plan_quotas = {
         layer_index: len(primary_plan.groups_for_layer(layer_index))
         for layer_index, _, _ in primary_plan.score_shapes
     }
     validate_cqer_layer_quotas(enabled=args.query_ema, quotas=cqer_plan_quotas)
+    validate_cora_layer_quotas(enabled=args.cora_c2, quotas=cqer_plan_quotas)
 
     torch.manual_seed(SEED)
     device = select_device(args.device)
@@ -1954,8 +2968,15 @@ def main() -> int:
     )
 
     encoded_tasks, token_manifest = encode_task_rows(tokenizer, rows)
+    token_manifest_sha256 = sha256_bytes(canonical_json_bytes(token_manifest))
+    validate_cora_development_identity(
+        enabled=args.cora_c2,
+        task_ids=actual_ids,
+        content_manifest_sha256=actual_manifest_sha256,
+        token_manifest_sha256=token_manifest_sha256,
+    )
     authenticated_selector_prefix: dict[str, object] | None = None
-    if heldout_calibration or args.query_ema:
+    if heldout_calibration or args.query_ema or args.cora_c2:
         _, selector_prefix_token_manifest = encode_task_rows(tokenizer, selector_prefix_rows)
         for selector_evidence in selectors:
             validate_actual_token_manifest(
@@ -1988,7 +3009,7 @@ def main() -> int:
 
     per_task: dict[str, list[dict[str, float | int]]] = {}
     per_task_full_code: dict[str, list[dict[str, float | int]]] = {}
-    per_task_query_ema_diagnostics: dict[str, list[dict[str, object]]] = {}
+    per_task_selector_diagnostics: dict[str, list[dict[str, object]]] = {}
     storage_anchor: dict[str, dict[str, int | float | bool]] | None = None
     reference_state_bytes: int | None = None
     with torch.inference_mode():
@@ -1999,7 +3020,7 @@ def main() -> int:
                 summaries,
                 full_code_summaries,
                 storage,
-                query_ema_diagnostics,
+                selector_diagnostics,
                 task_reference_bytes,
             ) = evaluate_task(
                 model,
@@ -2009,6 +3030,9 @@ def main() -> int:
                 adaptive_plans=adaptive_plans,
                 rank_fusion_specs=rank_fusion_specs,
                 query_ema_plans=query_ema_plans,
+                query_ema_c2_plans=query_ema_c2_plans,
+                cora_specs=cora_specs,
+                include_default_baselines=not args.cora_c2,
             )
             if storage_anchor is None:
                 storage_anchor = storage
@@ -2021,8 +3045,8 @@ def main() -> int:
                 per_task_full_code.setdefault(name, []).append(
                     {"task_id": row["task_id"], **summary}
                 )
-            for name, diagnostics in query_ema_diagnostics.items():
-                per_task_query_ema_diagnostics.setdefault(name, []).append(
+            for name, diagnostics in selector_diagnostics.items():
+                per_task_selector_diagnostics.setdefault(name, []).append(
                     {"task_id": row["task_id"], "layers": diagnostics}
                 )
             print(
@@ -2059,7 +3083,51 @@ def main() -> int:
             plan.resident_bytes + expected_selector_auxiliary_bytes
         ):
             raise RuntimeError(f"{name} selector-aware resident byte total is inconsistent")
-    if storage_anchor["v02_layer0_static"]["resident_bytes"] != primary_plan.resident_bytes:
+    expected_previous_raw_mask_bytes = sum(
+        (heads * rows + 7) // 8 for _, heads, rows in primary_plan.score_shapes
+    )
+    if expected_selector_auxiliary_bytes != QUERY_SELECTOR_AUXILIARY_BYTES:
+        raise RuntimeError("query selector auxiliary bytes drifted from the frozen contract")
+    if expected_previous_raw_mask_bytes != C2_PREVIOUS_RAW_MASK_BYTES:
+        raise RuntimeError("Confirmation-2 mask bytes drifted from the frozen contract")
+    if (
+        expected_selector_auxiliary_bytes + expected_previous_raw_mask_bytes
+        != CORA_SELECTOR_AUXILIARY_BYTES
+    ):
+        raise RuntimeError("CORA-C2 selector bytes drifted from the frozen contract")
+    for name, plan in query_ema_c2_plans.items():
+        summary = storage_anchor[name]
+        expected_total_auxiliary = (
+            expected_selector_auxiliary_bytes + expected_previous_raw_mask_bytes
+        )
+        if summary["resident_bytes"] != plan.resident_bytes:
+            raise RuntimeError(f"{name} did not realize its exact packed-state byte plan")
+        if summary["selector_auxiliary_bytes"] != expected_total_auxiliary:
+            raise RuntimeError(f"{name} did not realize its frozen selector bytes")
+        if summary["resident_bytes_including_selector"] != (
+            plan.resident_bytes + expected_total_auxiliary
+        ):
+            raise RuntimeError(f"{name} selector-aware resident byte total is inconsistent")
+    for name, (plan, _confirmation_two) in cora_specs.items():
+        summary = storage_anchor[name]
+        # Raw CORA also retains its previous raw mask to report the frozen
+        # cumulative raw/committed churn ablation honestly.
+        expected_total_auxiliary = (
+            expected_selector_auxiliary_bytes + expected_previous_raw_mask_bytes
+        )
+        if summary["resident_bytes"] != plan.resident_bytes:
+            raise RuntimeError(f"{name} did not realize its exact packed-state byte plan")
+        if summary["selector_auxiliary_bytes"] != expected_total_auxiliary:
+            raise RuntimeError(f"{name} did not realize its frozen selector bytes")
+        if summary["resident_bytes_including_selector"] != (
+            plan.resident_bytes + expected_total_auxiliary
+        ):
+            raise RuntimeError(f"{name} selector-aware resident byte total is inconsistent")
+    if (
+        "v02_layer0_static" in storage_anchor
+        and storage_anchor["v02_layer0_static"]["resident_bytes"]
+        != primary_plan.resident_bytes
+    ):
         raise RuntimeError("v0.2 static and the primary row plan are not equal-byte")
 
     aggregates = aggregate_task_rows(per_task)
@@ -2078,6 +3146,13 @@ def main() -> int:
     }
     repository_end = git_state()
     source_hashes_end = source_file_hashes(repository_root)
+    if cora_development:
+        validate_cora_development_repository_end(
+            start_repository=repository_start,
+            end_repository=repository_end,
+            start_source_hashes=source_hashes_start,
+            end_source_hashes=source_hashes_end,
+        )
     development_gate: dict[str, Any] | None = None
     if args.query_ema:
         expected_quotas = dict(CQER_FROZEN_LAYER_QUOTAS)
@@ -2086,7 +3161,7 @@ def main() -> int:
             per_task=per_task,
             per_task_full_code=per_task_full_code,
             storage=storage_anchor,
-            query_ema_diagnostics=per_task_query_ema_diagnostics,
+            query_ema_diagnostics=per_task_selector_diagnostics,
             expected_quotas=expected_quotas,
             expected_packed_bytes=primary_plan.resident_bytes,
             expected_selector_auxiliary_bytes=expected_selector_auxiliary_bytes,
@@ -2112,6 +3187,54 @@ def main() -> int:
         development_gate["passed"] = all(
             check["passed"] is True
             for check in development_gate["checks"].values()
+        )
+    if args.cora_c2:
+        development_gate = evaluate_cora_c2_development_gate(
+            aggregates=aggregates,
+            aggregates_full_code=aggregates_full_code,
+            per_task=per_task,
+            per_task_full_code=per_task_full_code,
+            storage=storage_anchor,
+            selector_diagnostics=per_task_selector_diagnostics,
+            contrasts=contrasts,
+            token_manifest=token_manifest,
+            expected_quotas=dict(CQER_FROZEN_LAYER_QUOTAS),
+            expected_packed_bytes=primary_plan.resident_bytes,
+            expected_query_auxiliary_bytes=expected_selector_auxiliary_bytes,
+            expected_cora_auxiliary_bytes=(
+                expected_selector_auxiliary_bytes + expected_previous_raw_mask_bytes
+            ),
+        )
+        development_gate["checks"]["authenticated_repository_sources_and_manifests"] = {
+            "passed": (
+                repository_start["commit"] == repository_end["commit"]
+                and repository_start["worktree_clean"] is True
+                and repository_end["worktree_clean"] is True
+                and source_hashes_start == source_hashes_end
+                and actual_ids == list(E008_DEVELOPMENT_TASK_IDS)
+                and actual_manifest_sha256
+                == E008_DEVELOPMENT_CONTENT_MANIFEST_SHA256
+                and token_manifest_sha256 == E008_DEVELOPMENT_TOKEN_MANIFEST_SHA256
+            ),
+            "repository_commit_stable": (
+                repository_start["commit"] == repository_end["commit"]
+            ),
+            "worktree_clean_at_start_and_end": (
+                repository_start["worktree_clean"] is True
+                and repository_end["worktree_clean"] is True
+            ),
+            "source_hashes_stable": source_hashes_start == source_hashes_end,
+            "selector_artifacts_authenticated": True,
+            "development_content_manifest_authenticated": (
+                actual_manifest_sha256 == E008_DEVELOPMENT_CONTENT_MANIFEST_SHA256
+            ),
+            "development_token_manifest_authenticated": (
+                token_manifest_sha256 == E008_DEVELOPMENT_TOKEN_MANIFEST_SHA256
+            ),
+            "protected_window_8_16_evaluated": False,
+        }
+        development_gate["passed"] = all(
+            check["passed"] is True for check in development_gate["checks"].values()
         )
     if heldout_calibration:
         validate_heldout_repository_end(
@@ -2142,25 +3265,37 @@ def main() -> int:
     else:
         heldout_gate = {
             "schema": (
-                "recurquant.experiment007-heldout-gate.v1"
-                if args.query_ema
+                "recurquant.experiment008-heldout-gate.v1"
+                if args.cora_c2
                 else (
-                    "recurquant.experiment006-heldout-gate.v1"
-                    if args.rank_fusion
-                    else "recurquant.experiment005-heldout-gate.v1"
+                    "recurquant.experiment007-heldout-gate.v1"
+                    if args.query_ema
+                    else (
+                        "recurquant.experiment006-heldout-gate.v1"
+                        if args.rank_fusion
+                        else "recurquant.experiment005-heldout-gate.v1"
+                    )
                 )
             ),
             "applicable": False,
             "passed": None,
             "reason": (
-                "same-calibration diagnostics cannot satisfy the frozen Experiment 007 "
-                "holdout gate; CQER-32 positive offsets remain disabled"
-                if args.query_ema
+                "the frozen Experiment 008 development diagnostic cannot satisfy its "
+                "independent numerical or protected holdout prerequisites; ranked "
+                "window [8, 16) remains closed"
+                if args.cora_c2
                 else (
-                    "same-calibration diagnostics cannot satisfy the frozen Experiment 006 "
-                    "holdout gate; rank-fusion positive offsets remain disabled"
-                    if args.rank_fusion
-                    else "same-calibration diagnostics cannot satisfy the frozen holdout gate"
+                    "same-calibration diagnostics cannot satisfy the frozen Experiment 007 "
+                    "holdout gate; CQER-32 positive offsets remain disabled"
+                    if args.query_ema
+                    else (
+                        "same-calibration diagnostics cannot satisfy the frozen Experiment 006 "
+                        "holdout gate; rank-fusion positive offsets remain disabled"
+                        if args.rank_fusion
+                        else (
+                            "same-calibration diagnostics cannot satisfy the frozen holdout gate"
+                        )
+                    )
                 )
             ),
         }
@@ -2193,6 +3328,8 @@ def main() -> int:
         quality_artifact_kind = "recurquant_rank_fusion_same_calibration_quality_diagnostic"
     if args.query_ema:
         quality_artifact_kind = "recurquant_cqer32_same_calibration_quality_diagnostic"
+    if args.cora_c2:
+        quality_artifact_kind = "recurquant_cora_c2_development_quality_diagnostic"
     prerequisite_artifacts: dict[str, dict[str, Any]] = {}
     if storage_boundary is not None:
         assert args.storage_boundary_artifact is not None
@@ -2216,6 +3353,17 @@ def main() -> int:
             f"{primary_claim} The primary metric "
             "excludes the prompt-to-first-code-token prediction because no stored "
             "quantized recurrent state can affect that output."
+        )
+    elif args.cora_c2:
+        claim_boundary = (
+            "This is the frozen Experiment 008 development diagnostic on ranked "
+            "calibration window [16, 32), disjoint from the authenticated selector "
+            "prefix and from prior quality windows. Ranked window [8, 16) remains "
+            "protected and was not tokenized or evaluated. This result cannot establish "
+            "confirmation generalization, novelty, speed, state of the art, or a "
+            f"breakthrough. {primary_claim} The primary metric excludes the "
+            "prompt-to-first-code-token prediction because no stored quantized "
+            "recurrent state can affect that output."
         )
     else:
         claim_boundary = (
@@ -2244,11 +3392,14 @@ def main() -> int:
             "phase": "calibration",
             "manifest_sha256": actual_manifest_sha256,
             "content_manifest_sha256": actual_manifest_sha256,
+            "token_manifest_sha256": token_manifest_sha256,
             "manifest": actual_manifest,
             "task_count": len(rows),
             "tasks": token_manifest,
             "selection_mode": (
-                "heldout_calibration" if heldout_calibration else "selector_task_prefix"
+                "experiment008_development"
+                if args.cora_c2
+                else "heldout_calibration" if heldout_calibration else "selector_task_prefix"
             ),
             "selection_window": {
                 "calibration_offset": args.calibration_offset,
@@ -2258,8 +3409,27 @@ def main() -> int:
             },
             "evaluation_task_ids": actual_ids,
             "selector_task_ids": sorted(all_selector_task_ids),
-            "selector_task_prefix": not heldout_calibration and limit < available_tasks,
-            "disjoint_from_all_selector_artifacts": (True if heldout_calibration else None),
+            "selector_task_prefix": (
+                False
+                if args.cora_c2
+                else not heldout_calibration and limit < available_tasks
+            ),
+            "disjoint_from_all_selector_artifacts": (
+                True if heldout_calibration or args.cora_c2 else None
+            ),
+            "development_identity": (
+                {
+                    "ordered_task_ids": list(E008_DEVELOPMENT_TASK_IDS),
+                    "content_manifest_sha256": E008_DEVELOPMENT_CONTENT_MANIFEST_SHA256,
+                    "token_manifest_sha256": E008_DEVELOPMENT_TOKEN_MANIFEST_SHA256,
+                    "actual_token_manifest_sha256": token_manifest_sha256,
+                    "identity_authenticated_before_model_load": True,
+                    "protected_window": [8, 16],
+                    "protected_window_tokenized_or_evaluated": False,
+                }
+                if args.cora_c2
+                else None
+            ),
             "authenticated_selector_prefix": authenticated_selector_prefix,
         },
         "metric_contract": {
@@ -2268,16 +3438,26 @@ def main() -> int:
             "excluded_from_primary": "prompt-to-first-code-token prediction",
             "secondary": "full reference-code tokens, including the unaffected first token",
             "contrasts": "paired task-macro baseline delta NLL minus primary delta NLL",
+            "cvar95_kl": (
+                "per-task token CVaR95 KL, followed by an equal-weight task macro mean"
+            ),
+            "maximum_kl": "maximum token KL across every evaluated task",
         },
         "methods": list(per_task),
         "primary": primary_name,
         "adaptive_policy_contracts": {
-            ADAPTIVE_H1: {
-                "selection": "per-update aligned INT4-to-INT8 row MSE reduction",
-                "layer_quota_source": "hrr_h1 selector plan",
-                "batch_size": 1,
-                "resident_bytes": adaptive_plans[ADAPTIVE_H1].resident_bytes,
-            },
+            **(
+                {
+                    ADAPTIVE_H1: {
+                        "selection": "per-update aligned INT4-to-INT8 row MSE reduction",
+                        "layer_quota_source": "hrr_h1 selector plan",
+                        "batch_size": 1,
+                        "resident_bytes": adaptive_plans[ADAPTIVE_H1].resident_bytes,
+                    }
+                }
+                if ADAPTIVE_H1 in adaptive_plans
+                else {}
+            ),
             **(
                 {
                     ADAPTIVE_TARGET_FISHER: {
@@ -2333,6 +3513,73 @@ def main() -> int:
                 }
                 for name, plan in query_ema_plans.items()
             },
+            **{
+                name: {
+                    "selection": (
+                        "causal normalized-query-energy EMA multiplied by per-write "
+                        "aligned INT4-to-INT8 row-MSE reduction with Confirmation-2"
+                    ),
+                    "query_normalization": "q / sqrt(sum(q^2) + 1e-6), computed in FP32",
+                    "query_energy_half_life_tokens": QUERY_EMA_HALF_LIFE,
+                    "confirmation_two": True,
+                    "confirmation_rule": (
+                        "incumbents remain eligible; new rows require consecutive raw "
+                        "top-quota membership on two state writes"
+                    ),
+                    "layer_quota_source": (
+                        "target_directional_fisher_difference_int4 selector plan"
+                    ),
+                    "batch_size": 1,
+                    "packed_recurrent_state_bytes": plan.resident_bytes,
+                    "selector_auxiliary_bytes": (
+                        expected_selector_auxiliary_bytes
+                        + expected_previous_raw_mask_bytes
+                    ),
+                    "resident_bytes_including_selector": (
+                        plan.resident_bytes
+                        + expected_selector_auxiliary_bytes
+                        + expected_previous_raw_mask_bytes
+                    ),
+                }
+                for name, plan in query_ema_c2_plans.items()
+            },
+            **{
+                name: {
+                    "selection": (
+                        "causal trace-normalized diagonal Gated DeltaNet observability "
+                        "predictor multiplied by aligned per-write INT4-to-INT8 row "
+                        "squared-error reduction"
+                    ),
+                    "observability_recurrence": (
+                        "diag(q*q^T + T^T diag(p) T), T=exp(g)(I-beta kk^T)"
+                    ),
+                    "query_key_l2norm_epsilon": 1e-6,
+                    "read_query_scale": "1 / sqrt(key_row_width)",
+                    "workspace_dtype": "torch.float64",
+                    "persistent_observability_dtype": "torch.float32",
+                    "trace_normalization": "across all heads and key rows per layer/token",
+                    "confirmation_two": confirmation_two,
+                    "layer_quota_source": (
+                        "target_directional_fisher_difference_int4 selector plan"
+                    ),
+                    "batch_size": 1,
+                    "packed_recurrent_state_bytes": plan.resident_bytes,
+                    "observability_diagonal_bytes": expected_selector_auxiliary_bytes,
+                    "previous_raw_mask_bytes": (
+                        expected_previous_raw_mask_bytes
+                    ),
+                    "selector_auxiliary_bytes": (
+                        expected_selector_auxiliary_bytes
+                        + expected_previous_raw_mask_bytes
+                    ),
+                    "resident_bytes_including_selector": (
+                        plan.resident_bytes
+                        + expected_selector_auxiliary_bytes
+                        + expected_previous_raw_mask_bytes
+                    ),
+                }
+                for name, (plan, confirmation_two) in cora_specs.items()
+            },
         },
         "storage": {
             "fp32_reference_recurrent_state_bytes": reference_state_bytes,
@@ -2345,7 +3592,17 @@ def main() -> int:
         "development_gate": development_gate,
         "per_task": per_task,
         "per_task_full_code_secondary": per_task_full_code,
-        "query_ema_diagnostics": per_task_query_ema_diagnostics,
+        "selector_diagnostics": per_task_selector_diagnostics,
+        "query_ema_diagnostics": {
+            name: records
+            for name, records in per_task_selector_diagnostics.items()
+            if name in {QUERY_EMA_PRIMARY, QUERY_EMA_C2}
+        },
+        "observability_diagnostics": {
+            name: records
+            for name, records in per_task_selector_diagnostics.items()
+            if name in {CORA_RAW, CORA_C2_PRIMARY}
+        },
         "environment": {
             "python": sys.version,
             "platform": platform.platform(),

@@ -19,6 +19,7 @@ from recurquant.public_data import (
     format_mbpp_prompt_code,
     load_mbpp_phase,
     load_mbpp_rows,
+    load_mbpp_rows_by_task_ids,
     mbpp_manifest,
     mbpp_manifest_content_sha256,
     mbpp_manifest_sha256,
@@ -180,6 +181,53 @@ def test_script_api_applies_limit_after_frozen_calibration_selection(
     assert limited == full[:3]
     with pytest.raises(ValueError, match="limit"):
         load_mbpp_rows("development", limit=0)
+
+
+def test_task_id_loader_retains_only_targets_in_frozen_order() -> None:
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    malformed_non_target = {"task_id": 99, "text": object()}
+
+    def fake_loader(*args: Any, **kwargs: Any) -> Iterable[Mapping[str, Any]]:
+        calls.append((args, kwargs))
+        return [malformed_non_target, row(2), row(1), row(3)]
+
+    loaded = load_mbpp_rows_by_task_ids(
+        "calibration",
+        task_ids=(3, 1),
+        load_dataset_fn=fake_loader,
+    )
+
+    assert [item["task_id"] for item in loaded] == [3, 1]
+    assert calls == [
+        (
+            (MBPP_DATASET_ID, MBPP_CONFIG),
+            {"revision": MBPP_REVISION, "split": "train", "streaming": True},
+        )
+    ]
+
+
+def test_task_id_loader_rejects_duplicate_missing_and_confirmation_ids() -> None:
+    def fake_loader(*args: Any, **kwargs: Any) -> Iterable[Mapping[str, Any]]:
+        return [row(1), row(2)]
+
+    with pytest.raises(ValueError, match="unique"):
+        load_mbpp_rows_by_task_ids(
+            "calibration",
+            task_ids=(1, 1),
+            load_dataset_fn=fake_loader,
+        )
+    with pytest.raises(ValueError, match="missing.*3"):
+        load_mbpp_rows_by_task_ids(
+            "calibration",
+            task_ids=(1, 3),
+            load_dataset_fn=fake_loader,
+        )
+    with pytest.raises(ValueError, match="forbidden for confirmation"):
+        load_mbpp_rows_by_task_ids(
+            "confirmation",
+            task_ids=(1,),
+            load_dataset_fn=fake_loader,
+        )
 
 
 def test_confirmation_guard_blocks_before_loader_and_accepts_explicit_token() -> None:

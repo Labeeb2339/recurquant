@@ -461,20 +461,21 @@ def test_calibration_holdout_refuses_out_of_range_window() -> None:
         )
 
 
-def test_frozen_holdout_request_requires_exact_window_and_two_eight_task_selectors() -> None:
+def test_legacy_frozen_holdout_is_locked_after_experiment008_freeze() -> None:
     selectors = [
         _frozen_selector(evaluator.HRR_ARTIFACT_KIND),
         _frozen_selector(evaluator.LOSS_ARTIFACT_KIND),
     ]
 
-    evaluator.validate_frozen_holdout_request(
-        offset=8,
-        limit=8,
-        bootstrap_samples=10_000,
-        selectors=selectors,
-        loss_selector_present=True,
-        storage_boundary_present=True,
-    )
+    with pytest.raises(ValueError, match="protected by Experiment 008"):
+        evaluator.validate_frozen_holdout_request(
+            offset=8,
+            limit=8,
+            bootstrap_samples=10_000,
+            selectors=selectors,
+            loss_selector_present=True,
+            storage_boundary_present=True,
+        )
 
 
 def test_experiment006_rank_fusion_holdout_remains_fail_closed() -> None:
@@ -1097,3 +1098,645 @@ def test_claim_and_exit_code_follow_actual_primary_and_gate() -> None:
     assert evaluator.diagnostic_exit_code(heldout_calibration=True, gate_passed=False) == 2
     assert evaluator.diagnostic_exit_code(heldout_calibration=True, gate_passed=True) == 0
     assert evaluator.diagnostic_exit_code(heldout_calibration=False, gate_passed=False) == 0
+
+
+def _cora_metric(
+    *,
+    delta_nll: float,
+    top1: float,
+    cvar95: float,
+) -> dict[str, float | int]:
+    return {
+        "macro_delta_nll": delta_nll,
+        "macro_mean_kl": delta_nll,
+        "macro_cvar95_kl": cvar95,
+        "macro_top1_agreement": top1,
+        "task_count": evaluator.E008_DEVELOPMENT_LIMIT,
+        "token_count": 2 * evaluator.E008_DEVELOPMENT_LIMIT,
+    }
+
+
+def _cora_task_rows(
+    summary: dict[str, float | int],
+) -> list[dict[str, float | int | bool]]:
+    return [
+        {
+            "task_id": task_id,
+            "delta_nll": summary["macro_delta_nll"],
+            "mean_kl": summary["macro_mean_kl"],
+            "cvar95_kl": summary["macro_cvar95_kl"],
+            "top1_agreement": summary["macro_top1_agreement"],
+            "token_count": 2,
+            "candidate_nll": 1.0,
+            "reference_nll": 0.5,
+            "max_kl": 1.5,
+            "all_logits_finite": True,
+        }
+        for task_id in evaluator.E008_DEVELOPMENT_TASK_IDS
+    ]
+
+
+def _query_selector_layer(*, confirmation_two: bool) -> dict[str, object]:
+    return {
+        "layer_index": 0,
+        "quota": 2,
+        "confirmation_two": confirmation_two,
+        "ema_decay": 2.0 ** (-1.0 / evaluator.QUERY_EMA_HALF_LIFE),
+        "l2norm_eps": 1e-6,
+        "state_updates": 3,
+        "observations_staged": 3,
+        "observations_committed": 3,
+        "tokens_observed": 6,
+        "last_query_token_count": 1,
+        "last_cutoff_score_margin": 0.01,
+        "last_mask_overlap": 1,
+        "last_mask_churn": 2,
+        "current_selected_count": 2,
+        "current_mask_sha256": "a" * 64,
+        "raw_mask_sha256": "b" * 64,
+        "committed_mask_sha256": "a" * 64,
+        "pending_observation": False,
+        "selector_auxiliary_bytes": 9 if confirmation_two else 8,
+    }
+
+
+def _cora_selector_layer(
+    *,
+    confirmation_two: bool,
+    committed_xor: int,
+) -> dict[str, object]:
+    transitions = 2
+    quota = 2
+    denominator = 2 * quota * transitions
+    raw_xor = 4
+    admissions = committed_xor // 2
+    dwell = quota * transitions - admissions
+    return {
+        "layer_index": 0,
+        "selection_method": (
+            evaluator.CORA_C2_PRIMARY if confirmation_two else evaluator.CORA_RAW
+        ),
+        "confirmation_two": confirmation_two,
+        "quota": quota,
+        "current_selected_count": quota,
+        "raw_mask_sha256": "b" * 64,
+        "committed_mask_sha256": "c" * 64,
+        "observations_staged": 3,
+        "observations_committed": 3,
+        "tokens_observed": 6,
+        "last_token_count": 1,
+        "mask_transition_count": transitions,
+        "raw_xor_churn_total": raw_xor,
+        "committed_xor_churn_total": committed_xor,
+        "raw_normalized_churn": raw_xor / denominator,
+        "committed_normalized_churn": committed_xor / denominator,
+        "last_raw_mask_overlap": 1,
+        "last_committed_mask_overlap": 1,
+        "last_dwell_count": 1,
+        "last_admission_count": 1,
+        "dwell_total": dwell,
+        "admissions_total": admissions,
+        "last_raw_cutoff_score": 0.1,
+        "last_raw_score_gap": 0.01,
+        "last_raw_normalized_gap": 0.1,
+        "last_committed_cutoff_score": 0.1,
+        "last_committed_score_gap": 0.01,
+        "last_committed_normalized_gap": 0.1,
+        "observability_trace": 1.0,
+        "observability_min": 0.1,
+        "observability_max": 0.9,
+        "observability_dtype": "torch.float32",
+        "l2norm_eps": 1e-6,
+        "state_updates": 3,
+        "pending_observation": False,
+        "observability_diagonal_bytes": 8,
+        # Raw CORA also keeps its previous raw mask to report cumulative churn.
+        "previous_raw_mask_bytes": 1,
+        "selector_auxiliary_bytes": 9,
+    }
+
+
+def _selector_task_diagnostics(layer: dict[str, object]) -> list[dict[str, object]]:
+    return [
+        {"task_id": task_id, "layers": [deepcopy(layer)]}
+        for task_id in evaluator.E008_DEVELOPMENT_TASK_IDS
+    ]
+
+
+def _passing_cora_c2_development_inputs() -> dict[str, object]:
+    static = "target_directional_fisher_difference_int4"
+    aggregates = {
+        static: _cora_metric(delta_nll=1.00, top1=0.800, cvar95=1.00),
+        evaluator.ADAPTIVE_TARGET_FISHER: _cora_metric(
+            delta_nll=0.90,
+            top1=0.810,
+            cvar95=0.95,
+        ),
+        evaluator.QUERY_EMA_PRIMARY: _cora_metric(
+            delta_nll=0.80,
+            top1=0.800,
+            cvar95=1.00,
+        ),
+        evaluator.CORA_RAW: _cora_metric(
+            delta_nll=0.72,
+            top1=0.804,
+            cvar95=1.02,
+        ),
+        evaluator.QUERY_EMA_C2: _cora_metric(
+            delta_nll=0.78,
+            top1=0.801,
+            cvar95=1.00,
+        ),
+        evaluator.CORA_C2_PRIMARY: _cora_metric(
+            delta_nll=0.70,
+            top1=0.805,
+            cvar95=1.04,
+        ),
+    }
+    per_task = {name: _cora_task_rows(values) for name, values in aggregates.items()}
+    per_task_full_code = deepcopy(per_task)
+    for task_rows in per_task_full_code.values():
+        for row in task_rows:
+            row["token_count"] = 3
+    aggregates_full_code = deepcopy(aggregates)
+    for summary in aggregates_full_code.values():
+        summary["token_count"] = 3 * evaluator.E008_DEVELOPMENT_LIMIT
+    packed_bytes = 100
+    storage = {
+        name: {
+            "resident_bytes": packed_bytes,
+            "high_precision_groups": 2,
+        }
+        for name in aggregates
+    }
+    storage[evaluator.QUERY_EMA_PRIMARY].update(
+        selector_auxiliary_bytes=8,
+        resident_bytes_including_selector=108,
+    )
+    storage[evaluator.CORA_RAW].update(
+        selector_auxiliary_bytes=9,
+        resident_bytes_including_selector=109,
+    )
+    for name in (evaluator.QUERY_EMA_C2, evaluator.CORA_C2_PRIMARY):
+        storage[name].update(
+            selector_auxiliary_bytes=9,
+            resident_bytes_including_selector=109,
+        )
+    selector_diagnostics = {
+        evaluator.QUERY_EMA_PRIMARY: _selector_task_diagnostics(
+            _query_selector_layer(confirmation_two=False)
+        ),
+        evaluator.QUERY_EMA_C2: _selector_task_diagnostics(
+            _query_selector_layer(confirmation_two=True)
+        ),
+        evaluator.CORA_RAW: _selector_task_diagnostics(
+            _cora_selector_layer(confirmation_two=False, committed_xor=4)
+        ),
+        evaluator.CORA_C2_PRIMARY: _selector_task_diagnostics(
+            _cora_selector_layer(confirmation_two=True, committed_xor=2)
+        ),
+    }
+    return {
+        "aggregates": aggregates,
+        "aggregates_full_code": aggregates_full_code,
+        "per_task": per_task,
+        "per_task_full_code": per_task_full_code,
+        "storage": storage,
+        "selector_diagnostics": selector_diagnostics,
+        "contrasts": {
+            static: {"confidence_interval": [0.10, 0.50]},
+            evaluator.QUERY_EMA_PRIMARY: {"confidence_interval": [0.02, 0.20]},
+        },
+        "token_manifest": [
+            {
+                "task_id": task_id,
+                "prompt_tokens": 4,
+                "code_tokens": 3,
+                "aligned_scored_tokens": 2,
+                "full_code_scored_tokens": 3,
+            }
+            for task_id in evaluator.E008_DEVELOPMENT_TASK_IDS
+        ],
+        "expected_quotas": {0: 2},
+        "expected_packed_bytes": packed_bytes,
+        "expected_query_auxiliary_bytes": 8,
+        "expected_cora_auxiliary_bytes": 9,
+    }
+
+
+def _set_all_cora_c2_committed_churn(values: dict[str, object], churn: int) -> None:
+    for task in values["selector_diagnostics"][evaluator.CORA_C2_PRIMARY]:
+        layer = task["layers"][0]
+        layer["committed_xor_churn_total"] = churn
+        layer["committed_normalized_churn"] = churn / 8
+        layer["admissions_total"] = churn // 2
+        layer["dwell_total"] = 4 - churn // 2
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"offset": 8},
+        {"offset": 15},
+        {"offset": 17},
+        {"limit": 15},
+        {"bootstrap_samples": 9_999},
+    ),
+)
+def test_experiment008_request_pins_development_and_protects_eight_to_sixteen(
+    changes: dict[str, int],
+) -> None:
+    arguments = {
+        "enabled": True,
+        "offset": evaluator.E008_DEVELOPMENT_OFFSET,
+        "limit": evaluator.E008_DEVELOPMENT_LIMIT,
+        "bootstrap_samples": evaluator.FROZEN_BOOTSTRAP_SAMPLES,
+    }
+    evaluator.validate_cora_development_request(**arguments)
+    arguments.update(changes)
+
+    with pytest.raises(ValueError, match=r"\[16, 32\).*\[8, 16\) remains closed"):
+        evaluator.validate_cora_development_request(**arguments)
+
+
+def test_experiment008_disabled_request_is_a_noop() -> None:
+    evaluator.validate_cora_development_request(
+        enabled=False,
+        offset=8,
+        limit=1,
+        bootstrap_samples=1,
+    )
+
+
+def test_experiment008_requires_a_clean_committed_repository_before_data_access() -> None:
+    clean = {"commit": "a" * 40, "worktree_clean": True, "status": []}
+    evaluator.validate_cora_development_repository_start(clean)
+
+    with pytest.raises(ValueError, match="clean committed worktree"):
+        evaluator.validate_cora_development_repository_start(
+            {"commit": "a" * 40, "worktree_clean": False, "status": [" M source.py"]}
+        )
+    with pytest.raises(ValueError, match="40-character Git commit"):
+        evaluator.validate_cora_development_repository_start(
+            {"commit": "short", "worktree_clean": True, "status": []}
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("task_ids", tuple(reversed(evaluator.E008_DEVELOPMENT_TASK_IDS)), "task IDs"),
+        ("content_manifest_sha256", "0" * 64, "content manifest"),
+        ("token_manifest_sha256", "0" * 64, "token manifest"),
+    ),
+)
+def test_experiment008_identity_rejects_every_frozen_identity_drift(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    arguments = {
+        "enabled": True,
+        "task_ids": evaluator.E008_DEVELOPMENT_TASK_IDS,
+        "content_manifest_sha256": evaluator.E008_DEVELOPMENT_CONTENT_MANIFEST_SHA256,
+        "token_manifest_sha256": evaluator.E008_DEVELOPMENT_TOKEN_MANIFEST_SHA256,
+    }
+    evaluator.validate_cora_development_identity(**arguments)
+    arguments[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        evaluator.validate_cora_development_identity(**arguments)
+
+
+def test_experiment008_authenticates_exact_selector_pair_and_quotas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selectors = [
+        _frozen_selector(evaluator.HRR_ARTIFACT_KIND),
+        _frozen_selector(evaluator.LOSS_ARTIFACT_KIND),
+    ]
+    monkeypatch.setattr(evaluator, "CQER_DEVELOPMENT_TASK_IDS", tuple(range(100, 108)))
+    monkeypatch.setattr(
+        evaluator,
+        "CQER_FROZEN_SELECTOR_CANONICAL_SHA256S",
+        tuple(
+            evaluator.sha256_bytes(evaluator.canonical_json_bytes(selector))
+            for selector in selectors
+        ),
+    )
+
+    evaluator.validate_cora_selector_artifacts(enabled=True, selectors=selectors)
+    evaluator.validate_cora_layer_quotas(
+        enabled=True,
+        quotas=dict(evaluator.CQER_FROZEN_LAYER_QUOTAS),
+    )
+
+    drifted_selector = deepcopy(selectors)
+    drifted_selector[1]["byte_budget"]["target_resident_bytes"] = 999
+    with pytest.raises(ValueError, match="canonical hashes"):
+        evaluator.validate_cora_selector_artifacts(
+            enabled=True,
+            selectors=drifted_selector,
+        )
+
+    drifted_quotas = dict(evaluator.CQER_FROZEN_LAYER_QUOTAS)
+    drifted_quotas[0] -= 1
+    drifted_quotas[1] += 1
+    with pytest.raises(ValueError, match="target-Fisher allocation"):
+        evaluator.validate_cora_layer_quotas(enabled=True, quotas=drifted_quotas)
+
+
+def test_experiment008_cora_path_does_not_authorize_the_protected_window() -> None:
+    with pytest.raises(ValueError, match=r"\[8, 16\) remains closed"):
+        evaluator.validate_cora_development_request(
+            enabled=True,
+            offset=8,
+            limit=8,
+            bootstrap_samples=evaluator.FROZEN_BOOTSTRAP_SAMPLES,
+        )
+
+
+@pytest.mark.parametrize(
+    ("offset", "limit", "bootstrap_samples"),
+    (
+        (8, 8, 10_000),
+        (16, 15, 10_000),
+        (16, 16, 9_999),
+    ),
+)
+def test_generic_holdout_validator_only_bypasses_for_exact_e008_development_request(
+    offset: int,
+    limit: int,
+    bootstrap_samples: int,
+) -> None:
+    evaluator.validate_frozen_holdout_request(
+        offset=16,
+        limit=16,
+        bootstrap_samples=10_000,
+        selectors=[],
+        loss_selector_present=False,
+        storage_boundary_present=False,
+        cora_c2_enabled=True,
+    )
+
+    with pytest.raises(ValueError, match="Experiment 008 CORA-C2"):
+        evaluator.validate_frozen_holdout_request(
+            offset=offset,
+            limit=limit,
+            bootstrap_samples=bootstrap_samples,
+            selectors=[],
+            loss_selector_present=False,
+            storage_boundary_present=False,
+            cora_c2_enabled=True,
+        )
+
+
+def test_cora_c2_development_gate_passes_the_complete_frozen_conjunction() -> None:
+    gate = evaluator.evaluate_cora_c2_development_gate(
+        **_passing_cora_c2_development_inputs()
+    )
+
+    assert gate["schema"] == "recurquant.experiment008-cora-c2-development-gate.v1"
+    assert gate["primary"] == evaluator.CORA_C2_PRIMARY
+    assert gate["passed"] is True
+    assert set(gate["checks"]) == {
+        "exact_per_layer_quotas",
+        "exact_packed_and_selector_bytes",
+        "exact_stage_consume_handshake",
+        "all_values_finite",
+        "lower_nll_than_primary_comparators",
+        "relative_nll_reduction_vs_static",
+        "relative_nll_reduction_vs_adaptive",
+        "relative_nll_reduction_vs_cqer",
+        "paired_lower_ci_vs_static",
+        "paired_lower_ci_vs_cqer",
+        "top1_margin_vs_static_adaptive",
+        "top1_not_lower_than_cqer",
+        "cvar95_margin_vs_static_adaptive",
+        "raw_cora_relative_nll_reduction_vs_cqer",
+        "c2_churn_reduction_vs_raw",
+        "c2_top1_not_lower_than_raw",
+        "c2_nll_worsening_vs_raw",
+    }
+    assert all(check["passed"] is True for check in gate["checks"].values())
+
+
+def test_cora_c2_gate_fails_closed_when_staging_evidence_is_missing() -> None:
+    inputs = _passing_cora_c2_development_inputs()
+    layer = inputs["selector_diagnostics"][evaluator.CORA_C2_PRIMARY][0]["layers"][0]
+    del layer["observations_staged"]
+
+    gate = evaluator.evaluate_cora_c2_development_gate(**inputs)
+
+    assert gate["passed"] is False
+    assert gate["checks"]["exact_stage_consume_handshake"]["passed"] is False
+
+
+def test_cora_c2_gate_rejects_method_or_metric_token_drift() -> None:
+    inputs = _passing_cora_c2_development_inputs()
+    inputs["aggregates"]["posthoc_method"] = deepcopy(
+        inputs["aggregates"][evaluator.CORA_C2_PRIMARY]
+    )
+    with pytest.raises(ValueError, match="frozen six-method set"):
+        evaluator.evaluate_cora_c2_development_gate(**inputs)
+
+    inputs = _passing_cora_c2_development_inputs()
+    inputs["per_task"][evaluator.CORA_C2_PRIMARY][0]["token_count"] = 1
+    with pytest.raises(ValueError, match="aligned token counts"):
+        evaluator.evaluate_cora_c2_development_gate(**inputs)
+
+
+def test_cora_c2_gate_rejects_dropped_transition_tokens() -> None:
+    inputs = _passing_cora_c2_development_inputs()
+    layer = inputs["selector_diagnostics"][evaluator.CORA_C2_PRIMARY][0]["layers"][0]
+    layer["tokens_observed"] = 5
+
+    gate = evaluator.evaluate_cora_c2_development_gate(**inputs)
+
+    assert gate["passed"] is False
+    assert gate["checks"]["exact_stage_consume_handshake"]["passed"] is False
+
+
+def test_evaluator_runs_all_e008_dynamic_methods_with_disjoint_observers() -> None:
+    torch.manual_seed(449)
+    config = tiny_config()
+    model = Qwen3_5ForCausalLM._from_config(
+        config,
+        attn_implementation="eager",
+    ).eval()
+    scores = {0: torch.arange(16, dtype=torch.float32).reshape(2, 8)}
+    plan = evaluator.select_rows_exact_budget(
+        scores,
+        target_resident_bytes=118,
+        group_size=8,
+    )
+    prompt_ids = torch.randint(0, config.vocab_size, (1, 4))
+    code_ids = torch.randint(0, config.vocab_size, (1, 3))
+    dynamic_methods = {
+        evaluator.QUERY_EMA_PRIMARY,
+        evaluator.QUERY_EMA_C2,
+        evaluator.CORA_RAW,
+        evaluator.CORA_C2_PRIMARY,
+    }
+
+    with torch.inference_mode():
+        summaries, _, storage, diagnostics, reference_bytes = evaluator.evaluate_task(
+            model,
+            prompt_ids=prompt_ids,
+            code_ids=code_ids,
+            plans={},
+            adaptive_plans={},
+            query_ema_plans={evaluator.QUERY_EMA_PRIMARY: plan},
+            query_ema_c2_plans={evaluator.QUERY_EMA_C2: plan},
+            cora_specs={
+                evaluator.CORA_RAW: (plan, False),
+                evaluator.CORA_C2_PRIMARY: (plan, True),
+            },
+            include_default_baselines=False,
+        )
+
+    assert set(summaries) == dynamic_methods
+    assert set(diagnostics) == dynamic_methods
+    assert all(summaries[name]["token_count"] == 2 for name in dynamic_methods)
+    assert all(storage[name]["resident_bytes"] == plan.resident_bytes for name in dynamic_methods)
+    assert storage[evaluator.QUERY_EMA_PRIMARY]["selector_auxiliary_bytes"] == 64
+    assert storage[evaluator.QUERY_EMA_C2]["selector_auxiliary_bytes"] == 66
+    assert storage[evaluator.CORA_RAW]["selector_auxiliary_bytes"] == 66
+    assert storage[evaluator.CORA_C2_PRIMARY]["selector_auxiliary_bytes"] == 66
+
+    for name in dynamic_methods:
+        assert len(diagnostics[name]) == 1
+        layer = diagnostics[name][0]
+        assert layer["state_updates"] == 3
+        assert layer["observations_staged"] == 3
+        assert layer["observations_committed"] == 3
+        assert layer["tokens_observed"] == 6
+        assert layer["current_selected_count"] == len(plan.groups_for_layer(0))
+        assert layer["pending_observation"] is False
+
+    assert diagnostics[evaluator.QUERY_EMA_PRIMARY][0]["confirmation_two"] is False
+    assert diagnostics[evaluator.QUERY_EMA_C2][0]["confirmation_two"] is True
+    assert diagnostics[evaluator.CORA_RAW][0]["selection_method"] == evaluator.CORA_RAW
+    assert (
+        diagnostics[evaluator.CORA_C2_PRIMARY][0]["selection_method"]
+        == evaluator.CORA_C2_PRIMARY
+    )
+    assert reference_bytes > 0
+
+
+@pytest.mark.parametrize(
+    ("mutation", "failed_check"),
+    (
+        (
+            lambda values: values["selector_diagnostics"][evaluator.CORA_C2_PRIMARY][0][
+                "layers"
+            ][0].update(current_selected_count=1),
+            "exact_per_layer_quotas",
+        ),
+        (
+            lambda values: values["storage"][evaluator.CORA_C2_PRIMARY].update(
+                resident_bytes_including_selector=110
+            ),
+            "exact_packed_and_selector_bytes",
+        ),
+        (
+            lambda values: values["selector_diagnostics"][evaluator.CORA_C2_PRIMARY][0][
+                "layers"
+            ][0].update(observations_committed=2),
+            "exact_stage_consume_handshake",
+        ),
+        (
+            lambda values: values["per_task_full_code"][evaluator.CORA_C2_PRIMARY][0].update(
+                all_logits_finite=False
+            ),
+            "all_values_finite",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.CORA_C2_PRIMARY].update(
+                macro_delta_nll=0.80
+            ),
+            "lower_nll_than_primary_comparators",
+        ),
+        (
+            lambda values: values["aggregates"][
+                "target_directional_fisher_difference_int4"
+            ].update(macro_delta_nll=0.874),
+            "relative_nll_reduction_vs_static",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.ADAPTIVE_TARGET_FISHER].update(
+                macro_delta_nll=0.735
+            ),
+            "relative_nll_reduction_vs_adaptive",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.QUERY_EMA_PRIMARY].update(
+                macro_delta_nll=0.735
+            ),
+            "relative_nll_reduction_vs_cqer",
+        ),
+        (
+            lambda values: values["contrasts"][
+                "target_directional_fisher_difference_int4"
+            ].update(confidence_interval=[0.0, 0.5]),
+            "paired_lower_ci_vs_static",
+        ),
+        (
+            lambda values: values["contrasts"][evaluator.QUERY_EMA_PRIMARY].update(
+                confidence_interval=[0.0, 0.2]
+            ),
+            "paired_lower_ci_vs_cqer",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.CORA_C2_PRIMARY].update(
+                macro_top1_agreement=0.799
+            ),
+            "top1_margin_vs_static_adaptive",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.QUERY_EMA_PRIMARY].update(
+                macro_top1_agreement=0.806
+            ),
+            "top1_not_lower_than_cqer",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.CORA_C2_PRIMARY].update(
+                macro_cvar95_kl=1.051
+            ),
+            "cvar95_margin_vs_static_adaptive",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.CORA_RAW].update(
+                macro_delta_nll=0.777
+            ),
+            "raw_cora_relative_nll_reduction_vs_cqer",
+        ),
+        (
+            lambda values: _set_all_cora_c2_committed_churn(values, 4),
+            "c2_churn_reduction_vs_raw",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.CORA_RAW].update(
+                macro_top1_agreement=0.806
+            ),
+            "c2_top1_not_lower_than_raw",
+        ),
+        (
+            lambda values: values["aggregates"][evaluator.CORA_RAW].update(
+                macro_delta_nll=0.69
+            ),
+            "c2_nll_worsening_vs_raw",
+        ),
+    ),
+)
+def test_cora_c2_development_gate_fails_each_frozen_condition(
+    mutation,
+    failed_check: str,
+) -> None:
+    inputs = _passing_cora_c2_development_inputs()
+    mutation(inputs)
+
+    gate = evaluator.evaluate_cora_c2_development_gate(**inputs)
+
+    assert gate["passed"] is False
+    assert gate["checks"][failed_check]["passed"] is False

@@ -127,6 +127,61 @@ def load_mbpp_rows(
     return rows if limit is None else rows[:limit]
 
 
+def load_mbpp_rows_by_task_ids(
+    phase: MBPPPhase | str,
+    *,
+    task_ids: Sequence[int],
+    load_dataset_fn: LoadDataset | None = None,
+) -> tuple[MBPPRow, ...]:
+    """Load only an already-pinned ordered row identity from a public split.
+
+    This path is intended for preregistered calibration/development identities:
+    it streams the source split, reads only ``task_id`` on non-target records,
+    retains only requested rows, and returns them in the caller's frozen order.
+    It deliberately refuses confirmation data and duplicate or missing IDs.
+    """
+
+    normalized_phase = _coerce_phase(phase)
+    if normalized_phase is MBPPPhase.CONFIRMATION:
+        raise ValueError(
+            "task-ID loading is forbidden for confirmation; use the explicit "
+            "whole-split confirmation contract"
+        )
+    if isinstance(task_ids, (str, bytes)) or not isinstance(task_ids, Sequence):
+        raise TypeError("task_ids must be an ordered sequence of integers")
+    ordered_ids = tuple(_task_id(task_id) for task_id in task_ids)
+    if not ordered_ids:
+        raise ValueError("task_ids must not be empty")
+    if len(set(ordered_ids)) != len(ordered_ids):
+        raise ValueError("task_ids must be unique")
+
+    targets = set(ordered_ids)
+    selected: dict[int, MBPPRow] = {}
+    loader = load_dataset_fn or _load_dataset_lazily
+    loaded = loader(
+        MBPP_DATASET_ID,
+        MBPP_CONFIG,
+        revision=MBPP_REVISION,
+        split=mbpp_source_split(normalized_phase),
+        streaming=True,
+    )
+    for raw_row in loaded:
+        task_id = _task_id(raw_row)
+        if task_id not in targets:
+            continue
+        if task_id in selected:
+            raise ValueError(f"duplicate requested MBPP task_id {task_id} in source split")
+        selected[task_id] = canonical_mbpp_row(raw_row)
+        if len(selected) == len(targets):
+            break
+
+    missing = [task_id for task_id in ordered_ids if task_id not in selected]
+    if missing:
+        rendered = ", ".join(str(task_id) for task_id in missing)
+        raise ValueError(f"requested MBPP task IDs are missing from source split: {rendered}")
+    return tuple(selected[task_id] for task_id in ordered_ids)
+
+
 def mbpp_calibration_key(row_or_task_id: Mapping[str, Any] | int) -> str:
     """Return the frozen SHA-256 ranking key for calibration selection."""
 

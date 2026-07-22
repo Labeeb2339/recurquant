@@ -12,6 +12,7 @@ from packaging.version import InvalidVersion, Version
 
 from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
+    CoraMixedPackedRecurrentStateCache,
     MixedPackedRecurrentStateCache,
     PackedRecurrentStateCache,
     QueryEmaMixedPackedRecurrentStateCache,
@@ -324,6 +325,7 @@ def create_qwen35_query_ema_exact_budget_cache(
     rounding: RoundingMode = "nearest",
     seed: int = 2339,
     record_evidence: bool = False,
+    confirmation_two: bool = False,
 ) -> QueryEmaMixedPackedRecurrentStateCache:
     """Create the frozen half-life-32 query-EMA mixed cache for Qwen3.5.
 
@@ -340,6 +342,34 @@ def create_qwen35_query_ema_exact_budget_cache(
         rounding=rounding,
         seed=seed,
         record_evidence=record_evidence,
+        confirmation_two=confirmation_two,
+    )
+
+
+def create_qwen35_cora_exact_budget_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    rounding: RoundingMode = "nearest",
+    seed: int = 2339,
+    record_evidence: bool = False,
+    confirmation_two: bool = True,
+) -> CoraMixedPackedRecurrentStateCache:
+    """Create the frozen causal-observability Qwen3.5 mixed cache.
+
+    The exact row plan fixes per-layer promotion quotas and packed-state bytes.
+    A transition observer must stage the successful Gated DeltaNet kernel's
+    post-convolution query, key, log-decay, and beta tensors before every state
+    write. ``confirmation_two=False`` selects the frozen raw-CORA ablation.
+    """
+
+    return CoraMixedPackedRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        rounding=rounding,
+        seed=seed,
+        record_evidence=record_evidence,
+        confirmation_two=confirmation_two,
     )
 
 

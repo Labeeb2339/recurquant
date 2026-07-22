@@ -888,6 +888,106 @@ _QUERY_L2NORM_EPS = 1e-6
 _QUERY_EMA_CHUNK_ATOL = 2e-8
 _QUERY_EMA_CHUNK_RTOL = 2e-6
 
+_CORA_L2NORM_EPS = 1e-6
+
+
+def _pack_row_mask(mask: torch.Tensor) -> torch.Tensor:
+    """Pack a canonical flattened boolean row mask, least-significant bit first."""
+
+    flat = mask.detach().reshape(-1).to(torch.uint8)
+    padding = (-flat.numel()) % 8
+    if padding:
+        flat = torch.nn.functional.pad(flat, (0, padding))
+    chunks = flat.reshape(-1, 8).to(torch.int16)
+    shifts = torch.arange(8, dtype=torch.int16, device=flat.device)
+    weights = torch.bitwise_left_shift(torch.ones_like(shifts), shifts)
+    return (chunks * weights).sum(dim=1).to(torch.uint8).contiguous()
+
+
+def _unpack_row_mask(packed: torch.Tensor, total_rows: int) -> torch.Tensor:
+    """Inverse of :func:`_pack_row_mask` for a known logical row count."""
+
+    shifts = torch.arange(8, dtype=torch.int16, device=packed.device)
+    expanded = torch.bitwise_right_shift(packed.to(torch.int16).unsqueeze(1), shifts)
+    return torch.bitwise_and(expanded, 1).reshape(-1)[:total_rows].to(torch.bool)
+
+
+def _stable_top_mask(
+    scores: torch.Tensor,
+    quota: int,
+    *,
+    eligible: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Return a stable exact-quota mask, optionally restricted to eligible rows."""
+
+    flat_scores = scores.reshape(-1)
+    total = flat_scores.numel()
+    mask = torch.zeros(total, dtype=torch.bool, device=flat_scores.device)
+    if quota == 0:
+        return mask
+    if quota == total and eligible is None:
+        return torch.ones_like(mask)
+    ranked_scores = flat_scores
+    if eligible is not None:
+        flat_eligible = eligible.reshape(-1)
+        if flat_eligible.dtype != torch.bool or flat_eligible.numel() != total:
+            raise RuntimeError("confirmation eligibility mask has invalid shape or dtype")
+        if int(flat_eligible.sum().item()) < quota:
+            raise RuntimeError("confirmation eligibility contains fewer rows than the quota")
+        ranked_scores = torch.where(
+            flat_eligible,
+            flat_scores,
+            torch.full_like(flat_scores, -torch.inf),
+        )
+    ranked = torch.argsort(ranked_scores, descending=True, stable=True)
+    mask[ranked[:quota]] = True
+    return mask
+
+
+def _score_boundary(
+    scores: torch.Tensor,
+    selected: torch.Tensor,
+) -> tuple[float | None, float | None, float | None]:
+    """Return cutoff, absolute gap, and scale-normalized gap for one mask.
+
+    The normalized gap is ``(cutoff - best_unselected) / max(abs(cutoff),
+    abs(best_unselected), 1e-12)``. This diagnostic definition is deterministic;
+    it does not participate in row selection.
+    """
+
+    flat_scores = scores.reshape(-1)
+    flat_selected = selected.reshape(-1)
+    if not flat_selected.any().item():
+        return None, None, None
+    cutoff = flat_scores[flat_selected].min()
+    if flat_selected.all().item():
+        return float(cutoff.item()), None, None
+    best_unselected = flat_scores[~flat_selected].max()
+    gap = cutoff - best_unselected
+    scale = torch.maximum(cutoff.abs(), best_unselected.abs()).clamp_min(1e-12)
+    return float(cutoff.item()), float(gap.item()), float((gap / scale).item())
+
+
+def _confirmation_two_mask(
+    *,
+    raw_mask: torch.Tensor,
+    scores: torch.Tensor,
+    quota: int,
+    enabled: bool,
+    has_history: bool,
+    previous_committed_mask: torch.Tensor | None,
+    previous_raw_mask_packed: torch.Tensor | None,
+) -> torch.Tensor:
+    """Apply the frozen two-consecutive-hit admission rule."""
+
+    if not enabled or not has_history:
+        return raw_mask.clone()
+    if previous_committed_mask is None or previous_raw_mask_packed is None:
+        raise RuntimeError("confirmation-2 history is incomplete")
+    previous_raw = _unpack_row_mask(previous_raw_mask_packed, raw_mask.numel())
+    eligible = previous_committed_mask.reshape(-1) | (previous_raw & raw_mask.reshape(-1))
+    return _stable_top_mask(scores, quota, eligible=eligible)
+
 
 @dataclass(slots=True)
 class _PendingQueryObservation:
@@ -895,6 +995,14 @@ class _PendingQueryObservation:
     token_count: int
     candidate_ema: torch.Tensor
     consumed: bool = False
+    raw_mask: torch.Tensor | None = None
+    committed_mask: torch.Tensor | None = None
+    raw_cutoff_score: float | None = None
+    raw_score_gap: float | None = None
+    raw_normalized_gap: float | None = None
+    committed_cutoff_score: float | None = None
+    committed_score_gap: float | None = None
+    committed_normalized_gap: float | None = None
 
 
 class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttentionLayer):
@@ -913,9 +1021,12 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
+        self.confirmation_two = False
         self.query_energy_ema: torch.Tensor | None = None
+        self.previous_raw_mask_packed: torch.Tensor | None = None
         self._pending_query_observation: _PendingQueryObservation | None = None
         self.query_observations_committed = 0
+        self.query_observations_staged = 0
         self.query_tokens_observed = 0
         self.last_query_token_count: int | None = None
         self.last_cutoff_score_margin: float | None = None
@@ -923,6 +1034,26 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
         self.last_mask_churn: int | None = None
         self._candidate_cutoff_score_margin: float | None = None
         self._has_query_selection_history = False
+        self.mask_transition_count = 0
+        self.raw_xor_churn_total = 0
+        self.committed_xor_churn_total = 0
+        self.admissions_total = 0
+        self.dwell_total = 0
+        self.last_raw_cutoff_score: float | None = None
+        self.last_raw_score_gap: float | None = None
+        self.last_raw_normalized_gap: float | None = None
+        self.last_committed_cutoff_score: float | None = None
+        self.last_committed_score_gap: float | None = None
+        self.last_committed_normalized_gap: float | None = None
+
+    def configure_confirmation_two(self, enabled: bool) -> None:
+        """Enable the frozen two-hit admission ablation before the first write."""
+
+        if not isinstance(enabled, bool):
+            raise TypeError("confirmation_two must be a bool")
+        if self._update_count or self._pending_query_observation is not None:
+            raise RuntimeError("confirmation_two must be configured before staging or writing")
+        self.confirmation_two = enabled
 
     def stage_query_observation(
         self,
@@ -1087,21 +1218,8 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
 
             total_groups = self.expected_heads * self.expected_rows
             quota = len(self.high_precision_group_indices)
-            mask = torch.zeros(
-                total_groups,
-                dtype=torch.bool,
-                device=recurrent_states.device,
-            )
             pending.consumed = True
             self._candidate_cutoff_score_margin = None
-            if quota == 0:
-                return mask.reshape(self.expected_heads, self.expected_rows)
-            if quota == total_groups:
-                return torch.ones_like(mask).reshape(
-                    self.expected_heads,
-                    self.expected_rows,
-                )
-
             with torch.no_grad():
                 source = recurrent_states.detach().to(torch.float32)
                 low = quantize_dequantize(recurrent_states, low_spec).tensor.to(torch.float32)
@@ -1116,12 +1234,44 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
                         f"layer {self.layer_index} query-weighted selector scores "
                         "must be finite"
                     )
-                ranked = torch.argsort(scores, descending=True, stable=True)
-                mask[ranked[:quota]] = True
-                self._candidate_cutoff_score_margin = float(
-                    (scores[ranked[quota - 1]] - scores[ranked[quota]]).item()
+                raw_mask = _stable_top_mask(scores, quota)
+                previous = self.packed_states[0]
+                previous_committed = (
+                    previous.high_precision_mask().reshape(-1)
+                    if (
+                        self.confirmation_two
+                        and previous is not None
+                        and self._has_query_selection_history
+                    )
+                    else None
                 )
-            return mask.reshape(self.expected_heads, self.expected_rows)
+                committed_mask = _confirmation_two_mask(
+                    raw_mask=raw_mask,
+                    scores=scores,
+                    quota=quota,
+                    enabled=self.confirmation_two,
+                    has_history=self._has_query_selection_history,
+                    previous_committed_mask=previous_committed,
+                    previous_raw_mask_packed=self.previous_raw_mask_packed,
+                )
+                pending.raw_mask = raw_mask
+                pending.committed_mask = committed_mask
+                (
+                    pending.raw_cutoff_score,
+                    pending.raw_score_gap,
+                    pending.raw_normalized_gap,
+                ) = _score_boundary(scores, raw_mask)
+                (
+                    pending.committed_cutoff_score,
+                    pending.committed_score_gap,
+                    pending.committed_normalized_gap,
+                ) = _score_boundary(scores, committed_mask)
+                if 0 < quota < total_groups:
+                    ranked = torch.argsort(scores, descending=True, stable=True)
+                    self._candidate_cutoff_score_margin = float(
+                        (scores[ranked[quota - 1]] - scores[ranked[quota]]).item()
+                    )
+            return committed_mask.reshape(self.expected_heads, self.expected_rows)
         except Exception:
             self.discard_pending_query_observation()
             raise
@@ -1139,8 +1289,30 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
         previous_device = self.device
         previous_update_count = self._update_count
         previous_history = self._has_query_selection_history
+        previous_raw_mask_packed = self.previous_raw_mask_packed
         callback = self.on_update
+        callback_owner = getattr(callback, "__self__", None)
+        callback_evidence = getattr(callback_owner, "update_evidence", None)
+        callback_update_index = getattr(callback_owner, "_update_index", None)
+        evidence_checkpoint = (
+            (len(callback_evidence), callback_update_index)
+            if isinstance(callback_evidence, list) and isinstance(callback_update_index, int)
+            else None
+        )
+        previous_raw: torch.Tensor | None = None
+        candidate_raw_packed: torch.Tensor | None = None
+        raw_xor = committed_xor = admissions = dwell = None
         try:
+            previous_raw = (
+                _unpack_row_mask(
+                    previous_raw_mask_packed,
+                    self.expected_heads * self.expected_rows,
+                )
+                if self.confirmation_two
+                and previous_history
+                and previous_raw_mask_packed is not None
+                else None
+            )
             previous_mask = (
                 previous.high_precision_mask().reshape(-1)
                 if previous is not None and previous_history
@@ -1155,7 +1327,12 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
             finally:
                 self.on_update = callback
             pending = self._pending_query_observation
-            if pending is None or not pending.consumed:
+            if (
+                pending is None
+                or not pending.consumed
+                or pending.raw_mask is None
+                or pending.committed_mask is None
+            ):
                 raise RuntimeError(
                     f"layer {self.layer_index} packed a state without consuming exactly "
                     "one query observation"
@@ -1164,6 +1341,8 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
             if current is None:
                 raise RuntimeError(f"layer {self.layer_index} packed state disappeared")
             current_mask = current.high_precision_mask().reshape(-1)
+            if not torch.equal(current_mask, pending.committed_mask):
+                raise RuntimeError("packed precision mask differs from query committed mask")
             overlap = (
                 None
                 if previous_mask is None
@@ -1174,6 +1353,17 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
                 if previous_mask is None
                 else int((previous_mask ^ current_mask).sum().item())
             )
+            if self.confirmation_two:
+                if pending.raw_mask is None:
+                    raise RuntimeError("query C2 selector did not produce a raw mask")
+                candidate_raw_packed = _pack_row_mask(pending.raw_mask)
+                if previous_history:
+                    if previous_raw is None or previous_mask is None:
+                        raise RuntimeError("query C2 transition history is incomplete")
+                    raw_xor = int((previous_raw ^ pending.raw_mask).sum().item())
+                    committed_xor = int((previous_mask ^ current_mask).sum().item())
+                    dwell = int((previous_mask & current_mask).sum().item())
+                    admissions = int((~previous_mask & current_mask).sum().item())
             if callback is not None:
                 callback(
                     self.layer_index,
@@ -1194,24 +1384,58 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
             self.device = previous_device
             self._update_count = previous_update_count
             self._has_query_selection_history = previous_history
+            self.previous_raw_mask_packed = previous_raw_mask_packed
+            if evidence_checkpoint is not None:
+                evidence_length, update_index = evidence_checkpoint
+                del callback_evidence[evidence_length:]
+                callback_owner._update_index = update_index
             self.discard_pending_query_observation()
             raise
 
         self.query_energy_ema = pending.candidate_ema
+        self.previous_raw_mask_packed = (
+            candidate_raw_packed if self.confirmation_two else None
+        )
+        self.query_observations_staged += 1
         self.query_observations_committed += 1
         self.query_tokens_observed += pending.token_count
         self.last_query_token_count = pending.token_count
         self.last_cutoff_score_margin = self._candidate_cutoff_score_margin
         self.last_mask_overlap = overlap
         self.last_mask_churn = churn
+        self.last_raw_cutoff_score = pending.raw_cutoff_score
+        self.last_raw_score_gap = pending.raw_score_gap
+        self.last_raw_normalized_gap = pending.raw_normalized_gap
+        self.last_committed_cutoff_score = pending.committed_cutoff_score
+        self.last_committed_score_gap = pending.committed_score_gap
+        self.last_committed_normalized_gap = pending.committed_normalized_gap
+        if self.confirmation_two and previous_history:
+            assert raw_xor is not None
+            assert committed_xor is not None
+            assert admissions is not None
+            assert dwell is not None
+            self.mask_transition_count += 1
+            self.raw_xor_churn_total += raw_xor
+            self.committed_xor_churn_total += committed_xor
+            self.admissions_total += admissions
+            self.dwell_total += dwell
         self._has_query_selection_history = True
         self.discard_pending_query_observation()
         return materialized
 
     def selector_auxiliary_bytes(self) -> int:
-        if self.query_energy_ema is None:
-            return 0
-        return self.query_energy_ema.numel() * self.query_energy_ema.element_size()
+        ema_bytes = (
+            0
+            if self.query_energy_ema is None
+            else self.query_energy_ema.numel() * self.query_energy_ema.element_size()
+        )
+        raw_mask_bytes = (
+            0
+            if not self.confirmation_two or self.previous_raw_mask_packed is None
+            else self.previous_raw_mask_packed.numel()
+            * self.previous_raw_mask_packed.element_size()
+        )
+        return ema_bytes + raw_mask_bytes
 
     def query_ema_diagnostics(self) -> dict[str, int | float | bool | str | None]:
         packed = self.packed_states[0]
@@ -1223,15 +1447,24 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
                 bytes(packed.precision_mask.detach().cpu().contiguous().tolist())
             ).hexdigest()
             current_selected_count = packed.high_precision_groups
+        quota = len(self.high_precision_group_indices)
+        churn_denominator = 2 * quota * self.mask_transition_count
         return {
             "layer_index": self.layer_index,
             "quota": len(self.high_precision_group_indices),
+            "confirmation_two": self.confirmation_two,
+            "selection_method": (
+                "query_ema32_confirm2_mse_target_fisher_quota"
+                if self.confirmation_two
+                else "query_ema32_weighted_aligned_mse_reduction"
+            ),
             "ema_decay": self.query_ema_decay,
             "l2norm_eps": self.query_l2norm_eps,
             "initial_ema_value": 1.0 / self.expected_rows,
             "chunk_equivalence_atol": self.query_ema_chunk_atol,
             "chunk_equivalence_rtol": self.query_ema_chunk_rtol,
             "state_updates": self._update_count,
+            "observations_staged": self.query_observations_staged,
             "observations_committed": self.query_observations_committed,
             "tokens_observed": self.query_tokens_observed,
             "last_query_token_count": self.last_query_token_count,
@@ -1240,6 +1473,46 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
             "last_mask_churn": self.last_mask_churn,
             "current_selected_count": current_selected_count,
             "current_mask_sha256": current_mask_sha256,
+            "raw_mask_sha256": (
+                current_mask_sha256
+                if self.previous_raw_mask_packed is None
+                else hashlib.sha256(
+                    bytes(
+                        self.previous_raw_mask_packed.detach()
+                        .cpu()
+                        .contiguous()
+                        .tolist()
+                    )
+                ).hexdigest()
+            ),
+            "committed_mask_sha256": current_mask_sha256,
+            "mask_transition_count": self.mask_transition_count,
+            "raw_xor_churn_total": self.raw_xor_churn_total,
+            "committed_xor_churn_total": self.committed_xor_churn_total,
+            "admissions_total": self.admissions_total,
+            "dwell_total": self.dwell_total,
+            "raw_normalized_churn": (
+                self.raw_xor_churn_total / churn_denominator
+                if churn_denominator
+                else None
+            ),
+            "committed_normalized_churn": (
+                self.committed_xor_churn_total / churn_denominator
+                if churn_denominator
+                else None
+            ),
+            "last_raw_cutoff_score": self.last_raw_cutoff_score,
+            "last_raw_score_gap": self.last_raw_score_gap,
+            "last_raw_normalized_gap": self.last_raw_normalized_gap,
+            "last_committed_cutoff_score": self.last_committed_cutoff_score,
+            "last_committed_score_gap": self.last_committed_score_gap,
+            "last_committed_normalized_gap": self.last_committed_normalized_gap,
+            "previous_raw_mask_bytes": (
+                0
+                if self.previous_raw_mask_packed is None
+                else self.previous_raw_mask_packed.numel()
+                * self.previous_raw_mask_packed.element_size()
+            ),
             "pending_observation": self._pending_query_observation is not None,
             "selector_auxiliary_bytes": self.selector_auxiliary_bytes(),
         }
@@ -1251,12 +1524,25 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
             self.query_energy_ema.fill_(1.0 / self.expected_rows)
         self._update_count = 0
         self._has_query_selection_history = False
+        self.previous_raw_mask_packed = None
         self.query_observations_committed = 0
+        self.query_observations_staged = 0
         self.query_tokens_observed = 0
         self.last_query_token_count = None
         self.last_cutoff_score_margin = None
         self.last_mask_overlap = None
         self.last_mask_churn = None
+        self.mask_transition_count = 0
+        self.raw_xor_churn_total = 0
+        self.committed_xor_churn_total = 0
+        self.admissions_total = 0
+        self.dwell_total = 0
+        self.last_raw_cutoff_score = None
+        self.last_raw_score_gap = None
+        self.last_raw_normalized_gap = None
+        self.last_committed_cutoff_score = None
+        self.last_committed_score_gap = None
+        self.last_committed_normalized_gap = None
 
     def _reject_pending_transfer(self, operation: str) -> None:
         if self._pending_query_observation is None:
@@ -1272,6 +1558,8 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
         super().offload()
         if self.query_energy_ema is not None:
             self.query_energy_ema = self.query_energy_ema.to("cpu")
+        if self.previous_raw_mask_packed is not None:
+            self.previous_raw_mask_packed = self.previous_raw_mask_packed.to("cpu")
 
     def prefetch(self) -> None:
         self._reject_pending_transfer("prefetch")
@@ -1283,6 +1571,632 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
         ):
             self.query_energy_ema = self.query_energy_ema.to(
                 self.device,
+                non_blocking=True,
+            )
+        if (
+            self.previous_raw_mask_packed is not None
+            and self.device is not None
+            and self.previous_raw_mask_packed.device != torch.device(self.device)
+        ):
+            self.previous_raw_mask_packed = self.previous_raw_mask_packed.to(
+                self.device,
+                non_blocking=True,
+            )
+
+
+@dataclass(slots=True)
+class _PendingTransitionObservation:
+    update_index: int
+    token_count: int
+    candidate_diagonal: torch.Tensor
+    consumed: bool = False
+    raw_mask: torch.Tensor | None = None
+    committed_mask: torch.Tensor | None = None
+    scores: torch.Tensor | None = None
+    raw_cutoff_score: float | None = None
+    raw_score_gap: float | None = None
+    raw_normalized_gap: float | None = None
+    committed_cutoff_score: float | None = None
+    committed_score_gap: float | None = None
+    committed_normalized_gap: float | None = None
+
+
+class CoraMixedPackedLinearAttentionLayer(MixedPackedLinearAttentionLayer):
+    """Causal observability row selector with optional two-hit confirmation.
+
+    The persistent selector state is a trace-normalized FP32 diagonal over all
+    ``[head, key_row]`` entries. Every candidate transition is computed in an
+    FP64 workspace and forms one transaction with the packed recurrent state,
+    previous raw mask, diagnostics, and cache-level update evidence.
+    """
+
+    l2norm_eps = _CORA_L2NORM_EPS
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        if self.number_of_states != 1:
+            raise ValueError("CORA currently requires exactly one recurrent state per layer")
+        self.confirmation_two = True
+        self.observability_diagonal: torch.Tensor | None = None
+        self.previous_raw_mask_packed: torch.Tensor | None = None
+        self._pending_transition_observation: _PendingTransitionObservation | None = None
+        self._has_observability_history = False
+        self.transition_observations_staged = 0
+        self.transition_observations_consumed = 0
+        self.transition_tokens_processed = 0
+        self.mask_transition_count = 0
+        self.cumulative_raw_xor_churn = 0
+        self.cumulative_committed_xor_churn = 0
+        self.cumulative_dwell_count = 0
+        self.cumulative_admission_count = 0
+        self.last_raw_mask_overlap: int | None = None
+        self.last_committed_mask_overlap: int | None = None
+        self.last_dwell_count: int | None = None
+        self.last_admission_count: int | None = None
+        self.last_raw_cutoff_score: float | None = None
+        self.last_raw_score_gap: float | None = None
+        self.last_raw_normalized_gap: float | None = None
+        self.last_committed_cutoff_score: float | None = None
+        self.last_committed_score_gap: float | None = None
+        self.last_committed_normalized_gap: float | None = None
+        self.last_token_count: int | None = None
+
+    def configure_confirmation_two(self, enabled: bool) -> None:
+        """Configure raw CORA or CORA-C2 before the first observation."""
+
+        if not isinstance(enabled, bool):
+            raise TypeError("confirmation_two must be a bool")
+        if self._update_count or self._pending_transition_observation is not None:
+            raise RuntimeError("confirmation_two must be configured before staging or writing")
+        self.confirmation_two = enabled
+
+    def _initial_diagonal(self, device: torch.device) -> torch.Tensor:
+        return torch.full(
+            (self.expected_heads, self.expected_rows),
+            1.0 / (self.expected_heads * self.expected_rows),
+            dtype=torch.float32,
+            device=device,
+        )
+
+    @staticmethod
+    def _validate_transition_tensor(
+        value: object,
+        *,
+        name: str,
+        shape: tuple[int, ...],
+    ) -> torch.Tensor:
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"{name} observation must be a tensor")
+        if tuple(value.shape) != shape:
+            raise ValueError(
+                f"{name} observation must have shape {shape}; got {tuple(value.shape)}"
+            )
+        if not value.is_floating_point():
+            raise TypeError(f"{name} observation must be floating point")
+        if value.device.type == "meta":
+            raise ValueError(f"{name} observation must be materialized")
+        if not torch.isfinite(value).all().item():
+            raise ValueError(f"{name} observation must be finite")
+        return value
+
+    def stage_transition_observation(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        log_decay: torch.Tensor,
+        beta: torch.Tensor,
+        *,
+        l2norm_eps: float = _CORA_L2NORM_EPS,
+    ) -> None:
+        """Stage one chronological Qwen kernel transition sequence.
+
+        ``query`` and ``key`` are ``[1, tokens, heads, key_rows]``;
+        ``log_decay`` and ``beta`` are ``[1, tokens, heads]``. The observer calls
+        this only after the corresponding state kernel succeeds.
+        """
+
+        if self._pending_transition_observation is not None:
+            self.discard_pending_transition_observation()
+            raise RuntimeError(
+                f"layer {self.layer_index} received a duplicate transition observation; "
+                "the pending observation was discarded"
+            )
+        if isinstance(l2norm_eps, bool) or not isinstance(l2norm_eps, Real):
+            raise TypeError("l2norm_eps must be a real number")
+        epsilon = float(l2norm_eps)
+        if not math.isfinite(epsilon) or epsilon != _CORA_L2NORM_EPS:
+            raise ValueError("CORA l2norm_eps is frozen at 1e-6")
+        if not isinstance(query, torch.Tensor) or query.ndim != 4:
+            actual = tuple(query.shape) if isinstance(query, torch.Tensor) else type(query).__name__
+            raise ValueError(f"query observation must have rank 4; got {actual}")
+        token_count = query.shape[1]
+        vector_shape = (1, token_count, self.expected_heads, self.expected_rows)
+        gate_shape = (1, token_count, self.expected_heads)
+        if token_count <= 0:
+            raise ValueError("transition observation must contain at least one token")
+        query = self._validate_transition_tensor(query, name="query", shape=vector_shape)
+        key = self._validate_transition_tensor(key, name="key", shape=vector_shape)
+        log_decay = self._validate_transition_tensor(
+            log_decay,
+            name="log_decay",
+            shape=gate_shape,
+        )
+        beta = self._validate_transition_tensor(beta, name="beta", shape=gate_shape)
+        devices = {query.device, key.device, log_decay.device, beta.device}
+        if len(devices) != 1:
+            raise ValueError("all transition observations must use the same device")
+        if (
+            self.observability_diagonal is not None
+            and self.observability_diagonal.device != query.device
+        ):
+            raise ValueError(
+                "transition observation and observability diagonal must share a device"
+            )
+        if self.device is not None and torch.device(self.device) != query.device:
+            raise ValueError("transition observation and recurrent state must share a device")
+
+        with torch.no_grad():
+            previous = self.observability_diagonal
+            if previous is None:
+                previous = self._initial_diagonal(query.device)
+            p = previous.detach().to(torch.float64)
+            q64 = query.detach().squeeze(0).to(torch.float64)
+            k64 = key.detach().squeeze(0).to(torch.float64)
+            g64 = log_decay.detach().squeeze(0).to(torch.float64)
+            beta64 = beta.detach().squeeze(0).to(torch.float64)
+            for token_index in range(token_count):
+                q_token = q64[token_index]
+                k_token = k64[token_index]
+                q_hat = q_token / torch.sqrt(
+                    q_token.square().sum(dim=-1, keepdim=True) + epsilon
+                )
+                k_hat = k_token / torch.sqrt(
+                    k_token.square().sum(dim=-1, keepdim=True) + epsilon
+                )
+                q_star_squared = q_hat.square() / self.expected_rows
+                u = k_hat.square()
+                c = (p * u).sum(dim=-1, keepdim=True)
+                beta_token = beta64[token_index].unsqueeze(-1)
+                decay_squared = torch.exp(2.0 * g64[token_index]).unsqueeze(-1)
+                cross = torch.clamp(c - p * u, min=0.0)
+                candidate = q_star_squared + decay_squared * (
+                    p * (1.0 - beta_token * u).square()
+                    + beta_token.square() * u * cross
+                )
+                trace = candidate.sum()
+                if not torch.isfinite(candidate).all().item() or not torch.isfinite(trace).item():
+                    raise RuntimeError(
+                        f"layer {self.layer_index} CORA recurrence produced non-finite values"
+                    )
+                if trace.item() <= 0.0:
+                    raise RuntimeError(
+                        f"layer {self.layer_index} CORA recurrence produced non-positive trace"
+                    )
+                p = candidate / trace
+            candidate_diagonal = p.to(torch.float32)
+            if not torch.isfinite(candidate_diagonal).all().item():
+                raise RuntimeError(
+                    f"layer {self.layer_index} CORA FP32 diagonal is non-finite"
+                )
+            if candidate_diagonal.sum().item() <= 0.0:
+                raise RuntimeError(
+                    f"layer {self.layer_index} CORA FP32 diagonal has non-positive trace"
+                )
+
+        self._pending_transition_observation = _PendingTransitionObservation(
+            update_index=self._update_count,
+            token_count=token_count,
+            candidate_diagonal=candidate_diagonal,
+        )
+
+    def discard_pending_transition_observation(self) -> None:
+        """Idempotently discard the current uncommitted transition candidate."""
+
+        self._pending_transition_observation = None
+
+    def _precision_mask(
+        self,
+        recurrent_states: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        MixedPackedLinearAttentionLayer._precision_mask(
+            self,
+            recurrent_states,
+            low_spec=low_spec,
+            high_spec=high_spec,
+        )
+        if recurrent_states.shape[0] != 1:
+            raise ValueError(
+                "CORA mixed cache selection requires batch size 1; "
+                f"got {recurrent_states.shape[0]}"
+            )
+        pending = self._pending_transition_observation
+        if pending is None:
+            raise RuntimeError(
+                f"layer {self.layer_index} has no staged transition observation for "
+                f"state update {self._update_count}"
+            )
+        try:
+            if pending.consumed:
+                raise RuntimeError("transition observation was consumed more than once")
+            if pending.update_index != self._update_count:
+                raise RuntimeError(
+                    f"layer {self.layer_index} has stale transition observation for update "
+                    f"{pending.update_index}; expected {self._update_count}"
+                )
+            expected_shape = (self.expected_heads, self.expected_rows)
+            diagonal = pending.candidate_diagonal
+            if tuple(diagonal.shape) != expected_shape or diagonal.dtype != torch.float32:
+                raise RuntimeError(
+                    f"staged observability diagonal must be FP32 with shape {expected_shape}"
+                )
+            if diagonal.device != recurrent_states.device:
+                raise ValueError("observability diagonal and recurrent state must share a device")
+            if not torch.isfinite(diagonal).all().item() or diagonal.sum().item() <= 0.0:
+                raise RuntimeError(
+                    "staged observability diagonal must be finite with positive trace"
+                )
+
+            with torch.no_grad():
+                source = recurrent_states.detach().to(torch.float32)
+                low = quantize_dequantize(recurrent_states, low_spec).tensor.to(torch.float32)
+                high = quantize_dequantize(recurrent_states, high_spec).tensor.to(torch.float32)
+                # The protocol freezes physical row SSE, not an averaged row MSE.
+                benefit = (
+                    (low - source).square().sum(dim=-1)
+                    - (high - source).square().sum(dim=-1)
+                ).reshape(self.expected_heads, self.expected_rows)
+                scores = (diagonal * benefit).reshape(-1)
+                if not torch.isfinite(scores).all().item():
+                    raise RuntimeError("CORA row scores must be finite")
+                quota = len(self.high_precision_group_indices)
+                raw_mask = _stable_top_mask(scores, quota)
+                previous = self.packed_states[0]
+                previous_committed = (
+                    previous.high_precision_mask().reshape(-1)
+                    if previous is not None and self._has_observability_history
+                    else None
+                )
+                committed_mask = _confirmation_two_mask(
+                    raw_mask=raw_mask,
+                    scores=scores,
+                    quota=quota,
+                    enabled=self.confirmation_two,
+                    has_history=self._has_observability_history,
+                    previous_committed_mask=previous_committed,
+                    previous_raw_mask_packed=self.previous_raw_mask_packed,
+                )
+                (
+                    pending.raw_cutoff_score,
+                    pending.raw_score_gap,
+                    pending.raw_normalized_gap,
+                ) = _score_boundary(scores, raw_mask)
+                (
+                    pending.committed_cutoff_score,
+                    pending.committed_score_gap,
+                    pending.committed_normalized_gap,
+                ) = _score_boundary(scores, committed_mask)
+                pending.scores = scores
+                pending.raw_mask = raw_mask
+                pending.committed_mask = committed_mask
+                pending.consumed = True
+            return committed_mask.reshape(self.expected_heads, self.expected_rows)
+        except Exception:
+            self.discard_pending_transition_observation()
+            raise
+
+    @staticmethod
+    def _evidence_checkpoint(
+        callback: MixedUpdateCallback | None,
+    ) -> tuple[object, int, int] | None:
+        owner = getattr(callback, "__self__", None)
+        evidence = getattr(owner, "update_evidence", None)
+        update_index = getattr(owner, "_update_index", None)
+        if isinstance(evidence, list) and isinstance(update_index, int):
+            return owner, len(evidence), update_index
+        return None
+
+    @staticmethod
+    def _restore_evidence(checkpoint: tuple[object, int, int] | None) -> None:
+        if checkpoint is None:
+            return
+        owner, length, update_index = checkpoint
+        evidence = owner.update_evidence
+        del evidence[length:]
+        owner._update_index = update_index
+
+    def _store(self, recurrent_states: torch.Tensor, state_idx: int) -> torch.Tensor:
+        if state_idx not in self.packed_states:
+            self.discard_pending_transition_observation()
+            raise IndexError(
+                f"layer {self.layer_index} state_idx {state_idx} is outside "
+                f"[0, {self.number_of_states})"
+            )
+        previous_packed = self.packed_states[state_idx]
+        previous_initialized = self.is_recurrent_states_initialized[state_idx]
+        previous_dtype = self.dtype
+        previous_device = self.device
+        previous_update_count = self._update_count
+        previous_history = self._has_observability_history
+        previous_diagonal = self.observability_diagonal
+        previous_raw_packed = self.previous_raw_mask_packed
+        previous_committed: torch.Tensor | None = None
+        previous_raw: torch.Tensor | None = None
+        try:
+            previous_committed = (
+                previous_packed.high_precision_mask().reshape(-1)
+                if previous_packed is not None and previous_history
+                else None
+            )
+            previous_raw = (
+                _unpack_row_mask(
+                    previous_raw_packed,
+                    self.expected_heads * self.expected_rows,
+                )
+                if previous_raw_packed is not None and previous_history
+                else None
+            )
+        except Exception:
+            self.discard_pending_transition_observation()
+            raise
+        callback = self.on_update
+        evidence_checkpoint = self._evidence_checkpoint(callback)
+        candidate_raw_packed: torch.Tensor | None = None
+        raw_xor = committed_xor = raw_overlap = committed_overlap = admissions = None
+        try:
+            if previous_history and (previous_raw is None or previous_committed is None):
+                raise RuntimeError("CORA transition history is incomplete")
+            self.on_update = None
+            try:
+                materialized = super()._store(recurrent_states, state_idx)
+            finally:
+                self.on_update = callback
+            pending = self._pending_transition_observation
+            if (
+                pending is None
+                or not pending.consumed
+                or pending.raw_mask is None
+                or pending.committed_mask is None
+                or pending.scores is None
+            ):
+                raise RuntimeError(
+                    f"layer {self.layer_index} packed a state without consuming exactly "
+                    "one complete CORA transition observation"
+                )
+            current = self.packed_states[state_idx]
+            if current is None:
+                raise RuntimeError("CORA packed state disappeared")
+            current_mask = current.high_precision_mask().reshape(-1)
+            quota = len(self.high_precision_group_indices)
+            if not torch.equal(current_mask, pending.committed_mask):
+                raise RuntimeError("packed precision mask differs from CORA committed mask")
+            if (
+                int(pending.raw_mask.sum().item()) != quota
+                or int(current_mask.sum().item()) != quota
+            ):
+                raise RuntimeError("CORA raw or committed mask violates the exact quota")
+            candidate_raw_packed = _pack_row_mask(pending.raw_mask)
+            if previous_history:
+                assert previous_raw is not None
+                assert previous_committed is not None
+                raw_xor = int((previous_raw ^ pending.raw_mask).sum().item())
+                committed_xor = int(
+                    (previous_committed ^ pending.committed_mask).sum().item()
+                )
+                raw_overlap = int((previous_raw & pending.raw_mask).sum().item())
+                committed_overlap = int(
+                    (previous_committed & pending.committed_mask).sum().item()
+                )
+                admissions = int(
+                    (~previous_committed & pending.committed_mask).sum().item()
+                )
+            if callback is not None:
+                callback(
+                    self.layer_index,
+                    state_idx,
+                    recurrent_states,
+                    current,
+                    materialized,
+                )
+        except Exception:
+            self.on_update = callback
+            self.packed_states[state_idx] = previous_packed
+            self.is_recurrent_states_initialized[state_idx] = previous_initialized
+            self.dtype = previous_dtype
+            self.device = previous_device
+            self._update_count = previous_update_count
+            self._has_observability_history = previous_history
+            self.observability_diagonal = previous_diagonal
+            self.previous_raw_mask_packed = previous_raw_packed
+            self._restore_evidence(evidence_checkpoint)
+            self.discard_pending_transition_observation()
+            raise
+
+        # No mutation of selector state or counters occurs before every packing,
+        # mask, materialization, and evidence postcondition above has succeeded.
+        assert candidate_raw_packed is not None
+        self.observability_diagonal = pending.candidate_diagonal
+        self.previous_raw_mask_packed = candidate_raw_packed
+        self.transition_observations_staged += 1
+        self.transition_observations_consumed += 1
+        self.transition_tokens_processed += pending.token_count
+        self.last_token_count = pending.token_count
+        if previous_history:
+            assert raw_xor is not None
+            assert committed_xor is not None
+            assert raw_overlap is not None
+            assert committed_overlap is not None
+            assert admissions is not None
+            self.mask_transition_count += 1
+            self.cumulative_raw_xor_churn += raw_xor
+            self.cumulative_committed_xor_churn += committed_xor
+            self.cumulative_dwell_count += committed_overlap
+            self.cumulative_admission_count += admissions
+            self.last_raw_mask_overlap = raw_overlap
+            self.last_committed_mask_overlap = committed_overlap
+            self.last_dwell_count = committed_overlap
+            self.last_admission_count = admissions
+        else:
+            self.last_raw_mask_overlap = None
+            self.last_committed_mask_overlap = None
+            self.last_dwell_count = None
+            self.last_admission_count = None
+        self.last_raw_cutoff_score = pending.raw_cutoff_score
+        self.last_raw_score_gap = pending.raw_score_gap
+        self.last_raw_normalized_gap = pending.raw_normalized_gap
+        self.last_committed_cutoff_score = pending.committed_cutoff_score
+        self.last_committed_score_gap = pending.committed_score_gap
+        self.last_committed_normalized_gap = pending.committed_normalized_gap
+        self._has_observability_history = True
+        self.discard_pending_transition_observation()
+        return materialized
+
+    def observability_diagonal_bytes(self) -> int:
+        if self.observability_diagonal is None:
+            return 0
+        return self.observability_diagonal.numel() * self.observability_diagonal.element_size()
+
+    def previous_raw_mask_bytes(self) -> int:
+        if self.previous_raw_mask_packed is None:
+            return 0
+        return (
+            self.previous_raw_mask_packed.numel()
+            * self.previous_raw_mask_packed.element_size()
+        )
+
+    def selector_auxiliary_bytes(self) -> int:
+        return self.observability_diagonal_bytes() + self.previous_raw_mask_bytes()
+
+    @staticmethod
+    def _mask_sha256(packed_mask: torch.Tensor | None) -> str | None:
+        if packed_mask is None:
+            return None
+        return hashlib.sha256(
+            bytes(packed_mask.detach().cpu().contiguous().tolist())
+        ).hexdigest()
+
+    def observability_diagnostics(self) -> dict[str, int | float | bool | str | None]:
+        packed = self.packed_states[0]
+        committed_packed = None if packed is None else packed.precision_mask
+        quota = len(self.high_precision_group_indices)
+        transitions = self.mask_transition_count
+        denominator = 2 * quota * transitions
+        diagonal = self.observability_diagonal
+        return {
+            "layer_index": self.layer_index,
+            "selection_method": (
+                "causal_observability_confirm2_mse_target_fisher_quota"
+                if self.confirmation_two
+                else "causal_observability_mse_target_fisher_quota"
+            ),
+            "confirmation_two": self.confirmation_two,
+            "quota": quota,
+            "current_selected_count": 0 if packed is None else packed.high_precision_groups,
+            "raw_mask_sha256": self._mask_sha256(self.previous_raw_mask_packed),
+            "committed_mask_sha256": self._mask_sha256(committed_packed),
+            "observations_staged": self.transition_observations_staged,
+            "observations_committed": self.transition_observations_consumed,
+            "tokens_observed": self.transition_tokens_processed,
+            "last_token_count": self.last_token_count,
+            "mask_transition_count": transitions,
+            "raw_xor_churn_total": self.cumulative_raw_xor_churn,
+            "committed_xor_churn_total": self.cumulative_committed_xor_churn,
+            "raw_normalized_churn": (
+                self.cumulative_raw_xor_churn / denominator if denominator else None
+            ),
+            "committed_normalized_churn": (
+                self.cumulative_committed_xor_churn / denominator if denominator else None
+            ),
+            "last_raw_mask_overlap": self.last_raw_mask_overlap,
+            "last_committed_mask_overlap": self.last_committed_mask_overlap,
+            "last_dwell_count": self.last_dwell_count,
+            "last_admission_count": self.last_admission_count,
+            "dwell_total": self.cumulative_dwell_count,
+            "admissions_total": self.cumulative_admission_count,
+            "last_raw_cutoff_score": self.last_raw_cutoff_score,
+            "last_raw_score_gap": self.last_raw_score_gap,
+            "last_raw_normalized_gap": self.last_raw_normalized_gap,
+            "last_committed_cutoff_score": self.last_committed_cutoff_score,
+            "last_committed_score_gap": self.last_committed_score_gap,
+            "last_committed_normalized_gap": self.last_committed_normalized_gap,
+            "observability_trace": None if diagonal is None else float(diagonal.sum().item()),
+            "observability_min": None if diagonal is None else float(diagonal.min().item()),
+            "observability_max": None if diagonal is None else float(diagonal.max().item()),
+            "observability_dtype": None if diagonal is None else str(diagonal.dtype),
+            "l2norm_eps": self.l2norm_eps,
+            "state_updates": self._update_count,
+            "pending_observation": self._pending_transition_observation is not None,
+            "observability_diagonal_bytes": self.observability_diagonal_bytes(),
+            "previous_raw_mask_bytes": self.previous_raw_mask_bytes(),
+            "selector_auxiliary_bytes": self.selector_auxiliary_bytes(),
+        }
+
+    def reset(self) -> None:
+        super().reset()
+        self.discard_pending_transition_observation()
+        if self.observability_diagonal is not None:
+            self.observability_diagonal.fill_(
+                1.0 / (self.expected_heads * self.expected_rows)
+            )
+        self.previous_raw_mask_packed = None
+        self._update_count = 0
+        self._has_observability_history = False
+        self.transition_observations_staged = 0
+        self.transition_observations_consumed = 0
+        self.transition_tokens_processed = 0
+        self.mask_transition_count = 0
+        self.cumulative_raw_xor_churn = 0
+        self.cumulative_committed_xor_churn = 0
+        self.cumulative_dwell_count = 0
+        self.cumulative_admission_count = 0
+        self.last_raw_mask_overlap = None
+        self.last_committed_mask_overlap = None
+        self.last_dwell_count = None
+        self.last_admission_count = None
+        self.last_raw_cutoff_score = None
+        self.last_raw_score_gap = None
+        self.last_raw_normalized_gap = None
+        self.last_committed_cutoff_score = None
+        self.last_committed_score_gap = None
+        self.last_committed_normalized_gap = None
+        self.last_token_count = None
+
+    def _reject_pending_transfer(self, operation: str) -> None:
+        if self._pending_transition_observation is None:
+            return
+        self.discard_pending_transition_observation()
+        raise RuntimeError(
+            f"layer {self.layer_index} cannot {operation} with a pending transition "
+            "observation; it was discarded"
+        )
+
+    def offload(self) -> None:
+        self._reject_pending_transfer("offload")
+        super().offload()
+        if self.observability_diagonal is not None:
+            self.observability_diagonal = self.observability_diagonal.to("cpu")
+        if self.previous_raw_mask_packed is not None:
+            self.previous_raw_mask_packed = self.previous_raw_mask_packed.to("cpu")
+
+    def prefetch(self) -> None:
+        self._reject_pending_transfer("prefetch")
+        super().prefetch()
+        if self.device is None:
+            return
+        device = torch.device(self.device)
+        if self.observability_diagonal is not None and self.observability_diagonal.device != device:
+            self.observability_diagonal = self.observability_diagonal.to(
+                device,
+                non_blocking=True,
+            )
+        if (
+            self.previous_raw_mask_packed is not None
+            and self.previous_raw_mask_packed.device != device
+        ):
+            self.previous_raw_mask_packed = self.previous_raw_mask_packed.to(
+                device,
                 non_blocking=True,
             )
 
@@ -1592,6 +2506,36 @@ class QueryEmaMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
     _mixed_layer_class = QueryEmaMixedPackedLinearAttentionLayer
     selection_method = "query_ema32_weighted_aligned_mse_reduction"
 
+    def __init__(
+        self,
+        config: object,
+        *,
+        plan: ExactBudgetRowPlan,
+        rounding: RoundingMode = "nearest",
+        seed: int = 2339,
+        record_evidence: bool = False,
+        confirmation_two: bool = False,
+    ) -> None:
+        if not isinstance(confirmation_two, bool):
+            raise TypeError("confirmation_two must be a bool")
+        super().__init__(
+            config,
+            plan=plan,
+            rounding=rounding,
+            seed=seed,
+            record_evidence=record_evidence,
+        )
+        self.confirmation_two = confirmation_two
+        self.selection_method = (
+            "query_ema32_confirm2_mse_target_fisher_quota"
+            if confirmation_two
+            else "query_ema32_weighted_aligned_mse_reduction"
+        )
+        for _, layer in self.mixed_packed_layers():
+            if not isinstance(layer, QueryEmaMixedPackedLinearAttentionLayer):
+                raise RuntimeError("query-EMA cache contains an incompatible layer")
+            layer.configure_confirmation_two(confirmation_two)
+
     def _query_ema_layer(self, layer_index: int) -> QueryEmaMixedPackedLinearAttentionLayer:
         if isinstance(layer_index, bool) or not isinstance(layer_index, int):
             raise TypeError("layer_index must be an integer")
@@ -1647,6 +2591,135 @@ class QueryEmaMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
         full_precision_equivalent = int(summary["full_precision_equivalent_bytes"])
         summary.update(
             {
+                "selector_auxiliary_bytes": auxiliary,
+                "resident_bytes_including_selector": total,
+                "resident_compression_ratio_including_selector": (
+                    full_precision_equivalent / total if total else 0.0
+                ),
+                "physical_reduction_realized_including_selector": (
+                    total > 0 and total < full_precision_equivalent
+                ),
+            }
+        )
+        return summary
+
+
+class CoraMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
+    """CORA exact-quota cache; Confirmation-2 is enabled by default."""
+
+    _mixed_layer_class = CoraMixedPackedLinearAttentionLayer
+    selection_method = "causal_observability_confirm2_mse_target_fisher_quota"
+
+    def __init__(
+        self,
+        config: object,
+        *,
+        plan: ExactBudgetRowPlan,
+        rounding: RoundingMode = "nearest",
+        seed: int = 2339,
+        record_evidence: bool = False,
+        confirmation_two: bool = True,
+    ) -> None:
+        if not isinstance(confirmation_two, bool):
+            raise TypeError("confirmation_two must be a bool")
+        super().__init__(
+            config,
+            plan=plan,
+            rounding=rounding,
+            seed=seed,
+            record_evidence=record_evidence,
+        )
+        self.confirmation_two = confirmation_two
+        self.selection_method = (
+            "causal_observability_confirm2_mse_target_fisher_quota"
+            if confirmation_two
+            else "causal_observability_mse_target_fisher_quota"
+        )
+        for _, layer in self.mixed_packed_layers():
+            if not isinstance(layer, CoraMixedPackedLinearAttentionLayer):
+                raise RuntimeError("CORA cache contains an incompatible layer")
+            layer.configure_confirmation_two(confirmation_two)
+
+    def _cora_layer(self, layer_index: int) -> CoraMixedPackedLinearAttentionLayer:
+        if isinstance(layer_index, bool) or not isinstance(layer_index, int):
+            raise TypeError("layer_index must be an integer")
+        if layer_index < 0 or layer_index >= len(self.layers):
+            raise IndexError(f"layer_index {layer_index} is outside this cache")
+        layer = self.layers[layer_index]
+        if not isinstance(layer, CoraMixedPackedLinearAttentionLayer):
+            raise ValueError(f"layer {layer_index} is not a CORA linear-attention layer")
+        return layer
+
+    def stage_transition_observation(
+        self,
+        layer_index: int,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        log_decay: torch.Tensor,
+        beta: torch.Tensor,
+        *,
+        l2norm_eps: float = _CORA_L2NORM_EPS,
+    ) -> None:
+        """Stage kernel q/k/log-decay/beta for the matching layer write."""
+
+        self._cora_layer(layer_index).stage_transition_observation(
+            query,
+            key,
+            log_decay,
+            beta,
+            l2norm_eps=l2norm_eps,
+        )
+
+    def discard_pending_transition_observations(self, layer_index: int) -> None:
+        """Idempotently discard a layer's staged transition observation."""
+
+        self._cora_layer(layer_index).discard_pending_transition_observation()
+
+    def observability_diagonal_bytes(self) -> int:
+        return sum(
+            layer.observability_diagonal_bytes()
+            for _, layer in self.mixed_packed_layers()
+            if isinstance(layer, CoraMixedPackedLinearAttentionLayer)
+        )
+
+    def previous_raw_mask_bytes(self) -> int:
+        return sum(
+            layer.previous_raw_mask_bytes()
+            for _, layer in self.mixed_packed_layers()
+            if isinstance(layer, CoraMixedPackedLinearAttentionLayer)
+        )
+
+    def selector_auxiliary_bytes(self) -> int:
+        return self.observability_diagonal_bytes() + self.previous_raw_mask_bytes()
+
+    def observability_diagnostics(
+        self,
+    ) -> list[dict[str, int | float | bool | str | None]]:
+        return [
+            layer.observability_diagnostics()
+            for _, layer in self.mixed_packed_layers()
+            if isinstance(layer, CoraMixedPackedLinearAttentionLayer)
+        ]
+
+    def selection_diagnostics(
+        self,
+    ) -> list[dict[str, int | float | bool | str | None]]:
+        """Generic evaluator alias for :meth:`observability_diagnostics`."""
+
+        return self.observability_diagnostics()
+
+    def storage_summary(self) -> dict[str, int | float | bool]:
+        summary = super().storage_summary()
+        diagonal = self.observability_diagonal_bytes()
+        raw_mask = self.previous_raw_mask_bytes()
+        auxiliary = diagonal + raw_mask
+        resident = int(summary["resident_bytes"])
+        total = resident + auxiliary
+        full_precision_equivalent = int(summary["full_precision_equivalent_bytes"])
+        summary.update(
+            {
+                "observability_diagonal_bytes": diagonal,
+                "previous_raw_mask_bytes": raw_mask,
                 "selector_auxiliary_bytes": auxiliary,
                 "resident_bytes_including_selector": total,
                 "resident_compression_ratio_including_selector": (
