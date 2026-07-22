@@ -8,6 +8,8 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import subprocess
+import sys
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +42,26 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def git_commit() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def tracked_worktree_is_clean() -> bool:
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=no"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return not result.stdout.strip()
 
 
 def parse_args() -> argparse.Namespace:
@@ -263,6 +285,7 @@ def main() -> int:
             "tokenizer_revision": args.revision,
             "dataset_manifest": dataset_manifest,
             "dataset_manifest_sha256": mbpp_manifest_sha256(rows, phase="calibration"),
+            "repository_commit": git_commit(),
         },
         "environment": {
             "python": platform.python_version(),
@@ -270,11 +293,14 @@ def main() -> int:
             "torch": torch.__version__,
             "transformers": importlib.metadata.version("transformers"),
             "datasets": importlib.metadata.version("datasets"),
+            "cuda_runtime": torch.version.cuda,
             "device": str(device),
             "device_name": (
                 torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
             ),
             "model_dtype": str(next(model.parameters()).dtype),
+            "command": [Path(sys.executable).name, *sys.argv],
+            "tracked_worktree_clean": tracked_worktree_is_clean(),
         },
         "calibration": {
             "seed": SEED,

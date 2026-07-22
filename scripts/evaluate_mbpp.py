@@ -918,7 +918,13 @@ def main() -> int:
                 torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
             ),
             "model_dtype": str(next(model.parameters()).dtype),
-            "command": [sys.executable, *sys.argv],
+            "command": [Path(sys.executable).name, *sys.argv],
+            "tracked_worktree_clean": not subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
         },
         "schedule": {
             "seed": SEED,
