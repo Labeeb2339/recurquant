@@ -139,6 +139,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bootstrap-samples", type=int, default=10_000)
     parser.add_argument("--skip-qdq-preflight", action="store_true")
     parser.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="Write the frozen row/token manifest without running model comparisons.",
+    )
+    parser.add_argument(
+        "--prepared-manifest",
+        type=Path,
+        help="Previously committed manifest-only artifact required for full public phases.",
+    )
+    parser.add_argument(
         "--allow-diagnostic-calibration",
         action="store_true",
         help="Allow a non-protocol calibration artifact for calibration-split smoke runs only.",
@@ -213,6 +223,44 @@ def load_calibration_artifact(
     return artifact
 
 
+def load_prepared_manifest(
+    path: Path,
+    *,
+    phase: str,
+    model_id: str,
+    revision: str,
+    dataset_manifest_sha256: str,
+    token_manifest_sha256: str,
+    calibration_evidence_sha256: str,
+) -> dict[str, Any]:
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    if artifact.get("artifact_kind") != "recurquant_mbpp_prepared_manifest":
+        raise ValueError("--prepared-manifest has the wrong artifact_kind")
+    evidence = artifact.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("prepared manifest does not contain evidence")
+    if artifact.get("canonical_evidence_sha256") != sha256_bytes(
+        canonical_json_bytes(evidence)
+    ):
+        raise ValueError("prepared manifest evidence hash does not match its contents")
+    source = evidence.get("source", {})
+    expected = {
+        "model_id": model_id,
+        "model_revision": revision,
+        "dataset_manifest_sha256": dataset_manifest_sha256,
+        "token_manifest_sha256": token_manifest_sha256,
+        "calibration_evidence_sha256": calibration_evidence_sha256,
+    }
+    for key, value in expected.items():
+        if source.get(key) != value:
+            raise ValueError(f"prepared manifest {key} does not match the current run")
+    if evidence.get("claim_scope", {}).get("phase") != phase:
+        raise ValueError("prepared manifest phase does not match the current run")
+    if evidence.get("claim_scope", {}).get("protocol_eligible") is not True:
+        raise ValueError("prepared manifest is diagnostic-only")
+    return artifact
+
+
 def candidate_definitions(calibration_artifact: dict[str, Any]) -> list[CandidateDefinition]:
     layers = calibration_artifact["evidence"]["calibration"]["candidate_layers"]
     required = {
@@ -250,6 +298,31 @@ def candidate_definitions(calibration_artifact: dict[str, Any]) -> list[Candidat
         for seed in (2339, 2340, 2341)
     )
     return candidates
+
+
+def candidate_execution_plan(
+    candidates: list[CandidateDefinition],
+) -> tuple[list[CandidateDefinition], dict[str, str]]:
+    """Deduplicate policies whose quantization streams are exactly identical."""
+
+    representative_by_key: dict[tuple[int, int | None, str, int], str] = {}
+    representatives: list[CandidateDefinition] = []
+    aliases: dict[str, str] = {}
+    for candidate in candidates:
+        effective_seed = candidate.seed if candidate.rounding == "stochastic" else 0
+        key = (
+            candidate.default_bits,
+            candidate.upgrade_layer,
+            candidate.rounding,
+            effective_seed,
+        )
+        representative = representative_by_key.get(key)
+        if representative is None:
+            representative_by_key[key] = candidate.name
+            representatives.append(candidate)
+            representative = candidate.name
+        aliases[candidate.name] = representative
+    return representatives, aliases
 
 
 def candidate_specs(
@@ -372,9 +445,10 @@ def verify_qdq_parity(
     prompt = _tensor_ids(task.prompt_ids, device)
     code = _tensor_ids(task.code_ids, device)
     maximum_by_candidate: dict[str, float] = {}
+    representatives, aliases = candidate_execution_plan(candidates)
 
     with torch.inference_mode():
-        for candidate in candidates:
+        for candidate in representatives:
             packed_cache = make_packed_cache(
                 model.config, candidate, group_size=group_size
             )
@@ -445,6 +519,11 @@ def verify_qdq_parity(
                 )
             maximum_by_candidate[candidate.name] = maximum
 
+    maximum_by_candidate = {
+        candidate.name: maximum_by_candidate[aliases[candidate.name]]
+        for candidate in candidates
+    }
+
     return {
         "task_id": task.task_id,
         "absolute_tolerance": tolerance,
@@ -503,11 +582,12 @@ def evaluate_task(
     prompt = _tensor_ids(task.prompt_ids, device)
     code = _tensor_ids(task.code_ids, device)
     reference_cache = DynamicCache(config=model.config)
+    representatives, aliases = candidate_execution_plan(candidates)
     caches = {
         candidate.name: make_packed_cache(
             model.config, candidate, group_size=group_size
         )
-        for candidate in candidates
+        for candidate in representatives
     }
     accumulators: dict[str, dict[str, list[torch.Tensor]]] = {
         candidate.name: {
@@ -516,7 +596,7 @@ def evaluate_task(
             "candidate_nll": [],
             "top1": [],
         }
-        for candidate in candidates
+        for candidate in representatives
     }
 
     with torch.inference_mode():
@@ -571,9 +651,18 @@ def evaluate_task(
         for state in iter_recurrent_states(reference_cache)
     )
     storage = {name: cache.storage_summary() for name, cache in caches.items()}
+    representative_fidelity = {
+        name: _task_fidelity(values) for name, values in accumulators.items()
+    }
     return (
-        {name: _task_fidelity(values) for name, values in accumulators.items()},
-        storage,
+        {
+            candidate.name: representative_fidelity[aliases[candidate.name]]
+            for candidate in candidates
+        },
+        {
+            candidate.name: storage[aliases[candidate.name]]
+            for candidate in candidates
+        },
         reference_bytes,
     )
 
@@ -665,6 +754,102 @@ def main() -> int:
     )
     token_manifest = [task.manifest_dict() for task in tasks]
     token_manifest_sha256 = sha256_bytes(canonical_json_bytes(token_manifest))
+    expected_count = {
+        MBPPPhase.CALIBRATION: MBPP_CALIBRATION_SIZE,
+        MBPPPhase.DEVELOPMENT: 90,
+        MBPPPhase.CONFIRMATION: 500,
+    }[phase]
+    manifest_protocol_eligible = (
+        len(rows) == expected_count
+        and args.limit is None
+        and calibration_artifact["evidence"]["claim_scope"]["protocol_eligible"] is True
+    )
+
+    if args.manifest_only:
+        manifest_evidence: dict[str, Any] = {
+            "claim_scope": {
+                "phase": phase.value,
+                "protocol_eligible": manifest_protocol_eligible,
+                "outcomes_computed": False,
+                "confirmation_touched": phase is MBPPPhase.CONFIRMATION,
+            },
+            "source": {
+                "model_id": args.model_id,
+                "model_revision": args.revision,
+                "tokenizer_revision": args.revision,
+                "dataset_manifest": dataset_manifest,
+                "dataset_manifest_sha256": mbpp_manifest_sha256(rows, phase=phase),
+                "token_manifest": token_manifest,
+                "token_manifest_sha256": token_manifest_sha256,
+                "calibration_evidence_sha256": calibration_artifact[
+                    "canonical_evidence_sha256"
+                ],
+                "repository_commit": git_commit(),
+            },
+            "environment": {
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "torch": torch.__version__,
+                "transformers": importlib.metadata.version("transformers"),
+                "datasets": importlib.metadata.version("datasets"),
+                "tokenizer_class": tokenizer.__class__.__name__,
+                "command": [Path(sys.executable).name, *sys.argv],
+                "tracked_worktree_clean": not subprocess.run(
+                    ["git", "status", "--porcelain", "--untracked-files=no"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+            },
+            "schedule": {
+                "row_count": len(rows),
+                "candidate_plan": [asdict(candidate) for candidate in candidates],
+            },
+        }
+        manifest_evidence_hash = sha256_bytes(canonical_json_bytes(manifest_evidence))
+        manifest_artifact = {
+            "schema_version": 1,
+            "artifact_kind": "recurquant_mbpp_prepared_manifest",
+            "created_at_utc": datetime.now(UTC).isoformat(),
+            "canonical_evidence_sha256": manifest_evidence_hash,
+            "evidence": manifest_evidence,
+        }
+        manifest_payload = canonical_json_bytes(manifest_artifact)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_bytes(manifest_payload)
+        print(
+            json.dumps(
+                {
+                    "output": str(args.output.resolve()),
+                    "artifact_sha256": sha256_bytes(manifest_payload),
+                    "canonical_evidence_sha256": manifest_evidence_hash,
+                    "phase": phase.value,
+                    "row_count": len(rows),
+                    "token_manifest_sha256": token_manifest_sha256,
+                    "protocol_eligible": manifest_protocol_eligible,
+                    "outcomes_computed": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    prepared_manifest: dict[str, Any] | None = None
+    if phase in (MBPPPhase.DEVELOPMENT, MBPPPhase.CONFIRMATION):
+        if args.prepared_manifest is None:
+            raise ValueError("public development/confirmation requires --prepared-manifest")
+        prepared_manifest = load_prepared_manifest(
+            args.prepared_manifest,
+            phase=phase.value,
+            model_id=args.model_id,
+            revision=args.revision,
+            dataset_manifest_sha256=mbpp_manifest_sha256(rows, phase=phase),
+            token_manifest_sha256=token_manifest_sha256,
+            calibration_evidence_sha256=calibration_artifact[
+                "canonical_evidence_sha256"
+            ],
+        )
 
     parity: dict[str, Any] | None = None
     if not args.skip_qdq_preflight:
@@ -741,7 +926,8 @@ def main() -> int:
             )
         print(
             f"[{task_index}/{len(tasks)}] task={task.task_id} "
-            f"prompt={len(task.prompt_ids)} code={len(task.code_ids)}"
+            f"prompt={len(task.prompt_ids)} code={len(task.code_ids)}",
+            flush=True,
         )
 
     elapsed_seconds = time.perf_counter() - started
@@ -882,11 +1068,6 @@ def main() -> int:
         ),
     }
     all_continuation_gates_pass = all(continuation_gates.values())
-    expected_count = {
-        MBPPPhase.CALIBRATION: MBPP_CALIBRATION_SIZE,
-        MBPPPhase.DEVELOPMENT: 90,
-        MBPPPhase.CONFIRMATION: 500,
-    }[phase]
     protocol_eligible = (
         len(rows) == expected_count
         and args.limit is None
@@ -917,6 +1098,11 @@ def main() -> int:
                 "canonical_evidence_sha256"
             ],
             "repository_commit": git_commit(),
+            "prepared_manifest_evidence_sha256": (
+                prepared_manifest["canonical_evidence_sha256"]
+                if prepared_manifest is not None
+                else None
+            ),
         },
         "environment": {
             "python": platform.python_version(),

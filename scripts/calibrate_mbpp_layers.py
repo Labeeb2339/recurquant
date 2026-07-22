@@ -270,7 +270,8 @@ def main() -> int:
             )
             print(
                 f"[{row_index}/{len(rows)}] task={row['task_id']} "
-                f"code_tokens={code_ids.shape[1]}"
+                f"code_tokens={code_ids.shape[1]}",
+                flush=True,
             )
 
     read_risk_means = _mean_by_layer(task_mean_read_risk, layer_indices)
