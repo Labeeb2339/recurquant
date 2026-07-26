@@ -15,6 +15,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          # Historical evidence authentication checks recorded commits against
+          # HEAD, so the test job needs the complete ancestry graph.
+          fetch-depth: 0
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.11"

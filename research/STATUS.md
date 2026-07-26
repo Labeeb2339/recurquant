@@ -1,5 +1,99 @@
 # Research status
 
+## v0.3 experimental track
+
+Last updated: 2026-07-26
+
+Experiment 005 stopped before holdout after its frozen real-storage-boundary
+sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
+failure, authenticated artifact, and same-calibration postmortem are recorded
+in [`EXPERIMENT_005_RESULT.md`](EXPERIMENT_005_RESULT.md). The ranked MBPP
+calibration window `[8, 16)` was not opened.
+
+Experiment 006 tested deterministic ordinal-rank fusion of offline
+target-directional sensitivity and causal per-write reconstruction benefit at
+the same exact byte budget. On the already inspected eight-task selector
+partition, its frozen `lambda = 0.5` primary had macro excess NLL `0.514873`,
+worse by point estimate than plain adaptive MSE at `0.493302`; the paired 95%
+interval crossed zero. It improved only 3.90% over the strongest static method,
+also with an interval crossing zero. The better `0.25` and `0.75` ablations
+cannot replace the frozen primary. The candidate was therefore stopped before
+its numerical prerequisite or holdout. The ranked `[8, 16)` window remains
+unopened. See [`EXPERIMENT_006_RESULT.md`](EXPERIMENT_006_RESULT.md).
+
+Experiment 007 tested CQER-32: a causal 32-token EMA of normalized query energy
+times exact per-write INT4-to-INT8 row reconstruction benefit, with the same
+frozen target-Fisher layer quotas. On the already inspected eight-task
+partition it lowered macro excess NLL to `0.462792`, a 6.18% descriptive
+reduction from plain adaptive MSE and 13.62% from static target-Fisher. Both
+paired 95% intervals crossed zero. The frozen gate failed because the static
+reduction was below 20% and top-1 agreement trailed the better comparator by
+`0.02690`, above the `0.01` margin. All exact-byte, causal-handshake, finiteness,
+and integrity checks passed. Experiment 007 therefore stopped before its FP64
+prerequisite or holdout; ranked `[8, 16)` remains unopened. See
+[`EXPERIMENT_007_RESULT.md`](EXPERIMENT_007_RESULT.md).
+
+Experiment 008 tested CORA-C2 on its separately frozen 16-task `[16, 32)`
+development window. CORA-C2 improved macro excess NLL by 26.17% over static
+target-Fisher and 21.62% over adaptive MSE, but it was 10.54% worse than
+CQER-32. Raw CORA was also 3.35% worse than CQER-32. Confirmation-2 reduced
+normalized committed-mask churn by 79.99%, yet worsened raw-CORA NLL by 6.96%,
+above the frozen 1% limit. Five advancement checks failed. The authenticated
+result is recorded in [`EXPERIMENT_008_RESULT.md`](EXPERIMENT_008_RESULT.md).
+The independent verifier was not reached and ranked `[8, 16)` remains
+protected.
+
+Experiment 009 tested RHT-CQER-32, which composes CQER-32 with a deterministic
+orthonormal right-side Hadamard codec while preserving the exact Q4/Q8 packed
+state and selector byte counts. Its one-task Stage-A falsification screen on
+already-open task 666 passed all nine frozen checks: closed-loop state SSE
+fell `59.97%`, aligned excess NLL fell `58.59%`, and aligned mean KL fell
+`31.19%` relative to CQER-32 while top-1 agreement and bytes were unchanged.
+The authenticated screen is in
+[`EXPERIMENT_009_STAGE_A_RESULT.md`](EXPERIMENT_009_STAGE_A_RESULT.md).
+
+The separately frozen 32-task Stage-B development run then passed all eight
+advancement checks. Relative to CQER-32, task-macro aligned excess NLL fell
+from `0.323944` to `0.153129` (`52.73%`), with 27 of 32 strict task wins and a
+paired 95% bootstrap interval of `[0.116082, 0.229438]`. Aggregate local
+recurrent-state reconstruction SSE fell from `36,409.363073` to
+`15,345.844948` (`57.85%`). Mean KL and CVaR95 KL were lower, top-1 agreement
+was higher, and the exact `2,564,096` packed-state bytes plus `147,456`
+selector bytes were unchanged.
+
+The frozen protocol, committed identity, authenticated result, post-write
+verification record, and compact release manifest are:
+
+- [`EXPERIMENT_009_RHT_CQER_PROTOCOL.md`](EXPERIMENT_009_RHT_CQER_PROTOCOL.md)
+- [`EXPERIMENT_009_STAGE_B_IDENTITY.md`](EXPERIMENT_009_STAGE_B_IDENTITY.md)
+- [`EXPERIMENT_009_STAGE_B_RESULT.md`](EXPERIMENT_009_STAGE_B_RESULT.md)
+- [`EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md`](EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md)
+- [`../evidence/experiment009-rht-cqer-stage-b-result-manifest.json`](../evidence/experiment009-rht-cqer-stage-b-result-manifest.json)
+
+The public-stream application-level access boundary remains fixed in
+[`EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md).
+Ranked MBPP window `[8, 16)` remained protected.
+
+In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
+packer and an exact dynamic-programming allocator. Its corrected two-bit
+metadata contract provides 3,808 marginal precision steps—not 3,952 rows—at
+the same `2,564,096` state bytes. It is not yet cache-integrated or
+quality-evaluated. See
+[`MULTIBIT_REFERENCE_DESIGN.md`](MULTIBIT_REFERENCE_DESIGN.md).
+
+The nearest known mechanism-level comparisons include MixKVQ's query-magnitude
+and quantization-difficulty scoring and established randomized-Hadamard or
+rotation quantizers. CQER-32 cannot be described as the first query-aware
+mixed-precision method, and RHT-CQER-32 cannot be described as the first
+rotation-based quantizer.
+
+Stage B supports a scoped positive development result for one frozen method,
+pinned model, and 32-task MBPP window. It is not held-out confirmation for
+RHT-CQER-32 and does not support a generalized v0.3, novelty, speed,
+state-of-the-art, deployment, or breakthrough claim.
+
+## v0.2 confirmed release
+
 The frozen v0.2 public-data study completed on 2026-07-22. Every preregistered
 quality gate passed on all 500 untouched MBPP test tasks and 30,244 scored
 tokens. The exact result, integrity anchors, infrastructure-resume record, and
@@ -13,7 +107,7 @@ development decision is in [`DEVELOPMENT_002.md`](DEVELOPMENT_002.md).
 The remainder of this file preserves the diagnostic v0.1 snapshot. Do not read
 its historical "next action" as the current project state.
 
-Last updated: 2026-07-22
+Snapshot date: 2026-07-22
 
 ## Confirmed implementation
 

@@ -1,0 +1,121 @@
+{
+  "artifact_kind": "recurquant_experiment009_stage_b_release_manifest",
+  "schema_version": 1,
+  "release": {
+    "repository": "Labeeb2339/recurquant",
+    "tag": "experiment009-stage-b-cdc603b",
+    "url": "https://github.com/Labeeb2339/recurquant/releases/tag/experiment009-stage-b-cdc603b",
+    "assets": {
+      "result_zip": {
+        "filename": "experiment009-rht-cqer-stage-b-result-cdc603b.json.zip",
+        "bytes": 11646686,
+        "sha256": "e0d4d6fbf6eb308660715365f76e90f9d22d8f7605dcd16be6388b878c6e9350",
+        "url": "https://github.com/Labeeb2339/recurquant/releases/download/experiment009-stage-b-cdc603b/experiment009-rht-cqer-stage-b-result-cdc603b.json.zip"
+      },
+      "checksums": {
+        "filename": "SHA256SUMS.txt",
+        "bytes": 238,
+        "sha256": "0675292507bcc8754ee895482710b670299a576f246aa7ad82cd4bb2d4eed9fe",
+        "url": "https://github.com/Labeeb2339/recurquant/releases/download/experiment009-stage-b-cdc603b/SHA256SUMS.txt"
+      }
+    }
+  },
+  "result": {
+    "artifact_kind": "recurquant_rht_cqer32_stage_b_development",
+    "raw_filename": "experiment009-rht-cqer-stage-b-result-cdc603b.json",
+    "raw_bytes": 167987192,
+    "raw_sha256": "57b341d37871a52977b1ff89709864f3e6e0927154e5b2b9275b6f374953fe05",
+    "canonical_evidence_sha256": "2b15c732e894510f0421a22fcca9435e035dd15c4d3b50e2fcb733c0d1df58a8",
+    "created_at_utc": "2026-07-26T05:46:49.671275+00:00",
+    "frozen_source_commit": "cdc603b6b8462e42e98495c5ec0610faa9473721",
+    "evaluation_commit": "8168c469b252bc9e707e51feaeccc3f940f190bb",
+    "verifier_fix_commit": "2075154e642c39a14432adcc8ec32da679b534d3",
+    "identity_artifact": "evidence/experiment009-rht-cqer-stage-b-identity-cdc603b.json",
+    "identity_file_sha256": "f94e60adb6d9ab51b5894e3ad8b3c0064a8e69721e3df24f90a81f0b4009fe19",
+    "identity_canonical_evidence_sha256": "4074db6860d3f36dff1a13b7945d0c5c5d619ee208f0fdb35108defb9512c343"
+  },
+  "verification": {
+    "strict_loader_passed": true,
+    "canonical_round_trip": true,
+    "integrity_passed": true,
+    "advancement_passed": true,
+    "advancement_check_count": 8,
+    "task_count": 32,
+    "bootstrap_samples": 10000,
+    "bootstrap_seed": 2339,
+    "verification_receipt": "research/EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md"
+  },
+  "graph_assets": {
+    "source_artifact_sha256": "57b341d37871a52977b1ff89709864f3e6e0927154e5b2b9275b6f374953fe05",
+    "canonical_evidence_sha256": "2b15c732e894510f0421a22fcca9435e035dd15c4d3b50e2fcb733c0d1df58a8",
+    "original_result_commit": "8168c469b252bc9e707e51feaeccc3f940f190bb",
+    "verifier_fix_commit": "2075154e642c39a14432adcc8ec32da679b534d3",
+    "artifact_kind": "recurquant_rht_cqer32_stage_b_development",
+    "integrity_passed": true,
+    "advancement_gate_passed": true,
+    "assets": {
+      "assets/experiment009-stage-b-overview.svg": {
+        "bytes": 7471,
+        "sha256": "8ce3a6d4a0976382831060d3f20c5826384b0e7d813984b9fbcbb0f94dc14af0",
+        "chart": "experiment009-stage-b-overview"
+      },
+      "assets/experiment009-stage-b-paired.svg": {
+        "bytes": 18692,
+        "sha256": "b16d0e3304cbf534f27819b68c0b66c4c4037edbf60e7d7165db2f886e94c594",
+        "chart": "experiment009-stage-b-paired-cqer-minus-rht"
+      }
+    }
+  },
+  "graph_data": {
+    "macro_aligned_excess_nll": [
+      {
+        "method": "target_directional_fisher_difference_int4",
+        "label": "Static Fisher",
+        "value": 0.41796037927269936
+      },
+      {
+        "method": "adaptive_mse_target_directional_fisher_quota",
+        "label": "Adaptive MSE",
+        "value": 0.4453618936240673
+      },
+      {
+        "method": "query_ema32_weighted_mse_target_fisher_quota",
+        "label": "CQER-32",
+        "value": 0.3239440377801657
+      },
+      {
+        "method": "right_rht_query_ema32_weighted_mse_target_fisher_quota",
+        "label": "RHT-CQER-32",
+        "value": 0.15312867239117622
+      }
+    ],
+    "cqer_vs_rht": {
+      "macro_excess_nll_relative_reduction": 0.5272989944791263,
+      "paired_mean_improvement": 0.17081536538898945,
+      "paired_95pct_confidence_interval": [
+        0.11608229021076114,
+        0.22943802918307482
+      ],
+      "rht_task_wins": 27,
+      "ties": 0,
+      "aggregate_state_sse": {
+        "cqer32": 36409.363072871,
+        "rht_cqer32": 15345.844948473503,
+        "relative_reduction": 0.5785192694044171
+      },
+      "macro_mean_kl": {
+        "cqer32": 0.32888971641659737,
+        "rht_cqer32": 0.19350104196928442
+      },
+      "macro_cvar95_kl": {
+        "cqer32": 2.046657746657729,
+        "rht_cqer32": 1.335989330895245
+      },
+      "macro_top1_agreement": {
+        "cqer32": 0.8260002993047237,
+        "rht_cqer32": 0.8794985339045525
+      }
+    }
+  },
+  "claim_boundary": "This is authenticated 32-task development evidence for one frozen method, pinned model, and MBPP window. It is not confirmation, novelty, speed, state-of-the-art, deployment, or breakthrough evidence."
+}

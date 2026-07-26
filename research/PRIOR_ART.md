@@ -1,6 +1,6 @@
 # Prior-art audit
 
-Last searched: 2026-07-22
+Last searched: 2026-07-26
 
 This is a living claim boundary, not proof that no related work exists. Repeat
 the search before any paper or novelty statement.
@@ -44,6 +44,28 @@ the search before any paper or novelty statement.
 - [AVMP](https://arxiv.org/abs/2605.22416) dynamically rebalances KV and SSM
   memory pools.
 
+## Transition- and observability-weighted error
+
+- Classical finite-wordlength state-space analysis already propagates
+  quantization-noise covariance to output noise through an observability
+  Gramian. In particular,
+  [Hilaire, Menard, and Sentieys (EUSIPCO 2007)](https://www.eurasip.org/Proceedings/Eusipco/Eusipco2007/Papers/b2l-g05.pdf)
+  writes the state-noise contribution as `tr(Psi_X * W_o)`. With diagonal
+  error covariance, this is the same broad algebraic family as weighting each
+  row's distortion by a diagonal observability term. RecurQuant cannot claim
+  to have invented observability-weighted quantization error.
+- [WriteSAE](https://arxiv.org/abs/2605.12770) derives the Gated DeltaNet cache-
+  write perturbation transition and its later-query/logit effect. It is an
+  interpretability method rather than a quantizer, but it precludes claiming
+  that the transition or downstream-influence principle is new.
+- [TQS-PTQ](https://arxiv.org/abs/2606.13300) treats quantized rollout error as
+  a dynamical-system trajectory-sensitivity problem and uses the score for
+  mixed-precision allocation. It targets offline time-series model tensors,
+  not causal Gated DeltaNet cache rows.
+- Nemotron 3 Super and Ultra propagate recurrent-cache errors through products
+  of state transitions. They do not use CORA's online row allocator, but they
+  preclude a broad "first transition-aware recurrent-cache quantizer" claim.
+
 ## Mixed-precision cache allocation
 
 - [KVTuner](https://arxiv.org/abs/2502.04420),
@@ -55,10 +77,41 @@ the search before any paper or novelty statement.
   [PM-KVQ](https://arxiv.org/abs/2505.18610), and
   [SpectrumKV](https://arxiv.org/abs/2606.08635) cover fixed-average-bit,
   progressive, or per-token mixed-precision KV policies.
+- [MixKVQ](https://arxiv.org/abs/2512.19206) combines query relevance and
+  intrinsic quantization difficulty for budgeted mixed-precision key-cache
+  channels. It is the closest published analogue to multiplying a read-
+  importance signal by physical quantization benefit.
+- [Kitty](https://arxiv.org/abs/2511.18643) dynamically promotes a fixed quota
+  of key-cache channels using runtime sensitivity and magnitude, with Triton
+  kernels. It targets transformer KV caches rather than recurrent matrices.
+- [OuroMamba](https://arxiv.org/abs/2503.10959) updates outlier-channel choices
+  at every timestep and assigns higher precision dynamically for Vision-Mamba
+  activations. It precludes a broad "first online dynamic mixed-precision SSM
+  channel" claim.
 
 These works target transformer KV caches rather than Gated DeltaNet recurrent
 matrices, but they preclude broad claims that sensitivity-guided, per-layer,
 dynamic, or equal-budget cache precision allocation is new.
+
+## Rotation and Hadamard codecs
+
+- [QuIP#](https://arxiv.org/abs/2402.04396) uses incoherence processing with
+  randomized Hadamard transforms for low-bit language-model quantization.
+- [QuaRot](https://arxiv.org/abs/2404.00456) uses computational invariance and
+  Hadamard rotations to remove activation outliers.
+- [SpinQuant](https://arxiv.org/abs/2405.16406) learns rotations for improved
+  LLM quantization, and
+  [TurboQuant](https://arxiv.org/abs/2504.19874) develops fast randomized
+  transforms for outlier suppression.
+- [MambaQuant](https://arxiv.org/abs/2501.13484) applies rotation-based
+  outlier suppression to an architecture adjacent to RecurQuant's recurrent
+  state setting.
+
+These methods make the transform principle established prior art.
+RHT-CQER-32's narrow hypothesis is whether a fixed, reproducible right-side
+transform composes usefully with physical causal row selection for one Gated
+DeltaNet cache layout. A positive result cannot support a broad first,
+rotation, Hadamard, or outlier-suppression novelty claim.
 
 ## Architecture evidence
 
@@ -73,16 +126,21 @@ dynamic, or equal-budget cache precision allocation is new.
 
 ## Audited gap, not a novelty claim
 
-The scan did not locate a published implementation combining all three:
+The scan did not locate a published implementation combining all four:
 
 1. sub-8-bit **persistent** Gated DeltaNet cache storage;
-2. Gated DeltaNet-specific read/sensitivity-based precision allocation; and
-3. a packed end-to-end runtime kernel with measured quality and latency.
+2. a causal transition-derived diagonal future-read score;
+3. physical row-distortion allocation with confirmation-gated admissions; and
+4. a packed end-to-end runtime kernel with measured quality and latency.
 
 That negative search is not proof of firstness, and the current RecurQuant
-alpha does not satisfy item 3: it physically stores the cache in packed form
+alpha does not satisfy item 4: it physically stores the cache in packed form
 but materializes one recurrent state for each layer call and has no fused
 recurrence kernel or latency result.
+
+Experiment 008 also failed its frozen development gate: CORA-C2 and raw CORA
+were both worse on macro excess NLL than CQER-32. Exact-combination novelty
+would not rescue a method that has not demonstrated the required quality.
 
 The frozen v0.2 protocol compares uniform INT4, one uniform INT8 reference,
 three same-byte random layer placements, MSE-selected placement, nearest and
