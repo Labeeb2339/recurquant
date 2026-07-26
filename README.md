@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="#quickstart"><b>Quickstart</b></a> ·
+  <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> ·
   <a href="#what-is-physically-smaller"><b>Storage</b></a> ·
   <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> ·
   <a href="#experiment-009-stage-b-development"><b>Stage B</b></a> ·
@@ -43,6 +44,23 @@ its current Python path dequantizes one recurrent state while that layer runs.
 I built and maintain RecurQuant as an open research project. —
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
 [Apache-2.0](LICENSE).
+
+## Verified storage-fidelity frontier
+
+Among the nearest-rounding quantized layouts evaluated in the held-out
+protocol, three form the non-dominated storage-fidelity frontier. Each trades
+more resident recurrent-state storage for lower teacher-forced excess NLL. The
+frozen v0.2 layout is the middle point: it adds `131,072` bytes (`5.39%`) over
+uniform INT4 while lowering task-macro excess NLL by `72.75%`.
+
+![Scatter plot of the held-out storage-fidelity frontier: uniform INT4 at 2.320 MiB and 2.9497 excess NLL, frozen v0.2 mixed precision at 2.445 MiB and 0.8037, and uniform INT8 at 4.570 MiB and 0.0172.](assets/mbpp-confirmation-pareto.svg)
+
+The chart is regenerated directly from the authenticated
+[500-task confirmation record](evidence/mbpp-v02-confirmation.json), and CI
+rejects stale generated assets. It compares exact resident recurrent-state
+bytes with teacher-forced fidelity only. The matched FP32 state reference is
+off-plot at `18,874,368` bytes and zero excess NLL by definition; these are not
+speed, peak-memory, whole-model-memory, or generated-code results.
 
 ## Quickstart
 

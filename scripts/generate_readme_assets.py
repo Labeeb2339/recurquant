@@ -209,6 +209,7 @@ def _confirmation_data() -> dict[str, object]:
     primary = candidates["read_risk_l0_nearest"]
     mse = candidates["mse_selected_nearest"]
     uniform = candidates["uniform_int4_nearest"]
+    uniform_int8 = candidates["uniform_int8_nearest"]
     primary_contrast = evidence["contrasts"]["primary_vs_uniform_int4"]
     random_contrast = evidence["contrasts"]["primary_vs_mean_random_equal_byte"]
     continuation = evidence["continuation_decision"]
@@ -250,6 +251,7 @@ def _confirmation_data() -> dict[str, object]:
         raise ValueError("MBPP confirmation dataset manifest task count disagrees")
     for label, candidate in (
         ("uniform INT4", uniform),
+        ("uniform INT8", uniform_int8),
         ("read-risk mixed", primary),
         ("MSE mixed", mse),
     ):
@@ -268,11 +270,13 @@ def _confirmation_data() -> dict[str, object]:
 
     expected_storage = {
         "uniform": 2_433_024,
+        "uniform_int8": 4_792_320,
         "primary": 2_564_096,
         "full_precision": 18_874_368,
     }
     for label, candidate, expected_bytes in (
         ("uniform INT4", uniform, expected_storage["uniform"]),
+        ("uniform INT8", uniform_int8, expected_storage["uniform_int8"]),
         ("mixed", primary, expected_storage["primary"]),
     ):
         storage = candidate["storage"]
@@ -289,6 +293,39 @@ def _confirmation_data() -> dict[str, object]:
         != expected_storage["full_precision"]
     ):
         raise ValueError("Confirmation validity record has a different storage reference")
+
+    nearest_coordinates = {
+        (
+            int(candidate["storage"]["resident_bytes"]),
+            Decimal(str(candidate["task_macro"]["delta_nll"])),
+        )
+        for candidate in candidates.values()
+        if candidate["policy"]["rounding"] == "nearest"
+    }
+    frontier_coordinates = {
+        point
+        for point in nearest_coordinates
+        if not any(
+            other[0] <= point[0] and other[1] <= point[1] and other != point
+            for other in nearest_coordinates
+        )
+    }
+    expected_frontier_coordinates = {
+        (
+            expected_storage["uniform"],
+            Decimal(str(uniform["task_macro"]["delta_nll"])),
+        ),
+        (
+            expected_storage["primary"],
+            Decimal(str(primary["task_macro"]["delta_nll"])),
+        ),
+        (
+            expected_storage["uniform_int8"],
+            Decimal(str(uniform_int8["task_macro"]["delta_nll"])),
+        ),
+    }
+    if frontier_coordinates != expected_frontier_coordinates:
+        raise ValueError("MBPP confirmation storage-fidelity frontier changed")
 
     uniform_macro = Decimal(str(uniform["task_macro"]["delta_nll"]))
     primary_macro = Decimal(str(primary["task_macro"]["delta_nll"]))
@@ -325,13 +362,20 @@ def _confirmation_data() -> dict[str, object]:
         "task_count": expected_task_count,
         "token_count": expected_token_count,
         "uniform_macro_delta_nll": uniform["task_macro"]["delta_nll"],
+        "uniform_int8_macro_delta_nll": uniform_int8["task_macro"]["delta_nll"],
         "primary_macro_delta_nll": primary["task_macro"]["delta_nll"],
         "relative_reduction": primary_contrast["relative_reduction"],
         "primary_vs_uniform": primary_contrast["paired_bootstrap"],
         "primary_vs_mean_random_equal_byte": random_contrast["paired_bootstrap"],
         "primary_resident_bytes": primary["storage"]["resident_bytes"],
         "uniform_resident_bytes": uniform["storage"]["resident_bytes"],
+        "uniform_int8_resident_bytes": uniform_int8["storage"]["resident_bytes"],
         "full_precision_equivalent_bytes": expected_storage["full_precision"],
+        "evaluated_nearest_policy_count": sum(
+            candidate["policy"]["rounding"] == "nearest" for candidate in candidates.values()
+        ),
+        "unique_nearest_coordinate_count": len(nearest_coordinates),
+        "frontier_coordinate_count": len(frontier_coordinates),
         "primary_upgrade_layer": primary["policy"]["upgrade_layer"],
         "mse_upgrade_layer": mse["policy"]["upgrade_layer"],
     }
@@ -824,6 +868,235 @@ def _confirmation_svg(data: dict[str, object]) -> str:
   <text class="note" x="28" y="406">Exact resident recurrent-state bytes: mixed {int(data["primary_resident_bytes"]):,}; uniform INT4 {int(data["uniform_resident_bytes"]):,}; FP32 reference {int(data["full_precision_equivalent_bytes"]):,}.</text>
   <text class="note" x="28" y="436">Held-out MBPP confirmation &#183; {task_count} tasks &#183; {token_count:,} teacher-forced reference code tokens.</text>
   <text class="note" x="28" y="460">Generated code was not executed; no speed or whole-model memory claim.</text>
+</svg>
+"""
+
+
+def _confirmation_pareto_svg(data: dict[str, object]) -> str:
+    """Render the held-out resident-state storage/fidelity frontier."""
+
+    points = (
+        {
+            "label": "Uniform INT4",
+            "detail": "all recurrent layers INT4",
+            "bytes": int(data["uniform_resident_bytes"]),
+            "excess_nll": Decimal(str(data["uniform_macro_delta_nll"])),
+            "shape": "circle",
+            "class": "uniform",
+        },
+        {
+            "label": "Frozen v0.2 mixed",
+            "detail": "layer 0 INT8; other 17 layers INT4",
+            "bytes": int(data["primary_resident_bytes"]),
+            "excess_nll": Decimal(str(data["primary_macro_delta_nll"])),
+            "shape": "diamond",
+            "class": "mixed",
+        },
+        {
+            "label": "Uniform INT8",
+            "detail": "all recurrent layers INT8",
+            "bytes": int(data["uniform_int8_resident_bytes"]),
+            "excess_nll": Decimal(str(data["uniform_int8_macro_delta_nll"])),
+            "shape": "square",
+            "class": "int8",
+        },
+    )
+    for point in points:
+        point["mib"] = Decimal(point["bytes"]) / Decimal(1_048_576)
+
+    x_min = Decimal("2.2")
+    x_max = Decimal("4.8")
+    y_max = Decimal("3.2")
+    plot_left = Decimal(130)
+    plot_top = Decimal(84)
+    plot_width = Decimal(700)
+    plot_height = Decimal(250)
+
+    def x_position(mib: Decimal) -> Decimal:
+        return plot_left + (mib - x_min) / (x_max - x_min) * plot_width
+
+    def y_position(excess_nll: Decimal) -> Decimal:
+        return plot_top + (y_max - excess_nll) / y_max * plot_height
+
+    positions = [
+        (
+            x_position(point["mib"]),
+            y_position(point["excess_nll"]),
+        )
+        for point in points
+    ]
+    frontier_path = " ".join(
+        ("M" if index == 0 else "L") + f" {x:.2f} {y:.2f}" for index, (x, y) in enumerate(positions)
+    )
+
+    x_ticks = []
+    for value in (
+        Decimal("2.25"),
+        Decimal("2.75"),
+        Decimal("3.25"),
+        Decimal("3.75"),
+        Decimal("4.25"),
+        Decimal("4.75"),
+    ):
+        x = x_position(value)
+        x_ticks.append(
+            f'''  <line class="grid" x1="{x:.2f}" y1="{plot_top}" x2="{x:.2f}" y2="{plot_top + plot_height}" />
+  <text class="tick" x="{x:.2f}" y="358" text-anchor="middle">{value:.2f}</text>'''
+        )
+
+    y_ticks = []
+    for value in (Decimal(0), Decimal(1), Decimal(2), Decimal(3)):
+        y = y_position(value)
+        y_ticks.append(
+            f'''  <line class="grid" x1="{plot_left}" y1="{y:.2f}" x2="{plot_left + plot_width}" y2="{y:.2f}" />
+  <text class="tick" x="112" y="{y + Decimal(4):.2f}" text-anchor="end">{value}</text>'''
+        )
+
+    marks = []
+    label_offsets = (
+        (Decimal(14), Decimal(-34), "start"),
+        (Decimal(14), Decimal(-34), "start"),
+        (Decimal(-14), Decimal(-34), "end"),
+    )
+    for point, (x, y), (dx, dy, anchor) in zip(
+        points,
+        positions,
+        label_offsets,
+        strict=True,
+    ):
+        tooltip = (
+            f"{point['label']}: {point['mib']:.3f} MiB resident recurrent state; "
+            f"{point['excess_nll']:.6f} task-macro excess NLL."
+        )
+        if point["shape"] == "circle":
+            mark = (
+                f'<circle class="point {point["class"]}" cx="{x:.2f}" cy="{y:.2f}" '
+                f'r="7"><title>{html.escape(tooltip)}</title></circle>'
+            )
+        elif point["shape"] == "diamond":
+            mark = (
+                f'<rect class="point {point["class"]}" x="{x - Decimal(7):.2f}" '
+                f'y="{y - Decimal(7):.2f}" width="14" height="14" '
+                f'transform="rotate(45 {x:.2f} {y:.2f})">'
+                f"<title>{html.escape(tooltip)}</title></rect>"
+            )
+        else:
+            mark = (
+                f'<rect class="point {point["class"]}" x="{x - Decimal(7):.2f}" '
+                f'y="{y - Decimal(7):.2f}" width="14" height="14">'
+                f"<title>{html.escape(tooltip)}</title></rect>"
+            )
+        marks.append(
+            f'''  <g>
+    {mark}
+    <text class="label" x="{x + dx:.2f}" y="{y + dy:.2f}" text-anchor="{anchor}">{point["label"]}</text>
+    <text class="muted" x="{x + dx:.2f}" y="{y + dy + Decimal(17):.2f}" text-anchor="{anchor}">{point["mib"]:.3f} MiB &#183; {point["excess_nll"]:.4f} excess NLL</text>
+  </g>'''
+        )
+
+    extra_bytes = int(data["primary_resident_bytes"]) - int(data["uniform_resident_bytes"])
+    reduction = Decimal(str(data["relative_reduction"])) * Decimal(100)
+    metadata_points = [
+        {
+            "label": point["label"],
+            "detail": point["detail"],
+            "resident_bytes": point["bytes"],
+            "task_macro_excess_nll": float(point["excess_nll"]),
+            "pareto_nondominated_among_plotted_quantized_layouts": True,
+        }
+        for point in points
+    ]
+    metadata = _metadata(
+        {
+            "chart": "mbpp-confirmation-storage-fidelity-frontier",
+            "source_document_sha256": data["document_sha256"],
+            "canonical_evidence_sha256": data["canonical_evidence_sha256"],
+            "phase": data["phase"],
+            "teacher_forced_fidelity_only": data["teacher_forced_fidelity_only"],
+            "generated_code_executed": data["generated_code_executed"],
+            "speed_claim_allowed": data["speed_claim_allowed"],
+            "whole_model_memory_claim_allowed": data["whole_model_memory_claim_allowed"],
+            "task_count": data["task_count"],
+            "token_count": data["token_count"],
+            "evaluated_nearest_policy_count": data["evaluated_nearest_policy_count"],
+            "unique_nearest_coordinate_count": data["unique_nearest_coordinate_count"],
+            "frontier_coordinate_count": data["frontier_coordinate_count"],
+            "points": metadata_points,
+            "fp32_reference": {
+                "resident_bytes": data["full_precision_equivalent_bytes"],
+                "task_macro_excess_nll": 0.0,
+                "excess_nll_zero_by_definition": True,
+                "off_plot": True,
+            },
+            "mixed_vs_uniform_int4": {
+                "additional_resident_bytes": extra_bytes,
+                "relative_excess_nll_reduction": data["relative_reduction"],
+            },
+            "claim_boundary": (
+                "Held-out teacher-forced recurrent-state fidelity and exact resident "
+                "state bytes only; no generated-code, speed, peak-memory, or "
+                "whole-model memory claim."
+            ),
+        },
+        source_document="evidence/mbpp-v02-confirmation.json",
+    )
+    description = (
+        "Three evaluated nearest-rounding recurrent-state layouts form a storage "
+        "and teacher-forced fidelity frontier. Uniform INT4 occupies "
+        f"{points[0]['mib']:.3f} MiB with {points[0]['excess_nll']:.6f} task-macro "
+        "excess negative log likelihood. The frozen version 0.2 mixed layout "
+        f"occupies {points[1]['mib']:.3f} MiB with "
+        f"{points[1]['excess_nll']:.6f} excess negative log likelihood. Uniform "
+        f"INT8 occupies {points[2]['mib']:.3f} MiB with "
+        f"{points[2]['excess_nll']:.6f} excess negative log likelihood. Lower-left "
+        "is better. The FP32 recurrent-state reference is outside the plotted "
+        "range at 18 MiB and zero excess negative log likelihood by definition."
+    )
+    return f"""<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="455" viewBox="0 0 960 455" role="img" aria-labelledby="pareto-title pareto-desc">
+  <title id="pareto-title">Held-out recurrent-state storage and fidelity frontier</title>
+  <desc id="pareto-desc">{html.escape(description)}</desc>
+  <metadata id="recurquant-provenance">{metadata}</metadata>
+  <style>
+    svg {{ background-color: #ffffff; }}
+    text {{ font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172033; }}
+    .title {{ font-size: 22px; font-weight: 500; }}
+    .subtitle, .muted, .tick, .note {{ fill: #556176; }}
+    .subtitle {{ font-size: 14px; }}
+    .label {{ font-size: 14px; font-weight: 500; }}
+    .muted, .tick, .note {{ font-size: 12px; }}
+    .grid {{ stroke: #d5dae3; stroke-width: 1; }}
+    .axis {{ stroke: #8993a4; stroke-width: 1.25; }}
+    .frontier {{ fill: none; stroke: #0f766e; stroke-width: 2.5; }}
+    .point {{ stroke: #ffffff; stroke-width: 2; }}
+    .uniform {{ fill: #2563eb; }}
+    .mixed {{ fill: #d97706; }}
+    .int8 {{ fill: #0f766e; }}
+    @media (prefers-color-scheme: dark) {{
+      svg {{ background-color: #0d1117; }}
+      text {{ fill: #e6edf3; }}
+      .subtitle, .muted, .tick, .note {{ fill: #a9b4c2; }}
+      .grid {{ stroke: #303b49; }}
+      .axis {{ stroke: #697586; }}
+      .frontier {{ stroke: #5eead4; }}
+      .point {{ stroke: #0d1117; }}
+      .uniform {{ fill: #60a5fa; }}
+      .mixed {{ fill: #fbbf24; }}
+      .int8 {{ fill: #5eead4; }}
+    }}
+  </style>
+  <text class="title" x="28" y="30">Held-out storage&#8211;fidelity frontier</text>
+  <text class="subtitle" x="28" y="54">Exact resident recurrent-state storage vs task-macro excess NLL &#183; lower-left is better</text>
+{chr(10).join(x_ticks)}
+{chr(10).join(y_ticks)}
+  <line class="axis" x1="{plot_left}" y1="{plot_top + plot_height}" x2="{plot_left + plot_width}" y2="{plot_top + plot_height}" />
+  <line class="axis" x1="{plot_left}" y1="{plot_top}" x2="{plot_left}" y2="{plot_top + plot_height}" />
+  <path class="frontier" d="{frontier_path}" />
+{chr(10).join(marks)}
+  <text class="label" x="480" y="390" text-anchor="middle">Resident recurrent-state storage (MiB)</text>
+  <text class="label" x="26" y="210" text-anchor="middle" transform="rotate(-90 26 210)">Task-macro excess NLL (nats/token)</text>
+  <text class="note" x="28" y="422">Frozen v0.2 adds {extra_bytes:,} bytes over uniform INT4 and lowers excess NLL by {reduction:.2f}%.</text>
+  <text class="note" x="28" y="445">500 held-out tasks &#183; 30,244 teacher-forced tokens &#183; FP32 state reference: 18.000 MiB and zero excess NLL by definition (off-plot).</text>
 </svg>
 """
 
@@ -1480,6 +1753,7 @@ def _legacy_outputs() -> dict[Path, str]:
         ASSETS / "diagnostic-tail-kl.svg": _diagnostic_svg(data),
         ASSETS / "mbpp-development-fidelity.svg": _development_svg(development_data),
         ASSETS / "mbpp-confirmation-fidelity.svg": _confirmation_svg(confirmation_data),
+        ASSETS / "mbpp-confirmation-pareto.svg": _confirmation_pareto_svg(confirmation_data),
     }
 
 

@@ -98,6 +98,55 @@ def _metadata(svg: str) -> dict[str, object]:
     return json.loads(metadata.text)
 
 
+def test_confirmation_pareto_uses_authenticated_storage_and_fidelity() -> None:
+    data = assets._confirmation_data()
+    svg = assets._confirmation_pareto_svg(data)
+    assets._validate_svg(
+        svg,
+        assets.ASSETS / "mbpp-confirmation-pareto.svg",
+    )
+
+    assert svg == assets._confirmation_pareto_svg(data)
+    record = _metadata(svg)
+    assert record["chart"] == "mbpp-confirmation-storage-fidelity-frontier"
+    assert record["canonical_evidence_sha256"] == (
+        "2a652df92f99fa81f785244d966829e909d31f200e5a1520b76e6b46fb45d3e0"
+    )
+    assert record["task_count"] == 500
+    assert record["token_count"] == 30_244
+    assert record["speed_claim_allowed"] is False
+    assert record["whole_model_memory_claim_allowed"] is False
+    assert record["evaluated_nearest_policy_count"] == 7
+    assert record["unique_nearest_coordinate_count"] == 6
+    assert record["frontier_coordinate_count"] == 3
+
+    points = record["points"]
+    assert isinstance(points, list)
+    assert [
+        (
+            point["label"],
+            point["resident_bytes"],
+            point["task_macro_excess_nll"],
+        )
+        for point in points
+    ] == [
+        ("Uniform INT4", 2_433_024, 2.949742543697357),
+        ("Frozen v0.2 mixed", 2_564_096, 0.8037128749489785),
+        ("Uniform INT8", 4_792_320, 0.017209371507167816),
+    ]
+    assert all(
+        point["pareto_nondominated_among_plotted_quantized_layouts"] is True for point in points
+    )
+    assert record["fp32_reference"] == {
+        "resident_bytes": 18_874_368,
+        "task_macro_excess_nll": 0.0,
+        "excess_nll_zero_by_definition": True,
+        "off_plot": True,
+    }
+    assert "breakthrough" not in svg.lower()
+    assert "state-of-the-art" not in svg.lower()
+
+
 def test_stage_b_assets_use_strict_loader_and_embed_authenticated_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
