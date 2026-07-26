@@ -292,6 +292,26 @@ def aggregate_state_error_evidence(records: Sequence[object]) -> dict[str, Any]:
         occurrence_key = (layer_index, state_index)
         write_ordinal = layer_occurrences[occurrence_key]
         layer_occurrences[occurrence_key] += 1
+        if "element_count" in record and _strict_int(
+            record["element_count"],
+            context=f"state-error record {record_index} element_count",
+        ) != element_count:
+            raise ValueError("state-error element_count does not match its shape")
+        if "write_ordinal" in record and _strict_int(
+            record["write_ordinal"],
+            context=f"state-error record {record_index} write_ordinal",
+        ) != write_ordinal:
+            raise ValueError("state-error write_ordinal does not match causal order")
+        if "state_sse" in record and not math.isclose(
+            _finite_float(
+                record["state_sse"],
+                context=f"state-error record {record_index} state_sse",
+            ),
+            state_sse,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("state-error state_sse does not match MSE times elements")
         normalized_record = {
             **record,
             "shape": list(shape),
@@ -347,20 +367,52 @@ def aggregate_state_error_evidence(records: Sequence[object]) -> dict[str, Any]:
 def validate_state_error_coverage(
     state_errors: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Require both codecs to record the same layers, writes, states, and shapes."""
+    """Recompute and authenticate exact layers, writes, states, shapes, and totals."""
 
     if set(state_errors) != set(METHODS):
         raise ValueError("state-error evidence must contain exactly CQER and RHT-CQER")
-    cqer = state_errors[CQER_METHOD]
-    rht = state_errors[RHT_METHOD]
-    if cqer.get("coverage") != rht.get("coverage"):
-        raise ValueError("CQER and RHT-CQER state-error coverage differs")
     expected_records = len(FROZEN_LINEAR_LAYERS) * EXPECTED_STATE_WRITES
+    expected_coverage = [
+        {
+            "write_ordinal": write,
+            "layer_index": layer,
+            "state_index": 0,
+            "shape": [1, 16, 128, 128],
+        }
+        for write in range(EXPECTED_STATE_WRITES)
+        for layer in FROZEN_LINEAR_LAYERS
+    ]
+    final_masks: dict[str, dict[int, str]] = {}
     for method, record in state_errors.items():
+        raw_records = record.get("records")
+        if isinstance(raw_records, (str, bytes)) or not isinstance(
+            raw_records, Sequence
+        ):
+            raise ValueError(f"{method} must retain raw per-write state-error records")
+        recomputed = aggregate_state_error_evidence(raw_records)
         if int(record.get("record_count", -1)) != expected_records:
             raise ValueError(
                 f"{method} must contain exactly {expected_records} state-error records"
             )
+        if recomputed["record_count"] != expected_records:
+            raise ValueError(f"{method} raw state-error record count drifted")
+        if recomputed["coverage"] != expected_coverage:
+            raise ValueError(f"{method} raw state-error geometry or causal order drifted")
+        if record.get("coverage") != expected_coverage:
+            raise ValueError(f"{method} reported state-error coverage drifted")
+        if _strict_int(
+            record.get("element_count"),
+            context=f"{method} aggregate element_count",
+        ) != recomputed["element_count"]:
+            raise ValueError(f"{method} aggregate element count was not recomputed")
+        for field in ("aggregate_state_sse", "aggregate_state_mse"):
+            if not math.isclose(
+                _finite_float(record.get(field), context=f"{method} {field}"),
+                float(recomputed[field]),
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(f"{method} {field} does not match raw records")
         per_layer = record.get("per_layer")
         per_write = record.get("per_write")
         if not isinstance(per_layer, Mapping) or set(per_layer) != {
@@ -382,11 +434,79 @@ def validate_state_error_coverage(
             for write in range(EXPECTED_STATE_WRITES)
         ):
             raise ValueError(f"{method} did not record every layer within every write")
+        for grouping_name, reported, expected in (
+            ("per-layer", per_layer, recomputed["per_layer"]),
+            ("per-write", per_write, recomputed["per_write"]),
+        ):
+            for key, expected_values in expected.items():
+                reported_values = reported[key]
+                for field in ("record_count", "element_count"):
+                    if _strict_int(
+                        reported_values.get(field),
+                        context=f"{method} {grouping_name} {key} {field}",
+                    ) != int(expected_values[field]):
+                        raise ValueError(
+                            f"{method} {grouping_name} {key} {field} drifted"
+                        )
+                if not math.isclose(
+                    _finite_float(
+                        reported_values.get("state_sse"),
+                        context=f"{method} {grouping_name} {key} state_sse",
+                    ),
+                    float(expected_values["state_sse"]),
+                    rel_tol=1e-12,
+                    abs_tol=1e-12,
+                ):
+                    raise ValueError(
+                        f"{method} {grouping_name} {key} state_sse drifted"
+                    )
+        expected_selection_method = (
+            "query_ema32_weighted_aligned_mse_reduction"
+            if method == CQER_METHOD
+            else RHT_METHOD
+        )
+        method_final_masks: dict[int, str] = {}
+        for index, raw_record in enumerate(recomputed["records"]):
+            layer = FROZEN_LINEAR_LAYERS[index % len(FROZEN_LINEAR_LAYERS)]
+            write = index // len(FROZEN_LINEAR_LAYERS)
+            if (
+                raw_record.get("layer_index") != layer
+                or raw_record.get("state_index") != 0
+                or raw_record.get("shape") != [1, 16, 128, 128]
+                or raw_record.get("update_index") != index
+                or raw_record.get("write_ordinal") != write
+                or raw_record.get("source_dtype") != "torch.float32"
+                or raw_record.get("selection_method") != expected_selection_method
+                or raw_record.get("total_groups") != 2048
+                or raw_record.get("high_precision_groups")
+                != FROZEN_LAYER_QUOTAS[layer]
+            ):
+                raise ValueError(
+                    f"{method} raw state-error record {index} contract drifted"
+                )
+            mask_hash = raw_record.get("high_precision_mask_sha256")
+            if (
+                not isinstance(mask_hash, str)
+                or len(mask_hash) != 64
+                or any(character not in "0123456789abcdef" for character in mask_hash)
+            ):
+                raise ValueError(f"{method} raw state-error mask hash is invalid")
+            if write == EXPECTED_STATE_WRITES - 1:
+                method_final_masks[layer] = mask_hash
+        final_masks[method] = method_final_masks
+    if state_errors[CQER_METHOD].get("coverage") != state_errors[RHT_METHOD].get(
+        "coverage"
+    ):
+        raise ValueError("CQER and RHT-CQER state-error coverage differs")
     return {
         "passed": True,
         "record_count_per_method": expected_records,
         "state_writes": EXPECTED_STATE_WRITES,
         "linear_layers": list(FROZEN_LINEAR_LAYERS),
+        "final_mask_sha256s": {
+            method: {str(layer): value for layer, value in masks.items()}
+            for method, masks in final_masks.items()
+        },
     }
 
 
@@ -535,6 +655,44 @@ def _metric_summary(
                 for field in fields
             },
         }
+        values = normalized[method]
+        mean_kl = float(values["mean_kl"])
+        cvar95_kl = float(values["cvar95_kl"])
+        max_kl = float(values["max_kl"])
+        top1 = float(values["top1_agreement"])
+        reference_nll = float(values["reference_nll"])
+        candidate_nll = float(values["candidate_nll"])
+        delta_nll = float(values["delta_nll"])
+        if mean_kl < 0 or cvar95_kl < 0 or max_kl < 0:
+            raise ValueError(f"{context} {method} KL metrics must be non-negative")
+        if mean_kl > cvar95_kl or cvar95_kl > max_kl:
+            raise ValueError(f"{context} {method} KL summary ordering is invalid")
+        if not 0.0 <= top1 <= 1.0:
+            raise ValueError(f"{context} {method} top1_agreement must be in [0, 1]")
+        if reference_nll < 0 or candidate_nll < 0:
+            raise ValueError(f"{context} {method} NLL metrics must be non-negative")
+        if not math.isclose(
+            delta_nll,
+            candidate_nll - reference_nll,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                f"{context} {method} delta_nll does not equal candidate minus reference"
+            )
+    reference_values = [
+        float(normalized[method]["reference_nll"]) for method in METHODS
+    ]
+    if any(
+        not math.isclose(
+            value,
+            reference_values[0],
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+        for value in reference_values[1:]
+    ):
+        raise ValueError(f"{context} methods do not share one reference NLL")
     return normalized
 
 
@@ -622,6 +780,15 @@ def evaluate_stage_a_gate(
         )
         selector_audit = audit_selector_diagnostics(selector_diagnostics)
         coverage = validate_state_error_coverage(state_errors)
+        for method in METHODS:
+            diagnostic_masks = {
+                str(record["layer_index"]): record["current_mask_sha256"]
+                for record in selector_audit["methods"][method]
+            }
+            if diagnostic_masks != coverage["final_mask_sha256s"][method]:
+                raise ValueError(
+                    f"{method} final state-error masks do not match selector diagnostics"
+                )
         return {
             "passed": True,
             "all_logits_and_metrics_finite": True,
@@ -739,7 +906,7 @@ def evaluate_stage_a_gate(
 
 
 def compute_unit_evidence() -> dict[str, Any]:
-    """Recompute deterministic inverse, sign, and physical-pack evidence on CPU."""
+    """Recompute deterministic production-path self-consistency evidence on CPU."""
 
     generator = torch.Generator().manual_seed(SEED)
     state = torch.randn((1, 3, 7, 128), generator=generator, dtype=torch.float32)

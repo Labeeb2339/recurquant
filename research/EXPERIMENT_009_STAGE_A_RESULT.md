@@ -11,6 +11,10 @@
 
 Date recorded: 2026-07-26
 
+The immutable artifact and its strengthened post-result verification are
+documented separately in the
+[Stage-A audit](EXPERIMENT_009_STAGE_A_AUDIT.md).
+
 ## Authenticated artifact
 
 The method, task identity, sign schedule, implementation, byte contract, and
@@ -25,7 +29,8 @@ nine-condition gate were committed before model quality was observed.
 | Canonical evidence SHA-256 | `9e03a1e8cefb5801406a47a2e5e365686afb0a05e10e099a989cee616b505ed1` |
 | Created at | `2026-07-26T03:34:27.699967+00:00` |
 | Model | `Qwen/Qwen3.5-0.8B-Base` at `dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68` |
-| Device and dtype | CUDA, bfloat16 |
+| Model runtime device and weight dtype | CUDA, bfloat16 |
+| Recurrent cache source/reference dtype | FP32 |
 | Task identity | MBPP task `666`, row SHA-256 `b4f5989005c921c3ab94ab52c8115e79f99a22390bc1d6e6235d36fd02687fb9` |
 | Token identity | 69 prompt, 39 code, 38 aligned scored tokens |
 | Evidence verification | valid, with no verifier errors |
@@ -77,10 +82,12 @@ All 39 recurrent-state writes and 107 observed query tokens completed the
 stage/consume handshake exactly once. All logits and reported metrics were
 finite.
 
-Independent numeric evidence measured a right-RHT inverse relative L2 of
-`1.1468e-7`, below the frozen `3e-7` threshold. Physical transformed packing
-matched the independent transform-quantize-dequantize reconstruction exactly.
-The sign schedule hash matched the preregistered value.
+Deterministic production-code self-consistency measured a right-RHT inverse
+relative L2 of `1.1468e-7`, below the frozen `3e-7` threshold. Physical
+transformed packing matched the production transform-quantize-dequantize
+reconstruction exactly. The sign schedule hash matched the preregistered
+value. This is wiring evidence, not an independently implemented numerical
+verifier.
 
 ## Decision and limitation
 

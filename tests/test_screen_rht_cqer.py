@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
 from scripts import screen_rht_cqer as screen
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+STAGE_A_EVIDENCE = (
+    REPOSITORY_ROOT
+    / "evidence"
+    / "experiment009-rht-cqer-stage-a-666-5be8d48.json"
+)
 
 
 def _metric(
@@ -65,40 +74,37 @@ def _diagnostics(method: str) -> list[dict[str, object]]:
     return records
 
 
-def _state_error(*, sse: float) -> dict[str, object]:
-    coverage = [
+def _state_error(*, sse: float, method: str) -> dict[str, object]:
+    record_count = (
+        screen.EXPECTED_STATE_WRITES * len(screen.FROZEN_LINEAR_LAYERS)
+    )
+    element_count = 16 * 128 * 128
+    mse = sse / (record_count * element_count)
+    mask_hash = "a" * 64 if method == screen.CQER_METHOD else "b" * 64
+    selection_method = (
+        "query_ema32_weighted_aligned_mse_reduction"
+        if method == screen.CQER_METHOD
+        else screen.RHT_METHOD
+    )
+    records = [
         {
-            "write_ordinal": write,
+            "update_index": write * len(screen.FROZEN_LINEAR_LAYERS) + offset,
             "layer_index": layer,
             "state_index": 0,
             "shape": [1, 16, 128, 128],
+            "mean_squared_error": mse,
+            "max_absolute_error": 0.1,
+            "relative_l2_error": 0.1,
+            "source_dtype": "torch.float32",
+            "selection_method": selection_method,
+            "total_groups": 2048,
+            "high_precision_groups": screen.FROZEN_LAYER_QUOTAS[layer],
+            "high_precision_mask_sha256": mask_hash,
         }
         for write in range(screen.EXPECTED_STATE_WRITES)
-        for layer in screen.FROZEN_LINEAR_LAYERS
+        for offset, layer in enumerate(screen.FROZEN_LINEAR_LAYERS)
     ]
-    return {
-        "record_count": len(coverage),
-        "element_count": len(coverage) * 16 * 128 * 128,
-        "aggregate_state_sse": sse,
-        "aggregate_state_mse": sse / (len(coverage) * 16 * 128 * 128),
-        "coverage": coverage,
-        "per_layer": {
-            str(layer): {
-                "record_count": screen.EXPECTED_STATE_WRITES,
-                "element_count": screen.EXPECTED_STATE_WRITES * 16 * 128 * 128,
-                "state_sse": sse / len(screen.FROZEN_LINEAR_LAYERS),
-            }
-            for layer in screen.FROZEN_LINEAR_LAYERS
-        },
-        "per_write": {
-            str(write): {
-                "record_count": len(screen.FROZEN_LINEAR_LAYERS),
-                "element_count": len(screen.FROZEN_LINEAR_LAYERS) * 16 * 128 * 128,
-                "state_sse": sse / screen.EXPECTED_STATE_WRITES,
-            }
-            for write in range(screen.EXPECTED_STATE_WRITES)
-        },
-    }
+    return screen.aggregate_state_error_evidence(records)
 
 
 def _passing_gate_inputs() -> dict[str, object]:
@@ -150,8 +156,14 @@ def _passing_gate_inputs() -> dict[str, object]:
             method: _diagnostics(method) for method in screen.METHODS
         },
         "state_errors": {
-            screen.CQER_METHOD: _state_error(sse=100.0),
-            screen.RHT_METHOD: _state_error(sse=40.0),
+            screen.CQER_METHOD: _state_error(
+                sse=100.0,
+                method=screen.CQER_METHOD,
+            ),
+            screen.RHT_METHOD: _state_error(
+                sse=40.0,
+                method=screen.RHT_METHOD,
+            ),
         },
         "unit_evidence": {
             "inverse_relative_l2": 2e-7,
@@ -258,6 +270,73 @@ def test_stage_a_gate_rejects_rht_method_or_codec_drift(
         gate["checks"]["finite_metrics_exact_quotas_and_handshakes"]["passed"]
         is False
     )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda values: values["aligned_metrics"][screen.RHT_METHOD].__setitem__(
+            "candidate_nll", 999.0
+        ),
+        lambda values: values["aligned_metrics"][screen.RHT_METHOD].__setitem__(
+            "reference_nll", 1.5
+        ),
+        lambda values: values["aligned_metrics"][screen.RHT_METHOD].__setitem__(
+            "mean_kl", -0.1
+        ),
+        lambda values: values["aligned_metrics"][screen.RHT_METHOD].__setitem__(
+            "top1_agreement", 1.2
+        ),
+        lambda values: values["state_errors"][screen.RHT_METHOD]["records"][
+            0
+        ].__setitem__("mean_squared_error", 1.0),
+        lambda values: values["state_errors"][screen.RHT_METHOD]["records"][
+            -1
+        ].__setitem__("high_precision_mask_sha256", "c" * 64),
+    ],
+)
+def test_stage_a_gate_recomputes_metrics_state_totals_and_mask_links(
+    mutation,
+) -> None:
+    inputs = deepcopy(_passing_gate_inputs())
+    mutation(inputs)
+
+    gate = screen.evaluate_stage_a_gate(**inputs)
+
+    assert gate["passed"] is False
+    assert (
+        gate["checks"]["finite_metrics_exact_quotas_and_handshakes"]["passed"]
+        is False
+    )
+
+
+def test_committed_stage_a_artifact_passes_the_hardened_gate() -> None:
+    document = json.loads(STAGE_A_EVIDENCE.read_text(encoding="utf-8"))
+    evidence = document["evidence"]
+    repository = evidence["repository"]
+    integrity = {
+        "repository_clean_at_start": repository["start"]["worktree_clean"],
+        "repository_clean_at_end": repository["end"]["worktree_clean"],
+        "repository_commit_stable": repository["stable_commit"],
+        "source_hashes_stable": evidence["source_files"]["stable"],
+        "identity_authenticated_before_model_weights": evidence["dataset"][
+            "identity_authenticated_before_model_weights"
+        ],
+        "protected_window_8_16_accessed": False,
+    }
+
+    gate = screen.evaluate_stage_a_gate(
+        aligned_metrics=evidence["metrics_aligned"],
+        full_code_metrics=evidence["metrics_full_code_secondary"],
+        storage=evidence["storage"]["candidates"],
+        selector_diagnostics=evidence["selector_diagnostics"],
+        state_errors=evidence["state_error"],
+        unit_evidence=evidence["unit_evidence"],
+        integrity=integrity,
+    )
+
+    assert gate["passed"] is True
+    assert all(check["passed"] is True for check in gate["checks"].values())
 
 
 def test_stage_a_identity_accepts_only_frozen_task_hash_and_token_counts() -> None:

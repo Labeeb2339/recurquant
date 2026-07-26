@@ -124,7 +124,8 @@ Stage A passes only if every condition holds:
    totals equal `2,711,552` bytes;
 4. every layer has its exact frozen quota, all observations are consumed once,
    and all logits and metrics are finite;
-5. independent unit evidence gives right-RHT inverse relative L2 below
+5. deterministic production-code self-consistency gives right-RHT inverse
+   relative L2 below
    `3e-7` and exact physical-pack versus transformed-QDQ reconstruction;
 6. closed-loop aggregate per-write state SSE is at least 50% lower than
    CQER-32;
@@ -152,6 +153,13 @@ inspected only for `task_id` and must be discarded immediately. Dataset
 transport may deserialize complete records; this transport fact is not treated
 as experiment-level content access.
 
+Before either identity pass, the resolver must authenticate the exact Stage-A
+artifact and match its Python `3.11.15`, datasets `4.8.5`, NumPy `2.4.6`,
+safetensors `0.8.0`, PyTorch `2.11.0+cu128`, Transformers `5.14.1`, CUDA
+availability, CUDA `12.8` runtime, and `cuda` device type. The identity records
+that structured runtime contract. The evaluator must match it again before
+reloading any target row or tokenizer and before opening model weights.
+
 The Stage B methods are frozen to:
 
 1. static target-directional Fisher Q4/Q8;
@@ -163,6 +171,25 @@ Primary metric: task-macro aligned excess next-token NLL relative to FP32
 recurrent state. Also report mean KL, task-macro CVaR95 KL, maximum KL, top-1
 agreement, full-code secondary metrics, task/token counts, and 10,000 paired
 task bootstraps with seed 2339.
+
+Task-macro metrics are the unweighted mean of the 32 per-task summaries. The
+paired bootstrap operates on the 32 aligned excess-NLL differences
+`CQER-32 - RHT-CQER-32`: it resamples paired tasks with replacement using
+NumPy `default_rng(2339)` and reports the equal-tailed, two-sided 95%
+percentile interval from 10,000 resamples. Advancement requires its lower
+endpoint to be strictly greater than zero. A task is an RHT win only when its
+excess NLL is strictly lower; exact equality is recorded as a tie and is not a
+win. The relative excess-NLL gate is valid only when CQER-32's macro excess
+NLL is positive; a zero or negative baseline fails closed instead of producing
+a relative claim.
+
+The state-error advancement metric is local codec reconstruction SSE:
+materialized packed state minus that candidate trajectory's own pre-pack
+source state. It is summed over every recurrent layer, write, and task before
+the relative reduction is computed. This is a write-micro aggregate, so tasks
+with more code-token writes contribute more state elements. Candidate state
+versus the matched FP32 trajectory is recorded separately as a secondary
+diagnostic and is not an advancement gate.
 
 Stage B advances only if all integrity conditions from Stage A hold and:
 
@@ -196,9 +223,11 @@ with causal row allocation for a pinned Gated DeltaNet recurrent cache under
 an exact byte contract. It would not establish that rotations, Hadamard
 quantization, query-aware precision, or recurrent-state quantization are new.
 
-Before release-level or paper-level claims, the candidate still requires an
-independent numeric verifier, another model size, natural-text and long-context
-tasks, closest-method comparisons, optimized packed kernels, end-to-end
-latency and peak-memory measurements, and independent reproduction. Ranked
-window `[8, 16)` stays closed until those prerequisites are separately frozen
-and passed.
+The repository now includes a separately implemented dense NumPy check of the
+sign derivation, Hadamard transform, FP16-scale quantizer, and decode. Before
+release-level or paper-level claims, the candidate still requires external
+reproduction of that verifier, another model size, natural-text and
+long-context tasks, closest-method comparisons, optimized packed kernels,
+end-to-end latency and peak-memory measurements, and independent reproduction
+of the quality result. Ranked window `[8, 16)` stays closed until those
+prerequisites are separately frozen and passed.
