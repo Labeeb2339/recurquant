@@ -541,7 +541,11 @@ class _ObservedQDQCache(RecurrentStateQDQCache):
 
 
 def test_real_tiny_qwen_runs_prefill_cached_chunk_and_decode() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = (
+        torch.device("cuda", torch.cuda.current_device())
+        if torch.cuda.is_available()
+        else torch.device("cpu")
+    )
     config = tiny_config()
     model = Qwen3_5ForCausalLM._from_config(
         config,

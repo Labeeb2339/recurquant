@@ -11,9 +11,10 @@
 </p>
 
 <p align="center">
-  <a href="#60-second-setup"><b>Quickstart</b></a> ·
+  <a href="#quickstart"><b>Quickstart</b></a> ·
   <a href="#what-is-physically-smaller"><b>Storage</b></a> ·
-  <a href="#held-out-confirmation"><b>Evidence</b></a> ·
+  <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> ·
+  <a href="#experiment-009-stage-b-development"><b>Stage B</b></a> ·
   <a href="docs/compatibility.md"><b>Compatibility</b></a> ·
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
@@ -23,9 +24,16 @@ recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. Pass its cache to
 ordinary eager Transformers model calls to keep those states as grouped INT4 or
 INT8 payloads between calls.
 
-Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
-protocol: task-macro excess NLL was 72.75% lower than uniform INT4 while the
-persistent recurrent state occupied exactly 2,564,096 resident bytes.
+Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced
+recurrent-state fidelity protocol. Relative to uniform INT4, task-macro excess
+NLL above the matched FP32-state reference was 72.75% lower while the packed
+persistent recurrent state—including payloads, FP16 scales, and precision
+masks—occupied exactly 2,564,096 resident bytes.
+
+The experimental v0.3 RHT-CQER-32 method has now also passed its separate
+32-task development gate: aligned excess NLL was 52.73% lower than CQER-32 at
+the same packed-state and selector byte counts. That newer result is
+development evidence, not held-out confirmation.
 
 It currently targets
 [`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base).
@@ -36,11 +44,13 @@ I built and maintain RecurQuant as an open research project. —
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
 [Apache-2.0](LICENSE).
 
-## 60-second setup
+## Quickstart
 
-The commands are short; the first run still needs to download the pinned model
-and tokenizer. Python 3.11 and a CUDA GPU are recommended for the evaluated
-path.
+This installs the public v0.2 alpha from its frozen tag. The first model-backed
+run downloads the pinned model and tokenizer. Python 3.11 and a CUDA GPU match
+the evaluated path; `recurquant demo` uses synthetic states and does not
+download a model. RHT-CQER-32 remains an experimental research path rather
+than the default package policy.
 
 Windows PowerShell:
 
@@ -199,6 +209,37 @@ Important boundaries:
   It does not support generated-code quality, speed, peak memory, whole-model
   memory, cross-model generality, or a breakthrough claim.
 
+## Experiment 009 Stage-B development
+
+RHT-CQER-32 applies a deterministic right-side randomized Hadamard transform
+inside each existing recurrent-state row group before the same physical Q4/Q8
+packing used by CQER-32. The transform does not change the frozen 1,976-row
+precision allocation or storage contract: both methods use 2,564,096 packed
+state bytes and 2,711,552 resident bytes including the query-energy selector.
+
+On the preregistered 32-task ranked MBPP `[32, 64)` development window,
+RHT-CQER-32 passed all eight frozen advancement checks. Task-macro aligned
+excess NLL fell from `0.323944` to `0.153129`, a **52.73% reduction**.
+Aggregate local recurrent-state reconstruction SSE fell from `36,409.363073`
+to `15,345.844948`, a **57.85% reduction**.
+
+![Authenticated Experiment 009 Stage-B excess-NLL and state-SSE comparison.](assets/experiment009-stage-b-overview.svg)
+
+RHT-CQER-32 had lower excess NLL on 27 of 32 tasks, with no ties. The paired
+CQER-minus-RHT improvement was `0.170815` nats/token and its frozen
+10,000-sample paired 95% bootstrap interval was `[0.116082, 0.229438]`.
+
+![Per-task paired CQER-32 minus RHT-CQER-32 excess-NLL differences.](assets/experiment009-stage-b-paired.svg)
+
+This is positive development evidence on one pinned model and task window, not
+held-out confirmation for RHT-CQER-32. Randomized Hadamard quantization is
+prior art, and the current Python implementation has no fused-kernel, latency,
+peak-memory, cross-model, or independent external-reproduction result. See the
+[full Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md),
+[verification receipt](research/EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md),
+and
+[machine-readable release manifest](evidence/experiment009-rht-cqer-stage-b-result-manifest.json).
+
 ## Scope
 
 The supported public surface is deliberately narrow:
@@ -226,9 +267,12 @@ the held-out confirmation and beat all three tested same-byte random placements.
 That is a confirmed case study, not proof of novelty or general superiority.
 Q-Mamba already studies 4-bit persistent Mamba2 states, Quamba2 quantizes cached
 SSM states, and other mixed-precision and replay systems overlap parts of this
-design space. RecurQuant currently has no fused packed kernel or measured speed
-claim. I therefore do not present this release as a breakthrough, a whole-model
-memory reduction, or a cross-model result. See the
+design space. Experiment 009 adds a positive 32-task development result for a
+known right-RHT codec composed with CQER-32, but it is not a new confirmation
+result or evidence that Hadamard quantization is new. RecurQuant currently has
+no fused packed kernel or measured speed claim. I therefore do not present this
+release as a breakthrough, a whole-model memory reduction, or a cross-model
+result. See the
 [claim boundary](research/CLAIM_BOUNDARY.md) and
 [prior-art review](research/PRIOR_ART.md) for the exact comparison.
 
@@ -244,6 +288,12 @@ memory reduction, or a cross-model result. See the
 - [MBPP development report](research/DEVELOPMENT_002.md)
 - [Current research status](research/STATUS.md)
 - [CORA-C2 development result](research/EXPERIMENT_008_RESULT.md)
+- [Experiment 009 frozen protocol](research/EXPERIMENT_009_RHT_CQER_PROTOCOL.md)
+- [Experiment 009 Stage-A result](research/EXPERIMENT_009_STAGE_A_RESULT.md)
+- [Experiment 009 Stage-B identity freeze](research/EXPERIMENT_009_STAGE_B_IDENTITY.md)
+- [Experiment 009 Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md)
+- [Experiment 009 verification receipt](research/EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md)
+- [Experiment 009 release manifest](evidence/experiment009-rht-cqer-stage-b-result-manifest.json)
 - [Claim boundary](research/CLAIM_BOUNDARY.md) and
   [prior-art review](research/PRIOR_ART.md)
 - [Failed proxy signals and empirical-sensitivity pivot](research/EXPERIMENT_001_SIGNAL_PIVOT.md)

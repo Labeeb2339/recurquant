@@ -43,22 +43,36 @@ result is recorded in [`EXPERIMENT_008_RESULT.md`](EXPERIMENT_008_RESULT.md).
 The independent verifier was not reached and ranked `[8, 16)` remains
 protected.
 
-Experiment 009 now freezes RHT-CQER-32. Stage A is a one-task falsification
-screen on already-open task 666. It composes CQER-32 with a deterministic
+Experiment 009 tested RHT-CQER-32, which composes CQER-32 with a deterministic
 orthonormal right-side Hadamard codec while preserving the exact Q4/Q8 packed
-state and selector byte counts. Stage A passed all nine frozen checks:
-closed-loop state SSE fell `59.97%`, aligned excess NLL fell `58.59%`, and
-aligned mean KL fell `31.19%` relative to CQER-32 while top-1 agreement and
-bytes were unchanged. The authenticated result is in
+state and selector byte counts. Its one-task Stage-A falsification screen on
+already-open task 666 passed all nine frozen checks: closed-loop state SSE
+fell `59.97%`, aligned excess NLL fell `58.59%`, and aligned mean KL fell
+`31.19%` relative to CQER-32 while top-1 agreement and bytes were unchanged.
+The authenticated screen is in
 [`EXPERIMENT_009_STAGE_A_RESULT.md`](EXPERIMENT_009_STAGE_A_RESULT.md).
-This pass authorizes identity resolution for the still-unopened `[32, 64)`
-development window.
-The protocol is in
-[`EXPERIMENT_009_RHT_CQER_PROTOCOL.md`](EXPERIMENT_009_RHT_CQER_PROTOCOL.md).
-The public-stream application-level access boundary is fixed in
-[`EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md)
-before Stage-B identity resolution.
-No Stage-B quality result exists yet, and `[8, 16)` remains protected.
+
+The separately frozen 32-task Stage-B development run then passed all eight
+advancement checks. Relative to CQER-32, task-macro aligned excess NLL fell
+from `0.323944` to `0.153129` (`52.73%`), with 27 of 32 strict task wins and a
+paired 95% bootstrap interval of `[0.116082, 0.229438]`. Aggregate local
+recurrent-state reconstruction SSE fell from `36,409.363073` to
+`15,345.844948` (`57.85%`). Mean KL and CVaR95 KL were lower, top-1 agreement
+was higher, and the exact `2,564,096` packed-state bytes plus `147,456`
+selector bytes were unchanged.
+
+The frozen protocol, committed identity, authenticated result, post-write
+verification record, and compact release manifest are:
+
+- [`EXPERIMENT_009_RHT_CQER_PROTOCOL.md`](EXPERIMENT_009_RHT_CQER_PROTOCOL.md)
+- [`EXPERIMENT_009_STAGE_B_IDENTITY.md`](EXPERIMENT_009_STAGE_B_IDENTITY.md)
+- [`EXPERIMENT_009_STAGE_B_RESULT.md`](EXPERIMENT_009_STAGE_B_RESULT.md)
+- [`EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md`](EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md)
+- [`../evidence/experiment009-rht-cqer-stage-b-result-manifest.json`](../evidence/experiment009-rht-cqer-stage-b-result-manifest.json)
+
+The public-stream application-level access boundary remains fixed in
+[`EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md).
+Ranked MBPP window `[8, 16)` remained protected.
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
 packer and an exact dynamic-programming allocator. Its corrected two-bit
@@ -73,9 +87,10 @@ rotation quantizers. CQER-32 cannot be described as the first query-aware
 mixed-precision method, and RHT-CQER-32 cannot be described as the first
 rotation-based quantizer.
 
-Stage A supports only a one-task development signal over CQER-32. No
-generalized v0.3 improvement, novelty, speed, or breakthrough claim is
-supported.
+Stage B supports a scoped positive development result for one frozen method,
+pinned model, and 32-task MBPP window. It is not held-out confirmation for
+RHT-CQER-32 and does not support a generalized v0.3, novelty, speed,
+state-of-the-art, deployment, or breakthrough claim.
 
 ## v0.2 confirmed release
 

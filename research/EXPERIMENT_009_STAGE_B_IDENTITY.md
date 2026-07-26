@@ -99,9 +99,14 @@ artifact creation. The successful invocation used the exact Stage-A runtime
 listed above. No dependency, seed, threshold, task window, selector, or source
 file was changed after the rejection.
 
-## Next decision
+## Historical authorization
 
-This identity authorizes one frozen Stage-B development evaluation. The result
-must be preserved whether the eight advancement gates pass or fail. No
-threshold, seed, method, task, or source file may be changed after observing
-the result.
+At the time of this freeze, the identity authorized one Stage-B development
+evaluation whose result had to be preserved whether the eight advancement
+gates passed or failed. No threshold, seed, method, task, or source file could
+be changed after observing the result.
+
+That evaluation is now complete. The authenticated outcome is recorded in the
+[Stage-B result](EXPERIMENT_009_STAGE_B_RESULT.md), and the immutable-artifact
+audit is recorded in the
+[verification receipt](EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md).

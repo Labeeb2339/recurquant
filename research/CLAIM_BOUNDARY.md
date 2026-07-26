@@ -92,12 +92,25 @@ it as a contribution.
 Experiment 009 freezes RHT-CQER-32, a deterministic right-side randomized
 Hadamard codec composed with CQER-32. Its one-task Stage-A screen passed every
 frozen gate, reducing state SSE by `59.97%` and aligned excess NLL by `58.59%`
-at equal packed-state and selector bytes. That result authorizes a new
-development run; it does not establish generalization or confirmation. The
-codec regenerates SHA-256-derived signs and materializes FP32 transform
-workspaces in the current Python path. The result does not establish novelty or
-speed because randomized Hadamard and rotation quantizers are prior art and the
-implementation has no fused-kernel benchmark.
+at equal packed-state and selector bytes.
+
+Its separately authenticated 32-task Stage-B development run passed all eight
+frozen advancement checks. Relative to CQER-32, task-macro aligned excess NLL
+fell from `0.323944` to `0.153129` (`52.73%`), the paired 95% interval for
+CQER-minus-RHT improvement was `[0.116082, 0.229438]`, and RHT-CQER-32 won 27
+of 32 strict task comparisons. Aggregate local recurrent-state reconstruction
+SSE fell from `36,409.363073` to `15,345.844948` (`57.85%`). Macro mean KL and
+CVaR95 KL were lower and top-1 agreement was higher. Both candidates retained
+the exact `2,564,096` packed-state bytes and `2,711,552` selector-aware
+resident bytes.
+
+That is a positive development result for one method, model revision, dataset
+construction, and ranked MBPP window. It is not held-out confirmation for
+RHT-CQER-32, cross-model evidence, generated-code correctness, or an
+end-to-end systems result. The codec regenerates SHA-256-derived signs and
+materializes FP32 transform workspaces in the current Python path. The result
+does not establish novelty or speed because randomized Hadamard and rotation
+quantizers are prior art and the implementation has no fused-kernel benchmark.
 
 ## Claims prohibited without new evidence
 
