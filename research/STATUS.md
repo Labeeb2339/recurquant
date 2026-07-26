@@ -46,11 +46,16 @@ protected.
 Experiment 009 now freezes RHT-CQER-32. Stage A is a one-task falsification
 screen on already-open task 666. It composes CQER-32 with a deterministic
 orthonormal right-side Hadamard codec while preserving the exact Q4/Q8 packed
-state and selector byte counts. Only a complete Stage-A pass may authorize
-identity resolution for the still-unopened `[32, 64)` development window.
+state and selector byte counts. Stage A passed all nine frozen checks:
+closed-loop state SSE fell `59.97%`, aligned excess NLL fell `58.59%`, and
+aligned mean KL fell `31.19%` relative to CQER-32 while top-1 agreement and
+bytes were unchanged. The authenticated result is in
+[`EXPERIMENT_009_STAGE_A_RESULT.md`](EXPERIMENT_009_STAGE_A_RESULT.md).
+This pass authorizes identity resolution for the still-unopened `[32, 64)`
+development window.
 The protocol is in
 [`EXPERIMENT_009_RHT_CQER_PROTOCOL.md`](EXPERIMENT_009_RHT_CQER_PROTOCOL.md).
-No Experiment 009 quality result exists yet, and `[8, 16)` remains protected.
+No Stage-B quality result exists yet, and `[8, 16)` remains protected.
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
 packer and an exact dynamic-programming allocator. Its corrected two-bit
@@ -65,7 +70,8 @@ rotation quantizers. CQER-32 cannot be described as the first query-aware
 mixed-precision method, and RHT-CQER-32 cannot be described as the first
 rotation-based quantizer.
 
-No v0.3 improvement over CQER-32, novelty, speed, or breakthrough claim is
+Stage A supports only a one-task development signal over CQER-32. No
+generalized v0.3 improvement, novelty, speed, or breakthrough claim is
 supported.
 
 ## v0.2 confirmed release

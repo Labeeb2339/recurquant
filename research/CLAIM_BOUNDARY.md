@@ -90,12 +90,14 @@ engineering hypothesis, but the failed development result does not establish
 it as a contribution.
 
 Experiment 009 freezes RHT-CQER-32, a deterministic right-side randomized
-Hadamard codec composed with CQER-32. Its Stage-A screen uses only already-open
-task 666; no quality result exists yet. The codec preserves the packed-state
-byte count but regenerates SHA-256-derived signs and materializes FP32 transform
-workspaces in the current Python path. Even a positive quality result would not
-establish novelty or speed because randomized Hadamard and rotation quantizers
-are prior art and the implementation has no fused kernel benchmark.
+Hadamard codec composed with CQER-32. Its one-task Stage-A screen passed every
+frozen gate, reducing state SSE by `59.97%` and aligned excess NLL by `58.59%`
+at equal packed-state and selector bytes. That result authorizes a new
+development run; it does not establish generalization or confirmation. The
+codec regenerates SHA-256-derived signs and materializes FP32 transform
+workspaces in the current Python path. The result does not establish novelty or
+speed because randomized Hadamard and rotation quantizers are prior art and the
+implementation has no fused-kernel benchmark.
 
 ## Claims prohibited without new evidence
 
