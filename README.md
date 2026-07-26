@@ -243,6 +243,7 @@ memory reduction, or a cross-model result. See the
 - [Frozen public evaluation protocol](research/PUBLIC_EVAL_PROTOCOL_V02.md)
 - [MBPP development report](research/DEVELOPMENT_002.md)
 - [Current research status](research/STATUS.md)
+- [CORA-C2 development result](research/EXPERIMENT_008_RESULT.md)
 - [Claim boundary](research/CLAIM_BOUNDARY.md) and
   [prior-art review](research/PRIOR_ART.md)
 - [Failed proxy signals and empirical-sensitivity pivot](research/EXPERIMENT_001_SIGNAL_PIVOT.md)

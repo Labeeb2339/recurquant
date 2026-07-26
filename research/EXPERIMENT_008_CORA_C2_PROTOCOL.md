@@ -1,12 +1,14 @@
 # Experiment 008: CORA-C2 protocol
 
-> **Status: frozen before any quality evaluation on ranked window `[16, 32)`.**
+> **Status: frozen before quality evaluation; development gate later failed.**
 >
 > CORA-C2 means **Causal Observability Row Allocation with Confirmation-2**.
 > The state-transition formula, diagonal approximation, normalization,
 > confirmation rule, quotas, storage accounting, development window,
 > comparators, metrics, and advancement rule are fixed below. Ranked MBPP
-> window `[8, 16)` remains protected and unopened.
+> window `[8, 16)` remains protected and unopened. The authenticated outcome
+> is recorded in [`EXPERIMENT_008_RESULT.md`](EXPERIMENT_008_RESULT.md); the
+> protocol below remains the pre-result specification.
 
 Protocol frozen: 2026-07-23
 

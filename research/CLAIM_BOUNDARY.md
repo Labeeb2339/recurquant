@@ -68,13 +68,23 @@ was not reached and ranked `[8, 16)` remained unopened. Experiment 007 supports
 no generalization, novelty, latency, deployment, state-of-the-art, or
 breakthrough claim.
 
-Experiment 008 preregisters CORA-C2 on a separate `[16, 32)` development
-window. Its implementation combines a causal diagonal approximation to the
-Gated DeltaNet error-transition observability recurrence, exact Q4-to-Q8 row
-squared-error benefit, fixed target-Fisher layer quotas, and Confirmation-2.
-That combination is a testable mechanism hypothesis, not an established novel
-method. No Experiment 008 quality result has yet been observed, and ranked
-`[8, 16)` remains protected.
+Experiment 008 tested CORA-C2 on a separate frozen `[16, 32)` development
+window. CORA-C2 lowered macro excess NLL by 26.17% relative to static
+target-Fisher and 21.62% relative to adaptive MSE, but it was 10.54% worse than
+CQER-32. Raw CORA was 3.35% worse than CQER-32. Confirmation-2 reduced
+normalized committed-mask churn by 79.99%, but worsened raw-CORA NLL by 6.96%,
+above the frozen 1% limit. Five advancement checks failed, the independent
+verifier was not reached, and ranked `[8, 16)` remained unopened. Experiment
+008 therefore supports neither improvement over CQER-32 nor a general benefit
+from its observability or two-hit mechanisms.
+
+Observability-weighted quantization error is not a new principle. Classical
+finite-wordlength state-space analysis expresses output noise using the
+quantization-noise covariance and observability Gramian. CORA's diagonal
+observability score times measured row distortion belongs to that same broad
+mathematical family. Its Gated DeltaNet adaptation may still be a useful
+engineering hypothesis, but the failed development result does not establish
+it as a contribution.
 
 ## Claims prohibited without new evidence
 
