@@ -19,6 +19,7 @@ from .quantization import (
     _scale_dtype,
     _stochastic_round,
 )
+from .rht import right_rht_decode, right_rht_encode
 
 
 def _validate_mixed_specs(
@@ -155,6 +156,33 @@ class PackedMixedQuantizedTensor:
     padded_size: int
     rows: int
     groups_per_row: int
+    right_rht_layer_index: int | None = None
+    right_rht_expected_heads: int | None = None
+
+    def __post_init__(self) -> None:
+        configured = (
+            self.right_rht_layer_index is not None,
+            self.right_rht_expected_heads is not None,
+        )
+        if configured[0] != configured[1]:
+            raise ValueError(
+                "right-RHT layer index and expected head count must be configured together"
+            )
+        if configured[0]:
+            assert self.right_rht_layer_index is not None
+            assert self.right_rht_expected_heads is not None
+            if self.right_rht_layer_index < 0:
+                raise ValueError("right-RHT layer index must be non-negative")
+            if self.right_rht_expected_heads <= 0:
+                raise ValueError("right-RHT expected head count must be positive")
+            if len(self.original_shape) != 4:
+                raise ValueError("right-RHT packed tensors require rank-four source state")
+            if self.original_shape[1] != self.right_rht_expected_heads:
+                raise ValueError(
+                    "right-RHT packed tensor head metadata does not match original shape"
+                )
+            if self.low_spec.flatten_last_dims != 2:
+                raise ValueError("right-RHT packed tensors require flatten_last_dims=2")
 
     @property
     def elements(self) -> int:
@@ -219,7 +247,16 @@ class PackedMixedQuantizedTensor:
             torch.float32
         ).unsqueeze(1)
         restored = restored_groups.reshape(self.rows, self.padded_size)[:, : self.flattened_size]
-        return restored.reshape(self.original_shape).to(self.original_dtype)
+        restored = restored.reshape(self.original_shape)
+        if self.right_rht_layer_index is not None:
+            assert self.right_rht_expected_heads is not None
+            return right_rht_decode(
+                restored,
+                layer_index=self.right_rht_layer_index,
+                expected_heads=self.right_rht_expected_heads,
+                output_dtype=self.original_dtype,
+            )
+        return restored.to(self.original_dtype)
 
     def to(self, device: torch.device | str) -> PackedMixedQuantizedTensor:
         """Move all resident tensors without materializing or requantizing."""
@@ -237,6 +274,8 @@ class PackedMixedQuantizedTensor:
             padded_size=self.padded_size,
             rows=self.rows,
             groups_per_row=self.groups_per_row,
+            right_rht_layer_index=self.right_rht_layer_index,
+            right_rht_expected_heads=self.right_rht_expected_heads,
         )
 
     def reorder_batch(self, beam_idx: torch.LongTensor) -> PackedMixedQuantizedTensor:
@@ -248,6 +287,8 @@ class PackedMixedQuantizedTensor:
             )
         if beam_idx.ndim != 1 or beam_idx.dtype not in (torch.int32, torch.int64):
             raise TypeError("beam_idx must be a one-dimensional int32 or int64 tensor")
+        if self.right_rht_layer_index is not None and beam_idx.numel() == 0:
+            raise ValueError("right-RHT packed tensors cannot reorder to an empty batch")
 
         batch_size = self.original_shape[0]
         if self.rows % batch_size:
@@ -284,6 +325,8 @@ class PackedMixedQuantizedTensor:
             padded_size=self.padded_size,
             rows=selected_batch_size * (self.rows // batch_size),
             groups_per_row=self.groups_per_row,
+            right_rht_layer_index=self.right_rht_layer_index,
+            right_rht_expected_heads=self.right_rht_expected_heads,
         )
 
 
@@ -300,6 +343,8 @@ def _from_integer_groups(
     padded_size: int,
     rows: int,
     groups_per_row: int,
+    right_rht_layer_index: int | None = None,
+    right_rht_expected_heads: int | None = None,
 ) -> PackedMixedQuantizedTensor:
     flat_mask = high_precision_mask.reshape(-1)
     return PackedMixedQuantizedTensor(
@@ -315,6 +360,8 @@ def _from_integer_groups(
         padded_size=padded_size,
         rows=rows,
         groups_per_row=groups_per_row,
+        right_rht_layer_index=right_rht_layer_index,
+        right_rht_expected_heads=right_rht_expected_heads,
     )
 
 
@@ -324,6 +371,8 @@ def quantize_pack_mixed(
     *,
     low_spec: QuantizationSpec,
     high_spec: QuantizationSpec,
+    right_rht_layer_index: int | None = None,
+    right_rht_expected_heads: int | None = None,
 ) -> PackedMixedQuantizedTensor:
     """Quantize groups into physically separate INT4 and INT8 payload pools.
 
@@ -332,9 +381,27 @@ def quantize_pack_mixed(
     """
 
     _validate_mixed_specs(low_spec, high_spec)
-    working, original_dtype, flattened_size, padded_size, groups_per_row, grouped = _group_tensor(
-        tensor, low_spec
+    configured = (
+        right_rht_layer_index is not None,
+        right_rht_expected_heads is not None,
     )
+    if configured[0] != configured[1]:
+        raise ValueError(
+            "right-RHT layer index and expected head count must be configured together"
+        )
+    source = tensor
+    if right_rht_layer_index is not None:
+        assert right_rht_expected_heads is not None
+        source = right_rht_encode(
+            tensor,
+            layer_index=right_rht_layer_index,
+            expected_heads=right_rht_expected_heads,
+            output_dtype=torch.float32,
+        )
+    working, grouped_dtype, flattened_size, padded_size, groups_per_row, grouped = _group_tensor(
+        source, low_spec
+    )
+    original_dtype = tensor.dtype if configured[0] else grouped_dtype
     rows = grouped.shape[0]
     _validate_mask_shape(
         high_precision_mask,
@@ -356,4 +423,6 @@ def quantize_pack_mixed(
         padded_size=padded_size,
         rows=rows,
         groups_per_row=groups_per_row,
+        right_rht_layer_index=right_rht_layer_index,
+        right_rht_expected_heads=right_rht_expected_heads,
     )

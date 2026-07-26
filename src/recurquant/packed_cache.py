@@ -21,6 +21,7 @@ from .quantization import (
     quantize_pack,
     scheduled_quantization_spec,
 )
+from .rht import RHT_SEED, right_rht_decode, right_rht_encode
 from .row_policy import ExactBudgetRowPlan
 
 
@@ -688,6 +689,48 @@ class MixedPackedLinearAttentionLayer(LinearAttentionLayer):
             self.expected_rows,
         )
 
+    def _quantized_endpoint(
+        self,
+        recurrent_states: torch.Tensor,
+        spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        """Return one aligned QDQ endpoint used by dynamic selectors."""
+
+        return quantize_dequantize(recurrent_states, spec).tensor
+
+    def _aligned_mse_benefit(
+        self,
+        recurrent_states: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        """Return per-row low-to-high precision MSE reduction."""
+
+        source = recurrent_states.detach().to(torch.float32)
+        low = self._quantized_endpoint(recurrent_states, low_spec).to(torch.float32)
+        high = self._quantized_endpoint(recurrent_states, high_spec).to(torch.float32)
+        return (low - source).square().mean(dim=-1) - (high - source).square().mean(
+            dim=-1
+        )
+
+    def _pack_state(
+        self,
+        recurrent_states: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> PackedMixedQuantizedTensor:
+        """Physically pack one state; codec-aware subclasses override this hook."""
+
+        return quantize_pack_mixed(
+            recurrent_states,
+            mask,
+            low_spec=low_spec,
+            high_spec=high_spec,
+        )
+
     def _store(self, recurrent_states: torch.Tensor, state_idx: int) -> torch.Tensor:
         if torch.is_grad_enabled() and recurrent_states.requires_grad:
             raise RuntimeError(
@@ -702,7 +745,7 @@ class MixedPackedLinearAttentionLayer(LinearAttentionLayer):
             low_spec=low_spec,
             high_spec=high_spec,
         )
-        packed = quantize_pack_mixed(
+        packed = self._pack_state(
             recurrent_states,
             mask,
             low_spec=low_spec,
@@ -1221,12 +1264,10 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
             pending.consumed = True
             self._candidate_cutoff_score_margin = None
             with torch.no_grad():
-                source = recurrent_states.detach().to(torch.float32)
-                low = quantize_dequantize(recurrent_states, low_spec).tensor.to(torch.float32)
-                high = quantize_dequantize(recurrent_states, high_spec).tensor.to(torch.float32)
-                benefit = (
-                    (low - source).square().mean(dim=-1)
-                    - (high - source).square().mean(dim=-1)
+                benefit = self._aligned_mse_benefit(
+                    recurrent_states,
+                    low_spec=low_spec,
+                    high_spec=high_spec,
                 ).reshape(self.expected_heads, self.expected_rows)
                 scores = (pending.candidate_ema * benefit).reshape(-1)
                 if not torch.isfinite(scores).all().item():
@@ -1582,6 +1623,95 @@ class QueryEmaMixedPackedLinearAttentionLayer(AdaptiveMixedPackedLinearAttention
                 self.device,
                 non_blocking=True,
             )
+
+
+class RightRhtQueryEmaMixedPackedLinearAttentionLayer(
+    QueryEmaMixedPackedLinearAttentionLayer
+):
+    """CQER-32 with a deterministic right-side RHT value-axis codec.
+
+    The transform is orthonormal and stays inside each existing
+    ``[head, key-row]`` quantization group. It therefore preserves CQER's row
+    identities and packed-state byte contract. The current implementation
+    materializes transient sign and transform workspaces and makes no latency or
+    peak-memory claim.
+    """
+
+    transform_name = "right_rht_sha256_signs_v1"
+    transform_seed = RHT_SEED
+
+    def _quantized_endpoint(
+        self,
+        recurrent_states: torch.Tensor,
+        spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        encoded = right_rht_encode(
+            recurrent_states,
+            layer_index=self.layer_index,
+            expected_heads=self.expected_heads,
+            output_dtype=torch.float32,
+        )
+        quantized = quantize_dequantize(encoded, spec).tensor
+        return right_rht_decode(
+            quantized,
+            layer_index=self.layer_index,
+            expected_heads=self.expected_heads,
+            output_dtype=torch.float32,
+        )
+
+    def _aligned_mse_benefit(
+        self,
+        recurrent_states: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> torch.Tensor:
+        # Orthonormal right-RHT preserves each row's squared error, so the
+        # selector can compare transformed endpoints without decoding either.
+        encoded = right_rht_encode(
+            recurrent_states,
+            layer_index=self.layer_index,
+            expected_heads=self.expected_heads,
+            output_dtype=torch.float32,
+        )
+        low = quantize_dequantize(encoded, low_spec).tensor.to(torch.float32)
+        high = quantize_dequantize(encoded, high_spec).tensor.to(torch.float32)
+        return (low - encoded).square().mean(dim=-1) - (high - encoded).square().mean(
+            dim=-1
+        )
+
+    def _pack_state(
+        self,
+        recurrent_states: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        low_spec: QuantizationSpec,
+        high_spec: QuantizationSpec,
+    ) -> PackedMixedQuantizedTensor:
+        return quantize_pack_mixed(
+            recurrent_states,
+            mask,
+            low_spec=low_spec,
+            high_spec=high_spec,
+            right_rht_layer_index=self.layer_index,
+            right_rht_expected_heads=self.expected_heads,
+        )
+
+    def query_ema_diagnostics(self) -> dict[str, int | float | bool | str | None]:
+        diagnostics = super().query_ema_diagnostics()
+        diagnostics.update(
+            {
+                "selection_method": (
+                    "right_rht_query_ema32_weighted_mse_target_fisher_quota"
+                ),
+                "state_codec": self.transform_name,
+                "state_codec_seed": self.transform_seed,
+                "state_codec_axis": "value",
+                "state_codec_normalization": "orthonormal",
+                "state_codec_persistent_tensor_bytes": 0,
+            }
+        )
+        return diagnostics
 
 
 @dataclass(slots=True)
@@ -2602,6 +2732,25 @@ class QueryEmaMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):
             }
         )
         return summary
+
+
+class RightRhtQueryEmaMixedPackedRecurrentStateCache(
+    QueryEmaMixedPackedRecurrentStateCache
+):
+    """Exact-byte CQER-32 cache with a deterministic right-side RHT codec."""
+
+    _mixed_layer_class = RightRhtQueryEmaMixedPackedLinearAttentionLayer
+    selection_method = "right_rht_query_ema32_weighted_mse_target_fisher_quota"
+
+    def __init__(self, *args: object, confirmation_two: bool = False, **kwargs: object) -> None:
+        if confirmation_two:
+            raise ValueError("right-RHT CQER screening does not support Confirmation-2")
+        super().__init__(
+            *args,
+            confirmation_two=False,
+            **kwargs,
+        )
+        self.selection_method = "right_rht_query_ema32_weighted_mse_target_fisher_quota"
 
 
 class CoraMixedPackedRecurrentStateCache(MixedPackedRecurrentStateCache):

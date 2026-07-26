@@ -43,6 +43,17 @@ from .model_fisher import (
     row_block_model_fisher_risk,
     sample_model_pseudo_labels,
 )
+from .multibit_policy import (
+    allocate_exact_multibit_codes,
+    frozen_qwen35_multibit_step_budgets,
+)
+from .multibit_quantization import (
+    INT4_PRECISION_CODE,
+    INT6_PRECISION_CODE,
+    INT8_PRECISION_CODE,
+    PackedMultiBitQuantizedTensor,
+    quantize_pack_multibit,
+)
 from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     CoraMixedPackedLinearAttentionLayer,
@@ -52,6 +63,8 @@ from .packed_cache import (
     QueryEmaMixedPackedLinearAttentionLayer,
     QueryEmaMixedPackedRecurrentStateCache,
     RankFusedMixedPackedRecurrentStateCache,
+    RightRhtQueryEmaMixedPackedLinearAttentionLayer,
+    RightRhtQueryEmaMixedPackedRecurrentStateCache,
 )
 from .quantization import (
     PackedQuantizedTensor,
@@ -68,8 +81,10 @@ from .qwen35 import (
     create_qwen35_packed_cache,
     create_qwen35_query_ema_exact_budget_cache,
     create_qwen35_rank_fused_exact_budget_cache,
+    create_qwen35_right_rht_query_ema_exact_budget_cache,
     create_qwen35_v02_mixed_cache,
 )
+from .rht import RHT_SEED, fwht_unnormalized, right_rht_decode, right_rht_encode
 from .row_policy import ExactBudgetRowPlan, RowLocation, select_rows_exact_budget
 from .transition_observer import Qwen35TransitionObserver
 
@@ -88,6 +103,7 @@ __all__ = [
     "HorizonReadRisk",
     "MixedPackedRecurrentStateCache",
     "PackedMixedQuantizedTensor",
+    "PackedMultiBitQuantizedTensor",
     "PackedQuantizedTensor",
     "PackedRecurrentStateCache",
     "QueryEmaMixedPackedLinearAttentionLayer",
@@ -95,10 +111,16 @@ __all__ = [
     "Qwen35QueryEnergyObserver",
     "Qwen35TransitionObserver",
     "RankFusedMixedPackedRecurrentStateCache",
+    "RightRhtQueryEmaMixedPackedLinearAttentionLayer",
+    "RightRhtQueryEmaMixedPackedRecurrentStateCache",
+    "RHT_SEED",
     "PhysicalMetricRun",
     "PhysicalRowPromotionOracleResult",
     "QuantizationResult",
     "QuantizationSpec",
+    "INT4_PRECISION_CODE",
+    "INT6_PRECISION_CODE",
+    "INT8_PRECISION_CODE",
     "RowBlockModelFisherRisk",
     "RowLocation",
     "RowPromotionMeasurement",
@@ -109,19 +131,26 @@ __all__ = [
     "TaskMacroSensitivityAccumulator",
     "TaskMacroSensitivitySummary",
     "check_directional_derivative",
+    "allocate_exact_multibit_codes",
     "create_qwen35_adaptive_exact_budget_cache",
     "create_qwen35_cora_exact_budget_cache",
     "create_qwen35_exact_budget_cache",
     "create_qwen35_packed_cache",
     "create_qwen35_query_ema_exact_budget_cache",
     "create_qwen35_rank_fused_exact_budget_cache",
+    "create_qwen35_right_rht_query_ema_exact_budget_cache",
     "create_qwen35_v02_mixed_cache",
     "finite_horizon_row_read_risk",
     "finite_horizon_row_read_risk_from_energies",
+    "frozen_qwen35_multibit_step_budgets",
     "evaluate_physical_row_promotions",
     "quantize_dequantize",
     "quantize_pack",
     "quantize_pack_mixed",
+    "quantize_pack_multibit",
+    "right_rht_decode",
+    "right_rht_encode",
+    "fwht_unnormalized",
     "row_block_model_fisher_risk",
     "row_promotion_scores_from_errors",
     "row_promotion_sensitivity_scores",

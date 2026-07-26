@@ -1,6 +1,6 @@
 # Prior-art audit
 
-Last searched: 2026-07-23
+Last searched: 2026-07-26
 
 This is a living claim boundary, not proof that no related work exists. Repeat
 the search before any paper or novelty statement.
@@ -92,6 +92,26 @@ the search before any paper or novelty statement.
 These works target transformer KV caches rather than Gated DeltaNet recurrent
 matrices, but they preclude broad claims that sensitivity-guided, per-layer,
 dynamic, or equal-budget cache precision allocation is new.
+
+## Rotation and Hadamard codecs
+
+- [QuIP#](https://arxiv.org/abs/2402.04396) uses incoherence processing with
+  randomized Hadamard transforms for low-bit language-model quantization.
+- [QuaRot](https://arxiv.org/abs/2404.00456) uses computational invariance and
+  Hadamard rotations to remove activation outliers.
+- [SpinQuant](https://arxiv.org/abs/2405.16406) learns rotations for improved
+  LLM quantization, and
+  [TurboQuant](https://arxiv.org/abs/2504.19874) develops fast randomized
+  transforms for outlier suppression.
+- [MambaQuant](https://arxiv.org/abs/2501.13484) applies rotation-based
+  outlier suppression to an architecture adjacent to RecurQuant's recurrent
+  state setting.
+
+These methods make the transform principle established prior art.
+RHT-CQER-32's narrow hypothesis is whether a fixed, reproducible right-side
+transform composes usefully with physical causal row selection for one Gated
+DeltaNet cache layout. A positive result cannot support a broad first,
+rotation, Hadamard, or outlier-suppression novelty claim.
 
 ## Architecture evidence
 

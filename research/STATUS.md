@@ -2,7 +2,7 @@
 
 ## v0.3 experimental track
 
-Last updated: 2026-07-23
+Last updated: 2026-07-26
 
 Experiment 005 stopped before holdout after its frozen real-storage-boundary
 sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
@@ -43,10 +43,27 @@ result is recorded in [`EXPERIMENT_008_RESULT.md`](EXPERIMENT_008_RESULT.md).
 The independent verifier was not reached and ranked `[8, 16)` remains
 protected.
 
-Any successor must use a new protocol and development split. The nearest known
-mechanism-level comparison is MixKVQ's query-magnitude and quantization-
-difficulty channel scoring for KV caches; CQER-32 cannot be described as the
-first query-aware mixed-precision method.
+Experiment 009 now freezes RHT-CQER-32. Stage A is a one-task falsification
+screen on already-open task 666. It composes CQER-32 with a deterministic
+orthonormal right-side Hadamard codec while preserving the exact Q4/Q8 packed
+state and selector byte counts. Only a complete Stage-A pass may authorize
+identity resolution for the still-unopened `[32, 64)` development window.
+The protocol is in
+[`EXPERIMENT_009_RHT_CQER_PROTOCOL.md`](EXPERIMENT_009_RHT_CQER_PROTOCOL.md).
+No Experiment 009 quality result exists yet, and `[8, 16)` remains protected.
+
+In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
+packer and an exact dynamic-programming allocator. Its corrected two-bit
+metadata contract provides 3,808 marginal precision steps—not 3,952 rows—at
+the same `2,564,096` state bytes. It is not yet cache-integrated or
+quality-evaluated. See
+[`MULTIBIT_REFERENCE_DESIGN.md`](MULTIBIT_REFERENCE_DESIGN.md).
+
+The nearest known mechanism-level comparisons include MixKVQ's query-magnitude
+and quantization-difficulty scoring and established randomized-Hadamard or
+rotation quantizers. CQER-32 cannot be described as the first query-aware
+mixed-precision method, and RHT-CQER-32 cannot be described as the first
+rotation-based quantizer.
 
 No v0.3 improvement over CQER-32, novelty, speed, or breakthrough claim is
 supported.

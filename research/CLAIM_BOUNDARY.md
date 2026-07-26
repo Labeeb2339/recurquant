@@ -1,6 +1,6 @@
 # Claim boundary
 
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-26
 
 ## What is already established
 
@@ -17,6 +17,9 @@ Last reviewed: 2026-07-23
   for mixed-precision KV-cache channel selection in
   [MixKVQ](https://arxiv.org/abs/2512.19206).
 - Mixed precision and memory-budget allocation are broad existing ideas.
+- Randomized Hadamard transforms and learned rotations are established
+  quantization outlier-suppression techniques. RecurQuant cannot claim to have
+  invented rotation-based or Hadamard-based quantization.
 
 ## Scoped v0.2 confirmation finding
 
@@ -86,6 +89,14 @@ mathematical family. Its Gated DeltaNet adaptation may still be a useful
 engineering hypothesis, but the failed development result does not establish
 it as a contribution.
 
+Experiment 009 freezes RHT-CQER-32, a deterministic right-side randomized
+Hadamard codec composed with CQER-32. Its Stage-A screen uses only already-open
+task 666; no quality result exists yet. The codec preserves the packed-state
+byte count but regenerates SHA-256-derived signs and materializes FP32 transform
+workspaces in the current Python path. Even a positive quality result would not
+establish novelty or speed because randomized Hadamard and rotation quantizers
+are prior art and the implementation has no fused kernel benchmark.
+
 ## Claims prohibited without new evidence
 
 - "First recurrent-state quantization method."
@@ -96,7 +107,7 @@ it as a contribution.
   recurrent-state payloads and scales only.
 - "Speeds up inference" without passing the separate latency gate under the
   stated benchmark.
-- "Breakthrough," "state of the art," or "novel" based on the v0.2 evidence.
+- "Breakthrough," "state of the art," or "novel" based on the current evidence.
 - Authorship of Qwen3.5 or any other base model.
 
 ## What this project contributes

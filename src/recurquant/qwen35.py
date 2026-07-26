@@ -17,6 +17,7 @@ from .packed_cache import (
     PackedRecurrentStateCache,
     QueryEmaMixedPackedRecurrentStateCache,
     RankFusedMixedPackedRecurrentStateCache,
+    RightRhtQueryEmaMixedPackedRecurrentStateCache,
 )
 from .quantization import QuantizationSpec, RoundingMode
 from .row_policy import ExactBudgetRowPlan
@@ -343,6 +344,31 @@ def create_qwen35_query_ema_exact_budget_cache(
         seed=seed,
         record_evidence=record_evidence,
         confirmation_two=confirmation_two,
+    )
+
+
+def create_qwen35_right_rht_query_ema_exact_budget_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    rounding: RoundingMode = "nearest",
+    seed: int = 2339,
+    record_evidence: bool = False,
+) -> RightRhtQueryEmaMixedPackedRecurrentStateCache:
+    """Create the experimental right-RHT CQER-32 cache for Qwen3.5.
+
+    The orthonormal transform operates only on each recurrent row's value axis,
+    so the plan's row identities, INT8 quota, and packed-state byte count remain
+    unchanged. The current PyTorch codec uses transient FP32 workspaces and has
+    no latency or peak-memory claim.
+    """
+
+    return RightRhtQueryEmaMixedPackedRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        rounding=rounding,
+        seed=seed,
+        record_evidence=record_evidence,
     )
 
 
