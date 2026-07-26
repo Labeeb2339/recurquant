@@ -55,6 +55,9 @@ This pass authorizes identity resolution for the still-unopened `[32, 64)`
 development window.
 The protocol is in
 [`EXPERIMENT_009_RHT_CQER_PROTOCOL.md`](EXPERIMENT_009_RHT_CQER_PROTOCOL.md).
+The public-stream application-level access boundary is fixed in
+[`EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md)
+before Stage-B identity resolution.
 No Stage-B quality result exists yet, and `[8, 16)` remains protected.
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8

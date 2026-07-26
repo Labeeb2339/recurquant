@@ -6,7 +6,9 @@
 > This protocol defines a cheap falsification screen on one already-open task
 > and, only if that screen passes, a separately authenticated 32-task
 > development run. Ranked MBPP window `[8, 16)` remains protected and must not
-> be loaded, tokenized, or evaluated by either stage.
+> be selected, retained, canonicalized, formatted, tokenized, passed to the
+> model, or evaluated by either stage. Public-stream traversal is defined in
+> [`EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md).
 
 Protocol frozen: 2026-07-26
 
@@ -143,6 +145,12 @@ ranked calibration window `[32, 64)` be resolved. The exact ordered task IDs,
 row hashes, content manifest, prompt/code token counts, and tokenizer manifest
 must be committed in an identity amendment before model weights are loaded or
 any quality metric is observed.
+
+Identity resolution must first rank an ID-only stream, then canonicalize and
+tokenize only the 32 selected target rows. Non-target source records may be
+inspected only for `task_id` and must be discarded immediately. Dataset
+transport may deserialize complete records; this transport fact is not treated
+as experiment-level content access.
 
 The Stage B methods are frozen to:
 

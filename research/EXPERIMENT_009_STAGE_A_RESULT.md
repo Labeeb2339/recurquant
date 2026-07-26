@@ -32,8 +32,13 @@ nine-condition gate were committed before model quality was observed.
 
 The repository and all hashed source files were clean and stable from the
 start of model loading through the atomic artifact write. Dataset identity was
-authenticated before model weights were loaded. Ranked MBPP window `[8, 16)`
-was not loaded, tokenized, or evaluated.
+authenticated before model weights were loaded. Task `666` was the only row
+selected, retained, canonicalized, formatted, tokenized, passed to the model,
+or evaluated. RecurQuant code inspected only `task_id` on non-target streaming
+records. The dataset transport may have deserialized complete records; see the
+[data-access clarification](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md).
+Ranked MBPP window `[8, 16)` remained outside application-level content and
+quality access.
 
 ## Frozen screen result
 
