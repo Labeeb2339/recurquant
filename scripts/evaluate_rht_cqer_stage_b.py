@@ -2810,11 +2810,47 @@ def _validate_result_identity_dataset(
     rows = manifest.get("rows")
     if not isinstance(rows, list) or len(rows) != STAGE_B_LIMIT:
         raise ValueError("Stage-B result identity manifest rows drifted")
-    expected_rows = [
-        {"task_id": int(record["task_id"]), "sha256": str(record["row_sha256"])}
-        for record in task_records
-    ]
-    if rows != expected_rows:
+    normalized_rows: list[dict[str, Any]] = []
+    seen_manifest_ids: set[int] = set()
+    previous_task_id: int | None = None
+    for offset, raw_row in enumerate(rows):
+        row = _mapping(
+            raw_row,
+            context=f"Stage-B result identity manifest row {offset}",
+        )
+        _require_exact_fields(
+            row,
+            {"task_id", "sha256"},
+            context=f"Stage-B result identity manifest row {offset}",
+        )
+        task_id = _strict_int(
+            row.get("task_id"),
+            context=f"Stage-B result identity manifest row {offset} task_id",
+        )
+        row_sha256 = _require_sha256(
+            row.get("sha256"),
+            context=f"Stage-B result identity manifest row {offset}",
+        )
+        if task_id in seen_manifest_ids:
+            raise ValueError("Stage-B result identity manifest task IDs are duplicated")
+        if previous_task_id is not None and task_id <= previous_task_id:
+            raise ValueError(
+                "Stage-B result identity manifest rows are not in canonical task-ID order"
+            )
+        seen_manifest_ids.add(task_id)
+        previous_task_id = task_id
+        normalized_rows.append({"task_id": task_id, "sha256": row_sha256})
+    expected_rows = sorted(
+        (
+            {
+                "task_id": int(record["task_id"]),
+                "sha256": str(record["row_sha256"]),
+            }
+            for record in task_records
+        ),
+        key=lambda row: row["task_id"],
+    )
+    if normalized_rows != expected_rows:
         raise ValueError("Stage-B result identity manifest rows do not match tasks")
     content_hash = _require_sha256(
         identity_dataset.get("content_manifest_sha256"),

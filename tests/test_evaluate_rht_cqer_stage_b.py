@@ -38,8 +38,8 @@ def _task_records() -> list[dict[str, int | str]]:
     return [
         {
             "rank": stage_b.STAGE_B_OFFSET + index,
-            "task_id": 10_000 + index,
-            "row_sha256": digest,
+            "task_id": 10_000 + ((index * 17) % stage_b.STAGE_B_LIMIT),
+            "row_sha256": f"{index + 1:064x}",
             "prompt_tokens": 3,
             "code_tokens": 4,
             "aligned_scored_tokens": 3,
@@ -562,10 +562,13 @@ def _result_identity_dataset(
         "selection_namespace": resolver.MBPP_SELECTION_NAMESPACE,
         "formatter_version": resolver.MBPP_FORMATTER_VERSION,
         "row_count": stage_b.STAGE_B_LIMIT,
-        "rows": [
-            {"task_id": int(task["task_id"]), "sha256": task["row_sha256"]}
-            for task in tasks
-        ],
+        "rows": sorted(
+            (
+                {"task_id": int(task["task_id"]), "sha256": task["row_sha256"]}
+                for task in tasks
+            ),
+            key=lambda row: row["task_id"],
+        ),
     }
     content_hash = stage_b.mbpp_manifest_content_sha256(manifest)
     token_hash = resolver.token_manifest_sha256(tasks)
@@ -1096,6 +1099,157 @@ def test_stage_b_result_loader_recomputes_the_exact_canonical_result(
     assert verification["advancement_passed"] is True
     assert verification["canonical_round_trip"] is True
     assert verification["advancement_check_count"] == 8
+    identity = evidence["dataset"]["identity"]
+    task_ids = [record["task_id"] for record in identity["tasks"]]
+    manifest_ids = [row["task_id"] for row in identity["manifest"]["rows"]]
+    assert task_ids != manifest_ids
+    assert manifest_ids == sorted(task_ids)
+
+
+def _rehash_result_identity_dataset(identity: dict[str, object]) -> None:
+    manifest = identity["manifest"]
+    tasks = identity["tasks"]
+    assert isinstance(manifest, dict)
+    assert isinstance(tasks, list)
+    content_hash = stage_b.mbpp_manifest_content_sha256(manifest)
+    identity["content_manifest_sha256"] = content_hash
+    identity["token_manifest_sha256"] = (
+        stage_b.identity_resolver.token_manifest_sha256(tasks)
+    )
+    identity["ordered_identity_sha256"] = (
+        stage_b.identity_resolver.ordered_identity_sha256(
+            content_manifest_sha256=content_hash,
+            task_records=tasks,
+        )
+    )
+
+
+def test_stage_b_result_identity_rejects_swapped_manifest_hashes() -> None:
+    identity = _result_identity_dataset(_task_records())
+    manifest = identity["manifest"]
+    assert isinstance(manifest, dict)
+    rows = manifest["rows"]
+    assert isinstance(rows, list)
+    rows[0]["sha256"], rows[1]["sha256"] = rows[1]["sha256"], rows[0]["sha256"]
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="manifest rows do not match tasks"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "extra"])
+def test_stage_b_result_identity_rejects_manifest_row_set_drift(
+    mutation: str,
+) -> None:
+    identity = _result_identity_dataset(_task_records())
+    manifest = identity["manifest"]
+    assert isinstance(manifest, dict)
+    rows = manifest["rows"]
+    assert isinstance(rows, list)
+    if mutation == "missing":
+        rows.pop()
+    elif mutation == "duplicate":
+        rows[1] = copy.deepcopy(rows[0])
+    else:
+        rows.append({"task_id": 99_999, "sha256": "f" * 64})
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="manifest rows|manifest task IDs"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+def test_stage_b_result_identity_rejects_unique_unknown_manifest_task_id() -> None:
+    identity = _result_identity_dataset(_task_records())
+    manifest = identity["manifest"]
+    assert isinstance(manifest, dict)
+    rows = manifest["rows"]
+    assert isinstance(rows, list)
+    rows[-1]["task_id"] = 99_999
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="manifest rows do not match tasks"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+@pytest.mark.parametrize("field_drift", ["missing", "extra"])
+def test_stage_b_result_identity_rejects_manifest_row_field_drift(
+    field_drift: str,
+) -> None:
+    identity = _result_identity_dataset(_task_records())
+    manifest = identity["manifest"]
+    assert isinstance(manifest, dict)
+    rows = manifest["rows"]
+    assert isinstance(rows, list)
+    if field_drift == "missing":
+        del rows[0]["sha256"]
+    else:
+        rows[0]["unexpected"] = "field"
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="manifest row 0 fields drifted"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+def test_stage_b_result_identity_rejects_invalid_manifest_sha256() -> None:
+    identity = _result_identity_dataset(_task_records())
+    manifest = identity["manifest"]
+    assert isinstance(manifest, dict)
+    rows = manifest["rows"]
+    assert isinstance(rows, list)
+    rows[0]["sha256"] = "not-a-sha256"
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="manifest row 0.*SHA-256"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+def test_stage_b_result_identity_rejects_boolean_manifest_task_id() -> None:
+    identity = _result_identity_dataset(_task_records())
+    manifest = identity["manifest"]
+    assert isinstance(manifest, dict)
+    rows = manifest["rows"]
+    assert isinstance(rows, list)
+    rows[0]["task_id"] = True
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="manifest row 0 task_id"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+def test_stage_b_result_identity_rejects_noncanonical_manifest_order() -> None:
+    identity = _result_identity_dataset(_task_records())
+    manifest = identity["manifest"]
+    assert isinstance(manifest, dict)
+    rows = manifest["rows"]
+    assert isinstance(rows, list)
+    rows[0], rows[1] = rows[1], rows[0]
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="canonical task-ID order"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+def test_stage_b_result_identity_rejects_rehashed_task_reorder() -> None:
+    identity = _result_identity_dataset(_task_records())
+    tasks = identity["tasks"]
+    assert isinstance(tasks, list)
+    tasks[0], tasks[1] = tasks[1], tasks[0]
+    identity["ordered_task_ids"] = [task["task_id"] for task in tasks]
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="ordered window"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
+
+
+def test_stage_b_result_identity_rejects_task_row_hash_tamper() -> None:
+    identity = _result_identity_dataset(_task_records())
+    tasks = identity["tasks"]
+    assert isinstance(tasks, list)
+    tasks[0]["row_sha256"] = "f" * 64
+    _rehash_result_identity_dataset(identity)
+
+    with pytest.raises(ValueError, match="manifest rows do not match tasks"):
+        stage_b._validate_result_identity_dataset(identity)  # noqa: SLF001
 
 
 def test_stage_b_result_loader_authenticates_an_exact_negative_result(
