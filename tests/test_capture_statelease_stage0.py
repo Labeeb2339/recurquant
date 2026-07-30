@@ -1026,7 +1026,10 @@ def test_verifier_rejects_artifact_mutation_after_authenticated_load(
     try:
         with pytest.raises(
             Stage0VerificationError,
-            match="changed during independent Stage-0 verification",
+            match=(
+                "serialized artifact SHA-256 differs from its authenticated sidecar"
+                "|changed during independent Stage-0 verification"
+            ),
         ):
             verify_production_stage0(authenticated_artifact)
     finally:
