@@ -1,0 +1,58 @@
+{
+  "artifact_kind": "recurquant_experiment010_statelease_stage_a_administrative_null",
+  "canonical_evidence_sha256": "c5f779ed4fd5a48284e212dfaead9146cbd2bb0b53404a5628fd49bc74ee31f3",
+  "evidence": {
+    "access_boundary": {
+      "aggregate_exposed": false,
+      "candidate_metrics_computed": false,
+      "completed_task_ids": [],
+      "dataset_load_dataset_called": false,
+      "forward_passes": 0,
+      "logits_computed": false,
+      "model_weights_loaded": false,
+      "protected_mbpp_window_accessed": false,
+      "quality_result_exposed": false,
+      "task_id": 666,
+      "task_row_loaded": false,
+      "tokenizer_loaded": false,
+      "verified_by": "authenticated ordered control flow plus failure traceback"
+    },
+    "artifact_kind": "recurquant_experiment010_statelease_stage_a_administrative_null",
+    "claim_boundary": "Experiment 010 produced no StateLease quality result. It is neither a pass nor a method failure and cannot support an improvement, novelty, deployment, speed, state-of-the-art, or breakthrough claim.",
+    "classification": "infrastructure_failure_before_evaluation",
+    "failure": {
+      "dependency_distribution_present": false,
+      "dependency_name": "datasets",
+      "failed_at_utc": "2026-07-30T18:43:00.236036+00:00",
+      "message": "MBPP loading requires the optional evaluation dependencies; install recurquant[eval]",
+      "stderr_file_sha256": "a422acf3ec550a4418b63fe873acabbffd84fded332108089d6a4d44e1f6ed7e",
+      "trace_boundary": "the datasets import failed before load_dataset could be called",
+      "type": "RuntimeError"
+    },
+    "original_attempt": {
+      "attempt_number": 1,
+      "automatic_rerun_authorized": false,
+      "h0_commit": "0e3dbcec2cb9cca1cdb062ec2491954ae052d7b9",
+      "h0_tree": "e271ba8f11bdf588c361e6ffc797ec795671e7f8",
+      "one_run_marker": "RecurQuant-One-Run: experiment010-stage-a-task666-v1",
+      "raw_receipt_file_sha256": "f53cbb53f043180d40e472cacda64397014b8a60ec065fabcb5c0738d53adc15",
+      "receipt_schema": "recurquant.experiment010.stage-a-attempt.v1",
+      "receipt_status": "failed_without_authenticated_stage_a_result",
+      "result_artifact_created": false,
+      "seal_commit": "c0ef99c924121b981d7bbda8ba4b9b76d3b14f51",
+      "seal_parent": "0e3dbcec2cb9cca1cdb062ec2491954ae052d7b9",
+      "seal_tree": "e271ba8f11bdf588c361e6ffc797ec795671e7f8",
+      "seal_tree_matches_h0": true,
+      "stage0_artifact_file_sha256": "e8984cb2446f3fe5c826ec94644ada5641652436762271f0f1b3cacc453ad703",
+      "stage0_sidecar_file_sha256": "6efc7c857e933afffb04d50b32eff1e1ee73ad97a642f65c07afb0e1ee9d1e80"
+    },
+    "recovery_disposition": {
+      "experiment010_resume_authorized": false,
+      "failed_seal_and_receipt_preserved": true,
+      "next_identity": "Experiment 011",
+      "reason": "Installing the missing dependency changes the runtime and the frozen Experiment 010 evaluator has no authenticated unchanged-source resume path.",
+      "scientific_method_or_gate_changed": false
+    },
+    "scientific_result_available": false
+  }
+}
