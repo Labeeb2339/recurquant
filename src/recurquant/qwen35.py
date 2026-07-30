@@ -24,6 +24,11 @@ from .packed_cache import (
 )
 from .quantization import QuantizationSpec, RoundingMode
 from .row_policy import ExactBudgetRowPlan
+from .statelease_baselines import (
+    FixedReplayMode,
+    FixedReplayRecurrentStateCache,
+    fixed_replay_policy,
+)
 from .statelease_cache import (
     STATELEASE_SELECTION_METHOD,
     StateLeaseRecurrentStateCache,
@@ -530,6 +535,30 @@ def create_qwen35_experiment010_statelease_cache(
         seed=2339,
         record_evidence=record_evidence,
         selection_method=STATELEASE_SELECTION_METHOD,
+        experiment_identity_sha256=EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
+    )
+
+
+def create_qwen35_experiment010_fixed_replay_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    mode: FixedReplayMode | str,
+    record_evidence: bool = False,
+) -> FixedReplayRecurrentStateCache:
+    """Create one policy- and byte-locked Experiment 010 replay baseline."""
+
+    _validate_experiment010_statelease_plan(plan)
+    policy = fixed_replay_policy(mode)
+    selection_method = f"{policy.mode}_right_rht_query_ema32_weighted_mse_fisher_quota"
+    return FixedReplayRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        mode=policy.mode,
+        rounding="nearest",
+        seed=2339,
+        record_evidence=record_evidence,
+        selection_method=selection_method,
         experiment_identity_sha256=EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
     )
 

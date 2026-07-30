@@ -12,6 +12,7 @@ import recurquant.statelease_cache as statelease_cache_module
 from recurquant.qwen35 import (
     EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
     EXPERIMENT010_STATELEASE_LAYER_QUOTAS,
+    create_qwen35_experiment010_fixed_replay_cache,
     create_qwen35_experiment010_statelease_cache,
     create_qwen35_statelease_cache,
     experiment010_statelease_effective_plan_sha256,
@@ -835,6 +836,13 @@ def test_experiment010_factory_is_identity_locked() -> None:
         layer.selection_method == statelease_cache_module.STATELEASE_SELECTION_METHOD
         for _, layer in cache.statelease_layers()
     )
+    fixed = create_qwen35_experiment010_fixed_replay_cache(
+        config,
+        plan=plan,
+        mode="fixed_cc5",
+    )
+    assert fixed.selection_method == ("fixed_cc5_right_rht_query_ema32_weighted_mse_fisher_quota")
+    assert fixed.experiment_identity_sha256 == EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256
 
     tampered = replace(plan, resident_bytes=plan.resident_bytes + 1)
     with pytest.raises(ValueError, match="storage identity"):
