@@ -1932,37 +1932,38 @@ def canonical_payload_sha256(value: object) -> str:
     digest = hashlib.sha256()
 
     def visit(item: object) -> None:
+        item_type = type(item)
         if item is None:
             digest.update(b"n")
-        elif isinstance(item, bool):
+        elif item_type is bool:
             digest.update(b"b1" if item else b"b0")
-        elif isinstance(item, int):
+        elif item_type is int:
             digest.update(b"i")
             digest.update(str(item).encode("ascii"))
             digest.update(b"\0")
-        elif isinstance(item, float):
+        elif item_type is float:
             if not math.isfinite(item):
                 _fail("artifact contains a non-finite scalar")
             digest.update(b"f")
             digest.update(item.hex().encode("ascii"))
             digest.update(b"\0")
-        elif isinstance(item, str):
+        elif item_type is str:
             encoded = item.encode("utf-8")
             digest.update(b"s")
             digest.update(len(encoded).to_bytes(8, "little"))
             digest.update(encoded)
-        elif isinstance(item, torch.Tensor):
+        elif item_type is torch.Tensor:
             digest.update(b"t")
             digest.update(_tensor_digest(item).encode("ascii"))
-        elif isinstance(item, Mapping):
-            if any(not isinstance(key, str) for key in item):
-                _fail("artifact mapping keys must be strings")
+        elif item_type is dict:
+            if any(type(key) is not str for key in item):
+                _fail("artifact mapping keys must be plain strings")
             digest.update(b"d")
             digest.update(len(item).to_bytes(8, "little"))
             for key in sorted(item):
                 visit(key)
                 visit(item[key])
-        elif isinstance(item, (list, tuple)):
+        elif item_type is list or item_type is tuple:
             digest.update(b"l")
             digest.update(len(item).to_bytes(8, "little"))
             for child in item:

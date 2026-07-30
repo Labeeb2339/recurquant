@@ -86,6 +86,23 @@ def test_canonical_payload_hash_is_mapping_order_independent_and_tensor_sensitiv
     assert canonical_payload_sha256(first) != canonical_payload_sha256(changed)
 
 
+def test_canonical_payload_rejects_schema_subclasses_in_both_implementations() -> None:
+    class UnsafeString(str):
+        pass
+
+    class UnsafeDict(dict[str, object]):
+        pass
+
+    for payload, type_name in (
+        ({"unsafe": UnsafeString("looks-like-a-string")}, "UnsafeString"),
+        (UnsafeDict({"looks": "like-a-dict"}), "UnsafeDict"),
+    ):
+        with pytest.raises(TypeError, match=rf"closed schema cannot hash {type_name}"):
+            canonical_payload_sha256(payload)
+        with pytest.raises(Stage0VerificationError, match=rf"unsupported type {type_name}"):
+            verify_stage0.canonical_payload_sha256(payload)
+
+
 def test_source_identity_matches_verifier_and_covers_the_complete_package() -> None:
     package_sources = {
         path.relative_to(REPO_ROOT).as_posix()
