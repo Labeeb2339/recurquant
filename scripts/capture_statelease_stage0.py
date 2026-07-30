@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Capture authenticated production receipts for Experiment 010 Stage 0.
+"""Capture authenticated production receipts for Experiment 011 Stage 0.
 
 The producer is intentionally allowed to import RecurQuant.  It runs only
 deterministic synthetic recurrent-state transitions, serializes a closed
@@ -28,7 +28,6 @@ from dataclasses import is_dataclass
 from pathlib import Path
 
 import torch
-import transformers
 from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 
 from recurquant.qwen35 import (
@@ -62,22 +61,46 @@ from recurquant.statelease_equal_byte_baselines import (
 )
 from recurquant.statelease_observer import Qwen35StateLeaseObserver
 
-SCHEMA_NAME = "recurquant.experiment010.stage0.production.v1"
+EXPERIMENT_ID = "experiment011"
+SCHEMA_NAME = f"recurquant.{EXPERIMENT_ID}.stage0.production.v1"
 SCHEMA_VERSION = 1
 FROZEN_SEED = 2339
+PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256 = (
+    "2466ad25043894fcd1604c97c373e5d5680061fdb7637f861b83d5c9465c31fe"
+)
+RUNTIME_PACKAGE_DISTRIBUTIONS = (
+    "datasets",
+    "fsspec",
+    "huggingface-hub",
+    "numpy",
+    "pyarrow",
+    "safetensors",
+    "tokenizers",
+    "torch",
+    "transformers",
+)
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ARTIFACT = REPO_ROOT / "artifacts" / "experiment010_stage0_production.pt"
+GIT_REPOSITORY_BINDING_SCHEMA = "recurquant.git-repository-binding.v1"
+DEFAULT_ARTIFACT = REPO_ROOT / "artifacts" / f"{EXPERIMENT_ID}_stage0_production.pt"
 LINEAR_LAYER_INDICES = tuple(EXPERIMENT010_STATELEASE_LAYER_QUOTAS)
 FROZEN_STATELEASE_RESIDENT_BYTES = 3_454_664
 RAW_STATE_ELEMENTS_PER_LAYER = 16 * 128 * 128
 RAW_STATE_ELEMENTS_ALL_LAYERS = len(LINEAR_LAYER_INDICES) * RAW_STATE_ELEMENTS_PER_LAYER
+EXPERIMENT011_SOURCE_PROVENANCE_PATHS = (
+    "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md",
+    "research/EXPERIMENT_011_STAGE_A_IDENTITY.md",
+    "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md",
+    "evidence/experiment010-statelease-stage-a-administrative-null.json",
+    "artifacts/experiment010-statelease-stage-a-666.attempt.json",
+    "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
+    "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
+)
 SOURCE_IDENTITY_PATHS = (
     "pyproject.toml",
     "scripts/capture_statelease_stage0.py",
     "scripts/screen_statelease_stage_a.py",
     "scripts/verify_statelease_stage0.py",
-    "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
-    "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
+    *EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
     "src/recurquant/__init__.py",
     "src/recurquant/cache.py",
     "src/recurquant/cli.py",
@@ -133,6 +156,39 @@ SOURCE_IDENTITY_PATHS = (
     "tests/test_statelease_observer.py",
     "tests/test_screen_statelease_stage_a.py",
     "tests/test_verify_statelease_stage0.py",
+)
+REQUIRED_LOADED_RECURQUANT_MODULE_PATHS = (
+    ("recurquant", "src/recurquant/__init__.py"),
+    ("recurquant.evidence", "src/recurquant/evidence.py"),
+    ("recurquant.finite_difference", "src/recurquant/finite_difference.py"),
+    ("recurquant.fisher_sensitivity", "src/recurquant/fisher_sensitivity.py"),
+    ("recurquant.horizon", "src/recurquant/horizon.py"),
+    ("recurquant.horizon_calibration", "src/recurquant/horizon_calibration.py"),
+    ("recurquant.intervention", "src/recurquant/intervention.py"),
+    ("recurquant.mixed_quantization", "src/recurquant/mixed_quantization.py"),
+    ("recurquant.model_fisher", "src/recurquant/model_fisher.py"),
+    ("recurquant.multibit_policy", "src/recurquant/multibit_policy.py"),
+    ("recurquant.multibit_quantization", "src/recurquant/multibit_quantization.py"),
+    ("recurquant.packed_cache", "src/recurquant/packed_cache.py"),
+    ("recurquant.quantization", "src/recurquant/quantization.py"),
+    ("recurquant.query_energy", "src/recurquant/query_energy.py"),
+    ("recurquant.qwen35", "src/recurquant/qwen35.py"),
+    ("recurquant.rht", "src/recurquant/rht.py"),
+    ("recurquant.row_policy", "src/recurquant/row_policy.py"),
+    ("recurquant.statelease", "src/recurquant/statelease.py"),
+    ("recurquant.statelease_baselines", "src/recurquant/statelease_baselines.py"),
+    ("recurquant.statelease_cache", "src/recurquant/statelease_cache.py"),
+    (
+        "recurquant.statelease_equal_byte_baselines",
+        "src/recurquant/statelease_equal_byte_baselines.py",
+    ),
+    (
+        "recurquant.statelease_equal_byte_cache",
+        "src/recurquant/statelease_equal_byte_cache.py",
+    ),
+    ("recurquant.statelease_evaluation", "src/recurquant/statelease_evaluation.py"),
+    ("recurquant.statelease_observer", "src/recurquant/statelease_observer.py"),
+    ("recurquant.transition_observer", "src/recurquant/transition_observer.py"),
 )
 
 
@@ -195,7 +251,7 @@ def canonical_payload_sha256(value: object) -> str:
                 visit(key)
                 visit(item[key])
         elif item_type is list or item_type is tuple:
-            digest.update(b"l")
+            digest.update(b"l" if item_type is list else b"t")
             digest.update(len(item).to_bytes(8, "little"))
             for child in item:
                 visit(child)
@@ -1112,22 +1168,277 @@ def _capture_equal_byte_comparators(
     }
 
 
+def _sanitized_capture_git_environment() -> dict[str, str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def _capture_git(
+    *arguments: str,
+    check: bool = True,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-c",
+            "core.useReplaceRefs=false",
+            "-c",
+            f"core.attributesFile={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            *arguments,
+        ],
+        cwd=REPO_ROOT,
+        check=check,
+        capture_output=True,
+        text=True,
+        input=input_text,
+        env=_sanitized_capture_git_environment(),
+    )
+
+
+def _resolved_git_path(value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path.resolve()
+
+
+def _private_path_sha256(path: Path) -> str:
+    normalized = os.path.normcase(str(path.resolve())).replace("\\", "/")
+    return _sha256_bytes(normalized.encode("utf-8"))
+
+
+def _capture_local_config_sha256() -> str:
+    process = _capture_git("config", "--local", "--no-includes", "--null", "--list")
+    entries: list[dict[str, str]] = []
+    for raw in process.stdout.split("\0"):
+        if not raw:
+            continue
+        key, separator, value = raw.partition("\n")
+        if not separator or not key:
+            raise RuntimeError("local Git config contains a malformed entry")
+        normalized_key = key.lower()
+        entries.append({"key": normalized_key, "value": value})
+        forbidden = (
+            normalized_key.startswith(("include.", "includeif.", "filter."))
+            or normalized_key
+            in {
+                "core.alternaterefscommand",
+                "core.alternaterefsprefixes",
+                "core.attributesfile",
+                "core.fsmonitor",
+                "core.hookspath",
+                "core.sparsecheckout",
+                "core.sparsecheckoutcone",
+                "core.untrackedcache",
+                "core.worktree",
+                "extensions.partialclone",
+                "extensions.worktreeconfig",
+                "index.sparse",
+            }
+            or (
+                normalized_key.startswith("remote.")
+                and normalized_key.endswith((".promisor", ".partialclonefilter"))
+            )
+        )
+        if forbidden:
+            raise RuntimeError(f"unsafe local Git config key is present: {normalized_key}")
+        if normalized_key == "core.usereplacerefs" and value.lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            raise RuntimeError("local Git config enables replacement objects")
+    values_by_key: dict[str, list[str]] = {}
+    for entry in entries:
+        values_by_key.setdefault(entry["key"], []).append(entry["value"])
+    if values_by_key.get("core.repositoryformatversion") != ["0"]:
+        raise RuntimeError("Git repository format version is not exactly zero")
+    if values_by_key.get("core.bare") != ["false"]:
+        raise RuntimeError("Git repository must explicitly be non-bare")
+    return canonical_payload_sha256(entries)
+
+
+def _assert_capture_index_has_no_hidden_flags() -> None:
+    """Reject index flags that can hide tracked worktree changes from status."""
+
+    try:
+        process = _capture_git("ls-files", "--cached", "-v", "-z")
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("cannot authenticate Git index visibility flags") from error
+    records = [record for record in process.stdout.split("\0") if record]
+    malformed = [record for record in records if len(record) < 3 or record[1] != " "]
+    if malformed:
+        raise RuntimeError("Git index visibility output is malformed")
+    unsafe_tags = sorted({record[0] for record in records if record[0] != "H"})
+    if unsafe_tags:
+        raise RuntimeError(
+            f"Git index contains hidden or non-canonical tracked entries (tags={unsafe_tags})"
+        )
+
+
+def _capture_repository_binding() -> dict[str, object]:
+    try:
+        top_level = _resolved_git_path(_capture_git("rev-parse", "--show-toplevel").stdout.strip())
+        git_dir = _resolved_git_path(_capture_git("rev-parse", "--absolute-git-dir").stdout.strip())
+        common_dir = _resolved_git_path(
+            _capture_git("rev-parse", "--git-common-dir").stdout.strip()
+        )
+        index_path = _resolved_git_path(
+            _capture_git("rev-parse", "--git-path", "index").stdout.strip()
+        )
+        object_dir = _resolved_git_path(
+            _capture_git("rev-parse", "--git-path", "objects").stdout.strip()
+        )
+        object_format = _capture_git(
+            "rev-parse",
+            "--show-object-format",
+        ).stdout.strip()
+        inside_worktree = _capture_git(
+            "rev-parse",
+            "--is-inside-work-tree",
+        ).stdout.strip()
+        bare = _capture_git("rev-parse", "--is-bare-repository").stdout.strip()
+        shallow = _capture_git(
+            "rev-parse",
+            "--is-shallow-repository",
+        ).stdout.strip()
+        shallow_path = _resolved_git_path(
+            _capture_git("rev-parse", "--git-path", "shallow").stdout.strip()
+        )
+        replace_refs = _capture_git(
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/replace/",
+        ).stdout.splitlines()
+        local_config_sha256 = _capture_local_config_sha256()
+        _assert_capture_index_has_no_hidden_flags()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("cannot authenticate the Git repository/object view") from error
+
+    expected_top_level = REPO_ROOT.resolve()
+    if top_level != expected_top_level or inside_worktree != "true" or bare != "false":
+        raise RuntimeError("Git top-level/worktree identity differs from the expected repository")
+    if object_format != "sha1":
+        raise RuntimeError("Stage-0 source identity requires the exact SHA-1 Git object format")
+    if index_path != git_dir / "index":
+        raise RuntimeError("Git index is not the exact worktree index")
+    if object_dir != common_dir / "objects" or not object_dir.is_dir():
+        raise RuntimeError("Git object directory is not the exact common object store")
+
+    dot_git = expected_top_level / ".git"
+    if dot_git.is_dir():
+        if dot_git.is_symlink():
+            raise RuntimeError("main-worktree .git directory must not be a symlink")
+        git_dir_kind = "main_worktree"
+        if git_dir != dot_git.resolve() or common_dir != git_dir:
+            raise RuntimeError("main-worktree Git directory/common directory identity differs")
+    elif dot_git.is_file():
+        if dot_git.is_symlink():
+            raise RuntimeError("linked-worktree .git marker must not be a symlink")
+        marker = dot_git.read_text(encoding="utf-8").strip()
+        prefix = "gitdir: "
+        if not marker.startswith(prefix):
+            raise RuntimeError("linked-worktree .git marker is malformed")
+        declared_git_dir = Path(marker[len(prefix) :])
+        if not declared_git_dir.is_absolute():
+            declared_git_dir = expected_top_level / declared_git_dir
+        if declared_git_dir.resolve() != git_dir:
+            raise RuntimeError("linked-worktree .git marker redirects to a different Git directory")
+        if git_dir.parent != common_dir / "worktrees":
+            raise RuntimeError(
+                "linked-worktree Git directory is outside the common worktree registry"
+            )
+        reverse_pointer = git_dir / "gitdir"
+        if not reverse_pointer.is_file() or reverse_pointer.is_symlink():
+            raise RuntimeError("linked-worktree Git directory has no canonical reverse pointer")
+        declared_dot_git = Path(reverse_pointer.read_text(encoding="utf-8").strip())
+        if not declared_dot_git.is_absolute():
+            declared_dot_git = git_dir / declared_dot_git
+        if declared_dot_git.resolve() != dot_git.resolve():
+            raise RuntimeError(
+                "linked-worktree Git directory reverse pointer targets a different worktree"
+            )
+        git_dir_kind = "linked_worktree"
+    else:
+        raise RuntimeError("repository has neither a canonical .git directory nor marker")
+
+    unsafe_object_files = (
+        object_dir / "info" / "alternates",
+        object_dir / "info" / "http-alternates",
+        git_dir / "info" / "grafts",
+        common_dir / "info" / "grafts",
+        shallow_path,
+    )
+    if any(path.exists() for path in unsafe_object_files):
+        raise RuntimeError("Git alternates, grafts, or shallow object view is not permitted")
+    if shallow != "false":
+        raise RuntimeError("shallow Git history is not permitted")
+    if replace_refs:
+        raise RuntimeError("Git replacement refs are not permitted")
+
+    return {
+        "schema": GIT_REPOSITORY_BINDING_SCHEMA,
+        "top_level_path_sha256": _private_path_sha256(top_level),
+        "worktree_path_sha256": _private_path_sha256(expected_top_level),
+        "git_dir_path_sha256": _private_path_sha256(git_dir),
+        "common_dir_path_sha256": _private_path_sha256(common_dir),
+        "index_path_sha256": _private_path_sha256(index_path),
+        "object_dir_path_sha256": _private_path_sha256(object_dir),
+        "git_dir_kind": git_dir_kind,
+        "object_format": object_format,
+        "inside_worktree": True,
+        "bare": False,
+        "shallow": False,
+        "alternates_absent": True,
+        "grafts_absent": True,
+        "replace_refs_absent": True,
+        "unsafe_local_config_absent": True,
+        "hidden_index_flags_absent": True,
+        "local_config_sha256": local_config_sha256,
+        "replacement_objects_disabled": True,
+        "system_and_global_config_disabled": True,
+        "fsmonitor_and_untracked_cache_disabled": True,
+        "hooks_disabled": True,
+        "worktree_gitdir_binding_verified": True,
+        "raw_source_hash_mode": "git_hash_object_no_filters_stdin_paths",
+    }
+
+
 def _git_blob_hashes_for_authenticated_sources() -> tuple[dict[str, str], dict[str, str]]:
     try:
-        tree_process = subprocess.run(
-            ["git", "ls-tree", "-r", "HEAD", "--", *SOURCE_IDENTITY_PATHS],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
+        tree_process = _capture_git(
+            "ls-tree",
+            "-r",
+            "--full-tree",
+            "HEAD",
+            "--",
+            *SOURCE_IDENTITY_PATHS,
         )
-        worktree_process = subprocess.run(
-            ["git", "hash-object", "--stdin-paths"],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-            input="\n".join(SOURCE_IDENTITY_PATHS),
+        worktree_process = _capture_git(
+            "hash-object",
+            "--no-filters",
+            "--stdin-paths",
+            input_text="\n".join(SOURCE_IDENTITY_PATHS),
         )
     except (OSError, subprocess.CalledProcessError) as error:
         raise RuntimeError(
@@ -1165,27 +1476,22 @@ def _git_blob_hashes_for_authenticated_sources() -> tuple[dict[str, str], dict[s
 
 
 def _repository_source_snapshot() -> dict[str, object]:
+    repository_binding = _capture_repository_binding()
     missing = [
-        relative for relative in SOURCE_IDENTITY_PATHS if not (REPO_ROOT / relative).is_file()
+        relative
+        for relative in SOURCE_IDENTITY_PATHS
+        if not (REPO_ROOT / relative).is_file() or (REPO_ROOT / relative).is_symlink()
     ]
     if missing:
         raise RuntimeError(f"authenticated Stage-0 source set is incomplete: {missing}")
     hashes = {relative: _file_sha256(REPO_ROOT / relative) for relative in SOURCE_IDENTITY_PATHS}
     head_blobs, worktree_blobs = _git_blob_hashes_for_authenticated_sources()
     try:
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
+        head = _capture_git("rev-parse", "HEAD").stdout.strip()
+        status = _capture_git(
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
         ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
         raise RuntimeError("cannot authenticate repository source identity") from error
@@ -1193,6 +1499,7 @@ def _repository_source_snapshot() -> dict[str, object]:
         raise RuntimeError("repository HEAD is not a lowercase SHA-1 commit identity")
     return {
         "repo_head": head,
+        "repository_binding": repository_binding,
         "source_hashes": hashes,
         "source_set_sha256": canonical_payload_sha256(hashes),
         "head_blob_hashes": head_blobs,
@@ -1202,23 +1509,67 @@ def _repository_source_snapshot() -> dict[str, object]:
     }
 
 
-def _loaded_local_source_paths() -> tuple[str, ...]:
-    loaded: set[str] = set()
-    for module_name, module in tuple(sys.modules.items()):
-        if module_name != __name__ and not (
-            module_name == "recurquant" or module_name.startswith("recurquant.")
-        ):
+def _loaded_recurquant_module_paths() -> dict[str, str]:
+    """Bind every loaded RecurQuant module name to its exact in-repository file."""
+
+    required = dict(REQUIRED_LOADED_RECURQUANT_MODULE_PATHS)
+    repo_root = REPO_ROOT.resolve()
+    observed: dict[str, str] = {}
+    for module_name, module in sorted(tuple(sys.modules.items())):
+        if module_name != "recurquant" and not module_name.startswith("recurquant."):
             continue
         path_value = getattr(module, "__file__", None)
-        if path_value is None:
-            continue
+        if not isinstance(path_value, (str, os.PathLike)):
+            raise RuntimeError(
+                f"loaded RecurQuant module has no regular source file: {module_name}"
+            )
+        declared_path = Path(path_value)
+        if declared_path.is_symlink():
+            raise RuntimeError(f"loaded RecurQuant module source is a symlink: {module_name}")
         try:
-            relative = Path(path_value).resolve().relative_to(REPO_ROOT).as_posix()
-        except (OSError, ValueError):
-            continue
-        if relative.endswith(".py"):
-            loaded.add(relative)
-    return tuple(sorted(loaded))
+            resolved_path = declared_path.resolve(strict=True)
+            relative = resolved_path.relative_to(repo_root).as_posix()
+        except (OSError, ValueError) as error:
+            raise RuntimeError(
+                f"loaded RecurQuant module is outside the authenticated repository: {module_name}"
+            ) from error
+        if not resolved_path.is_file():
+            raise RuntimeError(
+                f"loaded RecurQuant module source is not a regular file: {module_name}"
+            )
+        observed[module_name] = relative
+    missing = sorted(set(required) - set(observed))
+    mismatched = sorted(
+        module_name
+        for module_name in set(required) & set(observed)
+        if observed[module_name] != required[module_name]
+    )
+    unauthenticated = sorted(
+        module_name
+        for module_name, relative in observed.items()
+        if relative not in SOURCE_IDENTITY_PATHS
+        or relative
+        not in {
+            f"src/{module_name.replace('.', '/')}.py",
+            f"src/{module_name.replace('.', '/')}/__init__.py",
+        }
+    )
+    if missing or mismatched or unauthenticated:
+        raise RuntimeError(
+            "loaded RecurQuant module closure differs from the authenticated local closure "
+            f"(missing={missing}, mismatched={mismatched}, "
+            f"unauthenticated={unauthenticated})"
+        )
+    return observed
+
+
+def _loaded_local_source_paths() -> tuple[str, ...]:
+    module_paths = _loaded_recurquant_module_paths()
+    producer = Path(__file__)
+    expected_producer = (REPO_ROOT / "scripts" / "capture_statelease_stage0.py").resolve()
+    if producer.is_symlink() or producer.resolve() != expected_producer:
+        raise RuntimeError("Stage-0 producer source is not the authenticated local file")
+    return tuple(sorted({"scripts/capture_statelease_stage0.py", *module_paths.values()}))
 
 
 def _finalize_source_identity(
@@ -1237,12 +1588,14 @@ def _finalize_source_identity(
         raise RuntimeError(
             "authenticated source bytes must exactly equal their regular-file blobs at HEAD"
         )
+    loaded_module_paths = _loaded_recurquant_module_paths()
     loaded_paths = _loaded_local_source_paths()
     undeclared = sorted(set(loaded_paths) - set(SOURCE_IDENTITY_PATHS))
     if undeclared:
         raise RuntimeError(f"loaded local production source is unauthenticated: {undeclared}")
     start = {
         "repo_head": capture_start["repo_head"],
+        "repository_binding": dict(capture_start["repository_binding"]),
         "source_hashes": dict(capture_start["source_hashes"]),
         "source_set_sha256": capture_start["source_set_sha256"],
         "head_blob_hashes": dict(capture_start["head_blob_hashes"]),
@@ -1252,6 +1605,7 @@ def _finalize_source_identity(
     }
     end = {
         "repo_head": capture_end["repo_head"],
+        "repository_binding": dict(capture_end["repository_binding"]),
         "source_hashes": dict(capture_end["source_hashes"]),
         "source_set_sha256": capture_end["source_set_sha256"],
         "head_blob_hashes": dict(capture_end["head_blob_hashes"]),
@@ -1261,6 +1615,7 @@ def _finalize_source_identity(
     }
     return {
         "repo_head": start["repo_head"],
+        "repository_binding": dict(start["repository_binding"]),
         "source_hashes": dict(start["source_hashes"]),
         "source_set_sha256": start["source_set_sha256"],
         "head_blob_hashes": dict(start["head_blob_hashes"]),
@@ -1271,21 +1626,41 @@ def _finalize_source_identity(
         "capture_end": end,
         "capture_start_equals_end": start == end,
         "loaded_local_source_paths": list(loaded_paths),
+        "loaded_recurquant_module_paths": loaded_module_paths,
     }
 
 
+def _runtime_package_manifest() -> tuple[dict[str, str], str]:
+    packages = {
+        distribution: str(importlib.metadata.version(distribution))
+        for distribution in RUNTIME_PACKAGE_DISTRIBUTIONS
+    }
+    payload = json.dumps(packages, sort_keys=True, separators=(",", ":")) + "\n"
+    manifest_sha256 = _sha256_bytes(payload.encode("utf-8"))
+    if manifest_sha256 != PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256:
+        raise RuntimeError(
+            "the Experiment 011 runtime package manifest differs from the frozen identity"
+        )
+    return packages, manifest_sha256
+
+
 def _runtime_identity() -> dict[str, object]:
+    packages, package_manifest_sha256 = _runtime_package_manifest()
     return {
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "python_executable": Path(sys.executable).name,
         "python_environment": Path(sys.prefix).name,
-        # torch.__version__ is a TorchVersion (a str subclass) in recent
-        # PyTorch releases.  Persist a plain str so weights_only=True does not
-        # need to allowlist a Python class merely to read runtime metadata.
-        "torch_version": str(torch.__version__),
-        "transformers_version": str(transformers.__version__),
-        "numpy_version": importlib.metadata.version("numpy"),
+        "datasets_version": packages["datasets"],
+        "fsspec_version": packages["fsspec"],
+        "huggingface_hub_version": packages["huggingface-hub"],
+        "numpy_version": packages["numpy"],
+        "pyarrow_version": packages["pyarrow"],
+        "safetensors_version": packages["safetensors"],
+        "tokenizers_version": packages["tokenizers"],
+        "torch_version": packages["torch"],
+        "transformers_version": packages["transformers"],
+        "package_manifest_sha256": package_manifest_sha256,
         "platform": platform.platform(),
         "system": platform.system(),
         "machine": platform.machine(),
@@ -1414,9 +1789,11 @@ def write_artifact(artifact: Mapping[str, object], path: Path) -> dict[str, obje
     except ValueError:
         relative = None
     if relative is not None:
-        ignored = subprocess.run(
-            ["git", "check-ignore", "--quiet", "--", relative.as_posix()],
-            cwd=REPO_ROOT,
+        ignored = _capture_git(
+            "check-ignore",
+            "--quiet",
+            "--",
+            relative.as_posix(),
             check=False,
         )
         if ignored.returncode != 0:
@@ -1429,17 +1806,27 @@ def write_artifact(artifact: Mapping[str, object], path: Path) -> dict[str, obje
     os.link(temporary, path)
     temporary.unlink()
     file_digest = _file_sha256(path)
-    with sidecar.open("x", encoding="ascii") as handle:
-        handle.write(f"{file_digest}  {path.name}\n")
+    with sidecar.open("xb") as handle:
+        handle.write(file_digest.encode("ascii") + b"  " + path.name.encode("ascii") + b"\n")
     return {
-        "artifact": str(path),
-        "sidecar": str(sidecar),
+        "artifact": _public_output_label(path),
+        "sidecar": _public_output_label(sidecar),
         "file_sha256": file_digest,
         "canonical_payload_sha256": artifact["canonical_payload_sha256"],
         "bytes": path.stat().st_size,
         "quality_data_accessed": False,
         "protected_mbpp_window_accessed": False,
     }
+
+
+def _public_output_label(path: Path) -> str:
+    """Return a stable report label without exposing an absolute local path."""
+
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        return resolved.name
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Run the one permitted Experiment 010 StateLease Stage-A falsification screen.
+"""Run the one permitted Experiment 011 StateLease Stage-A falsification screen.
 
 The command is deliberately difficult to run accidentally.  It authenticates
-the committed Experiment 009 task-666 evidence, both frozen selector
-artifacts, an independently verified production Stage-0 artifact, the exact
-repository source set, and the pinned model configuration before reserving the
-single Stage-A attempt.  Only then may it read the already-open task 666,
-tokenize it, or load model weights.
+the Experiment 010 administrative-null provenance, committed Experiment 009
+task-666 evidence, both frozen selector artifacts, an independently verified
+production Stage-0 artifact, the exact repository source set, the complete
+runtime/dependency readiness receipt, and the pinned model configuration
+before reserving the single Stage-A attempt.  Only then may it read the
+already-open task 666, tokenize it, or load model weights.
 
 Stage A cannot support a public improvement, novelty, deployment, speed,
 state-of-the-art, or breakthrough claim, even when every frozen gate passes.
@@ -52,7 +53,7 @@ from recurquant.statelease_evaluation import (
 )
 
 SEED = 2339
-ARTIFACT_KIND = "recurquant_experiment010_statelease_stage_a_falsification"
+ARTIFACT_KIND = "recurquant_experiment011_statelease_stage_a_falsification"
 ARTIFACT_SCHEMA_VERSION = 1
 
 MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
@@ -78,6 +79,9 @@ QUALITY_METHODS = (
     *EQUAL_BYTE_NO_REPLAY_METHODS,
 )
 ALL_METHODS = (FP32_METHOD, *QUALITY_METHODS)
+FROZEN_STAGE_A_FORWARD_PASSES = 429
+if len(ALL_METHODS) * (1 + ALIGNED_TOKENS) != FROZEN_STAGE_A_FORWARD_PASSES:
+    raise RuntimeError("frozen Stage-A forward-pass count drifted from the method matrix")
 
 LINEAR_LAYER_INDICES = (
     0,
@@ -133,16 +137,151 @@ LOSS_SELECTOR_FILE_SHA256 = "95c16656edb32efbc985f2fea59e229634dd558f4f4bf04819b
 SELECTOR_CANONICAL_SHA256 = "7970961fd88b522998189ad64f26b333aed9c88ff5f653de5449fd9e01d8cbc8"
 LOSS_SELECTOR_CANONICAL_SHA256 = "bff4e33253990b8115e1f35e74516c4975c2fe4aac5066475afe968eb8a64609"
 
-OUTPUT_RELATIVE_PATH = "artifacts/experiment010-statelease-stage-a-666.json"
-ATTEMPT_RELATIVE_PATH = "artifacts/experiment010-statelease-stage-a-666.attempt.json"
-IDENTITY_NOTE_RELATIVE_PATH = "research/EXPERIMENT_010_STAGE_A_IDENTITY.md"
-IDENTITY_NOTE_FILE_SHA256 = "0bab7c8f416ce238071b9a87ed6b6dda6450d0e21265ee06ce5e47b1be36deb6"
-ONE_RUN_MARKER = "RecurQuant-One-Run: experiment010-stage-a-task666-v1"
+EXPERIMENT010_ADMIN_NULL_RELATIVE_PATH = (
+    "evidence/experiment010-statelease-stage-a-administrative-null.json"
+)
+EXPERIMENT010_ADMIN_NULL_FILE_SHA256 = (
+    "2baa25005d4220f99ea784d21bce1c869311987b7ecc56cb9338f76c14b36d12"
+)
+EXPERIMENT010_ADMIN_NULL_CANONICAL_SHA256 = (
+    "c5f779ed4fd5a48284e212dfaead9146cbd2bb0b53404a5628fd49bc74ee31f3"
+)
+EXPERIMENT010_ADMIN_NULL_NOTE_RELATIVE_PATH = (
+    "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md"
+)
+EXPERIMENT010_ATTEMPT_RELATIVE_PATH = "artifacts/experiment010-statelease-stage-a-666.attempt.json"
+EXPERIMENT010_ATTEMPT_FILE_SHA256 = (
+    "f53cbb53f043180d40e472cacda64397014b8a60ec065fabcb5c0738d53adc15"
+)
+EXPERIMENT010_OUTPUT_RELATIVE_PATH = "artifacts/experiment010-statelease-stage-a-666.json"
+EXPERIMENT010_H0_COMMIT = "0e3dbcec2cb9cca1cdb062ec2491954ae052d7b9"
+EXPERIMENT010_SEAL_COMMIT = "c0ef99c924121b981d7bbda8ba4b9b76d3b14f51"
+EXPERIMENT010_SEAL_TREE = "e271ba8f11bdf588c361e6ffc797ec795671e7f8"
+EXPERIMENT010_ONE_RUN_MARKER = "RecurQuant-One-Run: experiment010-stage-a-task666-v1"
+
+OUTPUT_RELATIVE_PATH = "artifacts/experiment011-statelease-stage-a-666.json"
+ATTEMPT_RELATIVE_PATH = "artifacts/experiment011-statelease-stage-a-666.attempt.json"
+IDENTITY_NOTE_RELATIVE_PATH = "research/EXPERIMENT_011_STAGE_A_IDENTITY.md"
+IDENTITY_NOTE_FILE_SHA256 = "9a1a855df14ba96e05bc948d016d1f360dadcdb5a510a15f02b87f26e4390536"
+PROTOCOL_NOTE_RELATIVE_PATH = "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md"
+PROTOCOL_NOTE_FILE_SHA256 = "29ad6a7d6c6eec243191a0d444a748219ed2ed12ab42f48e01af7316c8ab2737"
+ONE_RUN_MARKER = "RecurQuant-One-Run: experiment011-stage-a-task666-v1"
 ONE_RUN_LIMITATION = (
     "The local Git commit plus reflog is tamper-evident for normal repository "
     "operations, not cryptographically non-bypassable against deliberate ref and "
     "reflog destruction; external append-only anchoring is outside this evaluator."
 )
+POSTSEAL_RECEIPT_LIMITATION = (
+    "The complete prepared receipt is exclusively written and file-fsynced before "
+    "the Git compare-and-swap. If post-CAS status promotion is interrupted, the "
+    "prepared receipt plus HEAD at the proposed seal is sufficient consumed evidence. "
+    "A filesystem or hardware failure that loses already-fsynced data remains outside "
+    "the evaluator's guarantees; it never resets or automatically retries."
+)
+
+EXPECTED_RUNTIME_PACKAGES = {
+    "datasets": "4.8.5",
+    "fsspec": "2026.2.0",
+    "huggingface-hub": "1.26.0",
+    "numpy": "2.4.6",
+    "pyarrow": "25.0.0",
+    "safetensors": "0.8.0",
+    "tokenizers": "0.22.2",
+    "torch": "2.11.0+cu128",
+    "transformers": "5.14.1",
+}
+RUNTIME_PACKAGE_IMPORTS = {
+    "datasets": "datasets",
+    "fsspec": "fsspec",
+    "huggingface-hub": "huggingface_hub",
+    "numpy": "numpy",
+    "pyarrow": "pyarrow",
+    "safetensors": "safetensors",
+    "tokenizers": "tokenizers",
+    "torch": "torch",
+    "transformers": "transformers",
+}
+EXPECTED_RUNTIME_PACKAGE_MANIFEST_SHA256 = (
+    "2466ad25043894fcd1604c97c373e5d5680061fdb7637f861b83d5c9465c31fe"
+)
+MODEL_WEIGHT_RESOURCE_FILENAME = "model.safetensors-00001-of-00001.safetensors"
+MODEL_WEIGHT_RESOURCE_SIZE = 1_746_942_600
+MODEL_WEIGHT_RESOURCE_SHA256 = "c2b1e5a17d9c1e27685d92ed9b382911ebb99955ecd89052d1721241adfbab6c"
+MODEL_WEIGHT_INDEX_FILENAME = "model.safetensors.index.json"
+MODEL_WEIGHT_INDEX_TENSOR_BYTES = 1_746_882_752
+ALLOWED_MODEL_WEIGHT_FILENAMES = frozenset(
+    {
+        MODEL_WEIGHT_INDEX_FILENAME,
+        MODEL_WEIGHT_RESOURCE_FILENAME,
+    }
+)
+ALTERNATE_MODEL_WEIGHT_FILENAMES = frozenset(
+    {
+        "adapter_config.json",
+        "adapter_model.bin",
+        "adapter_model.safetensors",
+        "flax_model.msgpack",
+        "model.ckpt.index",
+        "model.safetensors",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+        "tf_model.h5",
+    }
+)
+ALTERNATE_TOKENIZER_RESOURCE_FILENAMES = frozenset(
+    {
+        "added_tokens.json",
+        "chat_template.jinja",
+        "chat_templates",
+        "sentencepiece.bpe.model",
+        "special_tokens_map.json",
+        "spiece.model",
+        "tokenizer.model",
+    }
+)
+MODEL_CACHE_RESOURCES = {
+    "config.json": {
+        "size_bytes": 2_907,
+        "sha256": "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
+    },
+    MODEL_WEIGHT_INDEX_FILENAME: {
+        "size_bytes": 50_900,
+        "sha256": "ce9a885efdf27d3664fdef5d512ad365216f1074051ef840c7cd8e5431495d0a",
+    },
+    MODEL_WEIGHT_RESOURCE_FILENAME: {
+        "size_bytes": MODEL_WEIGHT_RESOURCE_SIZE,
+        "sha256": MODEL_WEIGHT_RESOURCE_SHA256,
+    },
+    "tokenizer_config.json": {
+        "size_bytes": 16_712,
+        "sha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de",
+    },
+    "tokenizer.json": {
+        "size_bytes": 12_807_196,
+        "sha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
+    },
+    "merges.txt": {
+        "size_bytes": 3_353_259,
+        "sha256": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d",
+    },
+    "vocab.json": {
+        "size_bytes": 6_722_759,
+        "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+    },
+}
+DATASET_CACHE_REVISION_RELATIVE_ID = (
+    "google-research-datasets___mbpp/full/0.0.0/4bb6404fdc6cacfda99d4ac4205087b89d32030c"
+)
+DATASET_CACHE_RESOURCES = {
+    "dataset_info.json": {
+        "size_bytes": 1_069,
+        "sha256": "141cbe58ff5cb6fe53772f36a41520c1f7f3adda9f773848e11fa7a5bd40123c",
+    },
+    "mbpp-train.arrow": {
+        "size_bytes": 178_448,
+        "sha256": "dbd85255cf0fad7b11f3b39233045a0ab1799c4fe51846ec57946e0abe59ed70",
+    },
+}
 
 EXPECTED_DATASET_MANIFEST = {
     "config": "full",
@@ -176,12 +315,17 @@ EXPECTED_TASK_IDENTITY = {
 
 SOURCE_FILES = (
     "pyproject.toml",
+    EXPERIMENT010_ATTEMPT_RELATIVE_PATH,
+    EXPERIMENT010_ADMIN_NULL_RELATIVE_PATH,
     "scripts/capture_statelease_stage0.py",
     "scripts/screen_rht_cqer.py",
     "scripts/screen_statelease_stage_a.py",
     "scripts/verify_statelease_stage0.py",
     IDENTITY_NOTE_RELATIVE_PATH,
+    PROTOCOL_NOTE_RELATIVE_PATH,
+    "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
     "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
+    EXPERIMENT010_ADMIN_NULL_NOTE_RELATIVE_PATH,
     "src/recurquant/__init__.py",
     "src/recurquant/cache.py",
     "src/recurquant/cli.py",
@@ -240,11 +384,26 @@ SOURCE_FILES = (
 )
 
 CLAIM_BOUNDARY = (
-    "Experiment 010 Stage A is one-task, already-open falsification evidence. "
+    "Experiment 011 Stage A is one-task, already-open falsification evidence. "
     "Passing only authorizes the separately frozen development-identity step. "
     "It cannot support a public improvement, novelty, deployment, speed, "
     "state-of-the-art, or breakthrough claim."
 )
+PRESEAL_FRESHNESS_KEYS = frozenset(
+    {
+        "repository_reauthenticated",
+        "source_head_blobs_reauthenticated",
+        "new_marker_absent",
+        "stage0_reauthenticated",
+        "experiment010_administrative_null_reauthenticated",
+        "runtime_readiness_reauthenticated",
+        "configuration_reauthenticated_local_only",
+    }
+)
+RESULT_PREPARED_STATUS = "result_prepared_before_output_publish"
+RESULT_COMPLETED_STATUS = "completed_with_authenticated_stage_a_result"
+RESULT_PROMOTION_INTERRUPTED_STATUS = "completed_result_published_receipt_promotion_interrupted"
+RESULT_PUBLICATION_FAILED_STATUS = "result_prepared_output_publication_failed"
 
 
 class StageAAuthenticationError(RuntimeError):
@@ -257,6 +416,7 @@ class StageAPreflight:
     repository_start: dict[str, object]
     source_hashes_start: dict[str, str]
     identity_clarification: dict[str, object]
+    experiment010_admin_null: dict[str, object]
     anchor: dict[str, object]
     selector_identity: dict[str, object]
     plan: object
@@ -271,6 +431,12 @@ class StageAPreflight:
 class ModelConfiguration:
     config: object
     identity: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeReadiness:
+    receipt: dict[str, object]
+    canonical_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,32 +457,188 @@ class AttemptReservation:
     seal_message_sha256: str
 
 
+@dataclass(slots=True)
+class AccessLedger:
+    phase: str = "reserved_before_task_entry"
+    task_load_entered: bool = False
+    task_row_loaded: bool = False
+    tokenizer_entered: bool = False
+    tokenizer_loaded: bool = False
+    model_weights_entered: bool = False
+    model_weights_loaded: bool = False
+    evaluation_entered: bool = False
+    evaluation_returned: bool = False
+    finalization_entered: bool = False
+
+    def snapshot(self) -> dict[str, object]:
+        def conservative(completed: bool, entered: bool) -> bool | None:
+            if completed:
+                return True
+            if entered:
+                return None
+            return False
+
+        return {
+            "phase": self.phase,
+            "task_load_entered": self.task_load_entered,
+            "task_row_loaded": conservative(
+                self.task_row_loaded,
+                self.task_load_entered,
+            ),
+            "tokenizer_entered": self.tokenizer_entered,
+            "tokenizer_loaded": conservative(
+                self.tokenizer_loaded,
+                self.tokenizer_entered,
+            ),
+            "model_weights_entered": self.model_weights_entered,
+            "model_weights_loaded": conservative(
+                self.model_weights_loaded,
+                self.model_weights_entered,
+            ),
+            "evaluation_entered": self.evaluation_entered,
+            "evaluation_returned": conservative(
+                self.evaluation_returned,
+                self.evaluation_entered,
+            ),
+            "forward_passes": (
+                FROZEN_STAGE_A_FORWARD_PASSES
+                if self.evaluation_returned
+                else (None if self.evaluation_entered else 0)
+            ),
+            "forward_passes_minimum": (
+                FROZEN_STAGE_A_FORWARD_PASSES if self.evaluation_returned else 0
+            ),
+            "quality_result_computed": conservative(
+                self.evaluation_returned,
+                self.evaluation_entered,
+            ),
+            "finalization_entered": self.finalization_entered,
+        }
+
+
+ACCESS_PHASE_ORDER = (
+    "reserved_before_task_entry",
+    "task_load_entered",
+    "task_row_loaded",
+    "tokenizer_entered",
+    "tokenizer_loaded",
+    "model_weights_entered",
+    "model_weights_loaded",
+    "evaluation_entered",
+    "evaluation_returned",
+    "finalization_entered",
+)
+
+
+def _expected_access_snapshot(phase: str) -> dict[str, object]:
+    try:
+        phase_index = ACCESS_PHASE_ORDER.index(phase)
+    except ValueError as error:
+        raise StageAAuthenticationError(
+            f"unknown Stage-A access-ledger phase: {phase!r}"
+        ) from error
+    ledger = AccessLedger(phase=phase)
+    ledger.task_load_entered = phase_index >= 1
+    ledger.task_row_loaded = phase_index >= 2
+    ledger.tokenizer_entered = phase_index >= 3
+    ledger.tokenizer_loaded = phase_index >= 4
+    ledger.model_weights_entered = phase_index >= 5
+    ledger.model_weights_loaded = phase_index >= 6
+    ledger.evaluation_entered = phase_index >= 7
+    ledger.evaluation_returned = phase_index >= 8
+    ledger.finalization_entered = phase_index >= 9
+    return ledger.snapshot()
+
+
+def _validated_access_snapshot(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise StageAAuthenticationError("attempt receipt lacks its access ledger")
+    phase = value.get("phase")
+    if not isinstance(phase, str):
+        raise StageAAuthenticationError("attempt access-ledger phase is malformed")
+    expected = _expected_access_snapshot(phase)
+    if dict(value) != expected:
+        raise StageAAuthenticationError(
+            "attempt access ledger is not the exact frozen snapshot for its phase"
+        )
+    return expected
+
+
+def _assert_adjacent_access_transition(
+    previous: Mapping[str, object],
+    current: Mapping[str, object],
+    *,
+    allow_equal: bool,
+) -> None:
+    previous_phase = str(previous["phase"])
+    current_phase = str(current["phase"])
+    previous_index = ACCESS_PHASE_ORDER.index(previous_phase)
+    current_index = ACCESS_PHASE_ORDER.index(current_phase)
+    allowed = {previous_index + 1}
+    if allow_equal:
+        allowed.add(previous_index)
+    if current_index not in allowed:
+        raise StageAAuthenticationError("attempt access ledger regressed or skipped a frozen phase")
+
+
 @dataclass(frozen=True, slots=True)
 class AccessHooks:
     """Dependency-injected ordering contract used by production and tests."""
 
     authenticate: Callable[[], object]
+    authenticate_readiness: Callable[[object], object]
     load_config: Callable[[object], object]
-    reserve_attempt: Callable[[object, object], object]
+    reserve_attempt: Callable[[object, object, object], object]
     load_exact_task: Callable[[object], object]
     tokenize_task: Callable[[object, object], object]
     load_weights: Callable[[object, object], object]
     evaluate: Callable[[object, object, object, object], object]
+    record_access_transition: Callable[[object, AccessLedger], object]
+    record_evaluation_returned: Callable[[object, AccessLedger], object]
     finalize: Callable[[object, object, object, object, object, object], object]
-    record_failure: Callable[[object, BaseException], None]
+    record_failure: Callable[[object, BaseException, AccessLedger], None]
 
 
 def run_ordered_access(hooks: AccessHooks) -> object:
-    """Enforce authentication-before-data and token-identity-before-weights."""
+    """Enforce complete readiness before sealing/data and tokens before weights."""
 
     authenticated = hooks.authenticate()
+    readiness = hooks.authenticate_readiness(authenticated)
     configuration = hooks.load_config(authenticated)
-    attempt = hooks.reserve_attempt(authenticated, configuration)
+    attempt = hooks.reserve_attempt(authenticated, configuration, readiness)
+    ledger = AccessLedger()
     try:
+        ledger.phase = "task_load_entered"
+        ledger.task_load_entered = True
+        attempt = hooks.record_access_transition(attempt, ledger)
         row = hooks.load_exact_task(authenticated)
+        ledger.phase = "task_row_loaded"
+        ledger.task_row_loaded = True
+        attempt = hooks.record_access_transition(attempt, ledger)
+        ledger.tokenizer_entered = True
+        ledger.phase = "tokenizer_entered"
+        attempt = hooks.record_access_transition(attempt, ledger)
         tokenized = hooks.tokenize_task(authenticated, row)
+        ledger.tokenizer_loaded = True
+        ledger.phase = "tokenizer_loaded"
+        attempt = hooks.record_access_transition(attempt, ledger)
+        ledger.model_weights_entered = True
+        ledger.phase = "model_weights_entered"
+        attempt = hooks.record_access_transition(attempt, ledger)
         model = hooks.load_weights(configuration, authenticated)
+        ledger.model_weights_loaded = True
+        ledger.phase = "model_weights_loaded"
+        attempt = hooks.record_access_transition(attempt, ledger)
+        ledger.evaluation_entered = True
+        ledger.phase = "evaluation_entered"
+        attempt = hooks.record_access_transition(attempt, ledger)
         result = hooks.evaluate(model, tokenized, authenticated, configuration)
+        ledger.evaluation_returned = True
+        ledger.phase = "evaluation_returned"
+        attempt = hooks.record_evaluation_returned(attempt, ledger)
+        ledger.finalization_entered = True
+        ledger.phase = "finalization_entered"
+        attempt = hooks.record_access_transition(attempt, ledger)
         return hooks.finalize(
             result,
             model,
@@ -326,7 +648,7 @@ def run_ordered_access(hooks: AccessHooks) -> object:
             attempt,
         )
     except BaseException as error:
-        hooks.record_failure(attempt, error)
+        hooks.record_failure(attempt, error, ledger)
         raise
 
 
@@ -367,21 +689,223 @@ def _json_mapping(path: Path) -> dict[str, object]:
     return value
 
 
-def _git(repo_root: Path, *arguments: str) -> str:
-    process = subprocess.run(
+def _sanitized_git_environment(
+    extra: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a Git environment with no inherited repository/object routing."""
+
+    environment = {
+        key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")
+    }
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_SYSTEM"] = os.devnull
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_CONFIG_COUNT"] = "4"
+    environment["GIT_CONFIG_KEY_0"] = "core.hooksPath"
+    environment["GIT_CONFIG_VALUE_0"] = os.devnull
+    environment["GIT_CONFIG_KEY_1"] = "core.fsmonitor"
+    environment["GIT_CONFIG_VALUE_1"] = "false"
+    environment["GIT_CONFIG_KEY_2"] = "core.untrackedCache"
+    environment["GIT_CONFIG_VALUE_2"] = "false"
+    environment["GIT_CONFIG_KEY_3"] = "core.autocrlf"
+    environment["GIT_CONFIG_VALUE_3"] = "false"
+    if extra is not None:
+        allowed = {
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        }
+        if any(key.upper() not in allowed for key in extra):
+            raise StageAAuthenticationError("unsupported explicit Git environment override")
+        environment.update({key.upper(): value for key, value in extra.items()})
+    return environment
+
+
+def _run_git_process(
+    repo_root: Path,
+    *arguments: str,
+    input_text: str | None = None,
+    environment_overrides: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["git", *arguments],
         cwd=repo_root,
         check=False,
         capture_output=True,
         text=True,
+        input=input_text,
+        env=_sanitized_git_environment(environment_overrides),
     )
+
+
+def _git(repo_root: Path, *arguments: str) -> str:
+    process = _run_git_process(repo_root, *arguments)
     if process.returncode != 0:
         message = process.stderr.strip() or process.stdout.strip()
         raise StageAAuthenticationError(f"git {' '.join(arguments)} failed: {message}")
     return process.stdout.strip()
 
 
+def _git_path(repo_root: Path, value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = repo_root / path
+    try:
+        return path.resolve(strict=True)
+    except OSError as error:
+        raise StageAAuthenticationError("resolved Git repository path is unavailable") from error
+
+
+def _assert_git_repository_identity(repo_root: Path) -> dict[str, object]:
+    """Authenticate the exact worktree, Git directory, and object view."""
+
+    try:
+        expected_root = repo_root.resolve(strict=True)
+    except OSError as error:
+        raise StageAAuthenticationError("Stage-A repository root is unavailable") from error
+    top_level = _git_path(repo_root, _git(repo_root, "rev-parse", "--show-toplevel"))
+    git_dir = _git_path(repo_root, _git(repo_root, "rev-parse", "--absolute-git-dir"))
+    common_dir = _git_path(repo_root, _git(repo_root, "rev-parse", "--git-common-dir"))
+    object_dir = _git_path(repo_root, _git(repo_root, "rev-parse", "--git-path", "objects"))
+    index_path_raw = _git(repo_root, "rev-parse", "--git-path", "index")
+    index_path = Path(index_path_raw)
+    if not index_path.is_absolute():
+        index_path = repo_root / index_path
+    index_path = index_path.resolve(strict=False)
+
+    if top_level != expected_root:
+        raise StageAAuthenticationError("Git top-level does not match the Stage-A repository root")
+    if _git(repo_root, "rev-parse", "--is-inside-work-tree") != "true":
+        raise StageAAuthenticationError(
+            "Stage A is not executing inside the authenticated worktree"
+        )
+    if _git(repo_root, "rev-parse", "--is-bare-repository") != "false":
+        raise StageAAuthenticationError("Stage A refuses a bare Git repository")
+    if _git(repo_root, "rev-parse", "--show-object-format") != "sha1":
+        raise StageAAuthenticationError("Stage A requires the frozen SHA-1 Git object format")
+    if _git(repo_root, "rev-parse", "--is-shallow-repository") != "false":
+        raise StageAAuthenticationError("Stage A refuses a shallow Git history")
+    if not git_dir.is_dir() or not common_dir.is_dir():
+        raise StageAAuthenticationError("resolved Git directory identity is malformed")
+    dot_git = expected_root / ".git"
+    if dot_git.is_dir():
+        expected_git_dir = dot_git.resolve(strict=True)
+        if git_dir != expected_git_dir or common_dir != expected_git_dir:
+            raise StageAAuthenticationError(
+                "Git directory is not the authenticated repository's .git store"
+            )
+        worktree_layout = "primary"
+    elif dot_git.is_file():
+        try:
+            pointer = dot_git.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as error:
+            raise StageAAuthenticationError(
+                "cannot authenticate the linked-worktree Git pointer"
+            ) from error
+        if not pointer.startswith("gitdir: "):
+            raise StageAAuthenticationError("linked-worktree Git pointer is malformed")
+        pointer_path = Path(pointer.removeprefix("gitdir: "))
+        if not pointer_path.is_absolute():
+            pointer_path = expected_root / pointer_path
+        try:
+            pointer_git_dir = pointer_path.resolve(strict=True)
+        except OSError as error:
+            raise StageAAuthenticationError(
+                "linked-worktree Git directory is unavailable"
+            ) from error
+        if (
+            pointer_git_dir != git_dir
+            or git_dir.parent.name != "worktrees"
+            or git_dir.parent.parent != common_dir
+        ):
+            raise StageAAuthenticationError(
+                "linked-worktree Git directory/common-store identity drifted"
+            )
+        back_pointer = git_dir / "gitdir"
+        try:
+            linked_dot_git = Path(back_pointer.read_text(encoding="utf-8").strip()).resolve(
+                strict=True
+            )
+        except (OSError, UnicodeError) as error:
+            raise StageAAuthenticationError(
+                "linked-worktree reverse Git pointer is unavailable"
+            ) from error
+        if linked_dot_git != dot_git.resolve(strict=True):
+            raise StageAAuthenticationError("linked-worktree reverse Git pointer drifted")
+        worktree_layout = "linked"
+    else:
+        raise StageAAuthenticationError("repository .git identity is unavailable")
+    expected_object_dir = (common_dir / "objects").resolve(strict=True)
+    if object_dir != expected_object_dir or not object_dir.is_dir():
+        raise StageAAuthenticationError(
+            "Git object directory is not the authenticated common store"
+        )
+    expected_index = (git_dir / "index").resolve(strict=False)
+    if index_path != expected_index:
+        raise StageAAuthenticationError("Git index path is redirected from the authenticated store")
+
+    alternates = object_dir / "info" / "alternates"
+    http_alternates = object_dir / "info" / "http-alternates"
+    for alternate_file in (alternates, http_alternates):
+        if not alternate_file.exists():
+            continue
+        try:
+            alternate_bytes = alternate_file.read_bytes()
+        except OSError as error:
+            raise StageAAuthenticationError("cannot authenticate Git object alternates") from error
+        if alternate_bytes.strip():
+            raise StageAAuthenticationError("Git alternate object stores are forbidden")
+    shallow = common_dir / "shallow"
+    if shallow.exists():
+        try:
+            shallow_bytes = shallow.read_bytes()
+        except OSError as error:
+            raise StageAAuthenticationError("cannot authenticate Git shallow history") from error
+        if shallow_bytes.strip():
+            raise StageAAuthenticationError("Git shallow history metadata is forbidden")
+    if _git(repo_root, "for-each-ref", "--format=%(refname)", "refs/replace"):
+        raise StageAAuthenticationError("Git replacement refs are forbidden")
+    grafts = common_dir / "info" / "grafts"
+    if grafts.exists():
+        try:
+            graft_bytes = grafts.read_bytes()
+        except OSError as error:
+            raise StageAAuthenticationError("cannot authenticate Git history grafts") from error
+        if graft_bytes.strip():
+            raise StageAAuthenticationError("Git history grafts are forbidden")
+
+    def identity_digest(path: Path) -> str:
+        normalized = os.path.normcase(str(path))
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    return {
+        "top_level_matches_repo_root": True,
+        "inside_worktree": True,
+        "bare_repository": False,
+        "git_directory_authenticated": True,
+        "common_git_directory_authenticated": True,
+        "index_path_authenticated": True,
+        "object_directory_authenticated": True,
+        "alternate_object_stores_absent": True,
+        "shallow_history_absent": True,
+        "replacement_refs_absent": True,
+        "history_grafts_absent": True,
+        "object_format": "sha1",
+        "inherited_git_environment_scrubbed": True,
+        "system_and_global_git_config_disabled": True,
+        "worktree_layout": worktree_layout,
+        "top_level_identity_sha256": identity_digest(top_level),
+        "git_directory_identity_sha256": identity_digest(git_dir),
+        "common_git_directory_identity_sha256": identity_digest(common_dir),
+        "index_path_identity_sha256": identity_digest(index_path),
+        "object_directory_identity_sha256": identity_digest(object_dir),
+    }
+
+
 def _repository_state(repo_root: Path) -> dict[str, object]:
+    git_identity = _assert_git_repository_identity(repo_root)
     commit = _git(repo_root, "rev-parse", "HEAD")
     status = _git(
         repo_root,
@@ -395,6 +919,7 @@ def _repository_state(repo_root: Path) -> dict[str, object]:
         "branch": branch,
         "worktree_clean": not status,
         "porcelain": status.splitlines(),
+        "git_identity": git_identity,
     }
 
 
@@ -445,7 +970,7 @@ def _assert_sources_match_head(repo_root: Path) -> None:
         worktree_blob = _git(
             repo_root,
             "hash-object",
-            f"--path={relative}",
+            "--no-filters",
             "--",
             relative,
         )
@@ -469,6 +994,204 @@ def _assert_no_prior_stage_a_seal(repo_root: Path) -> None:
         )
 
 
+def _validate_experiment010_administrative_null(
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    if set(artifact) != {
+        "artifact_kind",
+        "canonical_evidence_sha256",
+        "evidence",
+    }:
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null artifact schema drifted"
+        )
+    if (
+        artifact.get("artifact_kind")
+        != "recurquant_experiment010_statelease_stage_a_administrative_null"
+        or artifact.get("canonical_evidence_sha256") != EXPERIMENT010_ADMIN_NULL_CANONICAL_SHA256
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null artifact identity drifted"
+        )
+    evidence = artifact.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise StageAAuthenticationError("Experiment 010 administrative-null evidence is missing")
+    if (
+        evidence.get("classification") != "infrastructure_failure_before_evaluation"
+        or evidence.get("scientific_result_available") is not False
+    ):
+        raise StageAAuthenticationError("Experiment 010 administrative-null classification drifted")
+
+    access = evidence.get("access_boundary")
+    expected_false_access = (
+        "aggregate_exposed",
+        "candidate_metrics_computed",
+        "dataset_load_dataset_called",
+        "logits_computed",
+        "model_weights_loaded",
+        "protected_mbpp_window_accessed",
+        "quality_result_exposed",
+        "task_row_loaded",
+        "tokenizer_loaded",
+    )
+    if (
+        not isinstance(access, Mapping)
+        or access.get("task_id") != TASK_ID
+        or access.get("completed_task_ids", []) != []
+        or access.get("forward_passes") != 0
+        or any(access.get(key) is not False for key in expected_false_access)
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null access boundary drifted"
+        )
+
+    original = evidence.get("original_attempt")
+    expected_original = {
+        "attempt_number": 1,
+        "automatic_rerun_authorized": False,
+        "h0_commit": EXPERIMENT010_H0_COMMIT,
+        "h0_tree": EXPERIMENT010_SEAL_TREE,
+        "one_run_marker": EXPERIMENT010_ONE_RUN_MARKER,
+        "raw_receipt_file_sha256": EXPERIMENT010_ATTEMPT_FILE_SHA256,
+        "receipt_schema": "recurquant.experiment010.stage-a-attempt.v1",
+        "receipt_status": "failed_without_authenticated_stage_a_result",
+        "result_artifact_created": False,
+        "seal_commit": EXPERIMENT010_SEAL_COMMIT,
+        "seal_parent": EXPERIMENT010_H0_COMMIT,
+        "seal_tree": EXPERIMENT010_SEAL_TREE,
+        "seal_tree_matches_h0": True,
+    }
+    if not isinstance(original, Mapping) or any(
+        original.get(key) != value for key, value in expected_original.items()
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null attempt provenance drifted"
+        )
+
+    recovery = evidence.get("recovery_disposition")
+    if (
+        not isinstance(recovery, Mapping)
+        or recovery.get("experiment010_resume_authorized") is not False
+        or recovery.get("failed_seal_and_receipt_preserved") is not True
+        or recovery.get("next_identity") != "Experiment 011"
+        or recovery.get("scientific_method_or_gate_changed") is not False
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null recovery disposition drifted"
+        )
+    return {
+        "classification": "infrastructure_failure_before_evaluation",
+        "scientific_result_available": False,
+        "quality_data_accessed": False,
+        "original_h0_commit": EXPERIMENT010_H0_COMMIT,
+        "original_seal_commit": EXPERIMENT010_SEAL_COMMIT,
+        "original_seal_tree": EXPERIMENT010_SEAL_TREE,
+        "original_one_run_marker": EXPERIMENT010_ONE_RUN_MARKER,
+        "experiment010_resume_authorized": False,
+        "next_experiment": "Experiment 011",
+    }
+
+
+def _validate_experiment010_failed_receipt(receipt: Mapping[str, object]) -> None:
+    expected = {
+        "schema": "recurquant.experiment010.stage-a-attempt.v1",
+        "status": "failed_without_authenticated_stage_a_result",
+        "attempt_number": 1,
+        "task_id": TASK_ID,
+        "output_path": EXPERIMENT010_OUTPUT_RELATIVE_PATH,
+        "h0_repository_commit": EXPERIMENT010_H0_COMMIT,
+        "one_run_seal_commit": EXPERIMENT010_SEAL_COMMIT,
+        "one_run_seal_tree": EXPERIMENT010_SEAL_TREE,
+        "one_run_marker": EXPERIMENT010_ONE_RUN_MARKER,
+        "completed_task_ids": [],
+        "quality_aggregate_exposed": False,
+        "rerun_automatically_authorized": False,
+        "failure_type": "RuntimeError",
+        "failure_message": (
+            "MBPP loading requires the optional evaluation dependencies; install recurquant[eval]"
+        ),
+    }
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise StageAAuthenticationError("Experiment 010 failed-attempt receipt semantics drifted")
+
+
+def _authenticate_experiment010_git_history(repo_root: Path) -> None:
+    reachable = set(_git(repo_root, "rev-list", "--all", "--reflog").splitlines())
+    if EXPERIMENT010_H0_COMMIT not in reachable or EXPERIMENT010_SEAL_COMMIT not in reachable:
+        raise StageAAuthenticationError(
+            "Experiment 010 H0 and one-run seal are not preserved in repository history"
+        )
+    if (
+        _git(repo_root, "show", "-s", "--format=%P", EXPERIMENT010_SEAL_COMMIT)
+        != EXPERIMENT010_H0_COMMIT
+        or _git(repo_root, "show", "-s", "--format=%T", EXPERIMENT010_SEAL_COMMIT)
+        != EXPERIMENT010_SEAL_TREE
+        or _git(repo_root, "show", "-s", "--format=%T", EXPERIMENT010_H0_COMMIT)
+        != EXPERIMENT010_SEAL_TREE
+    ):
+        raise StageAAuthenticationError("Experiment 010 preserved H0/seal ancestry or tree drifted")
+    old_message = _git(
+        repo_root,
+        "show",
+        "-s",
+        "--format=%B",
+        EXPERIMENT010_SEAL_COMMIT,
+    )
+    if EXPERIMENT010_ONE_RUN_MARKER not in old_message:
+        raise StageAAuthenticationError("Experiment 010 preserved one-run marker is missing")
+
+
+def authenticate_experiment010_administrative_null(
+    repo_root: Path,
+) -> dict[str, object]:
+    admin_path = repo_root / EXPERIMENT010_ADMIN_NULL_RELATIVE_PATH
+    if not admin_path.is_file() or _file_sha256(admin_path) != EXPERIMENT010_ADMIN_NULL_FILE_SHA256:
+        raise StageAAuthenticationError(
+            "committed Experiment 010 administrative-null file hash drifted"
+        )
+    verification = verify_evidence_artifact(admin_path)
+    if (
+        verification.get("valid") is not True
+        or verification.get("file_sha256") != EXPERIMENT010_ADMIN_NULL_FILE_SHA256
+        or verification.get("computed_canonical_evidence_sha256")
+        != EXPERIMENT010_ADMIN_NULL_CANONICAL_SHA256
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null canonical verification failed"
+        )
+    semantics = _validate_experiment010_administrative_null(_json_mapping(admin_path))
+
+    receipt_path = repo_root / EXPERIMENT010_ATTEMPT_RELATIVE_PATH
+    if (
+        not receipt_path.is_file()
+        or _file_sha256(receipt_path) != EXPERIMENT010_ATTEMPT_FILE_SHA256
+    ):
+        raise StageAAuthenticationError("Experiment 010 raw failed-attempt receipt hash drifted")
+    _validate_experiment010_failed_receipt(_json_mapping(receipt_path))
+    if (repo_root / EXPERIMENT010_OUTPUT_RELATIVE_PATH).exists():
+        raise StageAAuthenticationError(
+            "Experiment 010 result must remain absent after its administrative null"
+        )
+
+    _authenticate_experiment010_git_history(repo_root)
+
+    provenance = {
+        **semantics,
+        "administrative_null_path": EXPERIMENT010_ADMIN_NULL_RELATIVE_PATH,
+        "administrative_null_file_sha256": EXPERIMENT010_ADMIN_NULL_FILE_SHA256,
+        "administrative_null_canonical_evidence_sha256": (
+            EXPERIMENT010_ADMIN_NULL_CANONICAL_SHA256
+        ),
+        "raw_failed_receipt_path": EXPERIMENT010_ATTEMPT_RELATIVE_PATH,
+        "raw_failed_receipt_file_sha256": EXPERIMENT010_ATTEMPT_FILE_SHA256,
+        "experiment010_result_path": EXPERIMENT010_OUTPUT_RELATIVE_PATH,
+        "experiment010_result_absent": True,
+        "preserved_git_history_authenticated": True,
+    }
+    provenance["canonical_provenance_sha256"] = _canonical_sha256(provenance)
+    return provenance
+
+
 def _assert_repository_start(repo_root: Path) -> tuple[dict[str, object], dict[str, str]]:
     state = _repository_state(repo_root)
     if state["worktree_clean"] is not True:
@@ -488,11 +1211,7 @@ def _assert_ignored_exact_output(repo_root: Path) -> tuple[Path, Path]:
     if output != expected_output or attempt != expected_attempt:
         raise StageAAuthenticationError("Stage-A output identity is not exact")
     for path in (output, attempt):
-        ignored = subprocess.run(
-            ["git", "check-ignore", "--quiet", str(path)],
-            cwd=repo_root,
-            check=False,
-        )
+        ignored = _run_git_process(repo_root, "check-ignore", "--quiet", str(path))
         if ignored.returncode != 0:
             raise StageAAuthenticationError(
                 f"one-run artifact path is not Git-ignored: {path.name}"
@@ -607,13 +1326,18 @@ def authenticate_stage_a_identity_clarification(
     repo_root: Path,
 ) -> dict[str, object]:
     path = repo_root / IDENTITY_NOTE_RELATIVE_PATH
+    protocol_path = repo_root / PROTOCOL_NOTE_RELATIVE_PATH
     if not path.is_file() or _file_sha256(path) != IDENTITY_NOTE_FILE_SHA256:
         raise StageAAuthenticationError(
-            "Experiment 010 Stage-A identity clarification hash drifted"
+            "Experiment 011 Stage-A identity clarification hash drifted"
         )
+    if not protocol_path.is_file() or _file_sha256(protocol_path) != PROTOCOL_NOTE_FILE_SHA256:
+        raise StageAAuthenticationError("Experiment 011 StateLease protocol hash drifted")
     return {
         "path": IDENTITY_NOTE_RELATIVE_PATH,
         "file_sha256": IDENTITY_NOTE_FILE_SHA256,
+        "protocol_path": PROTOCOL_NOTE_RELATIVE_PATH,
+        "protocol_file_sha256": PROTOCOL_NOTE_FILE_SHA256,
         "task_id": TASK_ID,
         "row_sha256": TASK_ROW_SHA256,
         "prompt_text_sha256": PROMPT_TEXT_SHA256,
@@ -730,6 +1454,7 @@ def authenticate_static_inputs(args: argparse.Namespace) -> StageAPreflight:
     repository_start, source_hashes_start = _assert_repository_start(repo_root)
     output_path, attempt_path = _assert_ignored_exact_output(repo_root)
     identity_clarification = authenticate_stage_a_identity_clarification(repo_root)
+    experiment010_admin_null = authenticate_experiment010_administrative_null(repo_root)
     anchor = authenticate_experiment009_anchor(repo_root)
     selector_identity, plan = authenticate_selectors(repo_root, anchor)
     stage0, stage0_artifact, stage0_sha256 = authenticate_stage0(
@@ -743,6 +1468,7 @@ def authenticate_static_inputs(args: argparse.Namespace) -> StageAPreflight:
         repository_start=repository_start,
         source_hashes_start=source_hashes_start,
         identity_clarification=identity_clarification,
+        experiment010_admin_null=experiment010_admin_null,
         anchor=anchor,
         selector_identity=selector_identity,
         plan=plan,
@@ -778,16 +1504,322 @@ def _validate_model_geometry(config: object) -> dict[str, object]:
     return geometry
 
 
+def _runtime_dependency_versions() -> dict[str, str]:
+    actual: dict[str, str] = {}
+    for package, expected in EXPECTED_RUNTIME_PACKAGES.items():
+        try:
+            version = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError as error:
+            raise StageAAuthenticationError(
+                f"required runtime dependency is missing: {package}"
+            ) from error
+        if version != expected:
+            raise StageAAuthenticationError(
+                f"runtime dependency version drifted for {package}: "
+                f"expected {expected}, received {version}"
+            )
+        try:
+            importlib.import_module(RUNTIME_PACKAGE_IMPORTS[package])
+        except (ImportError, RuntimeError) as error:
+            raise StageAAuthenticationError(
+                f"required runtime dependency could not be imported: {package}"
+            ) from error
+        actual[package] = version
+    manifest_bytes = (json.dumps(actual, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "utf-8"
+    )
+    if hashlib.sha256(manifest_bytes).hexdigest() != (EXPECTED_RUNTIME_PACKAGE_MANIFEST_SHA256):
+        raise StageAAuthenticationError("runtime dependency compact-manifest SHA-256 drifted")
+    return actual
+
+
+def _resolve_cached_model_resource(filename: str) -> Path:
+    from huggingface_hub import try_to_load_from_cache
+
+    cached = try_to_load_from_cache(
+        MODEL_ID,
+        filename,
+        revision=MODEL_REVISION,
+    )
+    if not isinstance(cached, str):
+        raise StageAAuthenticationError(
+            f"pinned model resource is absent from the local cache: {filename}"
+        )
+    return Path(cached)
+
+
+def _is_recognized_model_weight_filename(filename: str) -> bool:
+    normalized = filename.casefold()
+    allowed = {item.casefold() for item in ALLOWED_MODEL_WEIGHT_FILENAMES}
+    alternates = {item.casefold() for item in ALTERNATE_MODEL_WEIGHT_FILENAMES}
+    return (
+        normalized in allowed
+        or normalized in alternates
+        or normalized.endswith((".safetensors", ".bin", ".h5", ".msgpack"))
+        or normalized.endswith((".safetensors.index.json", ".bin.index.json"))
+        or normalized.startswith("model.ckpt")
+    )
+
+
+def _is_unpinned_tokenizer_resource(filename: str) -> bool:
+    normalized = filename.casefold()
+    alternates = {item.casefold() for item in ALTERNATE_TOKENIZER_RESOURCE_FILENAMES}
+    return (
+        normalized in alternates
+        or normalized.endswith(".model")
+        or normalized.startswith("chat_template")
+    )
+
+
+def _authenticate_model_snapshot() -> tuple[Path, dict[str, object]]:
+    resources: dict[str, dict[str, object]] = {}
+    snapshot: Path | None = None
+    for filename, expected in MODEL_CACHE_RESOURCES.items():
+        cached = _resolve_cached_model_resource(filename).absolute()
+        if cached.name != filename or not cached.is_file():
+            raise StageAAuthenticationError(
+                f"pinned model cache identity is missing or malformed: {filename}"
+            )
+        if snapshot is None:
+            snapshot = cached.parent
+        elif cached.parent != snapshot:
+            raise StageAAuthenticationError(
+                "pinned model resources do not share one authenticated snapshot"
+            )
+        try:
+            size = cached.stat().st_size
+        except OSError as error:
+            raise StageAAuthenticationError(
+                f"cannot stat pinned model cache resource: {filename}"
+            ) from error
+        if size != expected["size_bytes"]:
+            raise StageAAuthenticationError(f"pinned model cache resource size drifted: {filename}")
+        digest = _file_sha256(cached)
+        if digest != expected["sha256"]:
+            raise StageAAuthenticationError(
+                f"pinned model cache resource SHA-256 drifted: {filename}"
+            )
+        resources[filename] = {
+            "resource_id": (f"{MODEL_ID}@{MODEL_REVISION}/{filename}"),
+            "size_bytes": size,
+            "sha256": digest,
+            "bytes_hashed_without_parsing_or_tensor_loading": True,
+        }
+    if snapshot is None or not snapshot.is_dir() or snapshot.name != MODEL_REVISION:
+        raise StageAAuthenticationError("pinned model snapshot revision identity drifted")
+
+    recognized = {
+        path.name for path in snapshot.iterdir() if _is_recognized_model_weight_filename(path.name)
+    }
+    if recognized != set(ALLOWED_MODEL_WEIGHT_FILENAMES):
+        extras = sorted(recognized - set(ALLOWED_MODEL_WEIGHT_FILENAMES))
+        missing = sorted(set(ALLOWED_MODEL_WEIGHT_FILENAMES) - recognized)
+        raise StageAAuthenticationError(
+            "pinned model snapshot weight file set drifted "
+            f"(missing={missing}, alternate_or_extra={extras})"
+        )
+    unpinned_tokenizer_resources = sorted(
+        path.name for path in snapshot.iterdir() if _is_unpinned_tokenizer_resource(path.name)
+    )
+    if unpinned_tokenizer_resources:
+        raise StageAAuthenticationError(
+            "pinned model snapshot contains unpinned tokenizer-affecting resources"
+        )
+
+    index_path = snapshot / MODEL_WEIGHT_INDEX_FILENAME
+    index = _json_mapping(index_path)
+    if set(index) != {"metadata", "weight_map"}:
+        raise StageAAuthenticationError("pinned model weight index schema drifted")
+    metadata = index.get("metadata")
+    weight_map = index.get("weight_map")
+    if (
+        not isinstance(metadata, Mapping)
+        or metadata.get("total_size") != MODEL_WEIGHT_INDEX_TENSOR_BYTES
+        or not isinstance(weight_map, Mapping)
+        or not weight_map
+        or any(
+            not isinstance(parameter, str) or shard != MODEL_WEIGHT_RESOURCE_FILENAME
+            for parameter, shard in weight_map.items()
+        )
+    ):
+        raise StageAAuthenticationError("pinned model weight index shard binding drifted")
+
+    resource_manifest_sha256 = _canonical_sha256(resources)
+    receipt = {
+        "model_id": MODEL_ID,
+        "revision": MODEL_REVISION,
+        "snapshot_resource_id": f"{MODEL_ID}@{MODEL_REVISION}",
+        "resources": resources,
+        "resource_manifest_sha256": resource_manifest_sha256,
+        "weight_index_filename": MODEL_WEIGHT_INDEX_FILENAME,
+        "weight_index_tensor_bytes": MODEL_WEIGHT_INDEX_TENSOR_BYTES,
+        "weight_shards": [MODEL_WEIGHT_RESOURCE_FILENAME],
+        "recognized_weight_files": sorted(recognized),
+        "alternate_or_unpinned_weight_files_absent": True,
+        "alternate_or_unpinned_tokenizer_resources_absent": True,
+        "loader_must_use_authenticated_snapshot_directory": True,
+        "local_cache_only": True,
+        "config_or_tokenizer_parsed": False,
+        "tensors_loaded": False,
+    }
+    return snapshot, receipt
+
+
+def _authenticate_cached_model_resources() -> dict[str, object]:
+    _snapshot, receipt = _authenticate_model_snapshot()
+    return receipt
+
+
+def _resolve_cached_dataset_revision(datasets_module: object) -> Path:
+    config = getattr(datasets_module, "config", None)
+    cache_root = getattr(config, "HF_DATASETS_CACHE", None)
+    if not isinstance(cache_root, (str, os.PathLike)):
+        raise StageAAuthenticationError(
+            "datasets cache root is unavailable from the authenticated runtime"
+        )
+    return Path(cache_root) / Path(DATASET_CACHE_REVISION_RELATIVE_ID)
+
+
+def _authenticate_cached_dataset_resources(
+    datasets_module: object,
+) -> dict[str, object]:
+    revision = _resolve_cached_dataset_revision(datasets_module)
+    if not revision.is_dir():
+        raise StageAAuthenticationError(
+            "pinned MBPP revision is absent from the local datasets cache"
+        )
+    resources: dict[str, dict[str, object]] = {}
+    for filename, expected in DATASET_CACHE_RESOURCES.items():
+        path = revision / filename
+        if not path.is_file():
+            raise StageAAuthenticationError(f"pinned MBPP cache resource is missing: {filename}")
+        try:
+            size = path.stat().st_size
+        except OSError as error:
+            raise StageAAuthenticationError(
+                f"cannot stat pinned MBPP cache resource: {filename}"
+            ) from error
+        if size != expected["size_bytes"]:
+            raise StageAAuthenticationError(f"pinned MBPP cache resource size drifted: {filename}")
+        digest = _file_sha256(path)
+        if digest != expected["sha256"]:
+            raise StageAAuthenticationError(
+                f"pinned MBPP cache resource SHA-256 drifted: {filename}"
+            )
+        resources[filename] = {
+            "resource_id": f"{DATASET_CACHE_REVISION_RELATIVE_ID}/{filename}",
+            "size_bytes": size,
+            "sha256": digest,
+            "bytes_hashed_without_decoding_or_iteration": True,
+        }
+    return {
+        "dataset_id": EXPECTED_DATASET_MANIFEST["dataset_id"],
+        "revision": EXPECTED_DATASET_MANIFEST["revision"],
+        "config": EXPECTED_DATASET_MANIFEST["config"],
+        "cache_revision_resource_id": DATASET_CACHE_REVISION_RELATIVE_ID,
+        "resources": resources,
+        "local_cache_only": True,
+        "dataset_rows_decoded_or_iterated": False,
+    }
+
+
+def authenticate_runtime_readiness(*, device_name: str) -> RuntimeReadiness:
+    if device_name not in {"auto", "cuda"}:
+        raise StageAAuthenticationError("Experiment 011 supports only the pinned CUDA BF16 path")
+    packages = _runtime_dependency_versions()
+    try:
+        datasets_module = importlib.import_module("datasets")
+    except (ImportError, RuntimeError) as error:
+        raise StageAAuthenticationError(
+            "the exact datasets runtime could not be imported"
+        ) from error
+    if not callable(getattr(datasets_module, "load_dataset", None)):
+        raise StageAAuthenticationError("datasets.load_dataset is unavailable or non-callable")
+    if not torch.cuda.is_available():
+        raise StageAAuthenticationError(
+            "the frozen Experiment 011 Stage-A CUDA device is unavailable"
+        )
+    visible_device_count = int(torch.cuda.device_count())
+    if visible_device_count < 1:
+        raise StageAAuthenticationError(
+            "the frozen Experiment 011 Stage-A runtime has no visible CUDA device"
+        )
+    bf16_check = getattr(torch.cuda, "is_bf16_supported", None)
+    if not callable(bf16_check) or bf16_check() is not True:
+        raise StageAAuthenticationError(
+            "the frozen Experiment 011 Stage-A CUDA device lacks BF16 support"
+        )
+    dataset_resources = _authenticate_cached_dataset_resources(datasets_module)
+    model_resources = _authenticate_cached_model_resources()
+    receipt: dict[str, object] = {
+        "schema": "recurquant.experiment011.runtime-readiness.v1",
+        "packages": packages,
+        "package_manifest_sha256": EXPECTED_RUNTIME_PACKAGE_MANIFEST_SHA256,
+        "package_imports": dict(RUNTIME_PACKAGE_IMPORTS),
+        "datasets_api": {
+            "module_imported": True,
+            "load_dataset_callable": True,
+            "load_dataset_called": False,
+        },
+        "accelerator": {
+            "requested_device": device_name,
+            "resolved_device": "cuda",
+            "cuda_available": True,
+            "visible_device_count": visible_device_count,
+            "bf16_supported": True,
+            "model_dtype": str(MODEL_DTYPE),
+            "torch_cuda_runtime": torch.version.cuda,
+        },
+        "model_cache_resources": model_resources,
+        "dataset_cache_resources": dataset_resources,
+        "authenticated_before_one_run_seal": True,
+        "authenticated_before_task_tokenizer_or_model_weights": True,
+    }
+    return RuntimeReadiness(
+        receipt=receipt,
+        canonical_sha256=_canonical_sha256(receipt),
+    )
+
+
+def _readiness_bundle(readiness: RuntimeReadiness) -> dict[str, object]:
+    if _canonical_sha256(readiness.receipt) != readiness.canonical_sha256:
+        raise StageAAuthenticationError("runtime readiness receipt canonical hash drifted")
+    return {
+        "receipt": readiness.receipt,
+        "canonical_sha256": readiness.canonical_sha256,
+    }
+
+
+def _runtime_readiness_from_bundle(value: object) -> RuntimeReadiness:
+    if not isinstance(value, Mapping):
+        raise StageAAuthenticationError("runtime readiness bundle is malformed")
+    receipt = value.get("receipt")
+    canonical_sha256 = value.get("canonical_sha256")
+    if not isinstance(receipt, Mapping) or not isinstance(canonical_sha256, str):
+        raise StageAAuthenticationError("runtime readiness receipt is malformed")
+    readiness = RuntimeReadiness(
+        receipt=dict(receipt),
+        canonical_sha256=canonical_sha256,
+    )
+    _readiness_bundle(readiness)
+    return readiness
+
+
 def load_and_authenticate_config(
     preflight: StageAPreflight,
     *,
     local_files_only: bool,
 ) -> ModelConfiguration:
     del preflight
+    if local_files_only is not True:
+        raise StageAAuthenticationError(
+            "Experiment 011 configuration authentication requires --local-files-only"
+        )
     from transformers import AutoConfig
 
+    snapshot, cache_receipt = _authenticate_model_snapshot()
     config = AutoConfig.from_pretrained(
-        MODEL_ID,
+        str(snapshot),
         revision=MODEL_REVISION,
         local_files_only=local_files_only,
         trust_remote_code=False,
@@ -802,6 +1834,9 @@ def load_and_authenticate_config(
             "dtype": str(MODEL_DTYPE),
             "attn_implementation": "eager",
             "geometry": geometry,
+            "authenticated_snapshot_resource_id": cache_receipt["snapshot_resource_id"],
+            "model_cache_resource_manifest_sha256": cache_receipt["resource_manifest_sha256"],
+            "configuration_loaded_from_authenticated_snapshot": True,
             "configuration_authenticated_before_task_or_model_weights": True,
         },
     )
@@ -846,12 +1881,27 @@ def _commit_tree(
     parent: str,
     message: str,
 ) -> str:
-    environment = dict(os.environ)
-    name = _git(repo_root, "config", "--get", "user.name")
-    email = _git(repo_root, "config", "--get", "user.email")
+    _assert_git_repository_identity(repo_root)
+    parent_payload = _git(repo_root, "cat-file", "commit", parent)
+    author_headers = [
+        line.removeprefix("author ")
+        for line in parent_payload.splitlines()
+        if line.startswith("author ")
+    ]
+    if len(author_headers) != 1:
+        raise StageAAuthenticationError(
+            "parent commit does not contain one authenticated author identity"
+        )
+    author = author_headers[0]
+    email_start = author.rfind(" <")
+    email_end = author.find("> ", email_start + 2)
+    if email_start <= 0 or email_end <= email_start + 2:
+        raise StageAAuthenticationError("parent commit author identity is malformed")
+    name = author[:email_start]
+    email = author[email_start + 2 : email_end]
     if not name or not email or "\n" in name or "\n" in email:
         raise StageAAuthenticationError(
-            "repository Git user.name and user.email are required for the one-run seal"
+            "authenticated parent author identity is required for the one-run seal"
         )
     identity = {
         "GIT_AUTHOR_NAME": name,
@@ -859,15 +1909,14 @@ def _commit_tree(
         "GIT_COMMITTER_NAME": name,
         "GIT_COMMITTER_EMAIL": email,
     }
-    environment.update(identity)
-    process = subprocess.run(
-        ["git", "commit-tree", tree, "-p", parent],
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
-        input=f"{message}\n",
-        env=environment,
+    process = _run_git_process(
+        repo_root,
+        "commit-tree",
+        tree,
+        "-p",
+        parent,
+        input_text=f"{message}\n",
+        environment_overrides=identity,
     )
     if process.returncode != 0:
         detail = process.stderr.strip() or process.stdout.strip()
@@ -875,34 +1924,73 @@ def _commit_tree(
     commit = process.stdout.strip()
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         raise StageAAuthenticationError("one-run seal commit identity is malformed")
+    _assert_git_repository_identity(repo_root)
     return commit
 
 
-def _seal_message(preflight: StageAPreflight, configuration: ModelConfiguration) -> str:
+def _seal_message(
+    preflight: StageAPreflight,
+    configuration: ModelConfiguration,
+    readiness: RuntimeReadiness,
+    preseal_freshness: Mapping[str, object],
+) -> str:
+    initial_access_ledger = _expected_access_snapshot("reserved_before_task_entry")
     payload = {
-        "schema": "recurquant.experiment010.stage-a-one-run-seal.v1",
+        "schema": "recurquant.experiment011.stage-a-one-run-seal.v1",
         "marker": ONE_RUN_MARKER,
         "h0_commit": preflight.repository_start["commit"],
         "source_set_sha256": _canonical_sha256(preflight.source_hashes_start),
         "identity_note_file_sha256": IDENTITY_NOTE_FILE_SHA256,
+        "protocol_note_file_sha256": PROTOCOL_NOTE_FILE_SHA256,
+        "experiment010_administrative_null": preflight.experiment010_admin_null,
         "experiment009_file_sha256": EXPERIMENT009_STAGE_A_FILE_SHA256,
         "stage0_artifact_file_sha256": preflight.stage0.get("artifact_file_sha256"),
         "stage0_sidecar_file_sha256": preflight.stage0.get("sidecar_file_sha256"),
         "selector_file_sha256": SELECTOR_FILE_SHA256,
         "loss_selector_file_sha256": LOSS_SELECTOR_FILE_SHA256,
+        "runtime_readiness": _readiness_bundle(readiness),
+        "preseal_freshness": dict(preseal_freshness),
         "model": configuration.identity,
         "task_id": TASK_ID,
+        "attempt_number": 1,
+        "attempt_path": ATTEMPT_RELATIVE_PATH,
+        "output_path": OUTPUT_RELATIVE_PATH,
+        "claim_boundary": CLAIM_BOUNDARY,
+        "postseal_receipt_limitation": POSTSEAL_RECEIPT_LIMITATION,
+        "completed_task_ids": [],
+        "quality_data_accessed": False,
+        "task_row_loaded": False,
+        "tokenizer_loaded": False,
+        "model_weights_loaded": False,
+        "evaluation_entered": False,
+        "evaluation_returned": False,
+        "forward_passes": 0,
+        "forward_passes_minimum": 0,
+        "quality_result_computed": False,
+        "access_ledger": initial_access_ledger,
+        "quality_aggregate_exposed": False,
+        "rerun_automatically_authorized": False,
         "quality_data_accessed_before_seal": False,
         "model_weights_loaded_before_seal": False,
     }
     payload_bytes = canonical_json_bytes(payload)
     payload_hash = hashlib.sha256(payload_bytes).hexdigest()
     return (
-        "chore: reserve Experiment 010 Stage-A one-run\n\n"
+        "chore: reserve Experiment 011 Stage-A one-run\n\n"
         f"{ONE_RUN_MARKER}\n"
         f"RecurQuant-One-Run-Payload-SHA256: {payload_hash}\n\n"
         f"{payload_bytes.decode('utf-8')}"
     ).rstrip("\r\n")
+
+
+def _validated_preseal_freshness(value: object) -> dict[str, object]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != PRESEAL_FRESHNESS_KEYS
+        or any(item is not True for item in value.values())
+    ):
+        raise StageAAuthenticationError("pre-seal freshness receipt is incomplete or malformed")
+    return dict(value)
 
 
 def _validate_one_run_seal(
@@ -912,6 +2000,11 @@ def _validate_one_run_seal(
     require_receipt: bool,
 ) -> dict[str, object]:
     state = _repository_state(preflight.repo_root)
+    start_git_identity = preflight.repository_start.get("git_identity")
+    if not isinstance(start_git_identity, Mapping) or state.get("git_identity") != dict(
+        start_git_identity
+    ):
+        raise StageAAuthenticationError("Git repository/object identity changed after H0")
     if state["worktree_clean"] is not True:
         raise StageAAuthenticationError("repository became dirty after one-run sealing")
     if state["commit"] != reservation.seal_commit:
@@ -946,9 +2039,84 @@ def _validate_one_run_seal(
     model_identity = reservation.receipt.get("model")
     if not isinstance(model_identity, Mapping):
         raise StageAAuthenticationError("one-run receipt model identity is malformed")
+    expected_receipt_identity = {
+        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "attempt_number": 1,
+        "task_id": TASK_ID,
+        "output_path": OUTPUT_RELATIVE_PATH,
+        "attempt_path": ATTEMPT_RELATIVE_PATH,
+        "h0_repository_commit": reservation.h0_commit,
+        "one_run_seal_commit": reservation.seal_commit,
+        "one_run_seal_tree": reservation.tree,
+        "one_run_marker": ONE_RUN_MARKER,
+        "one_run_seal_message_sha256": reservation.seal_message_sha256,
+        "quality_aggregate_exposed": False,
+        "rerun_automatically_authorized": False,
+        "claim_boundary": CLAIM_BOUNDARY,
+    }
+    if any(
+        reservation.receipt.get(key) != value for key, value in expected_receipt_identity.items()
+    ):
+        raise StageAAuthenticationError(
+            "promoted one-run receipt identity or access boundary drifted"
+        )
+    status = reservation.receipt.get("status")
+    if status == "reserved_before_quality_data_or_model_weights":
+        access_ledger = _validated_access_snapshot(reservation.receipt.get("access_ledger"))
+        expected_access = {
+            "completed_task_ids": [],
+            "quality_data_accessed": False,
+            "task_row_loaded": False,
+            "tokenizer_loaded": False,
+            "model_weights_loaded": False,
+            "evaluation_entered": False,
+            "evaluation_returned": False,
+            "forward_passes": 0,
+            "forward_passes_minimum": 0,
+            "quality_result_computed": False,
+        }
+        if access_ledger != _expected_access_snapshot("reserved_before_task_entry") or any(
+            reservation.receipt.get(key) != value for key, value in expected_access.items()
+        ):
+            raise StageAAuthenticationError("reserved receipt zero-access boundary drifted")
+    elif status in {
+        "running_with_monotonic_access_ledger",
+        "evaluation_returned_before_artifact_finalization",
+    }:
+        ledger = _validated_access_snapshot(reservation.receipt.get("access_ledger"))
+        evaluation_returned = ledger.get("evaluation_returned") is True
+        expected_access = {
+            "completed_task_ids": [TASK_ID] if evaluation_returned else [],
+            "quality_data_accessed": ledger.get("task_load_entered") is True,
+            "task_row_loaded": ledger.get("task_row_loaded"),
+            "tokenizer_loaded": ledger.get("tokenizer_loaded"),
+            "model_weights_loaded": ledger.get("model_weights_loaded"),
+            "evaluation_entered": ledger.get("evaluation_entered"),
+            "evaluation_returned": ledger.get("evaluation_returned"),
+            "forward_passes": ledger.get("forward_passes"),
+            "forward_passes_minimum": ledger.get("forward_passes_minimum"),
+            "quality_result_computed": ledger.get("quality_result_computed"),
+        }
+        if any(reservation.receipt.get(key) != value for key, value in expected_access.items()):
+            raise StageAAuthenticationError("running receipt access ledger reconciliation failed")
+        if (status == "evaluation_returned_before_artifact_finalization") != evaluation_returned:
+            raise StageAAuthenticationError("running receipt phase/status reconciliation failed")
+    else:
+        raise StageAAuthenticationError("one-run receipt status is not valid for active execution")
+    if (
+        reservation.receipt.get("experiment010_administrative_null")
+        != preflight.experiment010_admin_null
+    ):
+        raise StageAAuthenticationError(
+            "one-run receipt Experiment 010 administrative-null provenance drifted"
+        )
+    readiness = _runtime_readiness_from_bundle(reservation.receipt.get("runtime_readiness"))
+    preseal_freshness = _validated_preseal_freshness(reservation.receipt.get("preseal_freshness"))
     expected_message = _seal_message(
         preflight,
         ModelConfiguration(config=None, identity=dict(model_identity)),
+        readiness,
+        preseal_freshness,
     )
     if (
         message != expected_message
@@ -966,6 +2134,10 @@ def _validate_one_run_seal(
             raise StageAAuthenticationError("reserved attempt receipt is missing") from error
         if hashlib.sha256(payload).hexdigest() != reservation.receipt_file_sha256:
             raise StageAAuthenticationError("reserved attempt receipt bytes drifted")
+        if payload != canonical_json_bytes(reservation.receipt):
+            raise StageAAuthenticationError(
+                "reserved attempt receipt object differs from its persisted bytes"
+            )
     return {
         "h0_commit": reservation.h0_commit,
         "seal_commit": reservation.seal_commit,
@@ -977,91 +2149,562 @@ def _validate_one_run_seal(
     }
 
 
+def _assert_preseal_freshness(
+    preflight: StageAPreflight,
+    configuration: ModelConfiguration,
+    readiness: RuntimeReadiness,
+) -> dict[str, object]:
+    h0_commit = str(preflight.repository_start["commit"])
+    state = _repository_state(preflight.repo_root)
+    start_git_identity = preflight.repository_start.get("git_identity")
+    if state["worktree_clean"] is not True or state["commit"] != h0_commit:
+        raise StageAAuthenticationError("repository identity changed before Experiment 011 sealing")
+    if not isinstance(start_git_identity, Mapping) or state.get("git_identity") != dict(
+        start_git_identity
+    ):
+        raise StageAAuthenticationError("Git repository/object identity changed before sealing")
+    _assert_sources_match_head(preflight.repo_root)
+    _assert_no_prior_stage_a_seal(preflight.repo_root)
+    if _source_hashes(preflight.repo_root) != preflight.source_hashes_start:
+        raise StageAAuthenticationError(
+            "authenticated source hashes changed before Experiment 011 sealing"
+        )
+
+    stage0_now, artifact_now, sidecar_now = authenticate_stage0(
+        preflight.stage0_artifact,
+        preflight.stage0_sha256,
+        expected_repo_head=h0_commit,
+    )
+    if (
+        stage0_now != preflight.stage0
+        or artifact_now != preflight.stage0_artifact
+        or sidecar_now != preflight.stage0_sha256
+    ):
+        raise StageAAuthenticationError(
+            "production Stage-0 identity changed before Experiment 011 sealing"
+        )
+    admin_now = authenticate_experiment010_administrative_null(preflight.repo_root)
+    if admin_now != preflight.experiment010_admin_null:
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null provenance changed before sealing"
+        )
+
+    accelerator = readiness.receipt.get("accelerator")
+    if not isinstance(accelerator, Mapping):
+        raise StageAAuthenticationError("runtime readiness accelerator receipt is malformed")
+    requested_device = accelerator.get("requested_device")
+    if not isinstance(requested_device, str):
+        raise StageAAuthenticationError("runtime readiness requested device is malformed")
+    readiness_now = authenticate_runtime_readiness(device_name=requested_device)
+    if _readiness_bundle(readiness_now) != _readiness_bundle(readiness):
+        raise StageAAuthenticationError("runtime dependency/cache readiness changed before sealing")
+    configuration_now = load_and_authenticate_config(
+        preflight,
+        local_files_only=True,
+    )
+    if configuration_now.identity != configuration.identity:
+        raise StageAAuthenticationError("pinned local model configuration changed before sealing")
+
+    final_state = _repository_state(preflight.repo_root)
+    if final_state["worktree_clean"] is not True or final_state["commit"] != h0_commit:
+        raise StageAAuthenticationError(
+            "repository identity changed during final pre-seal authentication"
+        )
+    if final_state.get("git_identity") != dict(start_git_identity):
+        raise StageAAuthenticationError(
+            "Git repository/object identity changed during final pre-seal authentication"
+        )
+    _assert_sources_match_head(preflight.repo_root)
+    if _source_hashes(preflight.repo_root) != preflight.source_hashes_start:
+        raise StageAAuthenticationError("source bytes changed during final pre-seal authentication")
+    _assert_no_prior_stage_a_seal(preflight.repo_root)
+    return {
+        "repository_reauthenticated": True,
+        "source_head_blobs_reauthenticated": True,
+        "new_marker_absent": True,
+        "stage0_reauthenticated": True,
+        "experiment010_administrative_null_reauthenticated": True,
+        "runtime_readiness_reauthenticated": True,
+        "configuration_reauthenticated_local_only": True,
+    }
+
+
+def _promote_prepared_attempt_receipt(
+    path: Path,
+    prepared: Mapping[str, object],
+) -> tuple[dict[str, object], bytes]:
+    expected_prepared_bytes = canonical_json_bytes(prepared)
+    try:
+        actual_prepared_bytes = path.read_bytes()
+    except OSError as error:
+        raise StageAAuthenticationError(
+            "prepared one-run receipt is missing before status promotion"
+        ) from error
+    if actual_prepared_bytes != expected_prepared_bytes:
+        raise StageAAuthenticationError(
+            "prepared one-run receipt bytes drifted before status promotion"
+        )
+    promoted = {
+        **prepared,
+        "status": "reserved_before_quality_data_or_model_weights",
+    }
+    payload = canonical_json_bytes(promoted)
+    _atomic_replace_owned(path, payload)
+    return promoted, payload
+
+
+def _authenticate_prepared_attempt_receipt(
+    path: Path,
+    prepared: Mapping[str, object],
+    *,
+    h0_commit: str,
+    seal_commit: str,
+    tree: str,
+    seal_message_sha256: str,
+) -> str:
+    initial_access_ledger = _expected_access_snapshot("reserved_before_task_entry")
+    expected_identity = {
+        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "status": "prepared_before_head_cas",
+        "attempt_number": 1,
+        "task_id": TASK_ID,
+        "output_path": OUTPUT_RELATIVE_PATH,
+        "attempt_path": ATTEMPT_RELATIVE_PATH,
+        "h0_repository_commit": h0_commit,
+        "one_run_seal_commit": seal_commit,
+        "one_run_seal_tree": tree,
+        "one_run_marker": ONE_RUN_MARKER,
+        "one_run_seal_message_sha256": seal_message_sha256,
+        "completed_task_ids": [],
+        "quality_data_accessed": False,
+        "task_row_loaded": False,
+        "tokenizer_loaded": False,
+        "model_weights_loaded": False,
+        "evaluation_entered": False,
+        "evaluation_returned": False,
+        "forward_passes": 0,
+        "forward_passes_minimum": 0,
+        "quality_result_computed": False,
+        "access_ledger": initial_access_ledger,
+        "quality_aggregate_exposed": False,
+        "rerun_automatically_authorized": False,
+        "claim_boundary": CLAIM_BOUNDARY,
+    }
+    if any(prepared.get(key) != value for key, value in expected_identity.items()):
+        raise StageAAuthenticationError(
+            "prepared one-run receipt identity or zero-result boundary is malformed"
+        )
+    _runtime_readiness_from_bundle(prepared.get("runtime_readiness"))
+    _validated_preseal_freshness(prepared.get("preseal_freshness"))
+    expected_bytes = canonical_json_bytes(prepared)
+    try:
+        actual_bytes = path.read_bytes()
+    except OSError as error:
+        raise StageAAuthenticationError(
+            "prepared one-run receipt is missing before HEAD compare-and-swap"
+        ) from error
+    expected_hash = hashlib.sha256(expected_bytes).hexdigest()
+    if actual_bytes != expected_bytes or hashlib.sha256(actual_bytes).hexdigest() != expected_hash:
+        raise StageAAuthenticationError(
+            "prepared one-run receipt bytes drifted before HEAD compare-and-swap"
+        )
+    parsed = _json_mapping(path)
+    if parsed != dict(prepared) or canonical_json_bytes(parsed) != actual_bytes:
+        raise StageAAuthenticationError(
+            "prepared one-run receipt canonical JSON authentication failed"
+        )
+    return expected_hash
+
+
 def reserve_one_run(
     preflight: StageAPreflight,
     configuration: ModelConfiguration,
+    readiness: RuntimeReadiness,
 ) -> AttemptReservation:
     h0_commit = str(preflight.repository_start["commit"])
+    preseal_freshness = _assert_preseal_freshness(
+        preflight,
+        configuration,
+        readiness,
+    )
+    preseal_freshness = _validated_preseal_freshness(preseal_freshness)
     if _git(preflight.repo_root, "rev-parse", "HEAD") != h0_commit:
         raise StageAAuthenticationError("repository HEAD changed before one-run sealing")
     tree = _git(preflight.repo_root, "show", "-s", "--format=%T", h0_commit)
-    message = _seal_message(preflight, configuration)
+    message = _seal_message(
+        preflight,
+        configuration,
+        readiness,
+        preseal_freshness,
+    )
     seal_commit = _commit_tree(
         preflight.repo_root,
         tree=tree,
         parent=h0_commit,
         message=message,
     )
-    process = subprocess.run(
-        ["git", "update-ref", "HEAD", seal_commit, h0_commit],
-        cwd=preflight.repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if process.returncode != 0:
-        detail = process.stderr.strip() or process.stdout.strip()
-        raise StageAAuthenticationError(f"one-run HEAD compare-and-swap failed: {detail}")
-    receipt = {
-        "schema": "recurquant.experiment010.stage-a-attempt.v1",
-        "status": "reserved_before_quality_data_or_model_weights",
+    seal_message_sha256 = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    initial_access_ledger = _expected_access_snapshot("reserved_before_task_entry")
+    prepared = {
+        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "status": "prepared_before_head_cas",
         "created_at_utc": datetime.now(UTC).isoformat(),
         "attempt_number": 1,
         "task_id": TASK_ID,
         "output_path": OUTPUT_RELATIVE_PATH,
+        "attempt_path": ATTEMPT_RELATIVE_PATH,
         "h0_repository_commit": h0_commit,
         "one_run_seal_commit": seal_commit,
         "one_run_seal_tree": tree,
         "one_run_marker": ONE_RUN_MARKER,
+        "one_run_seal_message_sha256": seal_message_sha256,
         "one_run_seal_limitation": ONE_RUN_LIMITATION,
+        "postseal_receipt_limitation": POSTSEAL_RECEIPT_LIMITATION,
         "source_hashes": preflight.source_hashes_start,
+        "experiment010_administrative_null": preflight.experiment010_admin_null,
         "experiment009_file_sha256": EXPERIMENT009_STAGE_A_FILE_SHA256,
         "stage0_artifact_file_sha256": preflight.stage0.get("artifact_file_sha256"),
+        "stage0_sidecar_file_sha256": preflight.stage0.get("sidecar_file_sha256"),
         "selector_file_sha256": SELECTOR_FILE_SHA256,
         "loss_selector_file_sha256": LOSS_SELECTOR_FILE_SHA256,
+        "runtime_readiness": _readiness_bundle(readiness),
+        "preseal_freshness": preseal_freshness,
         "model": configuration.identity,
         "completed_task_ids": [],
+        "quality_data_accessed": False,
+        "task_row_loaded": False,
+        "tokenizer_loaded": False,
+        "model_weights_loaded": False,
+        "evaluation_entered": False,
+        "evaluation_returned": False,
+        "forward_passes": 0,
+        "forward_passes_minimum": 0,
+        "quality_result_computed": False,
+        "access_ledger": initial_access_ledger,
         "quality_aggregate_exposed": False,
+        "rerun_automatically_authorized": False,
         "claim_boundary": CLAIM_BOUNDARY,
     }
-    receipt_bytes = canonical_json_bytes(receipt)
-    _exclusive_write(preflight.attempt_path, receipt_bytes)
+    prepared_bytes = canonical_json_bytes(prepared)
+    _exclusive_write(preflight.attempt_path, prepared_bytes)
+    _authenticate_prepared_attempt_receipt(
+        preflight.attempt_path,
+        prepared,
+        h0_commit=h0_commit,
+        seal_commit=seal_commit,
+        tree=tree,
+        seal_message_sha256=seal_message_sha256,
+    )
+    _assert_git_repository_identity(preflight.repo_root)
+    process = _run_git_process(
+        preflight.repo_root,
+        "update-ref",
+        "HEAD",
+        seal_commit,
+        h0_commit,
+    )
+    if process.returncode != 0:
+        detail = process.stderr.strip() or process.stdout.strip()
+        raise StageAAuthenticationError(f"one-run HEAD compare-and-swap failed: {detail}")
+    _assert_git_repository_identity(preflight.repo_root)
+    if _git(preflight.repo_root, "rev-parse", "HEAD") != seal_commit:
+        raise StageAAuthenticationError("one-run HEAD compare-and-swap did not reach the seal")
+    receipt, receipt_bytes = _promote_prepared_attempt_receipt(
+        preflight.attempt_path,
+        prepared,
+    )
     reservation = AttemptReservation(
         receipt=receipt,
         receipt_file_sha256=hashlib.sha256(receipt_bytes).hexdigest(),
         h0_commit=h0_commit,
         seal_commit=seal_commit,
         tree=tree,
-        seal_message_sha256=hashlib.sha256(message.encode("utf-8")).hexdigest(),
+        seal_message_sha256=seal_message_sha256,
     )
     _validate_one_run_seal(preflight, reservation, require_receipt=True)
     return reservation
+
+
+def _privacy_safe_failure(error: BaseException) -> dict[str, object]:
+    raw = str(error)
+    raw_sha256 = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+    raw_type = type(error).__name__
+    safe_type = (
+        raw_type
+        if raw_type
+        and len(raw_type) <= 80
+        and all(character.isalnum() or character == "_" for character in raw_type)
+        else "Exception"
+    )
+    if isinstance(error, StageAAuthenticationError):
+        category = "authentication_or_integrity"
+    elif isinstance(error, (MemoryError, torch.cuda.OutOfMemoryError)):
+        category = "memory_or_accelerator_capacity"
+    elif isinstance(error, OSError):
+        category = "filesystem_or_io"
+    elif isinstance(error, (KeyboardInterrupt, SystemExit)):
+        category = "interruption"
+    else:
+        category = "runtime"
+    return {
+        "failure_type": safe_type,
+        "failure_category": category,
+        "failure_summary": f"{category} failure; raw detail withheld",
+        "failure_detail_sha256": raw_sha256,
+        "failure_detail_recorded": False,
+    }
+
+
+def record_access_transition(
+    preflight: StageAPreflight,
+    receipt: object,
+    ledger: AccessLedger,
+) -> AttemptReservation:
+    if not isinstance(receipt, AttemptReservation):
+        raise TypeError("Stage-A attempt receipt is invalid")
+    _validate_one_run_seal(preflight, receipt, require_receipt=True)
+    previous_snapshot = _validated_access_snapshot(receipt.receipt.get("access_ledger"))
+    snapshot = _validated_access_snapshot(ledger.snapshot())
+    _assert_adjacent_access_transition(
+        previous_snapshot,
+        snapshot,
+        allow_equal=False,
+    )
+    evaluation_returned = snapshot.get("evaluation_returned") is True
+    updated = {
+        **receipt.receipt,
+        "status": (
+            "evaluation_returned_before_artifact_finalization"
+            if evaluation_returned
+            else "running_with_monotonic_access_ledger"
+        ),
+        "access_ledger": snapshot,
+        "quality_data_accessed": snapshot.get("task_load_entered") is True,
+        "task_row_loaded": snapshot.get("task_row_loaded"),
+        "tokenizer_loaded": snapshot.get("tokenizer_loaded"),
+        "model_weights_loaded": snapshot.get("model_weights_loaded"),
+        "evaluation_entered": snapshot.get("evaluation_entered"),
+        "evaluation_returned": snapshot.get("evaluation_returned"),
+        "forward_passes": snapshot.get("forward_passes"),
+        "forward_passes_minimum": snapshot.get("forward_passes_minimum"),
+        "quality_result_computed": snapshot.get("quality_result_computed"),
+        "completed_task_ids": [TASK_ID] if evaluation_returned else [],
+        "quality_aggregate_exposed": False,
+        "rerun_automatically_authorized": False,
+    }
+    _validate_public_artifact(updated, repo_root=preflight.repo_root)
+    payload = canonical_json_bytes(updated)
+    _atomic_replace_owned(preflight.attempt_path, payload)
+    if preflight.attempt_path.read_bytes() != payload:
+        raise StageAAuthenticationError("monotonic access-ledger receipt persistence drifted")
+    return dataclasses.replace(
+        receipt,
+        receipt=updated,
+        receipt_file_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+
+
+def record_evaluation_returned(
+    preflight: StageAPreflight,
+    receipt: object,
+    ledger: AccessLedger,
+) -> AttemptReservation:
+    if not isinstance(receipt, AttemptReservation):
+        raise TypeError("Stage-A attempt receipt is invalid")
+    snapshot = ledger.snapshot()
+    if (
+        snapshot.get("evaluation_returned") is not True
+        or snapshot.get("task_row_loaded") is not True
+        or snapshot.get("tokenizer_loaded") is not True
+        or snapshot.get("model_weights_loaded") is not True
+    ):
+        raise StageAAuthenticationError("evaluation-returned access ledger is incomplete")
+    return record_access_transition(preflight, receipt, ledger)
 
 
 def record_attempt_failure(
     preflight: StageAPreflight,
     receipt: object,
     error: BaseException,
+    ledger: AccessLedger | None = None,
 ) -> None:
     if not isinstance(receipt, AttemptReservation):
         return
-    _validate_one_run_seal(preflight, receipt, require_receipt=True)
+    try:
+        disk_payload = preflight.attempt_path.read_bytes()
+        disk_receipt = _json_mapping(preflight.attempt_path)
+    except (OSError, StageAAuthenticationError) as receipt_error:
+        raise StageAAuthenticationError(
+            "cannot authenticate the current attempt receipt while recording failure"
+        ) from receipt_error
+    status = disk_receipt.get("status")
+    safe_failure = _privacy_safe_failure(error)
+
+    completion_statuses = {
+        RESULT_PREPARED_STATUS,
+        RESULT_PUBLICATION_FAILED_STATUS,
+    }
+    if status in completion_statuses:
+        if preflight.output_path.exists():
+            publication = _validate_published_output_against_receipt(
+                preflight.output_path,
+                disk_receipt,
+            )
+            preserved = {
+                **disk_receipt,
+                "status": RESULT_PROMOTION_INTERRUPTED_STATUS,
+                "receipt_promotion_interrupted": True,
+                "result_available": True,
+                "output_published": True,
+                "quality_aggregate_exposed": True,
+                "stage_a_gate_passed": publication["stage_a_gate_passed"],
+                "rerun_automatically_authorized": False,
+                **safe_failure,
+            }
+        else:
+            preserved = {
+                **disk_receipt,
+                "status": RESULT_PUBLICATION_FAILED_STATUS,
+                "result_available": False,
+                "output_published": False,
+                "quality_aggregate_exposed": False,
+                "rerun_automatically_authorized": False,
+                **safe_failure,
+            }
+        _validate_public_artifact(preserved, repo_root=preflight.repo_root)
+        _atomic_replace_owned(
+            preflight.attempt_path,
+            canonical_json_bytes(preserved),
+        )
+        return
+    if status in {
+        RESULT_COMPLETED_STATUS,
+        RESULT_PROMOTION_INTERRUPTED_STATUS,
+    }:
+        return
+    if preflight.output_path.exists():
+        raise StageAAuthenticationError(
+            "existing Stage-A output has no authenticated completion binding; "
+            "refusing to downgrade it to a no-result failure"
+        )
+
+    current = dataclasses.replace(
+        receipt,
+        receipt=disk_receipt,
+        receipt_file_sha256=hashlib.sha256(disk_payload).hexdigest(),
+    )
+    _validate_one_run_seal(preflight, current, require_receipt=True)
+    disk_snapshot = _validated_access_snapshot(disk_receipt.get("access_ledger"))
+    if ledger is None:
+        snapshot = disk_snapshot
+    else:
+        snapshot = _validated_access_snapshot(ledger.snapshot())
+        _assert_adjacent_access_transition(
+            disk_snapshot,
+            snapshot,
+            allow_equal=True,
+        )
+    evaluation_returned = snapshot.get("evaluation_returned") is True
     failed = {
-        **receipt.receipt,
-        "status": "failed_without_authenticated_stage_a_result",
+        **disk_receipt,
+        "status": (
+            "failed_after_evaluation_without_authenticated_artifact"
+            if evaluation_returned
+            else "failed_without_authenticated_stage_a_result"
+        ),
         "failed_at_utc": datetime.now(UTC).isoformat(),
-        "failure_type": type(error).__name__,
-        "failure_message": str(error),
-        "completed_task_ids": [],
+        "access_ledger": snapshot,
+        "quality_data_accessed": snapshot.get("task_load_entered") is True,
+        "task_row_loaded": snapshot.get("task_row_loaded"),
+        "tokenizer_loaded": snapshot.get("tokenizer_loaded"),
+        "model_weights_loaded": snapshot.get("model_weights_loaded"),
+        "evaluation_entered": snapshot.get("evaluation_entered"),
+        "evaluation_returned": snapshot.get("evaluation_returned"),
+        "forward_passes": snapshot.get("forward_passes"),
+        "forward_passes_minimum": snapshot.get("forward_passes_minimum"),
+        "quality_result_computed": snapshot.get("quality_result_computed"),
+        "completed_task_ids": [TASK_ID] if evaluation_returned else [],
         "quality_aggregate_exposed": False,
         "rerun_automatically_authorized": False,
+        **safe_failure,
     }
+    _validate_public_artifact(failed, repo_root=preflight.repo_root)
     _atomic_replace_owned(preflight.attempt_path, canonical_json_bytes(failed))
+
+
+def _authenticated_mbpp_train_arrow() -> Path:
+    datasets_module = importlib.import_module("datasets")
+    revision = _resolve_cached_dataset_revision(datasets_module)
+    path = revision / "mbpp-train.arrow"
+    expected = DATASET_CACHE_RESOURCES["mbpp-train.arrow"]
+    if not path.is_file():
+        raise StageAAuthenticationError(
+            "authenticated local MBPP training Arrow resource is missing"
+        )
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise StageAAuthenticationError(
+            "cannot stat authenticated local MBPP training Arrow resource"
+        ) from error
+    if size != expected["size_bytes"] or _file_sha256(path) != expected["sha256"]:
+        raise StageAAuthenticationError("authenticated local MBPP training Arrow resource drifted")
+    return path
+
+
+def _select_exact_task_from_arrow(
+    arrow_path: Path,
+    *,
+    task_id: int,
+) -> Mapping[str, object]:
+    try:
+        pyarrow = importlib.import_module("pyarrow")
+        pyarrow_compute = importlib.import_module("pyarrow.compute")
+        pyarrow_ipc = importlib.import_module("pyarrow.ipc")
+        selected_batches: list[object] = []
+        selected_rows = 0
+        with pyarrow.memory_map(str(arrow_path), "r") as source:
+            reader = pyarrow_ipc.open_stream(source)
+            task_id_index = reader.schema.get_field_index("task_id")
+            if task_id_index < 0:
+                raise StageAAuthenticationError(
+                    "authenticated local MBPP Arrow schema lacks task_id"
+                )
+            for batch in reader:
+                task_ids = batch.column(task_id_index)
+                mask = pyarrow_compute.equal(
+                    task_ids,
+                    pyarrow.scalar(task_id, type=task_ids.type),
+                )
+                filtered = batch.filter(mask)
+                if filtered.num_rows:
+                    selected_batches.append(filtered)
+                    selected_rows += int(filtered.num_rows)
+        if selected_rows != 1:
+            raise StageAAuthenticationError(
+                f"authenticated local MBPP Arrow selection returned non-unique task {task_id}"
+            )
+        table = pyarrow.Table.from_batches(selected_batches)
+        rows = table.to_pylist()
+    except StageAAuthenticationError:
+        raise
+    except (ImportError, OSError, RuntimeError, ValueError) as error:
+        raise StageAAuthenticationError(
+            "cannot scan the authenticated local MBPP Arrow resource"
+        ) from error
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 1
+        or not isinstance(rows[0], Mapping)
+        or int(rows[0].get("task_id", -1)) != task_id
+    ):
+        raise StageAAuthenticationError("authenticated local MBPP Arrow row identity is malformed")
+    return dict(rows[0])
 
 
 def load_exact_authenticated_task(preflight: StageAPreflight) -> Mapping[str, object]:
     del preflight
-    from recurquant.public_data import load_mbpp_rows_by_task_ids, mbpp_row_sha256
+    from recurquant.public_data import mbpp_row_sha256
 
     verifier = _script_module("verify_statelease_stage0")
     verifier.guard_protected_mbpp_window(
@@ -1069,12 +2712,8 @@ def load_exact_authenticated_task(preflight: StageAPreflight) -> Mapping[str, ob
         task_ids=(str(TASK_ID),),
         contains_quality_data=True,
     )
-    rows = load_mbpp_rows_by_task_ids("calibration", task_ids=(TASK_ID,))
-    if len(rows) != 1 or int(rows[0].get("task_id", -1)) != TASK_ID:
-        raise StageAAuthenticationError(
-            "exact task-ID loader returned an unauthorized MBPP identity"
-        )
-    row = rows[0]
+    arrow_path = _authenticated_mbpp_train_arrow()
+    row = _select_exact_task_from_arrow(arrow_path, task_id=TASK_ID)
     if mbpp_row_sha256(row) != TASK_ROW_SHA256:
         raise StageAAuthenticationError("already-open task-666 row content drifted")
     return row
@@ -1086,6 +2725,10 @@ def tokenize_authenticated_task(
     *,
     local_files_only: bool,
 ) -> TokenizedTask:
+    if local_files_only is not True:
+        raise StageAAuthenticationError(
+            "Experiment 011 tokenizer loading requires --local-files-only"
+        )
     from transformers import AutoTokenizer
 
     from recurquant.public_data import format_mbpp_example
@@ -1095,8 +2738,14 @@ def tokenize_authenticated_task(
         raise StageAAuthenticationError("task-666 formatted prompt text drifted")
     if hashlib.sha256(formatted.code.encode("utf-8")).hexdigest() != CODE_TEXT_SHA256:
         raise StageAAuthenticationError("task-666 formatted code text drifted")
+    snapshot, cache_receipt = _authenticate_model_snapshot()
+    if (
+        cache_receipt.get("snapshot_resource_id") != f"{MODEL_ID}@{MODEL_REVISION}"
+        or cache_receipt.get("alternate_or_unpinned_weight_files_absent") is not True
+    ):
+        raise StageAAuthenticationError("tokenizer snapshot authentication drifted")
     tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_ID,
+        str(snapshot),
         revision=MODEL_REVISION,
         local_files_only=local_files_only,
         trust_remote_code=False,
@@ -1195,9 +2844,22 @@ def load_model_weights(
     del preflight
     from transformers import Qwen3_5ForCausalLM
 
+    if local_files_only is not True:
+        raise StageAAuthenticationError("Experiment 011 model loading requires --local-files-only")
+    snapshot, cache_receipt = _authenticate_model_snapshot()
+    if (
+        configuration.identity.get("authenticated_snapshot_resource_id")
+        != cache_receipt.get("snapshot_resource_id")
+        or configuration.identity.get("model_cache_resource_manifest_sha256")
+        != cache_receipt.get("resource_manifest_sha256")
+        or cache_receipt.get("alternate_or_unpinned_weight_files_absent") is not True
+    ):
+        raise StageAAuthenticationError(
+            "authenticated model snapshot differs from the pre-weight configuration"
+        )
     device = _select_cuda_device(device_name)
     model = Qwen3_5ForCausalLM.from_pretrained(
-        MODEL_ID,
+        str(snapshot),
         revision=MODEL_REVISION,
         dtype=MODEL_DTYPE,
         attn_implementation="eager",
@@ -1206,6 +2868,9 @@ def load_model_weights(
         local_files_only=local_files_only,
         trust_remote_code=False,
     ).to(device)
+    snapshot_after, receipt_after = _authenticate_model_snapshot()
+    if snapshot_after != snapshot or receipt_after != cache_receipt:
+        raise StageAAuthenticationError("authenticated model snapshot changed during weight load")
     model.eval()
     loaded_geometry = _validate_model_geometry(model.config)
     if loaded_geometry != configuration.identity["geometry"]:
@@ -2586,6 +4251,11 @@ def _assert_end_integrity(
         raise StageAAuthenticationError("repository became dirty during Stage A")
     if repository_end["commit"] != reservation.seal_commit:
         raise StageAAuthenticationError("repository left the durable one-run seal")
+    start_git_identity = preflight.repository_start.get("git_identity")
+    if not isinstance(start_git_identity, Mapping) or repository_end.get("git_identity") != dict(
+        start_git_identity
+    ):
+        raise StageAAuthenticationError("Git repository/object identity changed during Stage A")
     if source_hashes_end != preflight.source_hashes_start:
         raise StageAAuthenticationError("authenticated source hashes changed during Stage A")
     if _file_sha256(preflight.repo_root / EXPERIMENT009_STAGE_A_RELATIVE_PATH) != (
@@ -2596,6 +4266,10 @@ def _assert_end_integrity(
         IDENTITY_NOTE_FILE_SHA256
     ):
         raise StageAAuthenticationError("Stage-A identity clarification changed during Stage A")
+    if _file_sha256(preflight.repo_root / PROTOCOL_NOTE_RELATIVE_PATH) != (
+        PROTOCOL_NOTE_FILE_SHA256
+    ):
+        raise StageAAuthenticationError("Experiment 011 StateLease protocol changed during Stage A")
     selector_hashes = {
         "selector": _file_sha256(preflight.repo_root / SELECTOR_RELATIVE_PATH),
         "loss_selector": _file_sha256(preflight.repo_root / LOSS_SELECTOR_RELATIVE_PATH),
@@ -2609,6 +4283,24 @@ def _assert_end_integrity(
         "artifact_file_sha256"
     ) or _file_sha256(preflight.stage0_sha256) != preflight.stage0.get("sidecar_file_sha256"):
         raise StageAAuthenticationError("production Stage-0 identity changed during Stage A")
+    experiment010_admin_null_end = authenticate_experiment010_administrative_null(
+        preflight.repo_root
+    )
+    if experiment010_admin_null_end != preflight.experiment010_admin_null:
+        raise StageAAuthenticationError(
+            "Experiment 010 administrative-null provenance changed during Stage A"
+        )
+    readiness_start = _runtime_readiness_from_bundle(reservation.receipt.get("runtime_readiness"))
+    preseal_freshness = _validated_preseal_freshness(reservation.receipt.get("preseal_freshness"))
+    accelerator = readiness_start.receipt.get("accelerator")
+    if not isinstance(accelerator, Mapping):
+        raise StageAAuthenticationError("runtime readiness accelerator receipt is malformed")
+    requested_device = accelerator.get("requested_device")
+    if not isinstance(requested_device, str):
+        raise StageAAuthenticationError("runtime readiness requested device is malformed")
+    readiness_end = authenticate_runtime_readiness(device_name=requested_device)
+    if _readiness_bundle(readiness_end) != _readiness_bundle(readiness_start):
+        raise StageAAuthenticationError("runtime dependency/cache readiness changed during Stage A")
     return {
         "repository_end": repository_end,
         "source_hashes_end": source_hashes_end,
@@ -2618,13 +4310,18 @@ def _assert_end_integrity(
         "selectors_reauthenticated": True,
         "anchor_reauthenticated": True,
         "identity_clarification_reauthenticated": True,
+        "experiment010_administrative_null": experiment010_admin_null_end,
+        "experiment010_administrative_null_reauthenticated": True,
+        "runtime_readiness": _readiness_bundle(readiness_end),
+        "runtime_readiness_reauthenticated": True,
+        "preseal_freshness": dict(preseal_freshness),
         "artifact_integrity": True,
     }
 
 
 def _package_versions() -> dict[str, str | None]:
     versions: dict[str, str | None] = {}
-    for package in ("datasets", "numpy", "safetensors", "torch", "transformers"):
+    for package in EXPECTED_RUNTIME_PACKAGES:
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
@@ -2878,6 +4575,384 @@ def _validate_public_artifact(value: object, *, repo_root: Path) -> None:
     walk(value, "$")
 
 
+def _strict_record_float(value: object, *, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"{context} is not a real scalar")
+    result = float(value)
+    if not math.isfinite(result):
+        raise RuntimeError(f"{context} is non-finite")
+    return result
+
+
+def _assert_exact_summary(
+    *,
+    method: str,
+    kind: str,
+    stored: object,
+    recomputed: Mapping[str, object],
+) -> None:
+    if not isinstance(stored, Mapping) or set(stored) != set(recomputed):
+        raise RuntimeError(f"{method} stored {kind} summary schema drifted")
+    for key, expected in recomputed.items():
+        actual = stored.get(key)
+        if isinstance(expected, bool):
+            matches = isinstance(actual, bool) and actual is expected
+        elif isinstance(expected, int):
+            matches = (
+                isinstance(actual, int) and not isinstance(actual, bool) and actual == expected
+            )
+        else:
+            matches = (
+                isinstance(actual, (int, float))
+                and not isinstance(actual, bool)
+                and math.isfinite(float(actual))
+                and float(actual) == float(expected)
+            )
+        if not matches:
+            raise RuntimeError(
+                f"{method} stored {kind} scalar {key} does not exactly match raw evidence"
+            )
+
+
+def _recompute_aligned_summary(
+    *,
+    method: str,
+    rows: object,
+    reference_rows: Sequence[Mapping[str, object]] | None,
+    expected_code_ids: Sequence[int] | None,
+    reference_method: bool,
+) -> tuple[dict[str, object], list[Mapping[str, object]]]:
+    if (
+        not isinstance(rows, Sequence)
+        or isinstance(rows, (str, bytes))
+        or len(rows) != ALIGNED_TOKENS
+    ):
+        raise RuntimeError(
+            f"{method} per-token evidence does not contain exactly {ALIGNED_TOKENS} rows"
+        )
+    expected_keys = {
+        "write_index",
+        "input_token_id",
+        "target_token_id",
+        "kl",
+        "reference_nll",
+        "candidate_nll",
+        "top1_agreement",
+        "delta_nll",
+        "all_logits_finite",
+    }
+    normalized: list[Mapping[str, object]] = []
+    kl_values: list[float] = []
+    reference_nll_values: list[float] = []
+    candidate_nll_values: list[float] = []
+    top1_values: list[bool] = []
+    finite_values: list[bool] = []
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, Mapping) or set(raw_row) != expected_keys:
+            raise RuntimeError(f"{method} per-token evidence schema drifted at write {index}")
+        write_index = raw_row.get("write_index")
+        input_token_id = raw_row.get("input_token_id")
+        target_token_id = raw_row.get("target_token_id")
+        if (
+            isinstance(write_index, bool)
+            or not isinstance(write_index, int)
+            or write_index != index
+            or isinstance(input_token_id, bool)
+            or not isinstance(input_token_id, int)
+            or isinstance(target_token_id, bool)
+            or not isinstance(target_token_id, int)
+        ):
+            raise RuntimeError(f"{method} per-token evidence is not ordered at write {index}")
+        if expected_code_ids is not None and (
+            input_token_id != expected_code_ids[index]
+            or target_token_id != expected_code_ids[index + 1]
+        ):
+            raise RuntimeError(f"{method} per-token token identity drifted at write {index}")
+
+        kl = _strict_record_float(raw_row.get("kl"), context=f"{method}[{index}].kl")
+        reference_nll = _strict_record_float(
+            raw_row.get("reference_nll"),
+            context=f"{method}[{index}].reference_nll",
+        )
+        candidate_nll = _strict_record_float(
+            raw_row.get("candidate_nll"),
+            context=f"{method}[{index}].candidate_nll",
+        )
+        delta_nll = _strict_record_float(
+            raw_row.get("delta_nll"),
+            context=f"{method}[{index}].delta_nll",
+        )
+        top1 = raw_row.get("top1_agreement")
+        finite = raw_row.get("all_logits_finite")
+        if not isinstance(top1, bool) or not isinstance(finite, bool) or not finite:
+            raise RuntimeError(f"{method} per-token boolean evidence drifted at write {index}")
+        if delta_nll != candidate_nll - reference_nll:
+            raise RuntimeError(
+                f"{method} per-token delta_nll does not match raw NLLs at write {index}"
+            )
+        if reference_rows is not None:
+            reference_row = reference_rows[index]
+            if (
+                input_token_id != reference_row.get("input_token_id")
+                or target_token_id != reference_row.get("target_token_id")
+                or reference_nll != reference_row.get("reference_nll")
+            ):
+                raise RuntimeError(
+                    f"{method} per-token reference alignment drifted at write {index}"
+                )
+        if reference_method and (
+            kl != 0.0 or candidate_nll != reference_nll or delta_nll != 0.0 or top1 is not True
+        ):
+            raise RuntimeError(f"{method} self-reference evidence drifted at write {index}")
+
+        normalized.append(raw_row)
+        kl_values.append(kl)
+        reference_nll_values.append(reference_nll)
+        candidate_nll_values.append(candidate_nll)
+        top1_values.append(top1)
+        finite_values.append(finite)
+
+    summary = fidelity_summary(
+        TokenFidelity(
+            kl=torch.tensor(kl_values, dtype=torch.float32),
+            reference_nll=torch.tensor(reference_nll_values, dtype=torch.float32),
+            candidate_nll=torch.tensor(candidate_nll_values, dtype=torch.float32),
+            top1_agreement=torch.tensor(top1_values, dtype=torch.bool),
+        )
+    )
+    return {**summary, "all_logits_finite": all(finite_values)}, normalized
+
+
+def _recompute_trajectory_summary(
+    *,
+    method: str,
+    rows: object,
+) -> dict[str, object]:
+    if (
+        not isinstance(rows, Sequence)
+        or isinstance(rows, (str, bytes))
+        or len(rows) != ALIGNED_TOKENS
+    ):
+        raise RuntimeError(
+            f"{method} trajectory evidence does not contain exactly {ALIGNED_TOKENS} writes"
+        )
+    expected_layer_keys = {str(layer) for layer in LINEAR_LAYER_INDICES}
+    accumulator = TrajectoryNmseAccumulator()
+    for index, raw_row in enumerate(rows):
+        if not isinstance(raw_row, Mapping) or set(raw_row) != {
+            "write_index",
+            "per_layer_nmse",
+            "layer_macro_nmse",
+        }:
+            raise RuntimeError(f"{method} trajectory evidence schema drifted at write {index}")
+        per_layer = raw_row.get("per_layer_nmse")
+        if (
+            raw_row.get("write_index") != index
+            or not isinstance(per_layer, Mapping)
+            or set(per_layer) != expected_layer_keys
+        ):
+            raise RuntimeError(f"{method} trajectory evidence is incomplete at write {index}")
+        layer_values = {
+            layer: _strict_record_float(
+                per_layer[str(layer)],
+                context=f"{method}[{index}].trajectory[{layer}]",
+            )
+            for layer in LINEAR_LAYER_INDICES
+        }
+        if any(value < 0 for value in layer_values.values()):
+            raise RuntimeError(f"{method} trajectory evidence is negative at write {index}")
+        macro = _strict_record_float(
+            raw_row.get("layer_macro_nmse"),
+            context=f"{method}[{index}].layer_macro_nmse",
+        )
+        if macro != sum(layer_values.values()) / len(layer_values):
+            raise RuntimeError(
+                f"{method} trajectory macro does not match per-layer evidence at write {index}"
+            )
+        accumulator.append(layer_values)
+    return dict(accumulator.summary())
+
+
+def _recompute_and_reconcile_stage_a_summaries(
+    result: Mapping[str, object],
+    *,
+    code_ids: torch.Tensor | None = None,
+) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
+    candidates = result.get("candidates")
+    reference = result.get("reference")
+    if not isinstance(candidates, Mapping) or set(candidates) != set(QUALITY_METHODS):
+        raise RuntimeError("Stage-A candidate result set is incomplete")
+    if not isinstance(reference, Mapping):
+        raise RuntimeError("Stage-A reference result is missing")
+    expected_code_ids: list[int] | None = None
+    if code_ids is not None:
+        if code_ids.dtype != torch.long or tuple(code_ids.shape) != (1, CODE_TOKENS):
+            raise RuntimeError("authenticated code-token identity is malformed")
+        expected_code_ids = [
+            int(value) for value in code_ids.detach().to("cpu").reshape(-1).tolist()
+        ]
+
+    reference_summary, reference_rows = _recompute_aligned_summary(
+        method=FP32_METHOD,
+        rows=reference.get("per_token"),
+        reference_rows=None,
+        expected_code_ids=expected_code_ids,
+        reference_method=True,
+    )
+    _assert_exact_summary(
+        method=FP32_METHOD,
+        kind="aligned",
+        stored=reference.get("aligned_metrics"),
+        recomputed=reference_summary,
+    )
+    reference_trajectory = {
+        "trajectory_nmse_auc": 0.0,
+        "scored_write_count": ALIGNED_TOKENS,
+        "layer_value_count": ALIGNED_TOKENS * len(LINEAR_LAYER_INDICES),
+    }
+    _assert_exact_summary(
+        method=FP32_METHOD,
+        kind="trajectory",
+        stored=reference.get("trajectory"),
+        recomputed=reference_trajectory,
+    )
+
+    aligned = {FP32_METHOD: reference_summary}
+    trajectories = {FP32_METHOD: reference_trajectory}
+    for method in QUALITY_METHODS:
+        method_result = candidates[method]
+        if not isinstance(method_result, Mapping):
+            raise RuntimeError(f"{method} Stage-A result is malformed")
+        summary, _rows = _recompute_aligned_summary(
+            method=method,
+            rows=method_result.get("per_token_aligned"),
+            reference_rows=reference_rows,
+            expected_code_ids=expected_code_ids,
+            reference_method=False,
+        )
+        _assert_exact_summary(
+            method=method,
+            kind="aligned",
+            stored=method_result.get("aligned_metrics"),
+            recomputed=summary,
+        )
+        trajectory = _recompute_trajectory_summary(
+            method=method,
+            rows=method_result.get("trajectory_per_write"),
+        )
+        _assert_exact_summary(
+            method=method,
+            kind="trajectory",
+            stored=method_result.get("trajectory"),
+            recomputed=trajectory,
+        )
+        aligned[method] = summary
+        trajectories[method] = trajectory
+    return aligned, trajectories
+
+
+def _validate_stage_a_result_completeness(
+    result: Mapping[str, object],
+    *,
+    code_ids: torch.Tensor | None = None,
+) -> dict[str, object]:
+    candidates = result.get("candidates")
+    reference = result.get("reference")
+    if not isinstance(candidates, Mapping) or set(candidates) != set(QUALITY_METHODS):
+        raise RuntimeError("Stage-A candidate result set is incomplete")
+    if not isinstance(reference, Mapping):
+        raise RuntimeError("Stage-A reference result is missing")
+
+    _recompute_and_reconcile_stage_a_summaries(result, code_ids=code_ids)
+
+    statelease = candidates[STATELEASE_METHOD]
+    if not isinstance(statelease, Mapping):
+        raise RuntimeError("StateLease result is malformed")
+    diagnostics = statelease.get("diagnostics")
+    if (
+        not isinstance(diagnostics, Sequence)
+        or isinstance(diagnostics, (str, bytes))
+        or len(diagnostics) != len(LINEAR_LAYER_INDICES)
+    ):
+        raise RuntimeError("StateLease diagnostics do not cover the frozen layer set")
+    if {row.get("layer_index") for row in diagnostics if isinstance(row, Mapping)} != set(
+        LINEAR_LAYER_INDICES
+    ):
+        raise RuntimeError("StateLease diagnostic layer identity is incomplete")
+
+    update_evidence = statelease.get("update_evidence")
+    expected_evidence_count = (1 + ALIGNED_TOKENS) * len(LINEAR_LAYER_INDICES)
+    if (
+        not isinstance(update_evidence, Sequence)
+        or isinstance(update_evidence, (str, bytes))
+        or len(update_evidence) != expected_evidence_count
+    ):
+        raise RuntimeError("StateLease update evidence does not cover every frozen layer-write")
+    for index, row in enumerate(update_evidence):
+        expected_layer = LINEAR_LAYER_INDICES[index % len(LINEAR_LAYER_INDICES)]
+        forward_index = index // len(LINEAR_LAYER_INDICES)
+        expected_token_count = PROMPT_TOKENS if forward_index == 0 else 1
+        if (
+            not isinstance(row, Mapping)
+            or row.get("update_index") != index
+            or row.get("layer_index") != expected_layer
+            or row.get("state_index") != 0
+            or row.get("token_count") != expected_token_count
+        ):
+            raise RuntimeError(
+                f"StateLease update evidence is incomplete or misordered at row {index}"
+            )
+
+    return {
+        "method_count": len(ALL_METHODS),
+        "authenticated_forward_passes": FROZEN_STAGE_A_FORWARD_PASSES,
+        "per_token_rows_per_method": ALIGNED_TOKENS,
+        "trajectory_writes_per_method": ALIGNED_TOKENS,
+        "trajectory_layers_per_write": len(LINEAR_LAYER_INDICES),
+        "statelease_update_evidence_records": expected_evidence_count,
+        "aligned_summaries_recomputed_from_per_token_evidence": True,
+        "aligned_aggregation_semantics": "recurquant.evaluation.fidelity_summary_fp32",
+        "trajectory_summaries_recomputed_from_per_layer_write_evidence": True,
+        "trajectory_aggregation_semantics": (
+            "recurquant.statelease_evaluation.TrajectoryNmseAccumulator_fp64_neumaier"
+        ),
+        "stored_aggregates_exactly_reconciled": True,
+        "all_expected_records_present_and_ordered": True,
+    }
+
+
+def _evaluate_gate_from_recomputed_evidence(
+    *,
+    candidates: Mapping[str, object],
+    recomputed_metrics: Mapping[str, Mapping[str, object]],
+    recomputed_trajectory: Mapping[str, Mapping[str, object]],
+    stage0_complete: bool,
+    artifact_integrity: bool,
+) -> dict[str, object]:
+    gate_methods = (
+        ORIGINAL_RHT_METHOD,
+        STATELEASE_METHOD,
+        *FIXED_REPLAY_METHODS,
+        *EQUAL_BYTE_NO_REPLAY_METHODS,
+    )
+    if set(recomputed_metrics) != set(ALL_METHODS) or set(recomputed_trajectory) != set(
+        ALL_METHODS
+    ):
+        raise RuntimeError("recomputed Stage-A gate evidence method set drifted")
+    statelease = candidates.get(STATELEASE_METHOD)
+    if not isinstance(statelease, Mapping):
+        raise RuntimeError("StateLease result is malformed")
+    return evaluate_statelease_stage_a_gate(
+        aligned_metrics={method: recomputed_metrics[method] for method in gate_methods},
+        trajectory_nmse_auc={method: recomputed_trajectory[method] for method in gate_methods},
+        statelease_storage=statelease["storage"],
+        statelease_diagnostics=statelease["diagnostics"],
+        statelease_update_evidence=statelease["update_evidence"],
+        stage0_complete=stage0_complete,
+        artifact_integrity=artifact_integrity,
+    )
+
+
 def _build_artifact(
     result: Mapping[str, object],
     tokenized: TokenizedTask,
@@ -2885,6 +4960,14 @@ def _build_artifact(
     configuration: ModelConfiguration,
     integrity: Mapping[str, object],
 ) -> tuple[dict[str, object], dict[str, object]]:
+    completeness = _validate_stage_a_result_completeness(
+        result,
+        code_ids=tokenized.code_ids,
+    )
+    recomputed_metrics, recomputed_trajectory = _recompute_and_reconcile_stage_a_summaries(
+        result,
+        code_ids=tokenized.code_ids,
+    )
     candidates = result.get("candidates")
     reference = result.get("reference")
     if not isinstance(candidates, Mapping) or set(candidates) != set(QUALITY_METHODS):
@@ -2893,21 +4976,10 @@ def _build_artifact(
         raise RuntimeError("Stage-A reference result is missing")
     storage_contracts = _validate_candidate_storage_results(candidates)
 
-    gate_methods = (
-        ORIGINAL_RHT_METHOD,
-        STATELEASE_METHOD,
-        *FIXED_REPLAY_METHODS,
-        *EQUAL_BYTE_NO_REPLAY_METHODS,
-    )
-    gate_metrics = {method: candidates[method]["aligned_metrics"] for method in gate_methods}
-    gate_trajectory = {method: candidates[method]["trajectory"] for method in gate_methods}
-    statelease = candidates[STATELEASE_METHOD]
-    gate = evaluate_statelease_stage_a_gate(
-        aligned_metrics=gate_metrics,
-        trajectory_nmse_auc=gate_trajectory,
-        statelease_storage=statelease["storage"],
-        statelease_diagnostics=statelease["diagnostics"],
-        statelease_update_evidence=statelease["update_evidence"],
+    gate = _evaluate_gate_from_recomputed_evidence(
+        candidates=candidates,
+        recomputed_metrics=recomputed_metrics,
+        recomputed_trajectory=recomputed_trajectory,
         stage0_complete=preflight.stage0.get("experiment_stage0_complete") is True,
         artifact_integrity=integrity.get("artifact_integrity") is True,
     )
@@ -2916,14 +4988,8 @@ def _build_artifact(
         FP32_METHOD: reference["per_token"],
         **{method: candidates[method]["per_token_aligned"] for method in QUALITY_METHODS},
     }
-    aligned_metrics = {
-        FP32_METHOD: reference["aligned_metrics"],
-        **{method: candidates[method]["aligned_metrics"] for method in QUALITY_METHODS},
-    }
-    trajectory = {
-        FP32_METHOD: reference["trajectory"],
-        **{method: candidates[method]["trajectory"] for method in QUALITY_METHODS},
-    }
+    aligned_metrics = recomputed_metrics
+    trajectory = recomputed_trajectory
     trajectory_per_write = {
         FP32_METHOD: [
             {
@@ -2944,7 +5010,7 @@ def _build_artifact(
         "one_authenticated_quality_run": True,
         "claim_boundary": CLAIM_BOUNDARY,
         "protocol": {
-            "name": "Experiment 010 Stage A",
+            "name": "Experiment 011 Stage A",
             "method": "StateLease-H5",
             "task_locked": True,
             "thresholds_locked": True,
@@ -2954,6 +5020,9 @@ def _build_artifact(
         },
         "input_authentication": {
             "stage_a_identity_clarification": preflight.identity_clarification,
+            "experiment010_administrative_null": integrity["experiment010_administrative_null"],
+            "runtime_readiness": integrity["runtime_readiness"],
+            "preseal_freshness": integrity["preseal_freshness"],
             "experiment009_stage_a": {
                 "path": preflight.anchor["path"],
                 "file_sha256": preflight.anchor["file_sha256"],
@@ -2961,7 +5030,7 @@ def _build_artifact(
             },
             "selectors": preflight.selector_identity,
             "production_stage0": preflight.stage0,
-            "all_passed_before_quality_data_or_model_weights": True,
+            "all_passed_before_one_run_seal_quality_data_or_model_weights": True,
         },
         "model": {
             **configuration.identity,
@@ -2993,10 +5062,12 @@ def _build_artifact(
             "aligned_primary": "one-token decode writes after the shared FP32 prefill",
             "aligned_token_count": ALIGNED_TOKENS,
             "statelease_resident_bytes": FROZEN_STATELEASE_RESIDENT_BYTES,
+            "authenticated_forward_passes": FROZEN_STAGE_A_FORWARD_PASSES,
             "reference_aligned_trajectory": (
                 "per-layer FP64 NMSE against the matched FP32 recurrent state at every write"
             ),
         },
+        "result_completeness": completeness,
         "methods": list(ALL_METHODS),
         "metrics_aligned": aligned_metrics,
         "per_token_aligned": per_token,
@@ -3104,7 +5175,7 @@ def _prepare_completed_artifact(
     payload = canonical_json_bytes(artifact)
     output_parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".experiment010-stage-a-verify.",
+        prefix=".experiment011-stage-a-verify.",
         suffix=".json",
         dir=output_parent,
     )
@@ -3128,6 +5199,131 @@ def _prepare_completed_artifact(
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _prepare_result_completion_receipt(
+    preflight: StageAPreflight,
+    attempt: AttemptReservation,
+    *,
+    file_hash: str,
+    canonical_hash: str,
+    gate: Mapping[str, object],
+) -> dict[str, object]:
+    _validate_one_run_seal(preflight, attempt, require_receipt=True)
+    json_gate = _jsonable(gate)
+    if not isinstance(json_gate, dict) or not isinstance(json_gate.get("passed"), bool):
+        raise StageAAuthenticationError("Stage-A gate is malformed before completion preparation")
+    prepared = {
+        **attempt.receipt,
+        "status": RESULT_PREPARED_STATUS,
+        "completion_prepared_at_utc": datetime.now(UTC).isoformat(),
+        "completed_task_ids": [TASK_ID],
+        "quality_result_computed": True,
+        "result_available": False,
+        "output_published": False,
+        "quality_aggregate_exposed": False,
+        "intended_output_path": OUTPUT_RELATIVE_PATH,
+        "output_file_sha256": file_hash,
+        "output_canonical_evidence_sha256": canonical_hash,
+        "stage_a_gate_sha256": _canonical_sha256(json_gate),
+        "rerun_automatically_authorized": False,
+        "claim_boundary": CLAIM_BOUNDARY,
+    }
+    _validate_public_artifact(prepared, repo_root=preflight.repo_root)
+    payload = canonical_json_bytes(prepared)
+    _atomic_replace_owned(preflight.attempt_path, payload)
+    if preflight.attempt_path.read_bytes() != payload:
+        raise StageAAuthenticationError("prepared completion receipt persistence drifted")
+    return prepared
+
+
+def _validate_published_output_against_receipt(
+    output_path: Path,
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    expected_file_hash = receipt.get("output_file_sha256")
+    expected_canonical_hash = receipt.get("output_canonical_evidence_sha256")
+    if not isinstance(expected_file_hash, str) or not isinstance(
+        expected_canonical_hash,
+        str,
+    ):
+        raise StageAAuthenticationError("completion receipt lacks authenticated output hashes")
+    try:
+        payload = output_path.read_bytes()
+    except OSError as error:
+        raise StageAAuthenticationError(
+            "prepared Stage-A output is absent after publication"
+        ) from error
+    if hashlib.sha256(payload).hexdigest() != expected_file_hash:
+        raise StageAAuthenticationError("published Stage-A output file hash drifted")
+    verification = verify_evidence_artifact(output_path)
+    if (
+        verification.get("valid") is not True
+        or verification.get("file_sha256") != expected_file_hash
+        or verification.get("computed_canonical_evidence_sha256") != expected_canonical_hash
+    ):
+        raise StageAAuthenticationError("published Stage-A output canonical verification failed")
+    artifact = _json_mapping(output_path)
+    if (
+        artifact.get("artifact_kind") != ARTIFACT_KIND
+        or artifact.get("canonical_evidence_sha256") != expected_canonical_hash
+    ):
+        raise StageAAuthenticationError("published Stage-A output identity drifted")
+    evidence = artifact.get("evidence")
+    gate = evidence.get("stage_a_gate") if isinstance(evidence, Mapping) else None
+    expected_gate_hash = receipt.get("stage_a_gate_sha256")
+    if (
+        not isinstance(gate, Mapping)
+        or not isinstance(gate.get("passed"), bool)
+        or not isinstance(expected_gate_hash, str)
+        or _canonical_sha256(gate) != expected_gate_hash
+    ):
+        raise StageAAuthenticationError(
+            "published Stage-A gate does not match its non-revealing receipt binding"
+        )
+    return {
+        "artifact_file_sha256": expected_file_hash,
+        "canonical_evidence_sha256": expected_canonical_hash,
+        "stage_a_gate_passed": gate["passed"],
+        "stage_a_gate_sha256": expected_gate_hash,
+        "valid": True,
+    }
+
+
+def _promote_result_completion_receipt(
+    preflight: StageAPreflight,
+    prepared: Mapping[str, object],
+) -> dict[str, object]:
+    expected_prepared = canonical_json_bytes(prepared)
+    try:
+        actual_prepared = preflight.attempt_path.read_bytes()
+    except OSError as error:
+        raise StageAAuthenticationError(
+            "prepared completion receipt is missing before promotion"
+        ) from error
+    if actual_prepared != expected_prepared:
+        raise StageAAuthenticationError(
+            "prepared completion receipt bytes drifted before promotion"
+        )
+    publication = _validate_published_output_against_receipt(
+        preflight.output_path,
+        prepared,
+    )
+    completed = {
+        **prepared,
+        "status": RESULT_COMPLETED_STATUS,
+        "result_available": True,
+        "output_published": True,
+        "quality_aggregate_exposed": True,
+        "stage_a_gate_passed": publication["stage_a_gate_passed"],
+        "completed_at_utc": datetime.now(UTC).isoformat(),
+    }
+    _validate_public_artifact(completed, repo_root=preflight.repo_root)
+    payload = canonical_json_bytes(completed)
+    _atomic_replace_owned(preflight.attempt_path, payload)
+    if preflight.attempt_path.read_bytes() != payload:
+        raise StageAAuthenticationError("completed result receipt promotion drifted")
+    return completed
 
 
 def finalize_stage_a(
@@ -3170,22 +5366,19 @@ def finalize_stage_a(
         raise StageAAuthenticationError(
             "repository identity changed while preparing the Stage-A artifact"
         )
-    _atomic_publish_new(authenticated.output_path, payload)
-    completed = {
-        **attempt.receipt,
-        "status": "completed_with_authenticated_stage_a_result",
-        "completed_at_utc": datetime.now(UTC).isoformat(),
-        "completed_task_ids": [TASK_ID],
-        "quality_aggregate_exposed": True,
-        "output_file_sha256": file_hash,
-        "output_canonical_evidence_sha256": canonical_hash,
-        "stage_a_gate_passed": gate["passed"],
-        "claim_boundary": CLAIM_BOUNDARY,
-    }
-    _atomic_replace_owned(
-        authenticated.attempt_path,
-        canonical_json_bytes(completed),
+    prepared_completion = _prepare_result_completion_receipt(
+        authenticated,
+        attempt,
+        file_hash=file_hash,
+        canonical_hash=canonical_hash,
+        gate=gate,
     )
+    _atomic_publish_new(authenticated.output_path, payload)
+    _validate_published_output_against_receipt(
+        authenticated.output_path,
+        prepared_completion,
+    )
+    _promote_result_completion_receipt(authenticated, prepared_completion)
     return {
         "output": OUTPUT_RELATIVE_PATH,
         "artifact_file_sha256": file_hash,
@@ -3205,11 +5398,18 @@ def execute_stage_a(args: argparse.Namespace) -> dict[str, object]:
 
     hooks = AccessHooks(
         authenticate=authenticate,
+        authenticate_readiness=lambda _preflight: authenticate_runtime_readiness(
+            device_name=args.device,
+        ),
         load_config=lambda preflight: load_and_authenticate_config(
             preflight,
             local_files_only=args.local_files_only,
         ),
-        reserve_attempt=reserve_one_run,
+        reserve_attempt=lambda preflight, configuration, readiness: reserve_one_run(
+            preflight,
+            configuration,
+            readiness,
+        ),
         load_exact_task=load_exact_authenticated_task,
         tokenize_task=lambda preflight, row: tokenize_authenticated_task(
             preflight,
@@ -3223,11 +5423,22 @@ def execute_stage_a(args: argparse.Namespace) -> dict[str, object]:
             local_files_only=args.local_files_only,
         ),
         evaluate=evaluate_frozen_stage_a,
+        record_access_transition=lambda receipt, ledger: record_access_transition(
+            holder["preflight"],
+            receipt,
+            ledger,
+        ),
+        record_evaluation_returned=lambda receipt, ledger: record_evaluation_returned(
+            holder["preflight"],
+            receipt,
+            ledger,
+        ),
         finalize=finalize_stage_a,
-        record_failure=lambda receipt, error: record_attempt_failure(
+        record_failure=lambda receipt, error, ledger: record_attempt_failure(
             holder["preflight"],
             receipt,
             error,
+            ledger,
         ),
     )
     result = run_ordered_access(hooks)
@@ -3255,7 +5466,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="auto",
         help="Frozen Stage A requires CUDA BF16; auto resolves only to CUDA.",
     )
-    parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument(
+        "--local-files-only",
+        action="store_true",
+        required=True,
+        help="Required fail-closed mode; all model, tokenizer, and dataset resources stay local.",
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--preflight-only",
@@ -3274,6 +5490,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.preflight_only:
         preflight = authenticate_static_inputs(args)
+        readiness = authenticate_runtime_readiness(device_name=args.device)
         configuration = load_and_authenticate_config(
             preflight,
             local_files_only=args.local_files_only,
@@ -3285,7 +5502,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "quality_data_accessed": False,
                     "model_weights_loaded": False,
                     "one_run_reserved": False,
+                    "task_row_loaded": False,
+                    "tokenizer_loaded": False,
                     "repository_commit": preflight.repository_start["commit"],
+                    "runtime_readiness": _readiness_bundle(readiness),
+                    "experiment010_administrative_null": (preflight.experiment010_admin_null),
                     "model": configuration.identity,
                     "output": OUTPUT_RELATIVE_PATH,
                     "claim_boundary": CLAIM_BOUNDARY,

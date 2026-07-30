@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Independent synthetic Stage-0 verifier for Experiment 010.
+"""Independent synthetic Stage-0 verifier for Experiment 011.
 
 This file deliberately contains its own dense Gated DeltaNet recurrence,
 randomized-Hadamard transform, signed bit packing, row quantizers, boundary
@@ -17,10 +17,13 @@ import argparse
 import ast
 import hashlib
 import importlib.metadata
+import io
 import json
 import math
+import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -68,8 +71,24 @@ RESIDUAL_Q4_BASE_BYTES = 2_585_088
 RESIDUAL_Q4_ROWS = 13_175
 RESIDUAL_Q4_PADDING_BYTES = 26
 
-PRODUCTION_SCHEMA = "recurquant.experiment010.stage0.production.v1"
+EXPERIMENT_ID = "experiment011"
+PRODUCTION_SCHEMA = f"recurquant.{EXPERIMENT_ID}.stage0.production.v1"
 PRODUCTION_SCHEMA_VERSION = 1
+GIT_REPOSITORY_BINDING_SCHEMA = "recurquant.git-repository-binding.v1"
+PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256 = (
+    "2466ad25043894fcd1604c97c373e5d5680061fdb7637f861b83d5c9465c31fe"
+)
+RUNTIME_PACKAGE_DISTRIBUTIONS = (
+    "datasets",
+    "fsspec",
+    "huggingface-hub",
+    "numpy",
+    "pyarrow",
+    "safetensors",
+    "tokenizers",
+    "torch",
+    "transformers",
+)
 EFFECTIVE_PLAN_SHA256 = "6b7d8f6b7a4b1142f0363bf3387fa20f8d3e3b0656c4367680f84d76ee528640"
 STATELEASE_SELECTION_METHOD = "statelease_cut4_cut5_right_rht_query_ema32_weighted_mse_fisher_quota"
 LINEAR_LAYER_INDICES = (
@@ -112,13 +131,21 @@ LAYER_QUOTAS = {
     21: 7,
     22: 55,
 }
+EXPERIMENT011_SOURCE_PROVENANCE_PATHS = (
+    "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md",
+    "research/EXPERIMENT_011_STAGE_A_IDENTITY.md",
+    "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md",
+    "evidence/experiment010-statelease-stage-a-administrative-null.json",
+    "artifacts/experiment010-statelease-stage-a-666.attempt.json",
+    "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
+    "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
+)
 SOURCE_IDENTITY_PATHS = (
     "pyproject.toml",
     "scripts/capture_statelease_stage0.py",
     "scripts/screen_statelease_stage_a.py",
     "scripts/verify_statelease_stage0.py",
-    "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
-    "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
+    *EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
     "src/recurquant/__init__.py",
     "src/recurquant/cache.py",
     "src/recurquant/cli.py",
@@ -174,6 +201,39 @@ SOURCE_IDENTITY_PATHS = (
     "tests/test_statelease_observer.py",
     "tests/test_screen_statelease_stage_a.py",
     "tests/test_verify_statelease_stage0.py",
+)
+REQUIRED_LOADED_RECURQUANT_MODULE_PATHS = (
+    ("recurquant", "src/recurquant/__init__.py"),
+    ("recurquant.evidence", "src/recurquant/evidence.py"),
+    ("recurquant.finite_difference", "src/recurquant/finite_difference.py"),
+    ("recurquant.fisher_sensitivity", "src/recurquant/fisher_sensitivity.py"),
+    ("recurquant.horizon", "src/recurquant/horizon.py"),
+    ("recurquant.horizon_calibration", "src/recurquant/horizon_calibration.py"),
+    ("recurquant.intervention", "src/recurquant/intervention.py"),
+    ("recurquant.mixed_quantization", "src/recurquant/mixed_quantization.py"),
+    ("recurquant.model_fisher", "src/recurquant/model_fisher.py"),
+    ("recurquant.multibit_policy", "src/recurquant/multibit_policy.py"),
+    ("recurquant.multibit_quantization", "src/recurquant/multibit_quantization.py"),
+    ("recurquant.packed_cache", "src/recurquant/packed_cache.py"),
+    ("recurquant.quantization", "src/recurquant/quantization.py"),
+    ("recurquant.query_energy", "src/recurquant/query_energy.py"),
+    ("recurquant.qwen35", "src/recurquant/qwen35.py"),
+    ("recurquant.rht", "src/recurquant/rht.py"),
+    ("recurquant.row_policy", "src/recurquant/row_policy.py"),
+    ("recurquant.statelease", "src/recurquant/statelease.py"),
+    ("recurquant.statelease_baselines", "src/recurquant/statelease_baselines.py"),
+    ("recurquant.statelease_cache", "src/recurquant/statelease_cache.py"),
+    (
+        "recurquant.statelease_equal_byte_baselines",
+        "src/recurquant/statelease_equal_byte_baselines.py",
+    ),
+    (
+        "recurquant.statelease_equal_byte_cache",
+        "src/recurquant/statelease_equal_byte_cache.py",
+    ),
+    ("recurquant.statelease_evaluation", "src/recurquant/statelease_evaluation.py"),
+    ("recurquant.statelease_observer", "src/recurquant/statelease_observer.py"),
+    ("recurquant.transition_observer", "src/recurquant/transition_observer.py"),
 )
 
 ALLOWED_CONSUMED_DTYPES = frozenset(
@@ -316,7 +376,7 @@ def derive_successful_record(
     ).to(torch.float32)
     batch, heads, rows, width = state.shape
     if batch != 1:
-        raise ValueError("Experiment 010 replay verification requires batch size one")
+        raise ValueError("Experiment 011 replay verification requires batch size one")
     if tuple(key.shape) != (batch, 1, heads, rows):
         raise ValueError("consumed_key must have shape [1, 1, heads, rows]")
     if tuple(value.shape) != (batch, 1, heads, width):
@@ -1889,7 +1949,7 @@ def guard_protected_mbpp_window(
 
     normalized_stage = stage.strip().lower()
     if normalized_stage not in {"stage0", "stagea", "stageb", "stagec"}:
-        raise ValueError("unknown Experiment 010 stage")
+        raise ValueError("unknown Experiment 011 stage")
     if any(isinstance(index, bool) or not isinstance(index, int) for index in ranked_indices):
         raise TypeError("ranked_indices must contain integers")
     if any(8 <= index < 16 for index in ranked_indices):
@@ -1904,18 +1964,27 @@ def guard_protected_mbpp_window(
 
 
 def assert_independent_imports(path: Path) -> None:
-    """Fail if this verifier acquires any package-under-test import."""
+    """Fail if this verifier imports the package or Stage-0 producer under test."""
 
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
         modules: list[str] = []
         if isinstance(node, ast.Import):
             modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            modules.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module is None:
+                modules.extend(alias.name for alias in node.names)
+            else:
+                modules.append(node.module)
+                modules.extend(f"{node.module}.{alias.name}" for alias in node.names)
         for module in modules:
             if module == "recurquant" or module.startswith("recurquant."):
                 _fail(f"independent verifier imports package under test: {module}")
+            if module in {
+                "capture_statelease_stage0",
+                "scripts.capture_statelease_stage0",
+            }:
+                _fail(f"independent verifier imports Stage-0 producer under test: {module}")
 
 
 def _file_sha256(path: Path) -> str:
@@ -1964,7 +2033,7 @@ def canonical_payload_sha256(value: object) -> str:
                 visit(key)
                 visit(item[key])
         elif item_type is list or item_type is tuple:
-            digest.update(b"l")
+            digest.update(b"l" if item_type is list else b"t")
             digest.update(len(item).to_bytes(8, "little"))
             for child in item:
                 visit(child)
@@ -1995,42 +2064,104 @@ def _require_exact_keys(
     return value
 
 
-def _read_sha256_sidecar(path: Path, artifact_path: Path) -> str:
+def _read_regular_file_bytes(path: Path, *, label: str) -> bytes:
+    """Read one stable regular-file handle and reject mutation during the read."""
+
+    if path.is_symlink():
+        _fail(f"{label} must be a regular non-symlink file")
     try:
-        line = path.read_text(encoding="ascii").strip()
+        with path.open("rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                _fail(f"{label} must be a regular non-symlink file")
+            payload = handle.read()
+            after = os.fstat(handle.fileno())
     except OSError as error:
-        raise Stage0VerificationError(f"cannot read SHA-256 sidecar: {error}") from error
-    parts = line.split()
+        raise Stage0VerificationError(f"cannot read {label}: {type(error).__name__}") from error
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if identity_before != identity_after or len(payload) != after.st_size:
+        _fail(f"{label} changed while its authenticated bytes were read")
+    return payload
+
+
+def _parse_sha256_sidecar(payload: bytes, artifact_path: Path) -> str:
+    try:
+        artifact_name = artifact_path.name.encode("ascii")
+    except UnicodeEncodeError as error:
+        raise Stage0VerificationError(
+            "artifact filename is not representable in the closed ASCII sidecar syntax"
+        ) from error
+    digest_bytes = payload[:64]
+    expected_payload = digest_bytes + b"  " + artifact_name + b"\n"
     if (
-        len(parts) != 2
-        or len(parts[0]) != 64
-        or any(character not in "0123456789abcdef" for character in parts[0])
-        or parts[1] != artifact_path.name
+        len(digest_bytes) != 64
+        or any(byte not in b"0123456789abcdef" for byte in digest_bytes)
+        or payload != expected_payload
     ):
         _fail("artifact SHA-256 sidecar has invalid closed syntax")
-    return parts[0]
+    return digest_bytes.decode("ascii")
 
 
-def load_authenticated_production_artifact(
+def _authenticated_artifact_bytes(
     artifact_path: Path,
-    *,
-    sha256_path: Path | None = None,
-) -> Mapping[str, object]:
-    """Authenticate serialized bytes, then load only tensor-safe primitives."""
+    sidecar_path: Path,
+) -> tuple[bytes, dict[str, str]]:
+    """Read and authenticate one exact artifact/sidecar byte pair."""
 
-    artifact_path = artifact_path.resolve()
-    sidecar = (
-        artifact_path.with_suffix(artifact_path.suffix + ".sha256")
-        if sha256_path is None
-        else sha256_path.resolve()
-    )
-    expected_file_hash = _read_sha256_sidecar(sidecar, artifact_path)
-    actual_file_hash = _file_sha256(artifact_path)
-    if actual_file_hash != expected_file_hash:
+    if (
+        artifact_path.is_symlink()
+        or sidecar_path.is_symlink()
+        or not artifact_path.is_file()
+        or not sidecar_path.is_file()
+    ):
+        _fail("artifact and SHA-256 sidecar must be regular non-symlink files")
+    sidecar_payload = _read_regular_file_bytes(sidecar_path, label="SHA-256 sidecar")
+    artifact_payload = _read_regular_file_bytes(artifact_path, label="serialized artifact")
+    expected_hash = _parse_sha256_sidecar(sidecar_payload, artifact_path)
+    artifact_hash = hashlib.sha256(artifact_payload).hexdigest()
+    if artifact_hash != expected_hash:
         _fail("serialized artifact SHA-256 differs from its authenticated sidecar")
+    return artifact_payload, {
+        "artifact_file_sha256": artifact_hash,
+        "sidecar_file_sha256": hashlib.sha256(sidecar_payload).hexdigest(),
+        "sidecar_declared_artifact_sha256": expected_hash,
+    }
+
+
+def _artifact_integrity_snapshot(
+    artifact_path: Path,
+    sidecar_path: Path,
+) -> dict[str, str]:
+    """Authenticate the exact current artifact/sidecar bytes."""
+
+    _, integrity = _authenticated_artifact_bytes(artifact_path, sidecar_path)
+    return integrity
+
+
+def _load_authenticated_production_artifact_with_integrity(
+    artifact_path: Path,
+    sidecar: Path,
+) -> tuple[Mapping[str, object], dict[str, str]]:
+    artifact_payload, loaded_integrity = _authenticated_artifact_bytes(
+        artifact_path,
+        sidecar,
+    )
     try:
         loaded = torch.load(
-            artifact_path,
+            io.BytesIO(artifact_payload),
             map_location="cpu",
             weights_only=True,
         )
@@ -2038,6 +2169,10 @@ def load_authenticated_production_artifact(
         raise Stage0VerificationError(
             f"weights-only artifact loading failed: {type(error).__name__}"
         ) from error
+    if _artifact_integrity_snapshot(artifact_path, sidecar) != loaded_integrity:
+        _fail("artifact or sidecar changed during authenticated weights-only load")
+    if type(loaded) is not dict:
+        _fail("artifact root must be an exact plain dict")
     artifact = _require_exact_keys(
         loaded,
         name="artifact",
@@ -2067,6 +2202,28 @@ def load_authenticated_production_artifact(
     unhashed = {key: artifact[key] for key in artifact if key != "canonical_payload_sha256"}
     if canonical_payload_sha256(unhashed) != canonical:
         _fail("artifact canonical payload SHA-256 is invalid")
+    return artifact, loaded_integrity
+
+
+def load_authenticated_production_artifact(
+    artifact_path: Path,
+    *,
+    sha256_path: Path | None = None,
+) -> Mapping[str, object]:
+    """Authenticate immutable bytes, then load only tensor-safe primitives."""
+
+    if artifact_path.is_symlink() or (sha256_path is not None and sha256_path.is_symlink()):
+        _fail("artifact and SHA-256 sidecar must be regular non-symlink files")
+    artifact_path = artifact_path.resolve()
+    sidecar = (
+        artifact_path.with_suffix(artifact_path.suffix + ".sha256")
+        if sha256_path is None
+        else sha256_path.resolve()
+    )
+    artifact, _ = _load_authenticated_production_artifact_with_integrity(
+        artifact_path,
+        sidecar,
+    )
     return artifact
 
 
@@ -2080,6 +2237,7 @@ def _recorded_source_snapshot(
         name=name,
         keys=(
             "repo_head",
+            "repository_binding",
             "source_hashes",
             "source_set_sha256",
             "head_blob_hashes",
@@ -2095,6 +2253,10 @@ def _recorded_source_snapshot(
         or any(character not in "0123456789abcdef" for character in repo_head)
     ):
         _fail(f"{name} lacks an exact repository HEAD")
+    repository_binding = _recorded_repository_binding(
+        snapshot["repository_binding"],
+        name=f"{name}.repository_binding",
+    )
     source_hashes = _require_exact_keys(
         snapshot["source_hashes"],
         name=f"{name}.source_hashes",
@@ -2143,6 +2305,7 @@ def _recorded_source_snapshot(
         _fail(f"{name} source bytes do not equal their regular-file blobs at HEAD")
     return {
         "repo_head": repo_head,
+        "repository_binding": repository_binding,
         "source_hashes": dict(source_hashes),
         "source_set_sha256": source_set_sha256,
         "head_blob_hashes": dict(head_blob_hashes),
@@ -2152,24 +2315,398 @@ def _recorded_source_snapshot(
     }
 
 
+def _sanitized_verifier_git_environment() -> dict[str, str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def _verifier_git(
+    repo_root: Path,
+    *arguments: str,
+    check: bool = True,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-c",
+            "core.useReplaceRefs=false",
+            "-c",
+            f"core.attributesFile={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            *arguments,
+        ],
+        cwd=repo_root,
+        check=check,
+        capture_output=True,
+        text=True,
+        input=input_text,
+        env=_sanitized_verifier_git_environment(),
+    )
+
+
+def _resolved_verifier_git_path(repo_root: Path, value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        path = repo_root / path
+    return path.resolve()
+
+
+def _private_verifier_path_sha256(path: Path) -> str:
+    normalized = os.path.normcase(str(path.resolve())).replace("\\", "/")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _verified_local_git_config_sha256(repo_root: Path) -> str:
+    process = _verifier_git(
+        repo_root,
+        "config",
+        "--local",
+        "--no-includes",
+        "--null",
+        "--list",
+    )
+    entries: list[dict[str, str]] = []
+    for raw in process.stdout.split("\0"):
+        if not raw:
+            continue
+        key, separator, value = raw.partition("\n")
+        if not separator or not key:
+            _fail("local Git config contains a malformed entry")
+        normalized_key = key.lower()
+        entries.append({"key": normalized_key, "value": value})
+        forbidden = (
+            normalized_key.startswith(("include.", "includeif.", "filter."))
+            or normalized_key
+            in {
+                "core.alternaterefscommand",
+                "core.alternaterefsprefixes",
+                "core.attributesfile",
+                "core.fsmonitor",
+                "core.hookspath",
+                "core.sparsecheckout",
+                "core.sparsecheckoutcone",
+                "core.untrackedcache",
+                "core.worktree",
+                "extensions.partialclone",
+                "extensions.worktreeconfig",
+                "index.sparse",
+            }
+            or (
+                normalized_key.startswith("remote.")
+                and normalized_key.endswith((".promisor", ".partialclonefilter"))
+            )
+        )
+        if forbidden:
+            _fail(f"unsafe local Git config key is present: {normalized_key}")
+        if normalized_key == "core.usereplacerefs" and value.lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            _fail("local Git config enables replacement objects")
+    values_by_key: dict[str, list[str]] = {}
+    for entry in entries:
+        values_by_key.setdefault(entry["key"], []).append(entry["value"])
+    if values_by_key.get("core.repositoryformatversion") != ["0"]:
+        _fail("Git repository format version is not exactly zero")
+    if values_by_key.get("core.bare") != ["false"]:
+        _fail("Git repository must explicitly be non-bare")
+    return canonical_payload_sha256(entries)
+
+
+def _assert_verifier_index_has_no_hidden_flags(repo_root: Path) -> None:
+    """Independently reject index flags that can conceal tracked-file drift."""
+
+    try:
+        process = _verifier_git(repo_root, "ls-files", "--cached", "-v", "-z")
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise Stage0VerificationError("cannot authenticate Git index visibility flags") from error
+    records = [record for record in process.stdout.split("\0") if record]
+    if any(len(record) < 3 or record[1] != " " for record in records):
+        _fail("Git index visibility output is malformed")
+    unsafe_tags = sorted({record[0] for record in records if record[0] != "H"})
+    if unsafe_tags:
+        _fail(f"Git index contains hidden or non-canonical tracked entries (tags={unsafe_tags})")
+
+
+def _current_repository_binding(repo_root: Path) -> dict[str, object]:
+    try:
+        local_config_sha256 = _verified_local_git_config_sha256(repo_root)
+        _assert_verifier_index_has_no_hidden_flags(repo_root)
+        top_level = _resolved_verifier_git_path(
+            repo_root,
+            _verifier_git(repo_root, "rev-parse", "--show-toplevel").stdout.strip(),
+        )
+        git_dir = _resolved_verifier_git_path(
+            repo_root,
+            _verifier_git(repo_root, "rev-parse", "--absolute-git-dir").stdout.strip(),
+        )
+        common_dir = _resolved_verifier_git_path(
+            repo_root,
+            _verifier_git(repo_root, "rev-parse", "--git-common-dir").stdout.strip(),
+        )
+        index_path = _resolved_verifier_git_path(
+            repo_root,
+            _verifier_git(repo_root, "rev-parse", "--git-path", "index").stdout.strip(),
+        )
+        object_dir = _resolved_verifier_git_path(
+            repo_root,
+            _verifier_git(repo_root, "rev-parse", "--git-path", "objects").stdout.strip(),
+        )
+        object_format = _verifier_git(
+            repo_root,
+            "rev-parse",
+            "--show-object-format",
+        ).stdout.strip()
+        inside_worktree = _verifier_git(
+            repo_root,
+            "rev-parse",
+            "--is-inside-work-tree",
+        ).stdout.strip()
+        bare = _verifier_git(
+            repo_root,
+            "rev-parse",
+            "--is-bare-repository",
+        ).stdout.strip()
+        shallow = _verifier_git(
+            repo_root,
+            "rev-parse",
+            "--is-shallow-repository",
+        ).stdout.strip()
+        shallow_path = _resolved_verifier_git_path(
+            repo_root,
+            _verifier_git(repo_root, "rev-parse", "--git-path", "shallow").stdout.strip(),
+        )
+        replace_refs = _verifier_git(
+            repo_root,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/replace/",
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise Stage0VerificationError(
+            "cannot authenticate the Git repository/object view"
+        ) from error
+
+    expected_top_level = repo_root.resolve()
+    if top_level != expected_top_level or inside_worktree != "true" or bare != "false":
+        _fail("Git top-level/worktree identity differs from the expected repository")
+    if object_format != "sha1":
+        _fail("Stage-0 source identity requires the exact SHA-1 Git object format")
+    if index_path != git_dir / "index":
+        _fail("Git index is not the exact worktree index")
+    if object_dir != common_dir / "objects" or not object_dir.is_dir():
+        _fail("Git object directory is not the exact common object store")
+
+    dot_git = expected_top_level / ".git"
+    try:
+        if dot_git.is_dir():
+            if dot_git.is_symlink():
+                _fail("main-worktree .git directory must not be a symlink")
+            git_dir_kind = "main_worktree"
+            if git_dir != dot_git.resolve() or common_dir != git_dir:
+                _fail("main-worktree Git directory/common directory identity differs")
+        elif dot_git.is_file():
+            if dot_git.is_symlink():
+                _fail("linked-worktree .git marker must not be a symlink")
+            marker = dot_git.read_text(encoding="utf-8").strip()
+            prefix = "gitdir: "
+            if not marker.startswith(prefix):
+                _fail("linked-worktree .git marker is malformed")
+            declared_git_dir = Path(marker[len(prefix) :])
+            if not declared_git_dir.is_absolute():
+                declared_git_dir = expected_top_level / declared_git_dir
+            if declared_git_dir.resolve() != git_dir:
+                _fail("linked-worktree .git marker redirects to a different Git directory")
+            if git_dir.parent != common_dir / "worktrees":
+                _fail("linked-worktree Git directory is outside the common worktree registry")
+            reverse_pointer = git_dir / "gitdir"
+            if not reverse_pointer.is_file() or reverse_pointer.is_symlink():
+                _fail("linked-worktree Git directory has no canonical reverse pointer")
+            declared_dot_git = Path(reverse_pointer.read_text(encoding="utf-8").strip())
+            if not declared_dot_git.is_absolute():
+                declared_dot_git = git_dir / declared_dot_git
+            if declared_dot_git.resolve() != dot_git.resolve():
+                _fail("linked-worktree Git directory reverse pointer targets a different worktree")
+            git_dir_kind = "linked_worktree"
+        else:
+            _fail("repository has neither a canonical .git directory nor marker")
+    except OSError as error:
+        raise Stage0VerificationError("cannot authenticate the worktree Git binding") from error
+
+    unsafe_object_files = (
+        object_dir / "info" / "alternates",
+        object_dir / "info" / "http-alternates",
+        git_dir / "info" / "grafts",
+        common_dir / "info" / "grafts",
+        shallow_path,
+    )
+    if any(path.exists() for path in unsafe_object_files):
+        _fail("Git alternates, grafts, or shallow object view is not permitted")
+    if shallow != "false":
+        _fail("shallow Git history is not permitted")
+    if replace_refs:
+        _fail("Git replacement refs are not permitted")
+
+    return {
+        "schema": GIT_REPOSITORY_BINDING_SCHEMA,
+        "top_level_path_sha256": _private_verifier_path_sha256(top_level),
+        "worktree_path_sha256": _private_verifier_path_sha256(expected_top_level),
+        "git_dir_path_sha256": _private_verifier_path_sha256(git_dir),
+        "common_dir_path_sha256": _private_verifier_path_sha256(common_dir),
+        "index_path_sha256": _private_verifier_path_sha256(index_path),
+        "object_dir_path_sha256": _private_verifier_path_sha256(object_dir),
+        "git_dir_kind": git_dir_kind,
+        "object_format": object_format,
+        "inside_worktree": True,
+        "bare": False,
+        "shallow": False,
+        "alternates_absent": True,
+        "grafts_absent": True,
+        "replace_refs_absent": True,
+        "unsafe_local_config_absent": True,
+        "hidden_index_flags_absent": True,
+        "local_config_sha256": local_config_sha256,
+        "replacement_objects_disabled": True,
+        "system_and_global_config_disabled": True,
+        "fsmonitor_and_untracked_cache_disabled": True,
+        "hooks_disabled": True,
+        "worktree_gitdir_binding_verified": True,
+        "raw_source_hash_mode": "git_hash_object_no_filters_stdin_paths",
+    }
+
+
+def _recorded_repository_binding(value: object, *, name: str) -> dict[str, object]:
+    binding = _require_exact_keys(
+        value,
+        name=name,
+        keys=(
+            "schema",
+            "top_level_path_sha256",
+            "worktree_path_sha256",
+            "git_dir_path_sha256",
+            "common_dir_path_sha256",
+            "index_path_sha256",
+            "object_dir_path_sha256",
+            "git_dir_kind",
+            "object_format",
+            "inside_worktree",
+            "bare",
+            "shallow",
+            "alternates_absent",
+            "grafts_absent",
+            "replace_refs_absent",
+            "unsafe_local_config_absent",
+            "hidden_index_flags_absent",
+            "local_config_sha256",
+            "replacement_objects_disabled",
+            "system_and_global_config_disabled",
+            "fsmonitor_and_untracked_cache_disabled",
+            "hooks_disabled",
+            "worktree_gitdir_binding_verified",
+            "raw_source_hash_mode",
+        ),
+    )
+    digest_fields = (
+        "top_level_path_sha256",
+        "worktree_path_sha256",
+        "git_dir_path_sha256",
+        "common_dir_path_sha256",
+        "index_path_sha256",
+        "object_dir_path_sha256",
+        "local_config_sha256",
+    )
+    malformed = [
+        field
+        for field in digest_fields
+        if not isinstance(binding[field], str)
+        or len(binding[field]) != 64
+        or any(character not in "0123456789abcdef" for character in binding[field])
+    ]
+    if malformed:
+        _fail(f"{name} contains malformed private path/config hashes: {malformed}")
+    if binding["schema"] != GIT_REPOSITORY_BINDING_SCHEMA:
+        _fail(f"{name} schema differs")
+    if binding["object_format"] != "sha1":
+        _fail(f"{name} object format differs")
+    if binding["raw_source_hash_mode"] != "git_hash_object_no_filters_stdin_paths":
+        _fail(f"{name} raw source hash mode differs")
+    git_dir_kind = binding["git_dir_kind"]
+    if not isinstance(git_dir_kind, str) or git_dir_kind not in {
+        "main_worktree",
+        "linked_worktree",
+    }:
+        _fail(f"{name} Git-directory kind is invalid")
+    expected_booleans = {
+        "inside_worktree": True,
+        "bare": False,
+        "shallow": False,
+        "alternates_absent": True,
+        "grafts_absent": True,
+        "replace_refs_absent": True,
+        "unsafe_local_config_absent": True,
+        "hidden_index_flags_absent": True,
+        "replacement_objects_disabled": True,
+        "system_and_global_config_disabled": True,
+        "fsmonitor_and_untracked_cache_disabled": True,
+        "hooks_disabled": True,
+        "worktree_gitdir_binding_verified": True,
+    }
+    if any(binding[field] is not expected for field, expected in expected_booleans.items()):
+        _fail(f"{name} does not attest the exact safe Git/object view")
+    if binding["top_level_path_sha256"] != binding["worktree_path_sha256"]:
+        _fail(f"{name} top-level/worktree path binding differs")
+    if (
+        git_dir_kind == "main_worktree"
+        and binding["git_dir_path_sha256"] != binding["common_dir_path_sha256"]
+    ):
+        _fail(f"{name} main-worktree Git/common-directory binding differs")
+    if (
+        git_dir_kind == "linked_worktree"
+        and binding["git_dir_path_sha256"] == binding["common_dir_path_sha256"]
+    ):
+        _fail(f"{name} linked-worktree Git/common-directory binding is not distinct")
+    return dict(binding)
+
+
 def _git_blob_hashes_for_authenticated_sources(
     repo_root: Path,
 ) -> tuple[dict[str, str], dict[str, str]]:
     try:
-        tree_process = subprocess.run(
-            ["git", "ls-tree", "-r", "HEAD", "--", *SOURCE_IDENTITY_PATHS],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
+        tree_process = _verifier_git(
+            repo_root,
+            "ls-tree",
+            "-r",
+            "--full-tree",
+            "HEAD",
+            "--",
+            *SOURCE_IDENTITY_PATHS,
         )
-        worktree_process = subprocess.run(
-            ["git", "hash-object", "--stdin-paths"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-            input="\n".join(SOURCE_IDENTITY_PATHS),
+        worktree_process = _verifier_git(
+            repo_root,
+            "hash-object",
+            "--no-filters",
+            "--stdin-paths",
+            input_text="\n".join(SOURCE_IDENTITY_PATHS),
         )
     except (OSError, subprocess.CalledProcessError) as error:
         raise Stage0VerificationError(
@@ -2207,8 +2744,11 @@ def _git_blob_hashes_for_authenticated_sources(
 
 
 def _current_repository_source_snapshot(repo_root: Path) -> dict[str, object]:
+    repository_binding = _current_repository_binding(repo_root)
     missing = [
-        relative for relative in SOURCE_IDENTITY_PATHS if not (repo_root / relative).is_file()
+        relative
+        for relative in SOURCE_IDENTITY_PATHS
+        if not (repo_root / relative).is_file() or (repo_root / relative).is_symlink()
     ]
     if missing:
         _fail(f"authenticated Stage-0 source set is incomplete: {missing}")
@@ -2217,19 +2757,12 @@ def _current_repository_source_snapshot(repo_root: Path) -> dict[str, object]:
     }
     head_blobs, worktree_blobs = _git_blob_hashes_for_authenticated_sources(repo_root)
     try:
-        repo_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
+        repo_head = _verifier_git(repo_root, "rev-parse", "HEAD").stdout.strip()
+        status = _verifier_git(
+            repo_root,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
         ).stdout
     except (OSError, subprocess.CalledProcessError) as error:
         raise Stage0VerificationError("cannot verify current repository source identity") from error
@@ -2237,6 +2770,7 @@ def _current_repository_source_snapshot(repo_root: Path) -> dict[str, object]:
         _fail("current repository HEAD is not a lowercase SHA-1 commit identity")
     return {
         "repo_head": repo_head,
+        "repository_binding": repository_binding,
         "source_hashes": source_hashes,
         "source_set_sha256": canonical_payload_sha256(source_hashes),
         "head_blob_hashes": head_blobs,
@@ -2285,6 +2819,7 @@ def _verify_source_and_method_identity(
         name="source_identity",
         keys=(
             "repo_head",
+            "repository_binding",
             "source_hashes",
             "source_set_sha256",
             "head_blob_hashes",
@@ -2295,6 +2830,7 @@ def _verify_source_and_method_identity(
             "capture_end",
             "capture_start_equals_end",
             "loaded_local_source_paths",
+            "loaded_recurquant_module_paths",
         ),
     )
     capture_start = _recorded_source_snapshot(
@@ -2309,6 +2845,7 @@ def _verify_source_and_method_identity(
         _fail("authenticated capture start/end source snapshots differ")
     top_level_snapshot = {
         "repo_head": source_identity["repo_head"],
+        "repository_binding": source_identity["repository_binding"],
         "source_hashes": source_identity["source_hashes"],
         "source_set_sha256": source_identity["source_set_sha256"],
         "head_blob_hashes": source_identity["head_blob_hashes"],
@@ -2318,16 +2855,42 @@ def _verify_source_and_method_identity(
     }
     if top_level_snapshot != capture_start:
         _fail("top-level source identity does not equal the recorded capture start")
+    loaded_module_paths = source_identity["loaded_recurquant_module_paths"]
+    if (
+        type(loaded_module_paths) is not dict
+        or any(type(key) is not str for key in loaded_module_paths)
+        or any(type(value) is not str for value in loaded_module_paths.values())
+    ):
+        _fail("loaded RecurQuant module-name/source-path closure is not a plain mapping")
+    required_module_paths = dict(REQUIRED_LOADED_RECURQUANT_MODULE_PATHS)
+    missing_required = sorted(set(required_module_paths) - set(loaded_module_paths))
+    mismatched_required = sorted(
+        module_name
+        for module_name in set(required_module_paths) & set(loaded_module_paths)
+        if loaded_module_paths[module_name] != required_module_paths[module_name]
+    )
+    unauthenticated = sorted(
+        module_name
+        for module_name, relative in loaded_module_paths.items()
+        if relative not in SOURCE_IDENTITY_PATHS
+        or relative
+        not in {
+            f"src/{module_name.replace('.', '/')}.py",
+            f"src/{module_name.replace('.', '/')}/__init__.py",
+        }
+        or (module_name != "recurquant" and not module_name.startswith("recurquant."))
+    )
+    if missing_required or mismatched_required or unauthenticated:
+        _fail("loaded RecurQuant module-name/source-path closure differs")
+    expected_loaded_paths = sorted(
+        {"scripts/capture_statelease_stage0.py", *loaded_module_paths.values()}
+    )
     loaded_paths = source_identity["loaded_local_source_paths"]
     if (
         not isinstance(loaded_paths, list)
         or any(not isinstance(path, str) for path in loaded_paths)
-        or loaded_paths != sorted(set(loaded_paths))
+        or loaded_paths != expected_loaded_paths
         or not set(loaded_paths).issubset(SOURCE_IDENTITY_PATHS)
-        or "scripts/capture_statelease_stage0.py" not in loaded_paths
-        or "src/recurquant/statelease_cache.py" not in loaded_paths
-        or "src/recurquant/statelease_equal_byte_baselines.py" not in loaded_paths
-        or "src/recurquant/statelease_observer.py" not in loaded_paths
     ):
         _fail("loaded local production-source closure is invalid")
     current_snapshot = _current_repository_source_snapshot(repo_root)
@@ -2379,6 +2942,18 @@ def _verify_source_and_method_identity(
         _fail("method or frozen plan identity differs")
 
 
+def _runtime_package_manifest() -> tuple[dict[str, str], str]:
+    packages = {
+        distribution: str(importlib.metadata.version(distribution))
+        for distribution in RUNTIME_PACKAGE_DISTRIBUTIONS
+    }
+    payload = json.dumps(packages, sort_keys=True, separators=(",", ":")) + "\n"
+    manifest_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if manifest_sha256 != PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256:
+        _fail("current runtime package manifest differs from the Experiment 011 identity")
+    return packages, manifest_sha256
+
+
 def _verify_runtime_identity(value: object) -> dict[str, object]:
     runtime = _require_exact_keys(
         value,
@@ -2388,9 +2963,16 @@ def _verify_runtime_identity(value: object) -> dict[str, object]:
             "python_implementation",
             "python_executable",
             "python_environment",
+            "datasets_version",
+            "fsspec_version",
+            "huggingface_hub_version",
+            "numpy_version",
+            "pyarrow_version",
+            "safetensors_version",
+            "tokenizers_version",
             "torch_version",
             "transformers_version",
-            "numpy_version",
+            "package_manifest_sha256",
             "platform",
             "system",
             "machine",
@@ -2400,14 +2982,22 @@ def _verify_runtime_identity(value: object) -> dict[str, object]:
             "default_dtype",
         ),
     )
+    packages, package_manifest_sha256 = _runtime_package_manifest()
     expected = {
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "python_executable": Path(sys.executable).name,
         "python_environment": Path(sys.prefix).name,
-        "torch_version": str(torch.__version__),
-        "transformers_version": importlib.metadata.version("transformers"),
-        "numpy_version": importlib.metadata.version("numpy"),
+        "datasets_version": packages["datasets"],
+        "fsspec_version": packages["fsspec"],
+        "huggingface_hub_version": packages["huggingface-hub"],
+        "numpy_version": packages["numpy"],
+        "pyarrow_version": packages["pyarrow"],
+        "safetensors_version": packages["safetensors"],
+        "tokenizers_version": packages["tokenizers"],
+        "torch_version": packages["torch"],
+        "transformers_version": packages["transformers"],
+        "package_manifest_sha256": package_manifest_sha256,
         "platform": platform.platform(),
         "system": platform.system(),
         "machine": platform.machine(),
@@ -4177,9 +4767,17 @@ def verify_production_stage0(
 
     assert_independent_imports(Path(__file__))
     guard_protected_mbpp_window(stage="stage0")
-    artifact = load_authenticated_production_artifact(
-        artifact_path,
-        sha256_path=sha256_path,
+    if artifact_path.is_symlink() or (sha256_path is not None and sha256_path.is_symlink()):
+        _fail("artifact and SHA-256 sidecar must be regular non-symlink files")
+    resolved_artifact = artifact_path.resolve()
+    resolved_sidecar = (
+        resolved_artifact.with_suffix(resolved_artifact.suffix + ".sha256")
+        if sha256_path is None
+        else sha256_path.resolve()
+    )
+    artifact, loaded_integrity = _load_authenticated_production_artifact_with_integrity(
+        resolved_artifact,
+        resolved_sidecar,
     )
     repo_root = Path(__file__).resolve().parents[1]
     _verify_source_and_method_identity(artifact, repo_root=repo_root)
@@ -4193,12 +4791,9 @@ def verify_production_stage0(
     )
     compatibility = _verify_cc1_production_compatibility(artifact["cc1_compatibility"])
     comparators = _verify_equal_byte_comparators(artifact["equal_byte_comparators"])
-    resolved_artifact = artifact_path.resolve()
-    resolved_sidecar = (
-        resolved_artifact.with_suffix(resolved_artifact.suffix + ".sha256")
-        if sha256_path is None
-        else sha256_path.resolve()
-    )
+    integrity_after = _artifact_integrity_snapshot(resolved_artifact, resolved_sidecar)
+    if integrity_after != loaded_integrity:
+        _fail("artifact or sidecar changed during independent Stage-0 verification")
     return {
         "status": "production_stage0_pass",
         "experiment_stage0_complete": True,
@@ -4207,9 +4802,10 @@ def verify_production_stage0(
         "protected_mbpp_window_accessed": False,
         "weights_only_load": True,
         "independent_imports": True,
-        "artifact": str(resolved_artifact),
-        "artifact_file_sha256": _file_sha256(resolved_artifact),
-        "sidecar_file_sha256": _file_sha256(resolved_sidecar),
+        "artifact": _public_output_label(resolved_artifact, repo_root=repo_root),
+        "sidecar": _public_output_label(resolved_sidecar, repo_root=repo_root),
+        "artifact_file_sha256": integrity_after["artifact_file_sha256"],
+        "sidecar_file_sha256": integrity_after["sidecar_file_sha256"],
         "canonical_payload_sha256": artifact["canonical_payload_sha256"],
         "repository_commit": artifact["source_identity"]["repo_head"],
         "runtime_identity": runtime_identity,
@@ -4223,6 +4819,16 @@ def verify_production_stage0(
         "cc1_compatibility": compatibility,
         "equal_byte_comparators": comparators,
     }
+
+
+def _public_output_label(path: Path, *, repo_root: Path) -> str:
+    """Return a stable report label without exposing an absolute local path."""
+
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return resolved.name
 
 
 def _synthetic_record_sequence(

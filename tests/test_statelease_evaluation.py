@@ -8,6 +8,13 @@ import torch
 from recurquant.statelease_evaluation import (
     EQUAL_BYTE_NO_REPLAY_METHODS,
     FIXED_REPLAY_METHODS,
+    FROZEN_STAGE_A_ALIGNED_TOKENS,
+    FROZEN_STAGE_A_FORWARD_COUNT,
+    FROZEN_STAGE_A_PROMPT_TOKENS,
+    FROZEN_STAGE_A_RECURRENT_LAYER_INDICES,
+    FROZEN_STAGE_A_TOKENS_OBSERVED,
+    FROZEN_STAGE_A_TRAJECTORY_LAYER_VALUES,
+    FROZEN_STAGE_A_UPDATE_EVIDENCE_RECORDS,
     RHT_CQER_METHOD,
     STATELEASE_METHOD,
     TrajectoryNmseAccumulator,
@@ -44,7 +51,7 @@ def _metrics(
             "candidate_nll": reference_nll + deltas[method],
             "delta_nll": deltas[method],
             "top1_agreement": top1[method],
-            "token_count": 38,
+            "token_count": FROZEN_STAGE_A_ALIGNED_TOKENS,
             "all_logits_finite": True,
         }
         for method in methods
@@ -55,43 +62,67 @@ def _trajectory(
     *,
     statelease: float = 0.8,
     cc1: float = 1.0,
-) -> dict[str, float]:
+) -> dict[str, dict[str, float | int]]:
     methods = (
         RHT_CQER_METHOD,
         STATELEASE_METHOD,
         *FIXED_REPLAY_METHODS,
         *EQUAL_BYTE_NO_REPLAY_METHODS,
     )
-    result = {method: 1.2 for method in methods}
-    result[STATELEASE_METHOD] = statelease
-    result["fixed_cc1"] = cc1
+    result = {
+        method: {
+            "trajectory_nmse_auc": 1.2,
+            "scored_write_count": FROZEN_STAGE_A_ALIGNED_TOKENS,
+            "layer_value_count": FROZEN_STAGE_A_TRAJECTORY_LAYER_VALUES,
+        }
+        for method in methods
+    }
+    result[STATELEASE_METHOD]["trajectory_nmse_auc"] = statelease
+    result["fixed_cc1"]["trajectory_nmse_auc"] = cc1
     return result
 
 
 def _diagnostics() -> list[dict[str, int]]:
     return [
         {
+            "layer_index": layer_index,
+            "state_updates": FROZEN_STAGE_A_FORWARD_COUNT,
+            "tokens_observed": FROZEN_STAGE_A_TOKENS_OBSERVED,
             "boundary4_count": 2,
-            "boundary5_count": 3,
+            "boundary5_count": 6,
             "tie_count": 1,
             "invalid_boundary_count": 0,
         }
-        for _ in range(18)
+        for layer_index in FROZEN_STAGE_A_RECURRENT_LAYER_INDICES
     ]
 
 
 def _update_evidence() -> list[dict[str, int | bool | None]]:
     result: list[dict[str, int | bool | None]] = []
-    for _ in range(18):
-        result.extend(
-            [
-                {"boundary": 4, "tie": False},
-                {"boundary": 4, "tie": False},
-                {"boundary": 5, "tie": True},
-                {"boundary": 5, "tie": False},
-                {"boundary": 5, "tie": False},
-            ]
-        )
+    boundary_by_decode_write = {
+        5: 4,
+        9: 5,
+        14: 4,
+        18: 5,
+        23: 5,
+        28: 5,
+        33: 5,
+        38: 5,
+    }
+    for forward_index in range(FROZEN_STAGE_A_FORWARD_COUNT):
+        boundary = boundary_by_decode_write.get(forward_index)
+        for layer_index in FROZEN_STAGE_A_RECURRENT_LAYER_INDICES:
+            result.append(
+                {
+                    "update_index": len(result),
+                    "layer_index": layer_index,
+                    "state_index": 0,
+                    "token_count": (FROZEN_STAGE_A_PROMPT_TOKENS if forward_index == 0 else 1),
+                    "boundary": boundary,
+                    "tie": forward_index == 9,
+                }
+            )
+    assert len(result) == FROZEN_STAGE_A_UPDATE_EVIDENCE_RECORDS
     return result
 
 
@@ -101,6 +132,7 @@ def _gate(
     trajectory: Mapping[str, object] | None = None,
     diagnostics: list[dict[str, int]] | None = None,
     update_evidence: list[dict[str, int | bool | None]] | None = None,
+    storage: Mapping[str, object] | None = None,
     storage_bytes: int = 3_454_664,
     stage0_complete: bool = True,
     artifact_integrity: bool = True,
@@ -108,10 +140,14 @@ def _gate(
     return evaluate_statelease_stage_a_gate(
         aligned_metrics=_metrics() if metrics is None else metrics,
         trajectory_nmse_auc=_trajectory() if trajectory is None else trajectory,
-        statelease_storage={
-            "resident_bytes_including_statelease": storage_bytes,
-            "persistent_fp32_state_mirror": False,
-        },
+        statelease_storage=(
+            {
+                "resident_bytes_including_statelease": storage_bytes,
+                "persistent_fp32_state_mirror": False,
+            }
+            if storage is None
+            else storage
+        ),
         statelease_diagnostics=_diagnostics() if diagnostics is None else diagnostics,
         statelease_update_evidence=(
             _update_evidence() if update_evidence is None else update_evidence
@@ -178,6 +214,36 @@ def test_stage_a_gate_passes_only_when_every_frozen_condition_passes() -> None:
         "no_more_than_5_percent_worse_than_strongest_fixed"
     ]["evidence"]
     assert strongest["strongest_fixed_method"] == "fixed_cc2"
+
+
+@pytest.mark.parametrize(
+    "storage",
+    [
+        {"resident_bytes_including_statelease": 3_454_664},
+        {
+            "resident_bytes_including_statelease": 3_454_664,
+            "persistent_fp32_state_mirror": None,
+        },
+        {
+            "resident_bytes_including_statelease": 3_454_664,
+            "persistent_fp32_state_mirror": True,
+        },
+        {
+            "resident_bytes_including_statelease": 3_454_664,
+            "persistent_fp32_state_mirror": 0,
+        },
+    ],
+    ids=["missing", "null", "true", "integer-zero"],
+)
+def test_stage_a_gate_requires_explicit_boolean_false_for_no_fp32_mirror(
+    storage: Mapping[str, object],
+) -> None:
+    gate = _gate(storage=storage)
+
+    check = gate["checks"]["exact_statelease_allocation"]  # type: ignore[index]
+    assert gate["passed"] is False
+    assert check["passed"] is False
+    assert "must be explicitly false" in check["error"]
 
 
 @pytest.mark.parametrize(
@@ -266,7 +332,8 @@ def test_stage_a_gate_rejects_missing_or_extra_methods() -> None:
 
 def test_stage_a_gate_rejects_ties_not_assigned_to_c5() -> None:
     evidence = _update_evidence()
-    evidence[2]["boundary"] = 4
+    tie_record = next(row for row in evidence if row["tie"] is True)
+    tie_record["boundary"] = 4
 
     gate = _gate(update_evidence=evidence)
 
@@ -300,3 +367,123 @@ def test_stage_a_gate_rejects_inconsistent_delta_nll_and_nonfinite_flag() -> Non
     gate = _gate(metrics=metrics)
     assert gate["passed"] is False
     assert gate["checks"]["all_primary_values_finite"]["passed"] is False  # type: ignore[index]
+
+
+def test_stage_a_gate_rejects_truncated_aligned_metric_coverage() -> None:
+    metrics = _metrics()
+    for row in metrics.values():
+        row["token_count"] = FROZEN_STAGE_A_ALIGNED_TOKENS - 1
+
+    gate = _gate(metrics=metrics)
+
+    check = gate["checks"]["stage0_and_artifact_integrity"]  # type: ignore[index]
+    assert check["passed"] is False
+    assert f"must equal the frozen Stage-A count {FROZEN_STAGE_A_ALIGNED_TOKENS}" in check["error"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("scalar", "must be a mapping"),
+        ("writes", "scored_write_count must equal 38"),
+        ("layers", "layer_value_count must equal 684"),
+    ],
+)
+def test_stage_a_gate_rejects_incomplete_trajectory_coverage(
+    mutation: str,
+    expected_error: str,
+) -> None:
+    trajectory: dict[str, object] = _trajectory()
+    if mutation == "scalar":
+        trajectory[STATELEASE_METHOD] = 0.8
+    elif mutation == "writes":
+        trajectory[STATELEASE_METHOD]["scored_write_count"] = (  # type: ignore[index]
+            FROZEN_STAGE_A_ALIGNED_TOKENS - 1
+        )
+    else:
+        trajectory[STATELEASE_METHOD]["layer_value_count"] = (  # type: ignore[index]
+            FROZEN_STAGE_A_TRAJECTORY_LAYER_VALUES - 1
+        )
+
+    gate = _gate(trajectory=trajectory)
+
+    check = gate["checks"]["stage0_and_artifact_integrity"]  # type: ignore[index]
+    assert check["passed"] is False
+    assert expected_error in check["error"]
+
+
+def test_stage_a_gate_rejects_truncated_or_duplicate_diagnostics() -> None:
+    truncated = _gate(diagnostics=_diagnostics()[:-1])
+    truncated_check = truncated["checks"]["only_c4_c5_and_ties_to_c5"]  # type: ignore[index]
+    assert truncated_check["passed"] is False
+    assert "exactly 18 recurrent layers" in truncated_check["error"]
+
+    duplicated = _diagnostics()
+    duplicated[-1]["layer_index"] = duplicated[0]["layer_index"]
+    duplicate_gate = _gate(diagnostics=duplicated)
+    duplicate_check = duplicate_gate["checks"]["only_c4_c5_and_ties_to_c5"]  # type: ignore[index]
+    assert duplicate_check["passed"] is False
+    assert "duplicate layer_index" in duplicate_check["error"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        ("state_updates", FROZEN_STAGE_A_FORWARD_COUNT - 1, "state_updates must equal 39"),
+        ("tokens_observed", FROZEN_STAGE_A_TOKENS_OBSERVED - 1, "tokens_observed must equal 107"),
+    ],
+)
+def test_stage_a_gate_rejects_incomplete_per_layer_diagnostic_counts(
+    field: str,
+    value: int,
+    expected_error: str,
+) -> None:
+    diagnostics = _diagnostics()
+    diagnostics[0][field] = value
+
+    gate = _gate(diagnostics=diagnostics)
+
+    check = gate["checks"]["only_c4_c5_and_ties_to_c5"]  # type: ignore[index]
+    assert check["passed"] is False
+    assert expected_error in check["error"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ("truncated", "exactly 702 layer-write records"),
+        ("index", "update_index must equal"),
+        ("layer", "layer_index must equal"),
+        ("state", "state_index must equal 0"),
+        ("prefill_tokens", "token_count must equal 69"),
+        ("decode_tokens", "token_count must equal 1"),
+        ("prefill_boundary", "prefill evidence must not report a boundary"),
+    ],
+)
+def test_stage_a_gate_rejects_incomplete_or_misaligned_update_evidence(
+    mutation: str,
+    expected_error: str,
+) -> None:
+    evidence = _update_evidence()
+    if mutation == "truncated":
+        evidence.pop()
+    elif mutation == "index":
+        evidence[1]["update_index"] = 999
+    elif mutation == "layer":
+        evidence[1]["layer_index"] = FROZEN_STAGE_A_RECURRENT_LAYER_INDICES[-1]
+    elif mutation == "state":
+        evidence[1]["state_index"] = 1
+    elif mutation == "prefill_tokens":
+        evidence[1]["token_count"] = 1
+    elif mutation == "decode_tokens":
+        evidence[len(FROZEN_STAGE_A_RECURRENT_LAYER_INDICES)]["token_count"] = (
+            FROZEN_STAGE_A_PROMPT_TOKENS
+        )
+    else:
+        evidence[1]["boundary"] = 4
+
+    gate = _gate(update_evidence=evidence)
+
+    check = gate["checks"]["only_c4_c5_and_ties_to_c5"]  # type: ignore[index]
+    assert check["passed"] is False
+    assert expected_error in check["error"]

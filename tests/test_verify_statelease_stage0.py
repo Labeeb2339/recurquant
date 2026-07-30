@@ -12,14 +12,19 @@ from pathlib import Path
 import pytest
 import torch
 
+import scripts.verify_statelease_stage0 as verify_stage0
 from scripts.verify_statelease_stage0 import (
     CHECKPOINT_BYTES,
     EXPANDED_Q48_PROMOTIONS,
+    EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
+    EXPERIMENT_ID,
     FROZEN_SEED,
     KEY_NORM_EPS,
     MULTIBIT_MARGINAL_STEPS,
+    PRODUCTION_SCHEMA,
     REPLAY_CAPACITY,
     RESIDUAL_Q4_ROWS,
+    SOURCE_IDENTITY_PATHS,
     STATELEASE_BYTES,
     ReplayRecord,
     Stage0VerificationError,
@@ -56,6 +61,384 @@ from scripts.verify_statelease_stage0 import (
 )
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "verify_statelease_stage0.py"
+
+
+def test_experiment011_verifier_identity_pins_complete_provenance() -> None:
+    expected_provenance = (
+        "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md",
+        "research/EXPERIMENT_011_STAGE_A_IDENTITY.md",
+        "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md",
+        "evidence/experiment010-statelease-stage-a-administrative-null.json",
+        "artifacts/experiment010-statelease-stage-a-666.attempt.json",
+        "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
+        "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
+    )
+
+    assert EXPERIMENT_ID == "experiment011"
+    assert PRODUCTION_SCHEMA == "recurquant.experiment011.stage0.production.v1"
+    assert expected_provenance == EXPERIMENT011_SOURCE_PROVENANCE_PATHS
+    assert all(relative in SOURCE_IDENTITY_PATHS for relative in expected_provenance)
+
+
+def _initialize_verifier_source_repository(path: Path) -> Path:
+    path.mkdir()
+    source = path / "source.py"
+    source.write_bytes(b"original\n")
+    for arguments in (
+        ["git", "init", "--quiet"],
+        ["git", "add", "source.py"],
+        [
+            "git",
+            "-c",
+            "user.name=Stage0 Test",
+            "-c",
+            "user.email=stage0@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "source",
+        ],
+    ):
+        subprocess.run(arguments, cwd=path, check=True, capture_output=True, text=True)
+    return source
+
+
+def _synthetic_repository_binding() -> dict[str, object]:
+    return {
+        "schema": verify_stage0.GIT_REPOSITORY_BINDING_SCHEMA,
+        "top_level_path_sha256": "1" * 64,
+        "worktree_path_sha256": "1" * 64,
+        "git_dir_path_sha256": "2" * 64,
+        "common_dir_path_sha256": "2" * 64,
+        "index_path_sha256": "3" * 64,
+        "object_dir_path_sha256": "4" * 64,
+        "git_dir_kind": "main_worktree",
+        "object_format": "sha1",
+        "inside_worktree": True,
+        "bare": False,
+        "shallow": False,
+        "alternates_absent": True,
+        "grafts_absent": True,
+        "replace_refs_absent": True,
+        "unsafe_local_config_absent": True,
+        "hidden_index_flags_absent": True,
+        "local_config_sha256": "5" * 64,
+        "replacement_objects_disabled": True,
+        "system_and_global_config_disabled": True,
+        "fsmonitor_and_untracked_cache_disabled": True,
+        "hooks_disabled": True,
+        "worktree_gitdir_binding_verified": True,
+        "raw_source_hash_mode": "git_hash_object_no_filters_stdin_paths",
+    }
+
+
+def test_verifier_git_environment_scrubs_all_caller_git_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    injected = {
+        "GIT_DIR": "attacker.git",
+        "GIT_WORK_TREE": "attacker-tree",
+        "GIT_COMMON_DIR": "attacker-common",
+        "GIT_INDEX_FILE": "attacker-index",
+        "GIT_OBJECT_DIRECTORY": "attacker-objects",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": "attacker-alternates",
+        "GIT_REPLACE_REF_BASE": "refs/evil/",
+        "GIT_GRAFT_FILE": "attacker-grafts",
+        "GIT_SHALLOW_FILE": "attacker-shallow",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.worktree",
+        "GIT_CONFIG_VALUE_0": "attacker-tree",
+        "GIT_CONFIG_PARAMETERS": "'core.bare=true'",
+    }
+    for key, value in injected.items():
+        monkeypatch.setenv(key, value)
+
+    environment = verify_stage0._sanitized_verifier_git_environment()
+
+    assert not set(injected).intersection(environment)
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_CONFIG_GLOBAL"] == verify_stage0.os.devnull
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_verifier_git_forces_read_only_consistency_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    recorded: dict[str, object] = {}
+
+    def fake_run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        recorded["arguments"] = arguments
+        recorded["kwargs"] = kwargs
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(verify_stage0.subprocess, "run", fake_run)
+
+    verify_stage0._verifier_git(tmp_path, "status", "--porcelain=v1")
+
+    arguments = recorded["arguments"]
+    assert isinstance(arguments, list)
+    joined = "\0".join(arguments)
+    assert "core.useReplaceRefs=false" in joined
+    assert f"core.attributesFile={verify_stage0.os.devnull}" in joined
+    assert "core.fsmonitor=false" in joined
+    assert "core.untrackedCache=false" in joined
+    assert f"core.hooksPath={verify_stage0.os.devnull}" in joined
+
+
+def test_current_repository_snapshot_ignores_hostile_git_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trusted = tmp_path / "trusted"
+    attacker = tmp_path / "attacker"
+    _initialize_verifier_source_repository(trusted)
+    _initialize_verifier_source_repository(attacker).write_bytes(b"attacker\n")
+    trusted_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=trusted,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    monkeypatch.setattr(verify_stage0, "SOURCE_IDENTITY_PATHS", ("source.py",))
+    monkeypatch.setenv("GIT_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(attacker))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(attacker / ".git" / "index"))
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(attacker / ".git" / "objects"))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.worktree")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(attacker))
+
+    snapshot = verify_stage0._current_repository_source_snapshot(trusted)
+
+    assert snapshot["repo_head"] == trusted_head
+    assert snapshot["sources_match_head"] is True
+    assert (
+        snapshot["repository_binding"]["top_level_path_sha256"]
+        == (snapshot["repository_binding"]["worktree_path_sha256"])
+    )
+    assert str(trusted.resolve()) not in json.dumps(snapshot["repository_binding"])
+
+
+@pytest.mark.parametrize(
+    "hazard",
+    ["alternates", "http-alternates", "grafts", "replace", "shallow"],
+)
+def test_current_repository_binding_rejects_unsafe_object_views(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hazard: str,
+) -> None:
+    repo = tmp_path / "repo"
+    _initialize_verifier_source_repository(repo)
+    git_dir = repo / ".git"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if hazard in {"alternates", "http-alternates"}:
+        info = git_dir / "objects" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / hazard).write_text(str(git_dir / "objects"), encoding="utf-8")
+    elif hazard == "grafts":
+        info = git_dir / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "grafts").write_text(f"{head}\n", encoding="ascii")
+    elif hazard == "replace":
+        subprocess.run(
+            ["git", "update-ref", f"refs/replace/{head}", head],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        (git_dir / "shallow").write_text(f"{head}\n", encoding="ascii")
+    monkeypatch.setattr(verify_stage0, "SOURCE_IDENTITY_PATHS", ("source.py",))
+
+    with pytest.raises(
+        Stage0VerificationError,
+        match="alternates|grafts|shallow|replacement",
+    ):
+        verify_stage0._current_repository_source_snapshot(repo)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("filter.attacker.clean", "type"),
+        ("core.fsmonitor", "true"),
+        ("core.untrackedCache", "true"),
+        ("core.hooksPath", "hooks"),
+        ("include.path", "attacker.config"),
+        ("extensions.partialClone", "origin"),
+    ],
+)
+def test_current_repository_binding_rejects_unsafe_local_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    repo = tmp_path / "repo"
+    _initialize_verifier_source_repository(repo)
+    subprocess.run(
+        ["git", "config", "--local", key, value],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    monkeypatch.setattr(verify_stage0, "SOURCE_IDENTITY_PATHS", ("source.py",))
+
+    with pytest.raises(Stage0VerificationError, match="unsafe local Git config"):
+        verify_stage0._current_repository_source_snapshot(repo)
+
+
+def test_linked_worktree_binding_rejects_mismatched_reverse_pointer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    _initialize_verifier_source_repository(primary)
+    subprocess.run(
+        ["git", "worktree", "add", "--quiet", "--detach", str(linked)],
+        cwd=primary,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    git_marker = linked / ".git"
+    git_dir = Path(git_marker.read_text(encoding="utf-8").removeprefix("gitdir: ").strip())
+    (git_dir / "gitdir").write_text(str(primary / ".git"), encoding="utf-8")
+    monkeypatch.setattr(verify_stage0, "SOURCE_IDENTITY_PATHS", ("source.py",))
+
+    with pytest.raises(Stage0VerificationError, match="reverse pointer"):
+        verify_stage0._current_repository_source_snapshot(linked)
+
+
+def test_raw_no_filter_hash_detects_attribute_hidden_source_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "source.py"
+    source.write_bytes(b"original\n")
+    (repo / ".gitattributes").write_text("source.py text eol=lf\n", encoding="utf-8")
+    for arguments in (
+        ["git", "init", "--quiet"],
+        ["git", "add", "source.py", ".gitattributes"],
+        [
+            "git",
+            "-c",
+            "user.name=Stage0 Test",
+            "-c",
+            "user.email=stage0@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "source",
+        ],
+    ):
+        subprocess.run(arguments, cwd=repo, check=True, capture_output=True, text=True)
+    source.write_bytes(b"original\r\n")
+    filtered_hash = subprocess.run(
+        ["git", "hash-object", "--path=source.py", "source.py"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    head_hash = subprocess.run(
+        ["git", "rev-parse", "HEAD:source.py"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert filtered_hash == head_hash
+    monkeypatch.setattr(verify_stage0, "SOURCE_IDENTITY_PATHS", ("source.py",))
+
+    snapshot = verify_stage0._current_repository_source_snapshot(repo)
+
+    assert snapshot["sources_match_head"] is False
+    assert (
+        snapshot["head_blob_hashes"]["source.py"] != (snapshot["worktree_blob_hashes"]["source.py"])
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "tampered"),
+    [
+        ("schema", "recurquant.git-repository-binding.v0"),
+        ("object_format", "sha256"),
+        ("raw_source_hash_mode", "git_hash_object_filtered"),
+        ("git_dir_kind", []),
+        ("inside_worktree", False),
+        ("bare", True),
+        ("shallow", True),
+        ("alternates_absent", False),
+        ("grafts_absent", False),
+        ("replace_refs_absent", False),
+        ("unsafe_local_config_absent", False),
+        ("hidden_index_flags_absent", False),
+        ("replacement_objects_disabled", False),
+        ("system_and_global_config_disabled", False),
+        ("fsmonitor_and_untracked_cache_disabled", False),
+        ("hooks_disabled", False),
+        ("worktree_gitdir_binding_verified", False),
+        ("local_config_sha256", "A" * 64),
+        ("top_level_path_sha256", "9" * 64),
+    ],
+)
+def test_recorded_repository_binding_rejects_any_weakened_attestation(
+    field: str,
+    tampered: object,
+) -> None:
+    binding = _synthetic_repository_binding()
+    binding[field] = tampered
+
+    with pytest.raises(Stage0VerificationError):
+        verify_stage0._recorded_repository_binding(binding, name="binding")
+
+
+def test_recorded_repository_and_source_bindings_use_closed_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = _synthetic_repository_binding()
+    assert verify_stage0._recorded_repository_binding(binding, name="binding") == binding
+    missing_binding = dict(binding)
+    missing_binding.pop("hooks_disabled")
+    with pytest.raises(Stage0VerificationError, match="closed schema"):
+        verify_stage0._recorded_repository_binding(missing_binding, name="binding")
+
+    monkeypatch.setattr(verify_stage0, "SOURCE_IDENTITY_PATHS", ("source.py",))
+    source_hashes = {"source.py": "a" * 64}
+    snapshot = {
+        "repo_head": "b" * 40,
+        "repository_binding": binding,
+        "source_hashes": source_hashes,
+        "source_set_sha256": verify_stage0.canonical_payload_sha256(source_hashes),
+        "head_blob_hashes": {"source.py": "c" * 40},
+        "worktree_blob_hashes": {"source.py": "c" * 40},
+        "sources_match_head": True,
+        "worktree_clean": True,
+    }
+    assert verify_stage0._recorded_source_snapshot(snapshot, name="snapshot") == snapshot
+    missing_source_binding = dict(snapshot)
+    missing_source_binding.pop("repository_binding")
+    with pytest.raises(Stage0VerificationError, match="closed schema"):
+        verify_stage0._recorded_source_snapshot(
+            missing_source_binding,
+            name="snapshot",
+        )
 
 
 def _one_transition(
@@ -126,6 +509,26 @@ def test_verifier_source_has_no_package_under_test_import() -> None:
         if isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
     assert not any(name == "recurquant" or name.startswith("recurquant.") for name in imported)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from scripts.capture_statelease_stage0 import build_production_artifact\n",
+        "import capture_statelease_stage0\n",
+        "from scripts import capture_statelease_stage0\n",
+        "from . import capture_statelease_stage0\n",
+    ],
+)
+def test_independence_guard_rejects_stage0_producer_imports(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    candidate = tmp_path / "candidate_verifier.py"
+    candidate.write_text(source, encoding="utf-8")
+
+    with pytest.raises(Stage0VerificationError, match="Stage-0 producer under test"):
+        assert_independent_imports(candidate)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])

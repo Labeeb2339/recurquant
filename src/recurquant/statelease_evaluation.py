@@ -1,4 +1,4 @@
-"""Fail-closed Experiment 010 StateLease evaluation primitives.
+"""Fail-closed Experiment 011 StateLease evaluation primitives.
 
 This module contains no dataset or model-loading code.  It provides the
 reference-aligned recurrent trajectory metric and the frozen Stage-A gate so
@@ -37,6 +37,36 @@ STAGE_A_REQUIRED_METHODS = (
 )
 
 FROZEN_STATELEASE_RESIDENT_BYTES = 3_454_664
+FROZEN_STAGE_A_PROMPT_TOKENS = 69
+FROZEN_STAGE_A_ALIGNED_TOKENS = 38
+FROZEN_STAGE_A_RECURRENT_LAYER_INDICES = (
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14,
+    16,
+    17,
+    18,
+    20,
+    21,
+    22,
+)
+FROZEN_STAGE_A_FORWARD_COUNT = 1 + FROZEN_STAGE_A_ALIGNED_TOKENS
+FROZEN_STAGE_A_TOKENS_OBSERVED = FROZEN_STAGE_A_PROMPT_TOKENS + FROZEN_STAGE_A_ALIGNED_TOKENS
+FROZEN_STAGE_A_TRAJECTORY_LAYER_VALUES = FROZEN_STAGE_A_ALIGNED_TOKENS * len(
+    FROZEN_STAGE_A_RECURRENT_LAYER_INDICES
+)
+FROZEN_STAGE_A_UPDATE_EVIDENCE_RECORDS = FROZEN_STAGE_A_FORWARD_COUNT * len(
+    FROZEN_STAGE_A_RECURRENT_LAYER_INDICES
+)
 MINIMUM_CC1_EXCESS_NLL_REDUCTION = 0.10
 MAXIMUM_STRONGEST_FIXED_RELATIVE_DISADVANTAGE = 0.05
 MAXIMUM_TOP1_TRAIL = 0.01
@@ -121,9 +151,7 @@ def reference_aligned_trajectory_nmse(
                 f"{tuple(reference_tensor.shape)} != {tuple(candidate_tensor.shape)}"
             )
         if reference_tensor.device != candidate_tensor.device:
-            raise ValueError(
-                f"layer {layer_index} reference and candidate devices differ"
-            )
+            raise ValueError(f"layer {layer_index} reference and candidate devices differ")
         reference_fp64 = reference_tensor.detach().to(torch.float64)
         error_fp64 = candidate_tensor.detach().to(torch.float64) - reference_fp64
         numerator = torch.sum(error_fp64.square(), dtype=torch.float64)
@@ -203,8 +231,7 @@ def _metric_rows(
     extra = sorted(set(metrics) - required_methods)
     if missing or extra:
         raise ValueError(
-            f"Stage-A metric methods differ from the frozen set: "
-            f"missing={missing}, extra={extra}"
+            f"Stage-A metric methods differ from the frozen set: missing={missing}, extra={extra}"
         )
 
     normalized: dict[str, dict[str, float | int | bool]] = {}
@@ -246,8 +273,11 @@ def _metric_rows(
             raise ValueError(f"{method} delta_nll is inconsistent with its NLL values")
         if not 0 <= top1 <= 1:
             raise ValueError(f"{method} top1_agreement must lie in [0, 1]")
-        if token_count <= 0:
-            raise ValueError(f"{method} token_count must be positive")
+        if token_count != FROZEN_STAGE_A_ALIGNED_TOKENS:
+            raise ValueError(
+                f"{method} token_count must equal the frozen Stage-A count "
+                f"{FROZEN_STAGE_A_ALIGNED_TOKENS}; got {token_count}"
+            )
         normalized[method] = {
             "candidate_nll": candidate_nll,
             "reference_nll": reference_nll,
@@ -281,12 +311,33 @@ def _trajectory_rows(
         )
     result: dict[str, float] = {}
     for method in sorted(required_methods):
-        value = trajectory[method]
-        if isinstance(value, Mapping):
-            value = value.get("trajectory_nmse_auc")
-        normalized = _finite_float(value, context=f"{method} trajectory_nmse_auc")
+        row = trajectory[method]
+        if not isinstance(row, Mapping):
+            raise TypeError(f"trajectory[{method!r}] must be a mapping")
+        normalized = _finite_float(
+            row.get("trajectory_nmse_auc"),
+            context=f"{method} trajectory_nmse_auc",
+        )
         if normalized < 0:
             raise ValueError("trajectory NMSE AUC must be non-negative")
+        scored_write_count = _strict_int(
+            row.get("scored_write_count"),
+            context=f"{method} scored_write_count",
+        )
+        layer_value_count = _strict_int(
+            row.get("layer_value_count"),
+            context=f"{method} layer_value_count",
+        )
+        if scored_write_count != FROZEN_STAGE_A_ALIGNED_TOKENS:
+            raise ValueError(
+                f"{method} scored_write_count must equal "
+                f"{FROZEN_STAGE_A_ALIGNED_TOKENS}; got {scored_write_count}"
+            )
+        if layer_value_count != FROZEN_STAGE_A_TRAJECTORY_LAYER_VALUES:
+            raise ValueError(
+                f"{method} layer_value_count must equal "
+                f"{FROZEN_STAGE_A_TRAJECTORY_LAYER_VALUES}; got {layer_value_count}"
+            )
         result[method] = normalized
     return result
 
@@ -317,7 +368,7 @@ def evaluate_statelease_stage_a_gate(
     stage0_complete: bool,
     artifact_integrity: bool,
 ) -> dict[str, object]:
-    """Evaluate every frozen Experiment 010 Stage-A condition conjunctively."""
+    """Evaluate every frozen Experiment 011 Stage-A condition conjunctively."""
 
     metrics: dict[str, dict[str, float | int | bool]] | None = None
     trajectory: dict[str, float] | None = None
@@ -353,8 +404,8 @@ def evaluate_statelease_stage_a_gate(
                 f"StateLease allocated {allocated} bytes; expected "
                 f"{FROZEN_STATELEASE_RESIDENT_BYTES}"
             )
-        if hidden_fp32 not in (None, False):
-            raise ValueError("StateLease reports a hidden persistent FP32 state mirror")
+        if hidden_fp32 is not False:
+            raise ValueError("StateLease persistent_fp32_state_mirror must be explicitly false")
         return {
             "allocated_resident_bytes": allocated,
             "expected_resident_bytes": FROZEN_STATELEASE_RESIDENT_BYTES,
@@ -365,13 +416,49 @@ def evaluate_statelease_stage_a_gate(
         if (
             not isinstance(statelease_diagnostics, Sequence)
             or isinstance(statelease_diagnostics, (str, bytes))
-            or not statelease_diagnostics
+            or len(statelease_diagnostics) != len(FROZEN_STAGE_A_RECURRENT_LAYER_INDICES)
         ):
-            raise ValueError("statelease_diagnostics must contain every recurrent layer")
+            raise ValueError(
+                "statelease_diagnostics must contain exactly "
+                f"{len(FROZEN_STAGE_A_RECURRENT_LAYER_INDICES)} recurrent layers"
+            )
         diagnostic_boundary4 = diagnostic_boundary5 = diagnostic_ties = 0
+        diagnostic_layers: set[int] = set()
         for index, row in enumerate(statelease_diagnostics):
             if not isinstance(row, Mapping):
                 raise TypeError(f"statelease_diagnostics[{index}] must be a mapping")
+            layer_index = _strict_int(
+                row.get("layer_index"),
+                context=f"diagnostics[{index}] layer_index",
+            )
+            if layer_index not in FROZEN_STAGE_A_RECURRENT_LAYER_INDICES:
+                raise ValueError(
+                    f"diagnostics[{index}] layer_index {layer_index} is not a frozen "
+                    "Qwen3.5 recurrent layer"
+                )
+            if layer_index in diagnostic_layers:
+                raise ValueError(
+                    f"statelease_diagnostics contains duplicate layer_index {layer_index}"
+                )
+            diagnostic_layers.add(layer_index)
+            state_updates = _strict_int(
+                row.get("state_updates"),
+                context=f"diagnostics[{index}] state_updates",
+            )
+            tokens_observed = _strict_int(
+                row.get("tokens_observed"),
+                context=f"diagnostics[{index}] tokens_observed",
+            )
+            if state_updates != FROZEN_STAGE_A_FORWARD_COUNT:
+                raise ValueError(
+                    f"diagnostics[{index}] state_updates must equal "
+                    f"{FROZEN_STAGE_A_FORWARD_COUNT}; got {state_updates}"
+                )
+            if tokens_observed != FROZEN_STAGE_A_TOKENS_OBSERVED:
+                raise ValueError(
+                    f"diagnostics[{index}] tokens_observed must equal "
+                    f"{FROZEN_STAGE_A_TOKENS_OBSERVED}; got {tokens_observed}"
+                )
             b4 = _strict_int(
                 row.get("boundary4_count"),
                 context=f"diagnostics[{index}] boundary4_count",
@@ -402,16 +489,62 @@ def evaluate_statelease_stage_a_gate(
             diagnostic_boundary5 += b5
             diagnostic_ties += tie_count
 
+        if diagnostic_layers != set(FROZEN_STAGE_A_RECURRENT_LAYER_INDICES):
+            raise ValueError(
+                "statelease_diagnostics does not contain the exact frozen recurrent-layer set"
+            )
+
         if (
             not isinstance(statelease_update_evidence, Sequence)
             or isinstance(statelease_update_evidence, (str, bytes))
-            or not statelease_update_evidence
+            or len(statelease_update_evidence) != FROZEN_STAGE_A_UPDATE_EVIDENCE_RECORDS
         ):
-            raise ValueError("statelease_update_evidence must contain every cache write")
+            raise ValueError(
+                "statelease_update_evidence must contain exactly "
+                f"{FROZEN_STAGE_A_UPDATE_EVIDENCE_RECORDS} layer-write records"
+            )
         evidence_boundary4 = evidence_boundary5 = evidence_ties = 0
         for index, row in enumerate(statelease_update_evidence):
             if not isinstance(row, Mapping):
                 raise TypeError(f"statelease_update_evidence[{index}] must be a mapping")
+            update_index = _strict_int(
+                row.get("update_index"),
+                context=f"statelease_update_evidence[{index}] update_index",
+            )
+            if update_index != index:
+                raise ValueError(
+                    f"statelease_update_evidence[{index}] update_index must equal {index}; "
+                    f"got {update_index}"
+                )
+            expected_layer = FROZEN_STAGE_A_RECURRENT_LAYER_INDICES[
+                index % len(FROZEN_STAGE_A_RECURRENT_LAYER_INDICES)
+            ]
+            layer_index = _strict_int(
+                row.get("layer_index"),
+                context=f"statelease_update_evidence[{index}] layer_index",
+            )
+            if layer_index != expected_layer:
+                raise ValueError(
+                    f"statelease_update_evidence[{index}] layer_index must equal "
+                    f"{expected_layer}; got {layer_index}"
+                )
+            state_index = _strict_int(
+                row.get("state_index"),
+                context=f"statelease_update_evidence[{index}] state_index",
+            )
+            if state_index != 0:
+                raise ValueError(f"statelease_update_evidence[{index}] state_index must equal 0")
+            forward_index = index // len(FROZEN_STAGE_A_RECURRENT_LAYER_INDICES)
+            expected_token_count = FROZEN_STAGE_A_PROMPT_TOKENS if forward_index == 0 else 1
+            token_count = _strict_int(
+                row.get("token_count"),
+                context=f"statelease_update_evidence[{index}] token_count",
+            )
+            if token_count != expected_token_count:
+                raise ValueError(
+                    f"statelease_update_evidence[{index}] token_count must equal "
+                    f"{expected_token_count}; got {token_count}"
+                )
             boundary = row.get("boundary")
             tie = row.get("tie")
             if not isinstance(tie, bool):
@@ -427,6 +560,8 @@ def evaluate_statelease_stage_a_gate(
                     evidence_boundary4 += 1
                 else:
                     evidence_boundary5 += 1
+            if forward_index == 0 and boundary is not None:
+                raise ValueError("StateLease prefill evidence must not report a boundary")
             if tie:
                 evidence_ties += 1
                 if boundary != 5:
@@ -437,9 +572,7 @@ def evaluate_statelease_stage_a_gate(
             or evidence_boundary5 != diagnostic_boundary5
             or evidence_ties != diagnostic_ties
         ):
-            raise ValueError(
-                "StateLease boundary evidence does not match per-layer diagnostics"
-            )
+            raise ValueError("StateLease boundary evidence does not match per-layer diagnostics")
         if evidence_boundary4 + evidence_boundary5 <= 0:
             raise ValueError("Stage A observed no full-buffer StateLease decision")
         return {
@@ -464,9 +597,7 @@ def evaluate_statelease_stage_a_gate(
             rel_tol=0.0,
             abs_tol=1e-12,
         ):
-            raise ValueError(
-                "StateLease excess-NLL reduction versus fixed_cc1 is below 10%"
-            )
+            raise ValueError("StateLease excess-NLL reduction versus fixed_cc1 is below 10%")
         return {
             "statelease_excess_nll": candidate,
             "fixed_cc1_excess_nll": baseline,
@@ -505,9 +636,7 @@ def evaluate_statelease_stage_a_gate(
             "statelease_excess_nll": candidate,
             "strongest_fixed_excess_nll": baseline,
             "relative_disadvantage": relative_disadvantage,
-            "maximum_relative_disadvantage": (
-                MAXIMUM_STRONGEST_FIXED_RELATIVE_DISADVANTAGE
-            ),
+            "maximum_relative_disadvantage": (MAXIMUM_STRONGEST_FIXED_RELATIVE_DISADVANTAGE),
         }
 
     def trajectory_check() -> dict[str, object]:
@@ -552,14 +681,10 @@ def evaluate_statelease_stage_a_gate(
         if metrics is None or trajectory is None:
             raise RuntimeError("normalized Stage-A values are unavailable")
         nonfinite_flags = sorted(
-            method
-            for method, row in metrics.items()
-            if row["all_logits_finite"] is not True
+            method for method, row in metrics.items() if row["all_logits_finite"] is not True
         )
         if nonfinite_flags:
-            raise ValueError(
-                f"methods reported non-finite logits: {nonfinite_flags}"
-            )
+            raise ValueError(f"methods reported non-finite logits: {nonfinite_flags}")
         return {
             "all_metric_scalars_finite": True,
             "all_trajectory_scalars_finite": True,
@@ -570,12 +695,8 @@ def evaluate_statelease_stage_a_gate(
         "stage0_and_artifact_integrity": _gate_check(inputs_check),
         "exact_statelease_allocation": _gate_check(storage_check),
         "only_c4_c5_and_ties_to_c5": _gate_check(boundary_check),
-        "cc1_excess_nll_reduction_at_least_10_percent": _gate_check(
-            cc1_reduction_check
-        ),
-        "no_more_than_5_percent_worse_than_strongest_fixed": _gate_check(
-            strongest_fixed_check
-        ),
+        "cc1_excess_nll_reduction_at_least_10_percent": _gate_check(cc1_reduction_check),
+        "no_more_than_5_percent_worse_than_strongest_fixed": _gate_check(strongest_fixed_check),
         "trajectory_nmse_auc_lower_than_cc1": _gate_check(trajectory_check),
         "top1_trail_at_most_0_01": _gate_check(top1_check),
         "all_primary_values_finite": _gate_check(finiteness_check),
@@ -585,9 +706,7 @@ def evaluate_statelease_stage_a_gate(
         "checks": checks,
         "thresholds": {
             "statelease_resident_bytes": FROZEN_STATELEASE_RESIDENT_BYTES,
-            "minimum_cc1_excess_nll_reduction": (
-                MINIMUM_CC1_EXCESS_NLL_REDUCTION
-            ),
+            "minimum_cc1_excess_nll_reduction": (MINIMUM_CC1_EXCESS_NLL_REDUCTION),
             "maximum_strongest_fixed_relative_disadvantage": (
                 MAXIMUM_STRONGEST_FIXED_RELATIVE_DISADVANTAGE
             ),
@@ -605,6 +724,13 @@ def evaluate_statelease_stage_a_gate(
 __all__ = [
     "EQUAL_BYTE_NO_REPLAY_METHODS",
     "FIXED_REPLAY_METHODS",
+    "FROZEN_STAGE_A_ALIGNED_TOKENS",
+    "FROZEN_STAGE_A_FORWARD_COUNT",
+    "FROZEN_STAGE_A_PROMPT_TOKENS",
+    "FROZEN_STAGE_A_RECURRENT_LAYER_INDICES",
+    "FROZEN_STAGE_A_TOKENS_OBSERVED",
+    "FROZEN_STAGE_A_TRAJECTORY_LAYER_VALUES",
+    "FROZEN_STAGE_A_UPDATE_EVIDENCE_RECORDS",
     "FROZEN_STATELEASE_RESIDENT_BYTES",
     "RHT_CQER_METHOD",
     "STAGE_A_EQUAL_BYTE_METHODS",
