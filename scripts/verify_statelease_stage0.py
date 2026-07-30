@@ -16,8 +16,13 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib.metadata
 import json
 import math
+import platform
+import re
+import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +55,8 @@ UPDATE_BUFFER_BYTES = 368_640
 LOG_DECAY_BUFFER_BYTES = 5_760
 COUNT_BYTES = 72
 STATELEASE_BYTES = 3_454_664
+RAW_STATE_ELEMENTS_PER_LAYER = HEADS * ROWS * WIDTH
+RAW_STATE_ELEMENTS_ALL_LAYERS = STATE_ELEMENTS
 
 EXPANDED_Q48_BASE_BYTES = 2_585_088
 EXPANDED_Q48_PROMOTIONS = 13_587
@@ -60,6 +67,114 @@ MULTIBIT_PADDING_BYTES = 8
 RESIDUAL_Q4_BASE_BYTES = 2_585_088
 RESIDUAL_Q4_ROWS = 13_175
 RESIDUAL_Q4_PADDING_BYTES = 26
+
+PRODUCTION_SCHEMA = "recurquant.experiment010.stage0.production.v1"
+PRODUCTION_SCHEMA_VERSION = 1
+EFFECTIVE_PLAN_SHA256 = "6b7d8f6b7a4b1142f0363bf3387fa20f8d3e3b0656c4367680f84d76ee528640"
+STATELEASE_SELECTION_METHOD = "statelease_cut4_cut5_right_rht_query_ema32_weighted_mse_fisher_quota"
+LINEAR_LAYER_INDICES = (
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14,
+    16,
+    17,
+    18,
+    20,
+    21,
+    22,
+)
+LAYER_QUOTAS = {
+    0: 355,
+    1: 380,
+    2: 269,
+    4: 179,
+    5: 185,
+    6: 105,
+    8: 80,
+    9: 43,
+    10: 84,
+    12: 30,
+    13: 62,
+    14: 54,
+    16: 45,
+    17: 27,
+    18: 7,
+    20: 9,
+    21: 7,
+    22: 55,
+}
+SOURCE_IDENTITY_PATHS = (
+    "pyproject.toml",
+    "scripts/capture_statelease_stage0.py",
+    "scripts/screen_statelease_stage_a.py",
+    "scripts/verify_statelease_stage0.py",
+    "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
+    "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
+    "src/recurquant/__init__.py",
+    "src/recurquant/cache.py",
+    "src/recurquant/cli.py",
+    "src/recurquant/confirmation.py",
+    "src/recurquant/evaluation.py",
+    "src/recurquant/evidence.py",
+    "src/recurquant/finite_difference.py",
+    "src/recurquant/fisher_sensitivity.py",
+    "src/recurquant/horizon.py",
+    "src/recurquant/horizon_calibration.py",
+    "src/recurquant/intervention.py",
+    "src/recurquant/metrics.py",
+    "src/recurquant/mixed_quantization.py",
+    "src/recurquant/model_fisher.py",
+    "src/recurquant/multibit_policy.py",
+    "src/recurquant/multibit_quantization.py",
+    "src/recurquant/packed_cache.py",
+    "src/recurquant/policies.py",
+    "src/recurquant/public_data.py",
+    "src/recurquant/quantization.py",
+    "src/recurquant/query_energy.py",
+    "src/recurquant/qwen35.py",
+    "src/recurquant/qwen35_quickstart.py",
+    "src/recurquant/rht.py",
+    "src/recurquant/row_policy.py",
+    "src/recurquant/signals.py",
+    "src/recurquant/statelease.py",
+    "src/recurquant/statelease_baselines.py",
+    "src/recurquant/statelease_cache.py",
+    "src/recurquant/statelease_equal_byte_baselines.py",
+    "src/recurquant/statelease_equal_byte_cache.py",
+    "src/recurquant/statelease_evaluation.py",
+    "src/recurquant/statelease_observer.py",
+    "src/recurquant/storage_boundary_validation.py",
+    "src/recurquant/transformers_cache.py",
+    "src/recurquant/transition_observer.py",
+    "src/recurquant/triton_state.py",
+    "tests/test_capture_statelease_stage0.py",
+    "tests/test_mixed_quantization.py",
+    "tests/test_multibit_policy.py",
+    "tests/test_multibit_quantization.py",
+    "tests/test_quantization.py",
+    "tests/test_qwen35_factory.py",
+    "tests/test_rht.py",
+    "tests/test_right_rht_query_ema_cache.py",
+    "tests/test_row_policy.py",
+    "tests/test_statelease.py",
+    "tests/test_statelease_baselines.py",
+    "tests/test_statelease_cache.py",
+    "tests/test_statelease_equal_byte_baselines.py",
+    "tests/test_statelease_equal_byte_cache.py",
+    "tests/test_statelease_evaluation.py",
+    "tests/test_statelease_observer.py",
+    "tests/test_screen_statelease_stage_a.py",
+    "tests/test_verify_statelease_stage0.py",
+)
 
 ALLOWED_CONSUMED_DTYPES = frozenset(
     (
@@ -491,8 +606,40 @@ def _pack_signed_rows(codes: torch.Tensor, bits: int) -> torch.Tensor:
     if ((codes16 < minimum) | (codes16 > maximum)).any().item():
         raise ValueError("signed code lies outside the requested bit width")
     bytes_per_row = math.ceil(codes16.shape[1] * bits / 8)
-    packed = torch.zeros((codes16.shape[0], bytes_per_row), dtype=torch.uint8)
+    if codes16.shape[0] == 0:
+        return torch.empty((0, bytes_per_row), dtype=torch.uint8)
     mask = (1 << bits) - 1
+    unsigned = torch.bitwise_and(codes16, mask)
+    if bits == 4 and codes16.shape[1] % 2 == 0:
+        pairs = unsigned.reshape(codes16.shape[0], -1, 2)
+        return (
+            (pairs[..., 0] | torch.bitwise_left_shift(pairs[..., 1], 4))
+            .to(torch.uint8)
+            .contiguous()
+        )
+    if bits == 6 and codes16.shape[1] % 4 == 0:
+        groups = unsigned.reshape(codes16.shape[0], -1, 4)
+        packed_groups = torch.empty(
+            (codes16.shape[0], groups.shape[1], 3),
+            dtype=torch.int16,
+        )
+        packed_groups[..., 0] = groups[..., 0] | torch.bitwise_left_shift(
+            torch.bitwise_and(groups[..., 1], 0x03),
+            6,
+        )
+        packed_groups[..., 1] = torch.bitwise_right_shift(
+            groups[..., 1],
+            2,
+        ) | torch.bitwise_left_shift(
+            torch.bitwise_and(groups[..., 2], 0x0F),
+            4,
+        )
+        packed_groups[..., 2] = torch.bitwise_right_shift(
+            groups[..., 2],
+            4,
+        ) | torch.bitwise_left_shift(groups[..., 3], 2)
+        return packed_groups.to(torch.uint8).reshape(codes16.shape[0], -1).contiguous()
+    packed = torch.zeros((codes16.shape[0], bytes_per_row), dtype=torch.uint8)
     for row_index, row in enumerate(codes16.tolist()):
         accumulator = 0
         available = 0
@@ -526,11 +673,50 @@ def _unpack_signed_rows(
     expected = math.ceil(width * bits / 8)
     if payload.shape[1] != expected:
         raise ValueError("payload row width does not match signed code geometry")
+    if payload.shape[0] == 0:
+        return torch.empty((0, width), dtype=torch.int16, device=payload.device)
+    cpu_payload = payload.to("cpu")
+    if bits == 4 and width % 2 == 0:
+        expanded = torch.empty(
+            (payload.shape[0], payload.shape[1], 2),
+            dtype=torch.int16,
+        )
+        source = cpu_payload.to(torch.int16)
+        expanded[..., 0] = torch.bitwise_and(source, 0x0F)
+        expanded[..., 1] = torch.bitwise_right_shift(source, 4)
+        unsigned = expanded.reshape(payload.shape[0], width)
+        signed = torch.where(unsigned >= 8, unsigned - 16, unsigned)
+        return signed.to(payload.device)
+    if bits == 6 and width % 4 == 0:
+        source = cpu_payload.reshape(payload.shape[0], -1, 3).to(torch.int16)
+        expanded = torch.empty(
+            (payload.shape[0], source.shape[1], 4),
+            dtype=torch.int16,
+        )
+        expanded[..., 0] = torch.bitwise_and(source[..., 0], 0x3F)
+        expanded[..., 1] = torch.bitwise_right_shift(
+            source[..., 0],
+            6,
+        ) | torch.bitwise_left_shift(
+            torch.bitwise_and(source[..., 1], 0x0F),
+            2,
+        )
+        expanded[..., 2] = torch.bitwise_right_shift(
+            source[..., 1],
+            4,
+        ) | torch.bitwise_left_shift(
+            torch.bitwise_and(source[..., 2], 0x03),
+            4,
+        )
+        expanded[..., 3] = torch.bitwise_right_shift(source[..., 2], 2)
+        unsigned = expanded.reshape(payload.shape[0], width)
+        signed = torch.where(unsigned >= 32, unsigned - 64, unsigned)
+        return signed.to(payload.device)
     output = torch.empty((payload.shape[0], width), dtype=torch.int16)
     mask = (1 << bits) - 1
     sign_bit = 1 << (bits - 1)
     modulus = 1 << bits
-    for row_index, row in enumerate(payload.to("cpu").tolist()):
+    for row_index, row in enumerate(cpu_payload.tolist()):
         accumulator = 0
         available = 0
         byte_index = 0
@@ -1732,6 +1918,2312 @@ def assert_independent_imports(path: Path) -> None:
                 _fail(f"independent verifier imports package under test: {module}")
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_payload_sha256(value: object) -> str:
+    """Hash the closed artifact schema without trusting torch serialization."""
+
+    digest = hashlib.sha256()
+
+    def visit(item: object) -> None:
+        if item is None:
+            digest.update(b"n")
+        elif isinstance(item, bool):
+            digest.update(b"b1" if item else b"b0")
+        elif isinstance(item, int):
+            digest.update(b"i")
+            digest.update(str(item).encode("ascii"))
+            digest.update(b"\0")
+        elif isinstance(item, float):
+            if not math.isfinite(item):
+                _fail("artifact contains a non-finite scalar")
+            digest.update(b"f")
+            digest.update(item.hex().encode("ascii"))
+            digest.update(b"\0")
+        elif isinstance(item, str):
+            encoded = item.encode("utf-8")
+            digest.update(b"s")
+            digest.update(len(encoded).to_bytes(8, "little"))
+            digest.update(encoded)
+        elif isinstance(item, torch.Tensor):
+            digest.update(b"t")
+            digest.update(_tensor_digest(item).encode("ascii"))
+        elif isinstance(item, Mapping):
+            if any(not isinstance(key, str) for key in item):
+                _fail("artifact mapping keys must be strings")
+            digest.update(b"d")
+            digest.update(len(item).to_bytes(8, "little"))
+            for key in sorted(item):
+                visit(key)
+                visit(item[key])
+        elif isinstance(item, (list, tuple)):
+            digest.update(b"l")
+            digest.update(len(item).to_bytes(8, "little"))
+            for child in item:
+                visit(child)
+        else:
+            _fail(f"artifact contains unsupported type {type(item).__name__}")
+
+    visit(value)
+    return digest.hexdigest()
+
+
+def _require_exact_keys(
+    value: object,
+    *,
+    name: str,
+    keys: Sequence[str],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        _fail(f"{name} must be a mapping")
+    actual = set(value)
+    expected = set(keys)
+    if actual != expected:
+        _fail(
+            f"{name} violates the closed schema; "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
+    if any(not isinstance(key, str) for key in value):
+        _fail(f"{name} contains a non-string key")
+    return value
+
+
+def _read_sha256_sidecar(path: Path, artifact_path: Path) -> str:
+    try:
+        line = path.read_text(encoding="ascii").strip()
+    except OSError as error:
+        raise Stage0VerificationError(f"cannot read SHA-256 sidecar: {error}") from error
+    parts = line.split()
+    if (
+        len(parts) != 2
+        or len(parts[0]) != 64
+        or any(character not in "0123456789abcdef" for character in parts[0])
+        or parts[1] != artifact_path.name
+    ):
+        _fail("artifact SHA-256 sidecar has invalid closed syntax")
+    return parts[0]
+
+
+def load_authenticated_production_artifact(
+    artifact_path: Path,
+    *,
+    sha256_path: Path | None = None,
+) -> Mapping[str, object]:
+    """Authenticate serialized bytes, then load only tensor-safe primitives."""
+
+    artifact_path = artifact_path.resolve()
+    sidecar = (
+        artifact_path.with_suffix(artifact_path.suffix + ".sha256")
+        if sha256_path is None
+        else sha256_path.resolve()
+    )
+    expected_file_hash = _read_sha256_sidecar(sidecar, artifact_path)
+    actual_file_hash = _file_sha256(artifact_path)
+    if actual_file_hash != expected_file_hash:
+        _fail("serialized artifact SHA-256 differs from its authenticated sidecar")
+    try:
+        loaded = torch.load(
+            artifact_path,
+            map_location="cpu",
+            weights_only=True,
+        )
+    except Exception as error:
+        raise Stage0VerificationError(
+            f"weights-only artifact loading failed: {type(error).__name__}"
+        ) from error
+    artifact = _require_exact_keys(
+        loaded,
+        name="artifact",
+        keys=(
+            "schema",
+            "schema_version",
+            "declarations",
+            "source_identity",
+            "runtime_identity",
+            "method_identity",
+            "production_trace",
+            "successful_kernel_receipt",
+            "resident_snapshot",
+            "lifecycle",
+            "cc1_compatibility",
+            "equal_byte_comparators",
+            "canonical_payload_sha256",
+        ),
+    )
+    canonical = artifact["canonical_payload_sha256"]
+    if (
+        not isinstance(canonical, str)
+        or len(canonical) != 64
+        or any(character not in "0123456789abcdef" for character in canonical)
+    ):
+        _fail("artifact canonical payload digest is malformed")
+    unhashed = {key: artifact[key] for key in artifact if key != "canonical_payload_sha256"}
+    if canonical_payload_sha256(unhashed) != canonical:
+        _fail("artifact canonical payload SHA-256 is invalid")
+    return artifact
+
+
+def _recorded_source_snapshot(
+    value: object,
+    *,
+    name: str,
+) -> dict[str, object]:
+    snapshot = _require_exact_keys(
+        value,
+        name=name,
+        keys=(
+            "repo_head",
+            "source_hashes",
+            "source_set_sha256",
+            "head_blob_hashes",
+            "worktree_blob_hashes",
+            "sources_match_head",
+            "worktree_clean",
+        ),
+    )
+    repo_head = snapshot["repo_head"]
+    if (
+        not isinstance(repo_head, str)
+        or len(repo_head) != 40
+        or any(character not in "0123456789abcdef" for character in repo_head)
+    ):
+        _fail(f"{name} lacks an exact repository HEAD")
+    source_hashes = _require_exact_keys(
+        snapshot["source_hashes"],
+        name=f"{name}.source_hashes",
+        keys=SOURCE_IDENTITY_PATHS,
+    )
+    malformed = [
+        relative
+        for relative, digest in source_hashes.items()
+        if not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ]
+    if malformed:
+        _fail(f"{name} contains malformed source hashes: {malformed}")
+    source_set_sha256 = snapshot["source_set_sha256"]
+    if source_set_sha256 != canonical_payload_sha256(source_hashes):
+        _fail(f"{name} source-set canonical digest differs")
+    if snapshot["worktree_clean"] is not True:
+        _fail(f"{name} does not attest a clean complete worktree")
+    head_blob_hashes = _require_exact_keys(
+        snapshot["head_blob_hashes"],
+        name=f"{name}.head_blob_hashes",
+        keys=SOURCE_IDENTITY_PATHS,
+    )
+    worktree_blob_hashes = _require_exact_keys(
+        snapshot["worktree_blob_hashes"],
+        name=f"{name}.worktree_blob_hashes",
+        keys=SOURCE_IDENTITY_PATHS,
+    )
+    malformed_blobs = [
+        f"{kind}:{relative}"
+        for kind, hashes in (
+            ("head", head_blob_hashes),
+            ("worktree", worktree_blob_hashes),
+        )
+        for relative, digest in hashes.items()
+        if not isinstance(digest, str)
+        or len(digest) != 40
+        or any(character not in "0123456789abcdef" for character in digest)
+    ]
+    if malformed_blobs:
+        _fail(f"{name} contains malformed Git blob hashes: {malformed_blobs}")
+    if snapshot["sources_match_head"] is not True or dict(head_blob_hashes) != dict(
+        worktree_blob_hashes
+    ):
+        _fail(f"{name} source bytes do not equal their regular-file blobs at HEAD")
+    return {
+        "repo_head": repo_head,
+        "source_hashes": dict(source_hashes),
+        "source_set_sha256": source_set_sha256,
+        "head_blob_hashes": dict(head_blob_hashes),
+        "worktree_blob_hashes": dict(worktree_blob_hashes),
+        "sources_match_head": True,
+        "worktree_clean": True,
+    }
+
+
+def _git_blob_hashes_for_authenticated_sources(
+    repo_root: Path,
+) -> tuple[dict[str, str], dict[str, str]]:
+    try:
+        tree_process = subprocess.run(
+            ["git", "ls-tree", "-r", "HEAD", "--", *SOURCE_IDENTITY_PATHS],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        worktree_process = subprocess.run(
+            ["git", "hash-object", "--stdin-paths"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            input="\n".join(SOURCE_IDENTITY_PATHS),
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise Stage0VerificationError(
+            "cannot compare authenticated source bytes with repository HEAD"
+        ) from error
+    head_blobs: dict[str, str] = {}
+    for line in tree_process.stdout.splitlines():
+        metadata, separator, relative = line.partition("\t")
+        parts = metadata.split()
+        if (
+            separator != "\t"
+            or len(parts) != 3
+            or parts[0] not in {"100644", "100755"}
+            or parts[1] != "blob"
+            or relative not in SOURCE_IDENTITY_PATHS
+        ):
+            _fail("authenticated source has an invalid repository tree entry")
+        head_blobs[relative] = parts[2]
+    if set(head_blobs) != set(SOURCE_IDENTITY_PATHS):
+        missing = sorted(set(SOURCE_IDENTITY_PATHS) - set(head_blobs))
+        _fail(f"authenticated source is not a regular tracked HEAD blob: {missing}")
+    worktree_lines = worktree_process.stdout.splitlines()
+    if len(worktree_lines) != len(SOURCE_IDENTITY_PATHS):
+        _fail("Git did not hash every authenticated worktree source")
+    worktree_blobs = dict(zip(SOURCE_IDENTITY_PATHS, worktree_lines, strict=True))
+    malformed = [
+        f"{kind}:{relative}"
+        for kind, hashes in (("head", head_blobs), ("worktree", worktree_blobs))
+        for relative, digest in hashes.items()
+        if len(digest) != 40 or any(character not in "0123456789abcdef" for character in digest)
+    ]
+    if malformed:
+        _fail(f"authenticated source Git blob identity is malformed: {malformed}")
+    return head_blobs, worktree_blobs
+
+
+def _current_repository_source_snapshot(repo_root: Path) -> dict[str, object]:
+    missing = [
+        relative for relative in SOURCE_IDENTITY_PATHS if not (repo_root / relative).is_file()
+    ]
+    if missing:
+        _fail(f"authenticated Stage-0 source set is incomplete: {missing}")
+    source_hashes = {
+        relative: _file_sha256(repo_root / relative) for relative in SOURCE_IDENTITY_PATHS
+    }
+    head_blobs, worktree_blobs = _git_blob_hashes_for_authenticated_sources(repo_root)
+    try:
+        repo_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise Stage0VerificationError("cannot verify current repository source identity") from error
+    if len(repo_head) != 40 or any(character not in "0123456789abcdef" for character in repo_head):
+        _fail("current repository HEAD is not a lowercase SHA-1 commit identity")
+    return {
+        "repo_head": repo_head,
+        "source_hashes": source_hashes,
+        "source_set_sha256": canonical_payload_sha256(source_hashes),
+        "head_blob_hashes": head_blobs,
+        "worktree_blob_hashes": worktree_blobs,
+        "sources_match_head": head_blobs == worktree_blobs,
+        "worktree_clean": status == "",
+    }
+
+
+def _verify_source_and_method_identity(
+    artifact: Mapping[str, object],
+    *,
+    repo_root: Path,
+) -> None:
+    if artifact["schema"] != PRODUCTION_SCHEMA:
+        _fail("production artifact schema identity differs")
+    if artifact["schema_version"] != PRODUCTION_SCHEMA_VERSION:
+        _fail("production artifact schema version differs")
+    declarations = _require_exact_keys(
+        artifact["declarations"],
+        name="declarations",
+        keys=(
+            "stage",
+            "synthetic_only",
+            "quality_data_accessed",
+            "protected_mbpp_window_accessed",
+            "pretrained_checkpoint_loaded",
+            "random_model_parameters_initialized",
+            "tokenizer_loaded",
+        ),
+    )
+    expected_declarations = {
+        "stage": "stage0",
+        "synthetic_only": True,
+        "quality_data_accessed": False,
+        "protected_mbpp_window_accessed": False,
+        "pretrained_checkpoint_loaded": False,
+        "random_model_parameters_initialized": True,
+        "tokenizer_loaded": False,
+    }
+    if dict(declarations) != expected_declarations:
+        _fail("artifact declarations do not prove a synthetic-only Stage 0")
+
+    source_identity = _require_exact_keys(
+        artifact["source_identity"],
+        name="source_identity",
+        keys=(
+            "repo_head",
+            "source_hashes",
+            "source_set_sha256",
+            "head_blob_hashes",
+            "worktree_blob_hashes",
+            "sources_match_head",
+            "worktree_clean",
+            "capture_start",
+            "capture_end",
+            "capture_start_equals_end",
+            "loaded_local_source_paths",
+        ),
+    )
+    capture_start = _recorded_source_snapshot(
+        source_identity["capture_start"],
+        name="source_identity.capture_start",
+    )
+    capture_end = _recorded_source_snapshot(
+        source_identity["capture_end"],
+        name="source_identity.capture_end",
+    )
+    if capture_start != capture_end or source_identity["capture_start_equals_end"] is not True:
+        _fail("authenticated capture start/end source snapshots differ")
+    top_level_snapshot = {
+        "repo_head": source_identity["repo_head"],
+        "source_hashes": source_identity["source_hashes"],
+        "source_set_sha256": source_identity["source_set_sha256"],
+        "head_blob_hashes": source_identity["head_blob_hashes"],
+        "worktree_blob_hashes": source_identity["worktree_blob_hashes"],
+        "sources_match_head": source_identity["sources_match_head"],
+        "worktree_clean": source_identity["worktree_clean"],
+    }
+    if top_level_snapshot != capture_start:
+        _fail("top-level source identity does not equal the recorded capture start")
+    loaded_paths = source_identity["loaded_local_source_paths"]
+    if (
+        not isinstance(loaded_paths, list)
+        or any(not isinstance(path, str) for path in loaded_paths)
+        or loaded_paths != sorted(set(loaded_paths))
+        or not set(loaded_paths).issubset(SOURCE_IDENTITY_PATHS)
+        or "scripts/capture_statelease_stage0.py" not in loaded_paths
+        or "src/recurquant/statelease_cache.py" not in loaded_paths
+        or "src/recurquant/statelease_equal_byte_baselines.py" not in loaded_paths
+        or "src/recurquant/statelease_observer.py" not in loaded_paths
+    ):
+        _fail("loaded local production-source closure is invalid")
+    current_snapshot = _current_repository_source_snapshot(repo_root)
+    if current_snapshot["repo_head"] != capture_end["repo_head"]:
+        _fail("artifact repository HEAD differs from current HEAD")
+    if current_snapshot["worktree_clean"] is not True:
+        _fail("current complete repository worktree is not clean")
+    if current_snapshot["sources_match_head"] is not True:
+        _fail("current authenticated source bytes differ from their HEAD blobs")
+    if current_snapshot["source_hashes"] != capture_end["source_hashes"]:
+        changed = [
+            relative
+            for relative in SOURCE_IDENTITY_PATHS
+            if current_snapshot["source_hashes"][relative] != capture_end["source_hashes"][relative]
+        ]
+        _fail(f"authenticated production/verifier source changed: {changed}")
+    if current_snapshot != capture_end:
+        _fail("current repository/source identity differs from capture end")
+
+    method = _require_exact_keys(
+        artifact["method_identity"],
+        name="method_identity",
+        keys=(
+            "method",
+            "selection_method",
+            "effective_plan_sha256",
+            "seed",
+            "replay_capacity",
+            "boundary_rule",
+            "key_normalization",
+            "checkpoint_codec",
+            "linear_layer_indices",
+            "layer_quotas",
+        ),
+    )
+    expected_method = {
+        "method": "StateLease-H5",
+        "selection_method": STATELEASE_SELECTION_METHOD,
+        "effective_plan_sha256": EFFECTIVE_PLAN_SHA256,
+        "seed": FROZEN_SEED,
+        "replay_capacity": REPLAY_CAPACITY,
+        "boundary_rule": "strictly_lower_c4_else_c5",
+        "key_normalization": "consumed_dtype_then_fp32",
+        "checkpoint_codec": "right_rht_sha256_signs_v1_q4_q8",
+        "linear_layer_indices": list(LINEAR_LAYER_INDICES),
+        "layer_quotas": {str(index): quota for index, quota in LAYER_QUOTAS.items()},
+    }
+    if dict(method) != expected_method:
+        _fail("method or frozen plan identity differs")
+
+
+def _verify_runtime_identity(value: object) -> dict[str, object]:
+    runtime = _require_exact_keys(
+        value,
+        name="runtime_identity",
+        keys=(
+            "python_version",
+            "python_implementation",
+            "python_executable",
+            "python_environment",
+            "torch_version",
+            "transformers_version",
+            "numpy_version",
+            "platform",
+            "system",
+            "machine",
+            "cuda_version",
+            "cuda_available",
+            "kernel_receipt_device",
+            "default_dtype",
+        ),
+    )
+    expected = {
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "python_executable": Path(sys.executable).name,
+        "python_environment": Path(sys.prefix).name,
+        "torch_version": torch.__version__,
+        "transformers_version": importlib.metadata.version("transformers"),
+        "numpy_version": importlib.metadata.version("numpy"),
+        "platform": platform.platform(),
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "cuda_version": torch.version.cuda,
+        "cuda_available": torch.cuda.is_available(),
+        "kernel_receipt_device": "cpu",
+        "default_dtype": str(torch.get_default_dtype()),
+    }
+    if dict(runtime) != expected:
+        changed = [field for field in expected if runtime[field] != expected[field]]
+        _fail(f"runtime identity differs: {changed}")
+    return expected
+
+
+def _assert_tensor_close(
+    actual: object,
+    expected: torch.Tensor,
+    *,
+    name: str,
+    rtol: float = 2e-6,
+    atol: float = 2e-6,
+    exact: bool = False,
+) -> torch.Tensor:
+    tensor = _require_tensor(actual, name=name)
+    if tensor.shape != expected.shape or tensor.dtype != expected.dtype:
+        _fail(
+            f"{name} shape/dtype differs: "
+            f"{tuple(tensor.shape)} {tensor.dtype} != "
+            f"{tuple(expected.shape)} {expected.dtype}"
+        )
+    if exact:
+        matches = torch.equal(tensor, expected)
+    elif tensor.is_floating_point():
+        matches = torch.allclose(tensor, expected, rtol=rtol, atol=atol)
+    else:
+        matches = torch.equal(tensor, expected)
+    if not matches:
+        maximum = (
+            float((tensor.to(torch.float64) - expected.to(torch.float64)).abs().max().item())
+            if tensor.numel()
+            else 0.0
+        )
+        _fail(f"{name} differs; max_abs={maximum:.9g}")
+    return tensor
+
+
+def independent_query_ema(
+    previous: torch.Tensor | None,
+    query: torch.Tensor,
+    *,
+    expected_heads: int = HEADS,
+    expected_rows: int = ROWS,
+) -> torch.Tensor:
+    query = _require_tensor(query, name="query", ndim=4).to(torch.float32)
+    if query.shape[0] != 1 or query.shape[2:] != (
+        expected_heads,
+        expected_rows,
+    ):
+        raise ValueError("query has incompatible frozen geometry")
+    squared = query.square()
+    energy = squared / (squared.sum(dim=-1, keepdim=True) + KEY_NORM_EPS)
+    energy = energy.squeeze(0)
+    prior = (
+        torch.full(
+            (expected_heads, expected_rows),
+            1.0 / expected_rows,
+            dtype=torch.float32,
+        )
+        if previous is None
+        else _require_tensor(
+            previous,
+            name="previous_query_ema",
+            dtype=torch.float32,
+            ndim=2,
+        )
+    )
+    decay = 0.5 ** (1.0 / 32.0)
+    token_count = energy.shape[0]
+    exponents = torch.arange(token_count - 1, -1, -1, dtype=torch.float32)
+    weights = torch.pow(torch.tensor(decay, dtype=torch.float32), exponents)
+    return (
+        decay**token_count * prior + (1.0 - decay) * (energy * weights[:, None, None]).sum(dim=0)
+    ).contiguous()
+
+
+def _independent_q48_checkpoint(
+    state: torch.Tensor,
+    query_ema: torch.Tensor,
+    *,
+    layer_index: int,
+    quota: int,
+) -> tuple[PhysicalQ4Q8, torch.Tensor]:
+    encoded = independent_rht_encode(state, layer_index=layer_index)
+    rows = encoded.reshape(-1, encoded.shape[-1])
+    benefit = q4_q8_physical_benefit(rows, query_ema.reshape(-1))
+    selected = stable_descending_indices(benefit, quota)
+    mask = torch.zeros(rows.shape[0], dtype=torch.bool)
+    mask[selected] = True
+    packed = pack_physical_q4_q8(rows, mask)
+    restored = packed.dequantize().reshape_as(encoded)
+    return packed, independent_rht_decode(restored, layer_index=layer_index)
+
+
+def _record_from_artifact(value: object, *, name: str) -> ReplayRecord | None:
+    record = _require_exact_keys(
+        value,
+        name=name,
+        keys=("present", "normalized_key", "update", "log_decay"),
+    )
+    present = record["present"]
+    if not isinstance(present, bool):
+        _fail(f"{name}.present must be bool")
+    if not present:
+        for field in ("normalized_key", "update", "log_decay"):
+            tensor = _require_tensor(record[field], name=f"{name}.{field}")
+            if tensor.numel() != 0:
+                _fail(f"{name}.{field} must be empty when record is absent")
+        return None
+    key = _require_tensor(
+        record["normalized_key"],
+        name=f"{name}.normalized_key",
+        dtype=torch.float32,
+        ndim=2,
+    )
+    update = _require_tensor(
+        record["update"],
+        name=f"{name}.update",
+        dtype=torch.float32,
+        ndim=2,
+    )
+    decay = _require_tensor(
+        record["log_decay"],
+        name=f"{name}.log_decay",
+        dtype=torch.float32,
+        ndim=1,
+    )
+    return ReplayRecord(
+        normalized_key=key.unsqueeze(0),
+        update=update.unsqueeze(0),
+        log_decay=decay.unsqueeze(0),
+    )
+
+
+def _verify_trace_buffers(
+    value: object,
+    expected: ReplayBuffers,
+    *,
+    name: str,
+) -> None:
+    buffers = _require_exact_keys(
+        value,
+        name=name,
+        keys=("normalized_keys", "updates", "log_decays", "valid_count"),
+    )
+    _assert_tensor_close(
+        buffers["normalized_keys"],
+        expected.normalized_keys,
+        name=f"{name}.normalized_keys",
+        exact=True,
+    )
+    _assert_tensor_close(
+        buffers["updates"],
+        expected.updates,
+        name=f"{name}.updates",
+        exact=True,
+    )
+    _assert_tensor_close(
+        buffers["log_decays"],
+        expected.log_decays,
+        name=f"{name}.log_decays",
+        exact=True,
+    )
+    _assert_tensor_close(
+        buffers["valid_count"],
+        expected.valid_count,
+        name=f"{name}.valid_count",
+        exact=True,
+    )
+
+
+def _empty_full_buffers() -> ReplayBuffers:
+    return ReplayBuffers(
+        normalized_keys=torch.zeros(
+            (REPLAY_CAPACITY, HEADS, ROWS),
+            dtype=torch.bfloat16,
+        ),
+        updates=torch.zeros(
+            (REPLAY_CAPACITY, HEADS, WIDTH),
+            dtype=torch.bfloat16,
+        ),
+        log_decays=torch.zeros(
+            (REPLAY_CAPACITY, HEADS),
+            dtype=torch.float32,
+        ),
+        valid_count=torch.zeros((1,), dtype=torch.int32),
+    )
+
+
+def _append_expected_record(
+    buffers: ReplayBuffers,
+    record: ReplayRecord,
+) -> ReplayBuffers:
+    count = int(buffers.valid_count.item())
+    if count >= REPLAY_CAPACITY:
+        raise ValueError("cannot append to a full expected buffer")
+    keys = buffers.normalized_keys.clone()
+    updates = buffers.updates.clone()
+    decays = buffers.log_decays.clone()
+    keys[count].copy_(record.normalized_key[0].to(torch.bfloat16))
+    updates[count].copy_(record.update[0].to(torch.bfloat16))
+    decays[count].copy_(record.log_decay[0].to(torch.float32))
+    return ReplayBuffers(
+        normalized_keys=keys,
+        updates=updates,
+        log_decays=decays,
+        valid_count=torch.tensor([count + 1], dtype=torch.int32),
+    )
+
+
+def _dense_successful_transition(
+    initial_state: torch.Tensor,
+    *,
+    consumed_key: torch.Tensor,
+    value: torch.Tensor,
+    log_decay: torch.Tensor,
+    beta: torch.Tensor,
+) -> torch.Tensor:
+    state = _require_tensor(initial_state, name="initial_state", ndim=4).to(torch.float32)
+    key = _require_tensor(consumed_key, name="consumed_key", ndim=4)
+    values = _require_tensor(value, name="value", ndim=4).to(torch.float32)
+    decays = _require_tensor(log_decay, name="log_decay", ndim=3).to(torch.float32)
+    writes = _require_tensor(beta, name="beta", ndim=3).to(torch.float32)
+    if (
+        key.shape[:3] != values.shape[:3]
+        or key.shape[:3] != decays.shape
+        or key.shape[:3] != writes.shape
+        or key.shape[0] != 1
+        or key.shape[2] != state.shape[1]
+        or key.shape[3] != state.shape[2]
+        or values.shape[3] != state.shape[3]
+    ):
+        raise ValueError("successful transition tensors have incompatible geometry")
+    normalized = normalize_consumed_key(key)
+    for token_index in range(key.shape[1]):
+        decay = decays[:, token_index]
+        key_token = normalized[:, token_index]
+        decayed = state * decay.exp().unsqueeze(-1).unsqueeze(-1)
+        remembered = (decayed * key_token.unsqueeze(-1)).sum(dim=-2)
+        update = (values[:, token_index] - remembered) * writes[:, token_index].unsqueeze(-1)
+        state = decayed + key_token.unsqueeze(-1) * update.unsqueeze(-2)
+    return state
+
+
+def _verify_successful_kernel_receipt(value: object) -> dict[str, object]:
+    receipt = _require_exact_keys(
+        value,
+        name="successful_kernel_receipt",
+        keys=(
+            "observer",
+            "model",
+            "pretrained_checkpoint_loaded",
+            "synthetic_token_ids_only",
+            "successful_model_forwards",
+            "successful_kernel_calls",
+            "receipts",
+        ),
+    )
+    expected_metadata = {
+        "observer": "Qwen35StateLeaseObserver",
+        "model": "randomly_initialized_tiny_Qwen3_5ForCausalLM",
+        "pretrained_checkpoint_loaded": False,
+        "synthetic_token_ids_only": True,
+        "successful_model_forwards": 2,
+        "successful_kernel_calls": 2,
+    }
+    for field, expected in expected_metadata.items():
+        if receipt[field] != expected:
+            _fail(f"successful-kernel receipt differs at {field}")
+    calls = receipt["receipts"]
+    if not isinstance(calls, list) or len(calls) != 2:
+        _fail("successful-kernel receipt must contain exactly two calls")
+    query_ema: torch.Tensor | None = None
+    checkpoint: torch.Tensor | None = None
+    previous: torch.Tensor | None = None
+    expected_buffers = ReplayBuffers(
+        normalized_keys=torch.zeros((5, 2, 8), dtype=torch.bfloat16),
+        updates=torch.zeros((5, 2, 8), dtype=torch.bfloat16),
+        log_decays=torch.zeros((5, 2), dtype=torch.float32),
+        valid_count=torch.zeros((1,), dtype=torch.int32),
+    )
+    for call_index, item in enumerate(calls):
+        call = _require_exact_keys(
+            item,
+            name=f"successful_kernel_receipt.receipts[{call_index}]",
+            keys=(
+                "layer_index",
+                "query",
+                "consumed_key",
+                "value",
+                "log_decay",
+                "beta",
+                "initial_state_present",
+                "initial_state",
+                "successful_final_state",
+                "call_index",
+                "input_ids",
+                "logits_shape",
+                "logits_finite",
+                "production_query_ema",
+                "production_materialized_state",
+                "production_buffers",
+                "production_evidence",
+            ),
+        )
+        if (
+            call["layer_index"] != 0
+            or call["call_index"] != call_index
+            or call["logits_finite"] is not True
+            or call["logits_shape"] != [1, 3 if call_index == 0 else 1, 128]
+        ):
+            _fail("successful-kernel call metadata differs")
+        input_ids = _require_tensor(
+            call["input_ids"],
+            name="successful_kernel.input_ids",
+            dtype=torch.long,
+            ndim=2,
+            finite=False,
+        )
+        expected_ids = (
+            torch.tensor([[7, 11, 13]], dtype=torch.long)
+            if call_index == 0
+            else torch.tensor([[17]], dtype=torch.long)
+        )
+        _assert_tensor_close(
+            input_ids,
+            expected_ids,
+            name="successful-kernel synthetic token IDs",
+            exact=True,
+        )
+        initial_present = call["initial_state_present"]
+        if initial_present is not (call_index == 1):
+            _fail("successful-kernel initial-state presence differs")
+        raw_initial = _require_tensor(
+            call["initial_state"],
+            name="successful_kernel.initial_state",
+        )
+        if call_index == 0:
+            if raw_initial.numel():
+                _fail("successful prefill kernel must have no initial state")
+            initial = torch.zeros((1, 2, 8, 8), dtype=torch.float32)
+        else:
+            if previous is None:
+                _fail("decode kernel has no preceding resident state")
+            _assert_tensor_close(
+                raw_initial,
+                previous,
+                name="successful decode kernel initial state",
+                exact=True,
+            )
+            initial = raw_initial
+        expected_final = _dense_successful_transition(
+            initial,
+            consumed_key=call["consumed_key"],
+            value=call["value"],
+            log_decay=call["log_decay"],
+            beta=call["beta"],
+        )
+        final = _assert_tensor_close(
+            call["successful_final_state"],
+            expected_final,
+            name="successful observed kernel final state",
+            rtol=3e-6,
+            atol=2e-6,
+        )
+        query_ema = independent_query_ema(
+            query_ema,
+            call["query"],
+            expected_heads=2,
+            expected_rows=8,
+        )
+        saved_ema = _assert_tensor_close(
+            call["production_query_ema"],
+            query_ema,
+            name="successful-kernel production query EMA",
+            exact=True,
+        )
+        evidence = call["production_evidence"]
+        if not isinstance(evidence, Mapping):
+            _fail("successful-kernel production evidence must be a mapping")
+        if call_index == 0:
+            _, checkpoint = _independent_q48_checkpoint(
+                final,
+                saved_ema,
+                layer_index=0,
+                quota=5,
+            )
+            expected_materialized = checkpoint
+            expected_action = "checkpoint_prefill"
+        else:
+            if checkpoint is None:
+                _fail("successful decode receipt lacks its prefill checkpoint")
+            record = derive_successful_record(
+                initial_state=initial,
+                consumed_key=call["consumed_key"],
+                value=call["value"],
+                log_decay=call["log_decay"],
+                beta=call["beta"],
+                successful_final_state=final,
+            )
+            expected_buffers = _append_expected_record(expected_buffers, record)
+            expected_materialized = replay_stored_buffers(
+                checkpoint,
+                expected_buffers,
+            )
+            expected_action = "replay_append"
+        if evidence.get("action") != expected_action:
+            _fail("successful-kernel production action differs")
+        _assert_tensor_close(
+            call["production_materialized_state"],
+            expected_materialized,
+            name="successful-kernel resident state",
+            rtol=4e-6,
+            atol=3e-6,
+        )
+        _verify_trace_buffers(
+            call["production_buffers"],
+            expected_buffers,
+            name=f"successful_kernel.buffers[{call_index}]",
+        )
+        previous = _require_tensor(
+            call["production_materialized_state"],
+            name="successful-kernel materialized state",
+        )
+    return {
+        "observer": expected_metadata["observer"],
+        "successful_model_forwards": 2,
+        "successful_kernel_calls": 2,
+        "consumed_record_verified": True,
+    }
+
+
+def _verify_production_trace(value: object) -> dict[str, object]:
+    if not isinstance(value, list) or len(value) != 6:
+        _fail("production trace must contain exactly six synthetic writes")
+    query_ema: torch.Tensor | None = None
+    checkpoint: torch.Tensor | None = None
+    buffers = _empty_full_buffers()
+    previous_materialized: torch.Tensor | None = None
+    boundary_counts = {4: 0, 5: 0}
+    trace_hashes: dict[str, str] = {}
+    for step_index, item in enumerate(value):
+        step = _require_exact_keys(
+            item,
+            name=f"production_trace[{step_index}]",
+            keys=(
+                "identity",
+                "step_index",
+                "signals",
+                "production_record",
+                "production_query_ema",
+                "production_materialized_state",
+                "production_buffers",
+                "production_evidence",
+            ),
+        )
+        identity = f"statelease_trace_step_{step_index}"
+        if step["identity"] != identity or step["step_index"] != step_index:
+            _fail("production trace identities or ordering differ")
+        trace_hashes[identity] = canonical_payload_sha256(step)
+        signals = _require_exact_keys(
+            step["signals"],
+            name=f"trace[{step_index}].signals",
+            keys=(
+                "query",
+                "consumed_key",
+                "value",
+                "log_decay",
+                "beta",
+                "initial_state",
+                "successful_final_state",
+            ),
+        )
+        initial = _require_tensor(
+            signals["initial_state"],
+            name="initial_state",
+            dtype=torch.float32,
+            ndim=4,
+        )
+        if initial.shape != (1, HEADS, ROWS, WIDTH):
+            _fail("trace initial state has wrong frozen geometry")
+        if step_index == 0:
+            if torch.count_nonzero(initial).item():
+                _fail("trace prefill initial state must be zero")
+        elif previous_materialized is None or not torch.equal(initial, previous_materialized):
+            _fail("trace does not consume the preceding resident state")
+        final = _require_tensor(
+            signals["successful_final_state"],
+            name="successful_final_state",
+            dtype=torch.float32,
+            ndim=4,
+        )
+        derived = derive_successful_record(
+            initial_state=initial,
+            consumed_key=signals["consumed_key"],
+            value=signals["value"],
+            log_decay=signals["log_decay"],
+            beta=signals["beta"],
+            successful_final_state=final,
+        )
+        production_record = _record_from_artifact(
+            step["production_record"],
+            name=f"trace[{step_index}].production_record",
+        )
+        if step_index == 0:
+            if production_record is not None:
+                _fail("prefill unexpectedly stored a replay record")
+        else:
+            if production_record is None:
+                _fail("decode write did not expose its production record")
+            _assert_tensor_close(
+                production_record.normalized_key,
+                derived.normalized_key,
+                name="production consumed normalized key",
+                exact=True,
+            )
+            _assert_tensor_close(
+                production_record.update,
+                derived.update,
+                name="production post-correction update",
+                exact=True,
+            )
+            _assert_tensor_close(
+                production_record.log_decay,
+                derived.log_decay,
+                name="production log decay",
+                exact=True,
+            )
+
+        query_ema = independent_query_ema(query_ema, signals["query"])
+        saved_ema = _assert_tensor_close(
+            step["production_query_ema"],
+            query_ema,
+            name=f"trace[{step_index}].query_ema",
+            exact=True,
+        )
+        evidence = step["production_evidence"]
+        if not isinstance(evidence, Mapping):
+            _fail("production trace evidence must be a mapping")
+        if evidence.get("update_index") != step_index:
+            _fail("production evidence update index differs")
+
+        if step_index == 0:
+            _, checkpoint = _independent_q48_checkpoint(
+                final,
+                saved_ema,
+                layer_index=0,
+                quota=LAYER_QUOTAS[0],
+            )
+            buffers = _empty_full_buffers()
+            expected_materialized = checkpoint
+            expected_action = "checkpoint_prefill"
+            expected_boundary = None
+        elif step_index < 5:
+            assert production_record is not None
+            buffers = _append_expected_record(buffers, production_record)
+            assert checkpoint is not None
+            expected_materialized = replay_stored_buffers(checkpoint, buffers)
+            expected_action = "replay_append"
+            expected_boundary = None
+        else:
+            assert production_record is not None
+            full = _append_expected_record(buffers, production_record)
+            if int(full.valid_count.item()) != REPLAY_CAPACITY:
+                _fail("fifth trace write did not exercise explicit slot four/count five")
+            _, cut4_checkpoint = _independent_q48_checkpoint(
+                initial,
+                saved_ema,
+                layer_index=0,
+                quota=LAYER_QUOTAS[0],
+            )
+            cut4_buffers = compact_full_buffer(full, boundary=4)
+            cut4_materialized = replay_stored_buffers(
+                cut4_checkpoint,
+                cut4_buffers,
+            )
+            _, cut5_materialized = _independent_q48_checkpoint(
+                final,
+                saved_ema,
+                layer_index=0,
+                quota=LAYER_QUOTAS[0],
+            )
+            weights = normalized_query_weights(saved_ema)
+            cut4_risk = float(
+                query_weighted_handoff_risk(
+                    final,
+                    cut4_materialized,
+                    weights,
+                ).item()
+            )
+            cut5_risk = float(
+                query_weighted_handoff_risk(
+                    final,
+                    cut5_materialized,
+                    weights,
+                ).item()
+            )
+            expected_boundary = 4 if cut4_risk < cut5_risk else 5
+            expected_action = f"boundary_{expected_boundary}"
+            if expected_boundary == 4:
+                checkpoint = cut4_checkpoint
+                buffers = cut4_buffers
+                expected_materialized = cut4_materialized
+            else:
+                checkpoint = cut5_materialized
+                buffers = compact_full_buffer(full, boundary=5)
+                expected_materialized = cut5_materialized
+            boundary_counts[expected_boundary] += 1
+            if not math.isclose(
+                float(evidence.get("cut4_risk")),
+                cut4_risk,
+                rel_tol=2e-6,
+                abs_tol=2e-7,
+            ):
+                _fail("production c4 handoff risk differs from dense verifier")
+            if not math.isclose(
+                float(evidence.get("cut5_risk")),
+                cut5_risk,
+                rel_tol=2e-6,
+                abs_tol=2e-7,
+            ):
+                _fail("production c5 handoff risk differs from dense verifier")
+            if bool(evidence.get("tie")) != (cut4_risk == cut5_risk):
+                _fail("production tie receipt differs")
+        if evidence.get("action") != expected_action:
+            _fail("production trace action differs from independent state machine")
+        if evidence.get("boundary") != expected_boundary:
+            _fail("production boundary differs from strict c4/c5 rule")
+        _assert_tensor_close(
+            step["production_materialized_state"],
+            expected_materialized,
+            name=f"trace[{step_index}].materialized",
+            rtol=4e-6,
+            atol=3e-6,
+        )
+        _verify_trace_buffers(
+            step["production_buffers"],
+            buffers,
+            name=f"trace[{step_index}].buffers",
+        )
+        previous_materialized = _require_tensor(
+            step["production_materialized_state"],
+            name="production_materialized_state",
+        )
+    if sum(boundary_counts.values()) != 1:
+        _fail("production trace did not contain exactly one c4/c5 boundary")
+    return {
+        "trace_hashes": trace_hashes,
+        "boundary4_count": boundary_counts[4],
+        "boundary5_count": boundary_counts[5],
+    }
+
+
+def _resident_tensor_map(snapshot: ResidentSnapshot) -> dict[str, torch.Tensor]:
+    if not all(
+        len(getattr(snapshot, field)) == LAYERS
+        for field in (
+            "checkpoint_low_payloads",
+            "checkpoint_high_payloads",
+            "checkpoint_scales",
+            "checkpoint_masks",
+            "query_emas",
+            "normalized_key_buffers",
+            "update_buffers",
+            "log_decay_buffers",
+            "valid_counts",
+        )
+    ):
+        _fail("resident snapshot must expose one tensor per recurrent layer")
+    result: dict[str, torch.Tensor] = {}
+    for position, layer_index in enumerate(LINEAR_LAYER_INDICES):
+        result.update(
+            {
+                f"layer_{layer_index}.checkpoint.low_payload": (
+                    snapshot.checkpoint_low_payloads[position]
+                ),
+                f"layer_{layer_index}.checkpoint.high_payload": (
+                    snapshot.checkpoint_high_payloads[position]
+                ),
+                f"layer_{layer_index}.checkpoint.scales": (snapshot.checkpoint_scales[position]),
+                f"layer_{layer_index}.checkpoint.precision_mask": (
+                    snapshot.checkpoint_masks[position]
+                ),
+                f"layer_{layer_index}.query_energy_ema": snapshot.query_emas[position],
+                f"layer_{layer_index}.normalized_key_buffer": (
+                    snapshot.normalized_key_buffers[position]
+                ),
+                f"layer_{layer_index}.update_buffer": snapshot.update_buffers[position],
+                f"layer_{layer_index}.log_decay_buffer": (snapshot.log_decay_buffers[position]),
+                f"layer_{layer_index}.valid_count": snapshot.valid_counts[position],
+            }
+        )
+    return result
+
+
+def _candidate_graph_path(name: str) -> str:
+    checkpoint = re.fullmatch(
+        r"layer_(\d+)\.checkpoint\.(low_payload|high_payload|scales|precision_mask)",
+        name,
+    )
+    if checkpoint is not None:
+        return f"cache.layers[{int(checkpoint.group(1))}].packed_states[0].{checkpoint.group(2)}"
+    direct = re.fullmatch(
+        r"layer_(\d+)\.(query_energy_ema|normalized_key_buffer|update_buffer|"
+        r"log_decay_buffer|valid_count)",
+        name,
+    )
+    if direct is None:
+        _fail(f"unknown StateLease persistent tensor name: {name}")
+    return f"cache.layers[{int(direct.group(1))}].{direct.group(2)}"
+
+
+def _inventory_tensor_view(path: str, tensor: torch.Tensor) -> dict[str, object]:
+    return {
+        "path": path,
+        "dtype": str(tensor.dtype),
+        "shape": list(tensor.shape),
+        "numel": tensor.numel(),
+        "logical_nbytes": tensor.numel() * tensor.element_size(),
+        "storage_offset": tensor.storage_offset(),
+        "sha256": _tensor_digest(tensor),
+    }
+
+
+def _expected_whole_cache_storage_audit(
+    tensors: Mapping[str, torch.Tensor],
+) -> dict[str, object]:
+    pending = [
+        {
+            "classification": "statelease_candidate",
+            "allowed_tensor_name": name,
+            "storage_nbytes": tensor.untyped_storage().nbytes(),
+            "views": [_inventory_tensor_view(_candidate_graph_path(name), tensor)],
+        }
+        for name, tensor in tensors.items()
+    ]
+    pending.sort(key=lambda entry: entry["views"][0]["path"])
+    inventory = [{"storage_index": index, **entry} for index, entry in enumerate(pending)]
+    candidate_bytes = sum(int(entry["storage_nbytes"]) for entry in inventory)
+    return {
+        "inventory": inventory,
+        "candidate_storage_count": len(inventory),
+        "candidate_unique_storage_bytes": candidate_bytes,
+        "shared_kv_unique_storage_bytes": 0,
+        "shared_conv_unique_storage_bytes": 0,
+        "unexplained_unique_storage_bytes": 0,
+        "total_unique_storage_bytes": candidate_bytes,
+        "unexplained_tensor_elements": 0,
+        "raw_state_elements_per_layer": RAW_STATE_ELEMENTS_PER_LAYER,
+        "raw_state_elements_all_layers": RAW_STATE_ELEMENTS_ALL_LAYERS,
+        "unexplained_raw_state_equivalent_layer_floor": 0,
+        "all_persistent_storage_classified": True,
+        "no_unexplained_persistent_storage": True,
+        "storage_deduplicated": True,
+    }
+
+
+def _verify_whole_cache_storage_audit(
+    value: object,
+    tensors: Mapping[str, torch.Tensor],
+) -> dict[str, object]:
+    expected_tensor_names = {
+        name
+        for layer_index in LINEAR_LAYER_INDICES
+        for name in (
+            f"layer_{layer_index}.checkpoint.low_payload",
+            f"layer_{layer_index}.checkpoint.high_payload",
+            f"layer_{layer_index}.checkpoint.scales",
+            f"layer_{layer_index}.checkpoint.precision_mask",
+            f"layer_{layer_index}.query_energy_ema",
+            f"layer_{layer_index}.normalized_key_buffer",
+            f"layer_{layer_index}.update_buffer",
+            f"layer_{layer_index}.log_decay_buffer",
+            f"layer_{layer_index}.valid_count",
+        )
+    }
+    if set(tensors) != expected_tensor_names:
+        _fail("whole-cache audit did not receive the exact frozen candidate tensor schema")
+    audit = _require_exact_keys(
+        value,
+        name="resident_snapshot.whole_cache_storage_audit",
+        keys=(
+            "inventory",
+            "candidate_storage_count",
+            "candidate_unique_storage_bytes",
+            "shared_kv_unique_storage_bytes",
+            "shared_conv_unique_storage_bytes",
+            "unexplained_unique_storage_bytes",
+            "total_unique_storage_bytes",
+            "unexplained_tensor_elements",
+            "raw_state_elements_per_layer",
+            "raw_state_elements_all_layers",
+            "unexplained_raw_state_equivalent_layer_floor",
+            "all_persistent_storage_classified",
+            "no_unexplained_persistent_storage",
+            "storage_deduplicated",
+        ),
+    )
+    expected = _expected_whole_cache_storage_audit(tensors)
+    if dict(audit) != expected:
+        _fail(
+            "whole-cache all-dtype storage inventory does not reconcile with "
+            "the closed StateLease tensor schema"
+        )
+    if expected["candidate_unique_storage_bytes"] != STATELEASE_BYTES:
+        _fail("whole-cache candidate storage does not equal the frozen StateLease budget")
+    return expected
+
+
+def _verify_tensor_enumeration(
+    value: object,
+    tensors: Mapping[str, torch.Tensor],
+    *,
+    name: str,
+) -> None:
+    if not isinstance(value, list) or len(value) != len(tensors):
+        _fail(f"{name} length differs from physical tensors")
+    expected_names = sorted(tensors)
+    actual_names: list[str] = []
+    for index, item in enumerate(value):
+        entry = _require_exact_keys(
+            item,
+            name=f"{name}[{index}]",
+            keys=("name", "dtype", "shape", "nbytes", "sha256"),
+        )
+        tensor_name = entry["name"]
+        if not isinstance(tensor_name, str) or tensor_name not in tensors:
+            _fail(f"{name} contains an unknown tensor name")
+        tensor = tensors[tensor_name]
+        expected = {
+            "name": tensor_name,
+            "dtype": str(tensor.dtype),
+            "shape": list(tensor.shape),
+            "nbytes": tensor.numel() * tensor.element_size(),
+            "sha256": _tensor_digest(tensor),
+        }
+        if dict(entry) != expected:
+            _fail(f"{name} metadata differs for {tensor_name}")
+        actual_names.append(tensor_name)
+    if actual_names != expected_names:
+        _fail(f"{name} is not a complete canonical tensor enumeration")
+
+
+def _verify_resident_snapshot(value: object) -> dict[str, object]:
+    mapping = _require_exact_keys(
+        value,
+        name="resident_snapshot",
+        keys=(
+            "checkpoint_low_payloads",
+            "checkpoint_high_payloads",
+            "checkpoint_scales",
+            "checkpoint_masks",
+            "query_emas",
+            "normalized_key_buffers",
+            "update_buffers",
+            "log_decay_buffers",
+            "valid_counts",
+            "persistent_enumeration",
+            "whole_cache_storage_audit",
+            "no_hidden_persistent_state_mirror",
+            "storage_summary",
+        ),
+    )
+    tensor_fields = (
+        "checkpoint_low_payloads",
+        "checkpoint_high_payloads",
+        "checkpoint_scales",
+        "checkpoint_masks",
+        "query_emas",
+        "normalized_key_buffers",
+        "update_buffers",
+        "log_decay_buffers",
+        "valid_counts",
+    )
+    for field in tensor_fields:
+        if not isinstance(mapping[field], list) or any(
+            not isinstance(tensor, torch.Tensor) for tensor in mapping[field]
+        ):
+            _fail(f"resident_snapshot.{field} must be a tensor list")
+    snapshot = ResidentSnapshot(
+        checkpoint_low_payloads=tuple(mapping["checkpoint_low_payloads"]),
+        checkpoint_high_payloads=tuple(mapping["checkpoint_high_payloads"]),
+        checkpoint_scales=tuple(mapping["checkpoint_scales"]),
+        checkpoint_masks=tuple(mapping["checkpoint_masks"]),
+        query_emas=tuple(mapping["query_emas"]),
+        normalized_key_buffers=tuple(mapping["normalized_key_buffers"]),
+        update_buffers=tuple(mapping["update_buffers"]),
+        log_decay_buffers=tuple(mapping["log_decay_buffers"]),
+        valid_counts=tuple(mapping["valid_counts"]),
+    )
+    storage = audit_resident_snapshot(snapshot)
+    tensors = _resident_tensor_map(snapshot)
+    _verify_tensor_enumeration(
+        mapping["persistent_enumeration"],
+        tensors,
+        name="resident_snapshot.persistent_enumeration",
+    )
+    whole_cache_audit = _verify_whole_cache_storage_audit(
+        mapping["whole_cache_storage_audit"],
+        tensors,
+    )
+    if mapping["no_hidden_persistent_state_mirror"] is not True:
+        _fail("producer did not declare absence of an all-dtype persistent state mirror")
+    illegal_fp32 = [
+        name
+        for name, tensor in tensors.items()
+        if tensor.dtype == torch.float32
+        and ".query_energy_ema" not in name
+        and ".log_decay_buffer" not in name
+    ]
+    if illegal_fp32:
+        _fail(f"resident snapshot contains hidden FP32 tensors: {illegal_fp32}")
+    summary = mapping["storage_summary"]
+    if not isinstance(summary, Mapping):
+        _fail("resident storage summary must be a mapping")
+    expected_summary = {
+        "selection_method": STATELEASE_SELECTION_METHOD,
+        "experiment_identity_sha256": EFFECTIVE_PLAN_SHA256,
+        "payload_bytes": CHECKPOINT_PAYLOAD_BYTES,
+        "scale_bytes": CHECKPOINT_SCALE_BYTES,
+        "mask_bytes": CHECKPOINT_MASK_BYTES,
+        "checkpoint_bytes": CHECKPOINT_BYTES,
+        "resident_bytes": CHECKPOINT_BYTES,
+        "query_ema_bytes": QUERY_EMA_BYTES,
+        "replay_capacity_bytes": (
+            KEY_BUFFER_BYTES + UPDATE_BUFFER_BYTES + LOG_DECAY_BUFFER_BYTES + COUNT_BYTES
+        ),
+        "resident_bytes_including_statelease": STATELEASE_BYTES,
+        "high_precision_groups": HIGH_PRECISION_ROWS,
+        "full_precision_equivalent_bytes": STATE_ELEMENTS * 4,
+        "physical_reduction_realized": True,
+        "physical_reduction_realized_including_statelease": True,
+        "forward_transaction_active": False,
+    }
+    for field, expected in expected_summary.items():
+        if summary.get(field) != expected:
+            _fail(f"resident storage summary differs at {field}")
+    if int(summary.get("replay_occupied_bytes", -1)) < COUNT_BYTES:
+        _fail("resident storage summary has invalid occupied replay bytes")
+    return {
+        "storage": storage,
+        "resident_digest": resident_snapshot_digest(snapshot),
+        "tensor_count": len(tensors),
+        "whole_cache_storage_audit": {
+            key: value for key, value in whole_cache_audit.items() if key != "inventory"
+        },
+    }
+
+
+def _verify_lifecycle(
+    value: object,
+    *,
+    trace_hashes: Mapping[str, str],
+) -> dict[str, object]:
+    lifecycle = _require_exact_keys(
+        value,
+        name="lifecycle",
+        keys=("rollback", "reset", "resume"),
+    )
+    rollback = _require_exact_keys(
+        lifecycle["rollback"],
+        name="lifecycle.rollback",
+        keys=(
+            "before_sha256",
+            "mutated_sha256",
+            "after_sha256",
+            "before_update_index",
+            "after_update_index",
+            "before_evidence_count",
+            "after_evidence_count",
+            "transaction_active_after_rollback",
+        ),
+    )
+    for field in ("before_sha256", "mutated_sha256", "after_sha256"):
+        digest = rollback[field]
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            _fail(f"rollback {field} is not SHA-256")
+    if (
+        rollback["before_sha256"] == rollback["mutated_sha256"]
+        or rollback["before_sha256"] != rollback["after_sha256"]
+        or rollback["before_update_index"] != rollback["after_update_index"]
+        or rollback["before_evidence_count"] != rollback["after_evidence_count"]
+        or rollback["transaction_active_after_rollback"] is not False
+    ):
+        _fail("production rollback receipt does not prove exact restoration")
+
+    reset = _require_exact_keys(
+        lifecycle["reset"],
+        name="lifecycle.reset",
+        keys=(
+            "resident_bytes_before_reset",
+            "resident_bytes_after_reset",
+            "update_index_after_reset",
+            "evidence_count_after_reset",
+            "all_has_previous_state_flags_cleared",
+            "all_pending_observations_cleared",
+            "post_reset_snapshot",
+        ),
+    )
+    expected_reset_scalars = {
+        "resident_bytes_before_reset": STATELEASE_BYTES,
+        "resident_bytes_after_reset": STATELEASE_BYTES,
+        "update_index_after_reset": 0,
+        "evidence_count_after_reset": 0,
+        "all_has_previous_state_flags_cleared": True,
+        "all_pending_observations_cleared": True,
+    }
+    for field, expected in expected_reset_scalars.items():
+        if reset[field] != expected:
+            _fail(f"production reset receipt differs at {field}")
+    _verify_resident_snapshot(reset["post_reset_snapshot"])
+    post_reset = reset["post_reset_snapshot"]
+    assert isinstance(post_reset, Mapping)
+    for field in (
+        "checkpoint_low_payloads",
+        "checkpoint_high_payloads",
+        "checkpoint_scales",
+        "normalized_key_buffers",
+        "update_buffers",
+        "log_decay_buffers",
+        "valid_counts",
+    ):
+        tensors = post_reset[field]
+        if not isinstance(tensors, list) or any(
+            torch.count_nonzero(tensor).item() for tensor in tensors
+        ):
+            _fail(f"production reset left nonzero {field}")
+    for tensor in post_reset["query_emas"]:
+        expected = torch.full_like(tensor, 1.0 / ROWS)
+        if not torch.equal(tensor, expected):
+            _fail("production reset did not restore uniform query EMA")
+
+    resume = _require_exact_keys(
+        lifecycle["resume"],
+        name="lifecycle.resume",
+        keys=(
+            "prior_identity_hashes",
+            "resumed_identity_hashes",
+            "expected_identities",
+            "completed_record_hashes",
+            "resumed_completed_record_hashes",
+            "resumed_remaining_identities",
+        ),
+    )
+    verify_resume_integrity(
+        prior_identity_hashes=resume["prior_identity_hashes"],
+        resumed_identity_hashes=resume["resumed_identity_hashes"],
+        expected_identities=resume["expected_identities"],
+        completed_record_hashes=resume["completed_record_hashes"],
+        resumed_completed_record_hashes=resume["resumed_completed_record_hashes"],
+        resumed_remaining_identities=resume["resumed_remaining_identities"],
+    )
+    if list(resume["expected_identities"]) != list(trace_hashes):
+        _fail("resume manifest differs from production trace identities")
+    for identity, digest in resume["completed_record_hashes"].items():
+        if trace_hashes.get(identity) != digest:
+            _fail("resume completed record hash differs from trace")
+    return {
+        "rollback_preserved": True,
+        "reset_cleared": True,
+        "resume_integrity": True,
+    }
+
+
+def _synthetic_trajectory_metrics(
+    candidate: torch.Tensor,
+    reference: torch.Tensor,
+) -> dict[str, float]:
+    error = candidate.to(torch.float64) - reference.to(torch.float64)
+    denominator = torch.linalg.vector_norm(reference.to(torch.float64)).clamp_min(1e-12)
+    return {
+        "synthetic_state_mse": float(error.square().mean().item()),
+        "synthetic_state_relative_l2": float(
+            (torch.linalg.vector_norm(error) / denominator).item()
+        ),
+    }
+
+
+def _verify_cc1_production_compatibility(value: object) -> dict[str, object]:
+    compatibility = _require_exact_keys(
+        value,
+        name="cc1_compatibility",
+        keys=(
+            "transitions",
+            "fixed_cc1_trajectory",
+            "rht_cqer_trajectory",
+            "fixed_cc1_masks",
+            "rht_cqer_masks",
+            "fixed_cc1_metrics",
+            "rht_cqer_metrics",
+            "row_plan",
+            "hashes",
+        ),
+    )
+    transitions = compatibility["transitions"]
+    if not isinstance(transitions, list) or len(transitions) != 4:
+        _fail("CC1 compatibility trace must contain four transitions")
+    fixed = _require_tensor(
+        compatibility["fixed_cc1_trajectory"],
+        name="fixed_cc1_trajectory",
+        dtype=torch.float32,
+        ndim=5,
+    )
+    anchor = _require_tensor(
+        compatibility["rht_cqer_trajectory"],
+        name="rht_cqer_trajectory",
+        dtype=torch.float32,
+        ndim=5,
+    )
+    if fixed.shape != (4, 1, HEADS, ROWS, WIDTH) or anchor.shape != fixed.shape:
+        _fail("CC1 compatibility trajectory has wrong frozen geometry")
+    _assert_tensor_close(
+        fixed,
+        anchor,
+        name="fixed CC1 versus RHT-CQER trajectory",
+        exact=True,
+    )
+    fixed_masks = compatibility["fixed_cc1_masks"]
+    anchor_masks = compatibility["rht_cqer_masks"]
+    if (
+        not isinstance(fixed_masks, list)
+        or not isinstance(anchor_masks, list)
+        or len(fixed_masks) != 4
+        or len(anchor_masks) != 4
+    ):
+        _fail("CC1 compatibility masks must contain four writes")
+    query_ema: torch.Tensor | None = None
+    expected_states: list[torch.Tensor] = []
+    expected_masks: list[torch.Tensor] = []
+    previous: torch.Tensor | None = None
+    references: list[torch.Tensor] = []
+    for index, item in enumerate(transitions):
+        signals = _require_exact_keys(
+            item,
+            name=f"cc1.transitions[{index}]",
+            keys=(
+                "query",
+                "consumed_key",
+                "value",
+                "log_decay",
+                "beta",
+                "initial_state",
+                "successful_final_state",
+            ),
+        )
+        initial = _require_tensor(
+            signals["initial_state"],
+            name="cc1.initial_state",
+            dtype=torch.float32,
+            ndim=4,
+        )
+        if index == 0:
+            if torch.count_nonzero(initial).item():
+                _fail("CC1 initial prefill state is not zero")
+        elif previous is None or not torch.equal(initial, previous):
+            _fail("CC1 trace did not consume its preceding materialized state")
+        final = _require_tensor(
+            signals["successful_final_state"],
+            name="cc1.successful_final_state",
+            dtype=torch.float32,
+            ndim=4,
+        )
+        derive_successful_record(
+            initial_state=initial,
+            consumed_key=signals["consumed_key"],
+            value=signals["value"],
+            log_decay=signals["log_decay"],
+            beta=signals["beta"],
+            successful_final_state=final,
+        )
+        query_ema = independent_query_ema(query_ema, signals["query"])
+        packed, materialized = _independent_q48_checkpoint(
+            final,
+            query_ema,
+            layer_index=0,
+            quota=LAYER_QUOTAS[0],
+        )
+        expected_states.append(materialized)
+        expected_masks.append(packed.precision_mask)
+        previous = materialized
+        references.append(final)
+    expected = torch.stack(expected_states)
+    _assert_tensor_close(
+        fixed,
+        expected,
+        name="fixed CC1 independently reconstructed trajectory",
+        rtol=4e-6,
+        atol=3e-6,
+    )
+    for index, expected_mask in enumerate(expected_masks):
+        _assert_tensor_close(
+            fixed_masks[index],
+            expected_mask,
+            name=f"fixed CC1 mask {index}",
+            exact=True,
+        )
+        _assert_tensor_close(
+            anchor_masks[index],
+            expected_mask,
+            name=f"RHT-CQER mask {index}",
+            exact=True,
+        )
+    reference = torch.stack(references)
+    expected_metrics = _synthetic_trajectory_metrics(expected, reference)
+    for field, expected_value in expected_metrics.items():
+        for metric_name in ("fixed_cc1_metrics", "rht_cqer_metrics"):
+            metrics = compatibility[metric_name]
+            if not isinstance(metrics, Mapping) or set(metrics) != set(expected_metrics):
+                _fail(f"{metric_name} violates the closed metric schema")
+            if not math.isclose(
+                float(metrics[field]),
+                expected_value,
+                rel_tol=2e-12,
+                abs_tol=2e-12,
+            ):
+                _fail(f"{metric_name}.{field} differs")
+    row_plan = compatibility["row_plan"]
+    expected_plan = {
+        "effective_plan_sha256": EFFECTIVE_PLAN_SHA256,
+        "layer_0_quota": LAYER_QUOTAS[0],
+    }
+    if row_plan != expected_plan:
+        _fail("CC1 compatibility row plan differs")
+    hashes = _require_exact_keys(
+        compatibility["hashes"],
+        name="cc1.hashes",
+        keys=(
+            "fixed_trajectory",
+            "rht_cqer_trajectory",
+            "fixed_masks",
+            "rht_cqer_masks",
+            "row_plan",
+        ),
+    )
+    expected_hashes = {
+        "fixed_trajectory": _tensor_digest(fixed),
+        "rht_cqer_trajectory": _tensor_digest(anchor),
+        "fixed_masks": canonical_payload_sha256(fixed_masks),
+        "rht_cqer_masks": canonical_payload_sha256(anchor_masks),
+        "row_plan": canonical_payload_sha256(row_plan),
+    }
+    if dict(hashes) != expected_hashes:
+        _fail("CC1 compatibility hashes differ")
+    return {
+        "trajectory_steps": 4,
+        "exact_match": True,
+        "metrics": expected_metrics,
+    }
+
+
+def _quantized_row_reconstruction(
+    rows: torch.Tensor,
+    bits: int,
+) -> torch.Tensor:
+    codes, scales = _quantize_rows(rows, bits)
+    return codes.to(torch.float32) * scales.to(torch.float32).unsqueeze(-1)
+
+
+def _independent_allocate_multibit_fast(
+    d4: torch.Tensor,
+    d6: torch.Tensor,
+    d8: torch.Tensor,
+    *,
+    marginal_steps: int,
+) -> torch.Tensor:
+    """Exact O(N log N) allocator over the binary64 distortion objective.
+
+    Finite binary64 costs are lifted to integers under one common power-of-two
+    denominator. Allocation sums and comparisons therefore cannot drift from
+    floating accumulation or ambiguous equality.
+    """
+
+    values = [
+        _require_tensor(tensor, name=name, ndim=1).to(torch.float64).cpu()
+        for tensor, name in ((d4, "d4"), (d6, "d6"), (d8, "d8"))
+    ]
+    if values[0].shape != values[1].shape or values[0].shape != values[2].shape:
+        raise ValueError("multibit distortion shapes differ")
+    rows = values[0].numel()
+    if not 0 <= marginal_steps <= 2 * rows:
+        raise ValueError("multibit marginal steps are outside the exact domain")
+    ratios = [
+        [float(values[precision][row]).as_integer_ratio() for precision in range(3)]
+        for row in range(rows)
+    ]
+    common_power = max(
+        (denominator.bit_length() - 1 for row in ratios for _, denominator in row),
+        default=0,
+    )
+    integer_costs = [
+        [
+            numerator << (common_power - (denominator.bit_length() - 1))
+            for numerator, denominator in row
+        ]
+        for row in ratios
+    ]
+    first_gain = [integer_costs[row][0] - integer_costs[row][1] for row in range(rows)]
+    second_gain = [integer_costs[row][1] - integer_costs[row][2] for row in range(rows)]
+    convex_rows = [index for index in range(rows) if first_gain[index] >= second_gain[index]]
+    nonconvex_rows = [index for index in range(rows) if first_gain[index] < second_gain[index]]
+    increments = [(first_gain[row], row, 0) for row in convex_rows] + [
+        (second_gain[row], row, 1) for row in convex_rows
+    ]
+    increments.sort(key=lambda item: (-item[0], item[1], item[2]))
+    increment_prefix = [0]
+    for gain, _, _ in increments:
+        increment_prefix.append(increment_prefix[-1] + gain)
+
+    bundles = [
+        (
+            first_gain[row] + second_gain[row],
+            row,
+            first_gain[row],
+            second_gain[row],
+        )
+        for row in nonconvex_rows
+    ]
+    bundles.sort(key=lambda item: (-item[0], item[1]))
+    bundle_prefix = [0]
+    for gain, _, _, _ in bundles:
+        bundle_prefix.append(bundle_prefix[-1] + gain)
+
+    prefix_inside: list[int | None] = [None]
+    best_inside: int | None = None
+    for rank, (_, row, _, second) in enumerate(bundles):
+        if best_inside is None:
+            best_inside = rank
+        else:
+            _, best_row, _, best_second = bundles[best_inside]
+            adjustment = -second
+            best_adjustment = -best_second
+            if adjustment > best_adjustment or (adjustment == best_adjustment and row > best_row):
+                best_inside = rank
+        prefix_inside.append(best_inside)
+
+    suffix_outside: list[int | None] = [None] * (len(bundles) + 1)
+    best_outside: int | None = None
+    for rank in range(len(bundles) - 1, -1, -1):
+        _, row, first, _ = bundles[rank]
+        if best_outside is None:
+            best_outside = rank
+        else:
+            _, best_row, best_first, _ = bundles[best_outside]
+            if first > best_first or (first == best_first and row < best_row):
+                best_outside = rank
+        suffix_outside[rank] = best_outside
+
+    Descriptor = tuple[int, int | None, int]
+
+    def materialize(descriptor: Descriptor) -> torch.Tensor:
+        bundle_count, singleton_rank, convex_steps = descriptor
+        codes = torch.zeros(rows, dtype=torch.uint8)
+        for _, row, _ in increments[:convex_steps]:
+            codes[row] += 1
+        bundle_limit = bundle_count + int(
+            singleton_rank is not None and singleton_rank < bundle_count
+        )
+        for rank in range(bundle_limit):
+            if rank != singleton_rank:
+                codes[bundles[rank][1]] = 2
+        if singleton_rank is not None:
+            codes[bundles[singleton_rank][1]] = 1
+        if int(codes.sum().item()) != marginal_steps:
+            _fail("independent multibit allocator violated its exact budget")
+        return codes
+
+    def choose(
+        incumbent: tuple[int, Descriptor] | None,
+        gain: int,
+        descriptor: Descriptor,
+    ) -> tuple[int, Descriptor]:
+        if incumbent is None or gain > incumbent[0]:
+            return gain, descriptor
+        if gain < incumbent[0]:
+            return incumbent
+        candidate_codes = materialize(descriptor)
+        incumbent_codes = materialize(incumbent[1])
+        differing = torch.nonzero(candidate_codes != incumbent_codes).reshape(-1)
+        if differing.numel() and (
+            int(candidate_codes[int(differing[0])]) > int(incumbent_codes[int(differing[0])])
+        ):
+            return gain, descriptor
+        return incumbent
+
+    best: tuple[int, Descriptor] | None = None
+    bundle_count_max = min(len(bundles), marginal_steps // 2)
+    for bundle_count in range(bundle_count_max + 1):
+        convex_steps = marginal_steps - 2 * bundle_count
+        if 0 <= convex_steps <= len(increments):
+            gain = bundle_prefix[bundle_count] + increment_prefix[convex_steps]
+            best = choose(
+                best,
+                gain,
+                (bundle_count, None, convex_steps),
+            )
+        convex_with_singleton = marginal_steps - 2 * bundle_count - 1
+        if not 0 <= convex_with_singleton <= len(increments):
+            continue
+        singleton_candidates: list[tuple[int, int]] = []
+        outside = suffix_outside[bundle_count]
+        if outside is not None:
+            singleton_candidates.append((bundles[outside][2], outside))
+        inside = prefix_inside[bundle_count]
+        if inside is not None and bundle_count < len(bundles):
+            adjustment = bundles[bundle_count][0] - bundles[inside][3]
+            singleton_candidates.append((adjustment, inside))
+        for adjustment, singleton_rank in singleton_candidates:
+            gain = (
+                bundle_prefix[bundle_count] + increment_prefix[convex_with_singleton] + adjustment
+            )
+            best = choose(
+                best,
+                gain,
+                (bundle_count, singleton_rank, convex_with_singleton),
+            )
+    if best is None:
+        _fail("independent multibit allocator found no exact allocation")
+    return materialize(best[1])
+
+
+def _selection_sha256(
+    selections: Sequence[torch.Tensor],
+) -> str:
+    digest = hashlib.sha256(b"recurquant.statelease.equal-byte.selection.v1\0")
+    for layer_index, selection in zip(
+        LINEAR_LAYER_INDICES,
+        selections,
+        strict=True,
+    ):
+        digest.update(layer_index.to_bytes(4, "little", signed=False))
+        digest.update(selection.detach().contiguous().cpu().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _global_masks(
+    scores: torch.Tensor,
+    *,
+    selected_count: int,
+) -> list[torch.Tensor]:
+    indices = stable_descending_indices(scores.reshape(-1), selected_count)
+    mask = torch.zeros(scores.numel(), dtype=torch.bool)
+    mask[indices] = True
+    return [chunk.reshape(HEADS, ROWS) for chunk in mask.split(HEADS * ROWS)]
+
+
+def _physical_comparator_expectations(
+    source_states: Mapping[int, torch.Tensor],
+    query_ema: torch.Tensor,
+    *,
+    codec: str,
+) -> tuple[dict[str, torch.Tensor], dict[str, object]]:
+    encoded: list[torch.Tensor] = []
+    row_sets: list[torch.Tensor] = []
+    d4_sets: list[torch.Tensor] = []
+    d6_sets: list[torch.Tensor] = []
+    d8_sets: list[torch.Tensor] = []
+    for position, layer_index in enumerate(LINEAR_LAYER_INDICES):
+        transformed = independent_rht_encode(
+            source_states[layer_index],
+            layer_index=layer_index,
+        )
+        rows = transformed.reshape(-1, WIDTH)
+        encoded.append(transformed)
+        row_sets.append(rows)
+        weight = query_ema[position].reshape(-1)
+        distortions: list[torch.Tensor] = []
+        for bits in (4, 6, 8):
+            restored = _quantized_row_reconstruction(rows, bits)
+            distortions.append(weight * (restored - rows).square().mean(dim=-1))
+        d4_sets.append(distortions[0])
+        d6_sets.append(distortions[1])
+        d8_sets.append(distortions[2])
+
+    expected: dict[str, torch.Tensor] = {}
+    materialized: list[torch.Tensor] = []
+    selection_streams: list[torch.Tensor] = []
+    if codec == "expanded_rht_q4_q8":
+        masks = _global_masks(
+            torch.cat([d4 - d8 for d4, d8 in zip(d4_sets, d8_sets, strict=True)]),
+            selected_count=EXPANDED_Q48_PROMOTIONS,
+        )
+        for position, (rows, mask, transformed) in enumerate(
+            zip(row_sets, masks, encoded, strict=True)
+        ):
+            packed = pack_physical_q4_q8(rows, mask.reshape(-1))
+            expected.update(
+                {
+                    f"layer_{position}.q4_payload": packed.low_payload,
+                    f"layer_{position}.q8_payload": packed.high_payload,
+                    f"layer_{position}.scales": packed.scales,
+                    f"layer_{position}.precision_mask": packed.precision_mask,
+                }
+            )
+            selection_streams.append(packed.precision_mask)
+            decoded = independent_rht_decode(
+                packed.dequantize().reshape_as(transformed),
+                layer_index=LINEAR_LAYER_INDICES[position],
+            )
+            materialized.append(decoded)
+        padding = EXPANDED_Q48_PADDING_BYTES
+        selected_units = EXPANDED_Q48_PROMOTIONS
+    elif codec == "rht_q4_q6_q8":
+        precision = _independent_allocate_multibit_fast(
+            torch.cat(d4_sets),
+            torch.cat(d6_sets),
+            torch.cat(d8_sets),
+            marginal_steps=MULTIBIT_MARGINAL_STEPS,
+        )
+        codes = [chunk.reshape(HEADS, ROWS) for chunk in precision.split(HEADS * ROWS)]
+        for position, (rows, layer_codes, transformed) in enumerate(
+            zip(row_sets, codes, encoded, strict=True)
+        ):
+            packed = pack_physical_q4_q6_q8(rows, layer_codes.reshape(-1))
+            expected.update(
+                {
+                    f"layer_{position}.q4_payload": packed.q4_payload,
+                    f"layer_{position}.q6_payload": packed.q6_payload,
+                    f"layer_{position}.q8_payload": packed.q8_payload,
+                    f"layer_{position}.scales": packed.scales,
+                    f"layer_{position}.precision_codes": packed.precision_codes,
+                }
+            )
+            selection_streams.append(packed.precision_codes)
+            decoded = independent_rht_decode(
+                packed.dequantize().reshape_as(transformed),
+                layer_index=LINEAR_LAYER_INDICES[position],
+            )
+            materialized.append(decoded)
+        padding = MULTIBIT_PADDING_BYTES
+        selected_units = MULTIBIT_MARGINAL_STEPS
+    elif codec == "rht_residual_q4":
+        benefits: list[torch.Tensor] = []
+        for position, rows in enumerate(row_sets):
+            base = _quantized_row_reconstruction(rows, 4)
+            residual = rows - base
+            correction = _quantized_row_reconstruction(residual, 4)
+            weight = query_ema[position].reshape(-1)
+            benefits.append(
+                weight
+                * (
+                    (base - rows).square().mean(dim=-1)
+                    - (base + correction - rows).square().mean(dim=-1)
+                )
+            )
+        masks = _global_masks(
+            torch.cat(benefits),
+            selected_count=RESIDUAL_Q4_ROWS,
+        )
+        for position, (rows, mask, transformed) in enumerate(
+            zip(row_sets, masks, encoded, strict=True)
+        ):
+            packed = pack_physical_residual_q4(rows, mask.reshape(-1))
+            expected.update(
+                {
+                    f"layer_{position}.base_q4_payload": (packed.base_payload.reshape(-1)),
+                    f"layer_{position}.base_scales": (packed.base_scales.reshape(HEADS, ROWS)),
+                    f"layer_{position}.residual_q4_payload": (packed.residual_payload.reshape(-1)),
+                    f"layer_{position}.residual_scales": (packed.residual_scales.reshape(-1, 1)),
+                    f"layer_{position}.lease_mask": packed.residual_mask,
+                }
+            )
+            selection_streams.append(packed.residual_mask)
+            decoded = independent_rht_decode(
+                packed.dequantize().reshape_as(transformed),
+                layer_index=LINEAR_LAYER_INDICES[position],
+            )
+            materialized.append(decoded)
+        padding = RESIDUAL_Q4_PADDING_BYTES
+        selected_units = RESIDUAL_Q4_ROWS
+    else:
+        raise ValueError("unknown physical comparator codec")
+
+    expected["query_energy_ema"] = query_ema
+    expected["reserved_padding"] = torch.zeros(padding, dtype=torch.uint8)
+    squared_error = torch.zeros((), dtype=torch.float64)
+    squared_source = torch.zeros((), dtype=torch.float64)
+    maximum = 0.0
+    for layer_index, candidate in zip(
+        LINEAR_LAYER_INDICES,
+        materialized,
+        strict=True,
+    ):
+        error = candidate.to(torch.float64) - source_states[layer_index].to(torch.float64)
+        squared_error += error.square().sum()
+        squared_source += source_states[layer_index].to(torch.float64).square().sum()
+        maximum = max(maximum, float(error.abs().max().item()))
+    metrics = {
+        "mean_squared_error": float((squared_error / STATE_ELEMENTS).item()),
+        "relative_l2_error": float(
+            (squared_error.sqrt() / squared_source.sqrt().clamp_min(1e-12)).item()
+        ),
+        "max_absolute_error": maximum,
+        "selected_units": selected_units,
+        "selection_sha256": _selection_sha256(selection_streams),
+    }
+    return expected, metrics
+
+
+def _verify_equal_byte_comparators(value: object) -> dict[str, object]:
+    comparators = _require_exact_keys(
+        value,
+        name="equal_byte_comparators",
+        keys=("source_states", "query_energy_ema", "snapshots"),
+    )
+    raw_states = _require_exact_keys(
+        comparators["source_states"],
+        name="equal_byte.source_states",
+        keys=tuple(str(index) for index in LINEAR_LAYER_INDICES),
+    )
+    source_states: dict[int, torch.Tensor] = {}
+    for layer_index in LINEAR_LAYER_INDICES:
+        state = _require_tensor(
+            raw_states[str(layer_index)],
+            name=f"equal_byte.source_states[{layer_index}]",
+            dtype=torch.float32,
+            ndim=4,
+        )
+        if state.shape != (1, HEADS, ROWS, WIDTH):
+            _fail("equal-byte source state has wrong frozen geometry")
+        source_states[layer_index] = state
+    query_ema = _require_tensor(
+        comparators["query_energy_ema"],
+        name="equal_byte.query_energy_ema",
+        dtype=torch.float32,
+        ndim=3,
+    )
+    if query_ema.shape != (LAYERS, HEADS, ROWS):
+        _fail("equal-byte query EMA has wrong frozen geometry")
+    if not torch.isfinite(query_ema).all().item() or (query_ema < 0).any().item():
+        _fail("equal-byte query EMA is invalid")
+    snapshots = _require_exact_keys(
+        comparators["snapshots"],
+        name="equal_byte.snapshots",
+        keys=("expanded_rht_q4_q8", "rht_q4_q6_q8", "rht_residual_q4"),
+    )
+    verified: dict[str, object] = {}
+    for codec in ("expanded_rht_q4_q8", "rht_q4_q6_q8", "rht_residual_q4"):
+        snapshot = _require_exact_keys(
+            snapshots[codec],
+            name=f"equal_byte.snapshots.{codec}",
+            keys=(
+                "tensors",
+                "persistent_enumeration",
+                "evidence",
+                "no_replay",
+                "no_hidden_persistent_state_mirror",
+            ),
+        )
+        if (
+            snapshot["no_replay"] is not True
+            or snapshot["no_hidden_persistent_state_mirror"] is not True
+        ):
+            _fail(f"{codec} did not declare its no-replay/no-mirror contract")
+        tensors = snapshot["tensors"]
+        if not isinstance(tensors, Mapping) or any(
+            not isinstance(name, str) or not isinstance(tensor, torch.Tensor)
+            for name, tensor in tensors.items()
+        ):
+            _fail(f"{codec} tensors violate the closed schema")
+        expected_tensors, expected_metrics = _physical_comparator_expectations(
+            source_states,
+            query_ema,
+            codec=codec,
+        )
+        if set(tensors) != set(expected_tensors):
+            _fail(f"{codec} physical tensor names differ")
+        for name, expected in expected_tensors.items():
+            _assert_tensor_close(
+                tensors[name],
+                expected,
+                name=f"{codec}.{name}",
+                exact=True,
+            )
+        _verify_tensor_enumeration(
+            snapshot["persistent_enumeration"],
+            tensors,
+            name=f"{codec}.persistent_enumeration",
+        )
+        illegal_fp32 = [
+            name
+            for name, tensor in tensors.items()
+            if tensor.dtype == torch.float32 and name != "query_energy_ema"
+        ]
+        if illegal_fp32:
+            _fail(f"{codec} retains unexpected FP32 tensors: {illegal_fp32}")
+        actual_bytes = sum(tensor_bytes(tensor) for tensor in tensors.values())
+        if actual_bytes != STATELEASE_BYTES:
+            _fail(f"{codec} owns {actual_bytes} bytes, expected {STATELEASE_BYTES}")
+        evidence = snapshot["evidence"]
+        if not isinstance(evidence, Mapping):
+            _fail(f"{codec} evidence must be a mapping")
+        if codec == "expanded_rht_q4_q8":
+            payload_bytes = 3_228_864
+            scale_bytes = 73_728
+            precision_bytes = 4_608
+            padding_bytes = EXPANDED_Q48_PADDING_BYTES
+        elif codec == "rht_q4_q6_q8":
+            payload_bytes = 3_224_256
+            scale_bytes = 73_728
+            precision_bytes = 9_216
+            padding_bytes = MULTIBIT_PADDING_BYTES
+        else:
+            payload_bytes = 3_202_496
+            scale_bytes = 100_078
+            precision_bytes = 4_608
+            padding_bytes = RESIDUAL_Q4_PADDING_BYTES
+        expected_evidence = {
+            "codec": codec,
+            "state_elements": STATE_ELEMENTS,
+            "fp32_state_bytes": STATE_ELEMENTS * 4,
+            "payload_bytes": payload_bytes,
+            "scale_bytes": scale_bytes,
+            "precision_bytes": precision_bytes,
+            "query_ema_bytes": QUERY_EMA_BYTES,
+            "padding_bytes": padding_bytes,
+            "resident_bytes": STATELEASE_BYTES,
+            "selected_units": expected_metrics["selected_units"],
+            "expected_selected_units": expected_metrics["selected_units"],
+            "selection_sha256": expected_metrics["selection_sha256"],
+            "mean_squared_error": expected_metrics["mean_squared_error"],
+            "relative_l2_error": expected_metrics["relative_l2_error"],
+            "max_absolute_error": expected_metrics["max_absolute_error"],
+            "compression_ratio": (STATE_ELEMENTS * 4) / STATELEASE_BYTES,
+        }
+        if set(evidence) != set(expected_evidence):
+            _fail(f"{codec} evidence violates the closed schema")
+        for field, expected in expected_evidence.items():
+            actual = evidence[field]
+            if isinstance(expected, float):
+                if not isinstance(actual, (int, float)) or not math.isclose(
+                    float(actual),
+                    expected,
+                    rel_tol=3e-7,
+                    abs_tol=3e-9,
+                ):
+                    _fail(f"{codec} evidence differs at {field}")
+            elif actual != expected:
+                _fail(f"{codec} evidence differs at {field}")
+        verified[codec] = {
+            "resident_bytes": actual_bytes,
+            "selected_units": expected_metrics["selected_units"],
+            "selection_sha256": expected_metrics["selection_sha256"],
+            "relative_l2_error": expected_metrics["relative_l2_error"],
+        }
+    return verified
+
+
+def verify_production_stage0(
+    artifact_path: Path,
+    *,
+    sha256_path: Path | None = None,
+) -> dict[str, object]:
+    """Authenticate and independently recompute the full production Stage 0."""
+
+    assert_independent_imports(Path(__file__))
+    guard_protected_mbpp_window(stage="stage0")
+    artifact = load_authenticated_production_artifact(
+        artifact_path,
+        sha256_path=sha256_path,
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    _verify_source_and_method_identity(artifact, repo_root=repo_root)
+    runtime_identity = _verify_runtime_identity(artifact["runtime_identity"])
+    successful_kernel = _verify_successful_kernel_receipt(artifact["successful_kernel_receipt"])
+    trace = _verify_production_trace(artifact["production_trace"])
+    resident = _verify_resident_snapshot(artifact["resident_snapshot"])
+    lifecycle = _verify_lifecycle(
+        artifact["lifecycle"],
+        trace_hashes=trace["trace_hashes"],
+    )
+    compatibility = _verify_cc1_production_compatibility(artifact["cc1_compatibility"])
+    comparators = _verify_equal_byte_comparators(artifact["equal_byte_comparators"])
+    resolved_artifact = artifact_path.resolve()
+    resolved_sidecar = (
+        resolved_artifact.with_suffix(resolved_artifact.suffix + ".sha256")
+        if sha256_path is None
+        else sha256_path.resolve()
+    )
+    return {
+        "status": "production_stage0_pass",
+        "experiment_stage0_complete": True,
+        "scope": "authenticated production plus independent synthetic recomputation",
+        "quality_data_accessed": False,
+        "protected_mbpp_window_accessed": False,
+        "weights_only_load": True,
+        "independent_imports": True,
+        "artifact": str(resolved_artifact),
+        "artifact_file_sha256": _file_sha256(resolved_artifact),
+        "sidecar_file_sha256": _file_sha256(resolved_sidecar),
+        "canonical_payload_sha256": artifact["canonical_payload_sha256"],
+        "repository_commit": artifact["source_identity"]["repo_head"],
+        "runtime_identity": runtime_identity,
+        "successful_kernel_receipt": successful_kernel,
+        "trace": {key: value for key, value in trace.items() if key != "trace_hashes"},
+        "storage": resident["storage"],
+        "whole_cache_storage_audit": resident["whole_cache_storage_audit"],
+        "resident_tensor_count": resident["tensor_count"],
+        "resident_snapshot_sha256": resident["resident_digest"],
+        "lifecycle": lifecycle,
+        "cc1_compatibility": compatibility,
+        "equal_byte_comparators": comparators,
+    }
+
+
 def _synthetic_record_sequence(
     *,
     dtype: torch.dtype,
@@ -1833,6 +4325,19 @@ def run_synthetic_stage0() -> dict[str, object]:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--artifact",
+        type=Path,
+        help=(
+            "authenticated production .pt artifact; omit to run only the "
+            "independent algebra self-test"
+        ),
+    )
+    parser.add_argument(
+        "--sha256",
+        type=Path,
+        help="optional SHA-256 sidecar path (defaults to ARTIFACT.pt.sha256)",
+    )
+    parser.add_argument(
         "--compact",
         action="store_true",
         help="emit compact rather than indented JSON",
@@ -1842,7 +4347,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    report = run_synthetic_stage0()
+    if args.sha256 is not None and args.artifact is None:
+        raise SystemExit("--sha256 requires --artifact")
+    report = (
+        run_synthetic_stage0()
+        if args.artifact is None
+        else verify_production_stage0(
+            args.artifact,
+            sha256_path=args.sha256,
+        )
+    )
     print(json.dumps(report, indent=None if args.compact else 2, sort_keys=True))
     return 0
 

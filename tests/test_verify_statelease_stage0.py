@@ -23,6 +23,7 @@ from scripts.verify_statelease_stage0 import (
     STATELEASE_BYTES,
     ReplayRecord,
     Stage0VerificationError,
+    _independent_allocate_multibit_fast,
     allocate_exact_multibit,
     assert_independent_imports,
     assert_replay_matches,
@@ -347,7 +348,16 @@ def test_exact_full_storage_contract_and_owned_snapshot() -> None:
 
 @pytest.mark.parametrize(
     "tamper",
-    ["extra_fp32", "alias", "dtype", "count", "shape", "mask"],
+    [
+        "extra_fp32",
+        "extra_bf16",
+        "split_fp16",
+        "alias",
+        "dtype",
+        "count",
+        "shape",
+        "mask",
+    ],
 )
 def test_resident_snapshot_tampering_fails_closed(tamper: str) -> None:
     snapshot = canonical_empty_resident_snapshot()
@@ -356,6 +366,30 @@ def test_resident_snapshot_tampering_fails_closed(tamper: str) -> None:
             snapshot,
             extra_persistent_tensors=(
                 ("persistent_fp32_state_mirror", torch.zeros((1, 16, 128, 128))),
+            ),
+        )
+    elif tamper == "extra_bf16":
+        snapshot = replace(
+            snapshot,
+            extra_persistent_tensors=(
+                (
+                    "persistent_bf16_state_mirror",
+                    torch.zeros((1, 16, 128, 128), dtype=torch.bfloat16),
+                ),
+            ),
+        )
+    elif tamper == "split_fp16":
+        snapshot = replace(
+            snapshot,
+            extra_persistent_tensors=(
+                (
+                    "persistent_state_left",
+                    torch.zeros((1, 16, 64, 128), dtype=torch.float16),
+                ),
+                (
+                    "persistent_state_right",
+                    torch.zeros((1, 16, 64, 128), dtype=torch.float16),
+                ),
             ),
         )
     elif tamper == "alias":
@@ -445,6 +479,23 @@ def test_q4_q6_q8_exact_dp_physical_pools_and_invalid_code() -> None:
     tampered = replace(packed, precision_codes=invalid_codes)
     with pytest.raises(Stage0VerificationError, match="invalid"):
         tampered.dequantize()
+
+
+@pytest.mark.parametrize("only_code", [0, 1, 2])
+def test_q4_q6_q8_empty_precision_pools_keep_canonical_shapes(
+    only_code: int,
+) -> None:
+    rows = torch.randn((5, 128), generator=torch.Generator().manual_seed(660 + only_code))
+    precision = torch.full((5,), only_code, dtype=torch.uint8)
+
+    packed = pack_physical_q4_q6_q8(rows, precision)
+    restored = packed.dequantize()
+
+    assert packed.q4_payload.shape == ((5 if only_code == 0 else 0), 64)
+    assert packed.q6_payload.shape == ((5 if only_code == 1 else 0), 96)
+    assert packed.q8_payload.shape == ((5 if only_code == 2 else 0), 128)
+    assert restored.shape == rows.shape
+    assert torch.isfinite(restored).all()
 
 
 def test_residual_q4_is_physical_and_reconstructs_transformed_residual() -> None:
@@ -542,3 +593,76 @@ def test_cli_runs_without_quality_data_and_reports_exact_bytes() -> None:
     assert report["quality_data_accessed"] is False
     assert report["protected_mbpp_window_accessed"] is False
     assert report["storage"]["resident_bytes"] == STATELEASE_BYTES
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_independent_fast_multibit_allocator_matches_small_exact_oracle(
+    seed: int,
+) -> None:
+    generator = torch.Generator().manual_seed(8000 + seed)
+    distortions = torch.rand((3, 9), generator=generator)
+    for marginal_steps in range(19):
+        oracle = allocate_exact_multibit(
+            distortions[0],
+            distortions[1],
+            distortions[2],
+            marginal_steps=marginal_steps,
+        )
+        fast = _independent_allocate_multibit_fast(
+            distortions[0],
+            distortions[1],
+            distortions[2],
+            marginal_steps=marginal_steps,
+        )
+        assert torch.equal(fast, oracle)
+
+
+def test_independent_fast_multibit_allocator_has_exact_binary_tie_rule() -> None:
+    tied = torch.ones(6, dtype=torch.float64)
+    for marginal_steps in range(13):
+        actual = _independent_allocate_multibit_fast(
+            tied,
+            tied,
+            tied,
+            marginal_steps=marginal_steps,
+        )
+        expected = torch.zeros(6, dtype=torch.uint8)
+        remaining = marginal_steps
+        for row in range(6):
+            code = min(2, remaining)
+            expected[row] = code
+            remaining -= code
+        assert torch.equal(actual, expected)
+
+
+def test_independent_fast_multibit_allocator_matches_adversarial_nonconvex_oracle() -> None:
+    unit = 2.0**-40
+    d4 = torch.tensor([9, 9, 12, 12, 7, 7], dtype=torch.float64) * unit
+    d6 = torch.tensor([8, 8, 11, 4, 6, 2], dtype=torch.float64) * unit
+    d8 = torch.tensor([0, 0, 10, 3, 1, 1], dtype=torch.float64) * unit
+    for marginal_steps in range(13):
+        oracle = allocate_exact_multibit(
+            d4,
+            d6,
+            d8,
+            marginal_steps=marginal_steps,
+        )
+        exact = _independent_allocate_multibit_fast(
+            d4,
+            d6,
+            d8,
+            marginal_steps=marginal_steps,
+        )
+        assert torch.equal(exact, oracle)
+
+
+def test_cli_rejects_sha256_without_artifact() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--sha256", "unused.sha256", "--compact"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=SCRIPT.parents[1],
+    )
+    assert completed.returncode != 0
+    assert "--sha256 requires --artifact" in completed.stderr
