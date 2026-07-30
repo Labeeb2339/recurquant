@@ -1279,8 +1279,11 @@ def _runtime_identity() -> dict[str, object]:
         "python_implementation": platform.python_implementation(),
         "python_executable": Path(sys.executable).name,
         "python_environment": Path(sys.prefix).name,
-        "torch_version": torch.__version__,
-        "transformers_version": transformers.__version__,
+        # torch.__version__ is a TorchVersion (a str subclass) in recent
+        # PyTorch releases.  Persist a plain str so weights_only=True does not
+        # need to allowlist a Python class merely to read runtime metadata.
+        "torch_version": str(torch.__version__),
+        "transformers_version": str(transformers.__version__),
         "numpy_version": importlib.metadata.version("numpy"),
         "platform": platform.platform(),
         "system": platform.system(),

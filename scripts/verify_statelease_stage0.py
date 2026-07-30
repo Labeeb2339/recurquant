@@ -2404,7 +2404,7 @@ def _verify_runtime_identity(value: object) -> dict[str, object]:
         "python_implementation": platform.python_implementation(),
         "python_executable": Path(sys.executable).name,
         "python_environment": Path(sys.prefix).name,
-        "torch_version": torch.__version__,
+        "torch_version": str(torch.__version__),
         "transformers_version": importlib.metadata.version("transformers"),
         "numpy_version": importlib.metadata.version("numpy"),
         "platform": platform.platform(),

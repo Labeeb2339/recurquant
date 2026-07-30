@@ -381,6 +381,8 @@ def test_runtime_identity_is_exact_and_includes_numpy_and_python_environment() -
     assert runtime["python_environment"] == Path(capture_stage0.sys.prefix).name
     assert ":\\" not in runtime["python_executable"]
     assert ":\\" not in runtime["python_environment"]
+    assert type(runtime["torch_version"]) is str
+    assert type(runtime["transformers_version"]) is str
     assert isinstance(runtime["numpy_version"], str)
     changed = dict(runtime)
     changed["numpy_version"] = "0.0-tampered"
