@@ -75,17 +75,42 @@ from .quantization import (
 )
 from .query_energy import Qwen35QueryEnergyObserver
 from .qwen35 import (
+    EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
+    EXPERIMENT010_STATELEASE_LAYER_QUOTAS,
     create_qwen35_adaptive_exact_budget_cache,
     create_qwen35_cora_exact_budget_cache,
     create_qwen35_exact_budget_cache,
+    create_qwen35_experiment010_statelease_cache,
     create_qwen35_packed_cache,
     create_qwen35_query_ema_exact_budget_cache,
     create_qwen35_rank_fused_exact_budget_cache,
     create_qwen35_right_rht_query_ema_exact_budget_cache,
+    create_qwen35_statelease_cache,
     create_qwen35_v02_mixed_cache,
+    experiment010_statelease_effective_plan_sha256,
 )
 from .rht import RHT_SEED, fwht_unnormalized, right_rht_decode, right_rht_encode
 from .row_policy import ExactBudgetRowPlan, RowLocation, select_rows_exact_budget
+from .statelease import (
+    STATELEASE_L2NORM_EPS,
+    StateLeaseBoundaryDecision,
+    normalize_gated_delta_key,
+    per_head_frobenius_error,
+    propagate_frobenius_error_bound,
+    query_weighted_row_mse,
+    replay_gated_delta_state,
+    replay_gated_delta_updates,
+    select_statelease_boundary,
+)
+from .statelease_cache import (
+    STATELEASE_GENERIC_SELECTION_METHOD,
+    STATELEASE_REPLAY_CAPACITY,
+    STATELEASE_SELECTION_METHOD,
+    StateLeaseLinearAttentionLayer,
+    StateLeaseRecurrentStateCache,
+    StateLeaseUpdateEvidence,
+)
+from .statelease_observer import Qwen35StateLeaseObserver
 from .transition_observer import Qwen35TransitionObserver
 
 __all__ = [
@@ -95,6 +120,8 @@ __all__ = [
     "CoraMixedPackedRecurrentStateCache",
     "DirectionalDerivativeCheck",
     "ExactBudgetRowPlan",
+    "EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256",
+    "EXPERIMENT010_STATELEASE_LAYER_QUOTAS",
     "FiniteDifferencePoint",
     "GDNCalibrationTrace",
     "GDNHorizonCalibrationRecorder",
@@ -109,11 +136,20 @@ __all__ = [
     "QueryEmaMixedPackedLinearAttentionLayer",
     "QueryEmaMixedPackedRecurrentStateCache",
     "Qwen35QueryEnergyObserver",
+    "Qwen35StateLeaseObserver",
     "Qwen35TransitionObserver",
     "RankFusedMixedPackedRecurrentStateCache",
     "RightRhtQueryEmaMixedPackedLinearAttentionLayer",
     "RightRhtQueryEmaMixedPackedRecurrentStateCache",
     "RHT_SEED",
+    "STATELEASE_L2NORM_EPS",
+    "STATELEASE_GENERIC_SELECTION_METHOD",
+    "STATELEASE_REPLAY_CAPACITY",
+    "STATELEASE_SELECTION_METHOD",
+    "StateLeaseBoundaryDecision",
+    "StateLeaseLinearAttentionLayer",
+    "StateLeaseRecurrentStateCache",
+    "StateLeaseUpdateEvidence",
     "PhysicalMetricRun",
     "PhysicalRowPromotionOracleResult",
     "QuantizationResult",
@@ -135,11 +171,14 @@ __all__ = [
     "create_qwen35_adaptive_exact_budget_cache",
     "create_qwen35_cora_exact_budget_cache",
     "create_qwen35_exact_budget_cache",
+    "create_qwen35_experiment010_statelease_cache",
     "create_qwen35_packed_cache",
     "create_qwen35_query_ema_exact_budget_cache",
     "create_qwen35_rank_fused_exact_budget_cache",
     "create_qwen35_right_rht_query_ema_exact_budget_cache",
+    "create_qwen35_statelease_cache",
     "create_qwen35_v02_mixed_cache",
+    "experiment010_statelease_effective_plan_sha256",
     "finite_horizon_row_read_risk",
     "finite_horizon_row_read_risk_from_energies",
     "frozen_qwen35_multibit_step_budgets",
@@ -148,6 +187,12 @@ __all__ = [
     "quantize_pack",
     "quantize_pack_mixed",
     "quantize_pack_multibit",
+    "per_head_frobenius_error",
+    "normalize_gated_delta_key",
+    "propagate_frobenius_error_bound",
+    "query_weighted_row_mse",
+    "replay_gated_delta_state",
+    "replay_gated_delta_updates",
     "right_rht_decode",
     "right_rht_encode",
     "fwht_unnormalized",
@@ -158,6 +203,7 @@ __all__ = [
     "sample_model_pseudo_labels",
     "score_gdn_calibration_trace",
     "select_rows_exact_budget",
+    "select_statelease_boundary",
     "target_nll_values",
     "verify_evidence_artifact",
 ]
