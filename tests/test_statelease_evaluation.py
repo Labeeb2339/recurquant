@@ -8,6 +8,7 @@ import torch
 from recurquant.statelease_evaluation import (
     EQUAL_BYTE_NO_REPLAY_METHODS,
     FIXED_REPLAY_METHODS,
+    RHT_CQER_METHOD,
     STATELEASE_METHOD,
     TrajectoryNmseAccumulator,
     evaluate_statelease_stage_a_gate,
@@ -24,7 +25,12 @@ def _metrics(
     best_top1: float = 0.91,
 ) -> dict[str, dict[str, float | int | bool]]:
     reference_nll = 0.5
-    methods = (STATELEASE_METHOD, *FIXED_REPLAY_METHODS, *EQUAL_BYTE_NO_REPLAY_METHODS)
+    methods = (
+        RHT_CQER_METHOD,
+        STATELEASE_METHOD,
+        *FIXED_REPLAY_METHODS,
+        *EQUAL_BYTE_NO_REPLAY_METHODS,
+    )
     deltas = {method: 1.20 for method in methods}
     deltas[STATELEASE_METHOD] = statelease_delta
     deltas["fixed_cc1"] = cc1_delta
@@ -50,7 +56,12 @@ def _trajectory(
     statelease: float = 0.8,
     cc1: float = 1.0,
 ) -> dict[str, float]:
-    methods = (STATELEASE_METHOD, *FIXED_REPLAY_METHODS, *EQUAL_BYTE_NO_REPLAY_METHODS)
+    methods = (
+        RHT_CQER_METHOD,
+        STATELEASE_METHOD,
+        *FIXED_REPLAY_METHODS,
+        *EQUAL_BYTE_NO_REPLAY_METHODS,
+    )
     result = {method: 1.2 for method in methods}
     result[STATELEASE_METHOD] = statelease
     result["fixed_cc1"] = cc1

@@ -16,6 +16,7 @@ from numbers import Real
 import torch
 
 STATELEASE_METHOD = "statelease_h5"
+RHT_CQER_METHOD = "rht_cqer32"
 FIXED_REPLAY_METHODS = (
     "fixed_cc1",
     "fixed_cc2",
@@ -29,6 +30,11 @@ EQUAL_BYTE_NO_REPLAY_METHODS = (
     "rht_residual_q4",
 )
 STAGE_A_EQUAL_BYTE_METHODS = FIXED_REPLAY_METHODS + EQUAL_BYTE_NO_REPLAY_METHODS
+STAGE_A_REQUIRED_METHODS = (
+    RHT_CQER_METHOD,
+    STATELEASE_METHOD,
+    *STAGE_A_EQUAL_BYTE_METHODS,
+)
 
 FROZEN_STATELEASE_RESIDENT_BYTES = 3_454_664
 MINIMUM_CC1_EXCESS_NLL_REDUCTION = 0.10
@@ -190,7 +196,7 @@ class TrajectoryNmseAccumulator:
 def _metric_rows(
     metrics: Mapping[str, Mapping[str, object]],
 ) -> dict[str, dict[str, float | int | bool]]:
-    required_methods = {STATELEASE_METHOD, *STAGE_A_EQUAL_BYTE_METHODS}
+    required_methods = set(STAGE_A_REQUIRED_METHODS)
     if not isinstance(metrics, Mapping):
         raise TypeError("metrics must be a mapping")
     missing = sorted(required_methods - set(metrics))
@@ -263,7 +269,7 @@ def _metric_rows(
 def _trajectory_rows(
     trajectory: Mapping[str, object],
 ) -> dict[str, float]:
-    required_methods = {STATELEASE_METHOD, *STAGE_A_EQUAL_BYTE_METHODS}
+    required_methods = set(STAGE_A_REQUIRED_METHODS)
     if not isinstance(trajectory, Mapping):
         raise TypeError("trajectory must be a mapping")
     missing = sorted(required_methods - set(trajectory))
@@ -473,7 +479,7 @@ def evaluate_statelease_stage_a_gate(
             raise RuntimeError("normalized metrics are unavailable")
         strongest = min(
             FIXED_REPLAY_METHODS,
-            key=lambda method: (float(metrics[method]["delta_nll"]), method),
+            key=lambda method: float(metrics[method]["delta_nll"]),
         )
         baseline = float(metrics[strongest]["delta_nll"])
         candidate = float(metrics[STATELEASE_METHOD]["delta_nll"])
@@ -522,7 +528,7 @@ def evaluate_statelease_stage_a_gate(
             raise RuntimeError("normalized metrics are unavailable")
         best_method = max(
             FIXED_REPLAY_METHODS,
-            key=lambda method: (float(metrics[method]["top1_agreement"]), method),
+            key=lambda method: float(metrics[method]["top1_agreement"]),
         )
         candidate = float(metrics[STATELEASE_METHOD]["top1_agreement"])
         best = float(metrics[best_method]["top1_agreement"])
@@ -588,6 +594,7 @@ def evaluate_statelease_stage_a_gate(
             "maximum_top1_trail": MAXIMUM_TOP1_TRAIL,
         },
         "method_sets": {
+            "historical_anchor": RHT_CQER_METHOD,
             "statelease": STATELEASE_METHOD,
             "fixed_replay": list(FIXED_REPLAY_METHODS),
             "equal_byte_no_replay": list(EQUAL_BYTE_NO_REPLAY_METHODS),
@@ -599,7 +606,9 @@ __all__ = [
     "EQUAL_BYTE_NO_REPLAY_METHODS",
     "FIXED_REPLAY_METHODS",
     "FROZEN_STATELEASE_RESIDENT_BYTES",
+    "RHT_CQER_METHOD",
     "STAGE_A_EQUAL_BYTE_METHODS",
+    "STAGE_A_REQUIRED_METHODS",
     "STATELEASE_METHOD",
     "TrajectoryNmseAccumulator",
     "evaluate_statelease_stage_a_gate",

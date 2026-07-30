@@ -10,6 +10,18 @@
 
 Protocol frozen: 2026-07-30
 
+Implementation clarification frozen: 2026-07-31, before Stage A
+
+The Q4/Q6/Q8 complete-state objective, exact marginal-step budget, and
+lexicographically greatest flattened-code tie rule are unchanged. A proven
+`O(N log N)` structural solver may replace the `O(NK)` dynamic-programming
+oracle only when it returns the identical exact optimum for every valid input.
+Stage 0 must independently recompute the physical allocation and the
+implementation tests must compare the fast solver with the oracle and brute
+force across exhaustive small budgets, nonconvex rows, exact ties, and
+adversarial binary64 ranges. This clarification changes implementation cost,
+not the candidate, data, threshold, metric, or gate.
+
 ## Research question
 
 Can a physically packed RHT-CQER recurrent-state checkpoint plus a bounded
@@ -308,9 +320,11 @@ the current state instead of replay:
 2. **RHT Q4/Q6/Q8.** All-row Q4 payloads, FP16 scales, two-bit precision codes,
    and the FP32 query EMA cost `2,589,696` bytes. The exact allocator receives
    27,030 32-byte marginal steps, adding `864,960` bytes, with 8 explicit
-   reserved padding bytes. The complete-state dynamic program from
+   reserved padding bytes. The exact complete-state objective from
    [`MULTIBIT_REFERENCE_DESIGN.md`](MULTIBIT_REFERENCE_DESIGN.md) determines
-   Q4/Q6/Q8 choices from causal weighted physical distortions.
+   Q4/Q6/Q8 choices from causal weighted physical distortions. The fast
+   structural solver must be exactly equivalent to the slow oracle under the
+   frozen tie rule.
 3. **RHT residual-Q4.** All rows receive a first RHT-Q4 code. A one-bit lease
    mask, FP16 scales, and the FP32 query EMA retain the same `2,585,088`-byte
    base. Exactly 13,175 rows receive an additional Q4 code plus FP16 residual
