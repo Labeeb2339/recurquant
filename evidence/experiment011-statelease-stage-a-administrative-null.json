@@ -1,0 +1,59 @@
+{
+  "artifact_kind": "recurquant_experiment011_statelease_stage_a_administrative_null",
+  "canonical_evidence_sha256": "c3ab1763502e3fac91166337dbc9fb536bd66258fbb17128f617911a2d6db387",
+  "evidence": {
+    "access_boundary": {
+      "completed_task_ids": [],
+      "evaluation_entered": true,
+      "evaluation_returned": null,
+      "finalization_entered": false,
+      "forward_passes": null,
+      "minimum_forward_passes": 0,
+      "model_weights_loaded": true,
+      "quality_aggregate_exposed": false,
+      "quality_result_computed": null,
+      "result_artifact_created": false,
+      "task_id": 666,
+      "task_row_loaded": true,
+      "tokenizer_loaded": true,
+      "unknown_value_semantics": "A null field was not durably authenticated after evaluation entry and must not be interpreted as false or zero.",
+      "verified_by": "authenticated monotonic attempt receipt and ordered control flow"
+    },
+    "artifact_kind": "recurquant_experiment011_statelease_stage_a_administrative_null",
+    "claim_boundary": "Experiment 011 produced no authenticated StateLease quality result. It is neither a pass nor a scientific negative and cannot support an improvement, novelty, deployment, speed, state-of-the-art, or breakthrough claim.",
+    "classification": "administrative_null_after_evaluation_entry_before_authenticated_return",
+    "failure": {
+      "category": "runtime",
+      "detail_sha256": "4e714f51191d838888188dbfbb33eeb98ae54eaf5383f4ec89a9c05f3b093573",
+      "failed_before": "StateLease storage summary construction",
+      "privacy_boundary": "No absolute path, raw exception message, or traceback is included.",
+      "summary": "A fail-closed runtime type attestation rejected the genuine base FixedReplayRecurrentStateCache instance before its storage summary was produced.",
+      "type": "RuntimeError"
+    },
+    "original_attempt": {
+      "attempt_number": 1,
+      "automatic_rerun_authorized": false,
+      "h0_commit": "827bcadacd6231e521f9e2f2ea92582dd4d68cef",
+      "h0_tree": "5596ed305246750da1bacc576002aae828acc045",
+      "one_run_marker": "RecurQuant-One-Run: experiment011-stage-a-task666-v1",
+      "raw_receipt_file_sha256": "f7c7f68adf5078cbbe24b47d17f17fa1e2fdbbd4a9f6fc8229f8d2c7a5dcb9b4",
+      "receipt_schema": "recurquant.experiment011.stage-a-attempt.v1",
+      "receipt_status": "failed_without_authenticated_stage_a_result",
+      "rerun_occurred": false,
+      "result_artifact_created": false,
+      "seal_commit": "0b236c4b46d54ece36f9518ef791a90cf113f0fe",
+      "seal_parent": "827bcadacd6231e521f9e2f2ea92582dd4d68cef",
+      "seal_tree": "5596ed305246750da1bacc576002aae828acc045",
+      "seal_tree_matches_h0": true
+    },
+    "recovery_disposition": {
+      "corrected_run_requires_new_identity": true,
+      "experiment011_resume_authorized": false,
+      "failed_seal_and_receipt_preserved": true,
+      "next_identity": "Experiment 012",
+      "reason": "Correcting the fail-closed cache type attestation changes the authenticated evaluator source, so the sealed Experiment 011 identity cannot be resumed or rerun.",
+      "scientific_method_or_gate_changed": false
+    },
+    "scientific_result_available": false
+  }
+}
