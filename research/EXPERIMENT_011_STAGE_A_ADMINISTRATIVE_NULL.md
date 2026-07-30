@@ -1,6 +1,6 @@
 # Experiment 011 Stage-A administrative null
 
-Recorded: 2026-07-31  
+Recorded: 2026-07-31
 Classification: administrative null after evaluation entry and before an
 authenticated return
 
