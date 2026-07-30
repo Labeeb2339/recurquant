@@ -1,6 +1,6 @@
 # Prior-art audit
 
-Last searched: 2026-07-26
+Last searched: 2026-07-30
 
 This is a living claim boundary, not proof that no related work exists. Repeat
 the search before any paper or novelty statement.
@@ -22,10 +22,12 @@ the search before any paper or novelty statement.
   accumulation and uses FP16 stochastic rounding in its released deployment
   path.
 - [Nemotron 3 Ultra](https://arxiv.org/abs/2606.15007) evaluates FP16, INT8, and
-  FP8 recurrent states with block scaling, stochastic rounding, checkpoints,
-  and cached-input replay. Its reported INT8/FP8 checkpoint experiments were
-  emulated while optimized 8-bit kernels were still under development. These
-  methods remain prior art and mandatory stability baselines for RecurQuant.
+  FP8 recurrent states with block scaling, stochastic rounding, and periodic
+  quantized-state checkpointing plus cached-activation replay. It reports a
+  fixed checkpoint period `CC = 8` on Nemotron 3 Super; those checkpoint
+  experiments were emulated while optimized 8-bit kernels were still under
+  development. Fixed checkpoint/replay is prior art and a mandatory
+  Experiment 010 stability baseline.
 
 ## Existing Gated DeltaNet systems work
 
@@ -35,9 +37,14 @@ the search before any paper or novelty statement.
   quantized Gated DeltaNet" claim.
 - [KVBuffer](https://arxiv.org/abs/2605.19049) buffers Gated DeltaNet updates to
   reduce state writes.
-- [ReplaySSM](https://tridao.me/blog/2026/replayssm/) applies update/correction
-  replay to Mamba-2 and Qwen3.5 Gated DeltaNet; its
+- [ReplaySSM](https://tridao.me/blog/2026/replayssm/) applies checkpoint plus
+  cached-input replay to Mamba-2 and Qwen3.5 Gated DeltaNet; its Gated DeltaNet
+  algorithm buffers the post-correction update, normalized key, and log decay
+  as `(u, k, g)`. Its
   [implementation is public](https://github.com/Johnny-Liou/ReplaySSM).
+  RecurQuant cannot claim the first Gated DeltaNet update buffer,
+  checkpoint/replay cache, reduced state-write frequency, or Qwen3.5 replay
+  implementation.
 - [HOLA](https://arxiv.org/abs/2607.02303) combines Gated DeltaNet state with a
   bounded exact KV cache and uses committed update magnitude as an importance
   signal. Update residuals and hybrid state/KV memory are therefore not novel.
@@ -93,6 +100,27 @@ These works target transformer KV caches rather than Gated DeltaNet recurrent
 matrices, but they preclude broad claims that sensitivity-guided, per-layer,
 dynamic, or equal-budget cache precision allocation is new.
 
+## Runtime adaptation and residual correction
+
+- [Runtime-Certified Bounded-Error Quantized
+  Attention](https://arxiv.org/abs/2605.20868) computes online per-head,
+  per-step error bounds for a tiered quantized KV cache and uses them for
+  adaptive precision selection and deterministic fallback. It targets
+  attention rather than a Gated DeltaNet state, but it precludes a broad first
+  claim for runtime-checked adaptive cache precision or fallback.
+- [Don't Waste Bits!](https://arxiv.org/abs/2604.04722) uses a learned
+  token-level controller to choose among 2-bit, 4-bit, 8-bit, and FP16 KV-cache
+  precision during decode. Dynamic per-token precision is prior art.
+- [GEAR](https://arxiv.org/abs/2403.05527) combines low-bit KV-cache
+  quantization with low-rank and sparse reconstruction-error correction.
+- [TurboQuant](https://arxiv.org/abs/2504.19874) combines randomized rotation
+  and scalar quantization with a quantized residual correction for inner
+  products.
+
+These methods do not establish Experiment 010's result, but they prohibit
+broad claims that online risk selection, adaptive fallback, rotation, or
+residual correction is new.
+
 ## Rotation and Hadamard codecs
 
 - [QuIP#](https://arxiv.org/abs/2402.04396) uses incoherence processing with
@@ -141,6 +169,14 @@ recurrence kernel or latency result.
 Experiment 008 also failed its frozen development gate: CORA-C2 and raw CORA
 were both worse on macro excess NLL than CQER-32. Exact-combination novelty
 would not rescue a method that has not demonstrated the required quality.
+
+Experiment 010's StateLease-H5 protocol therefore treats checkpoint/replay,
+`(u, k, g)` buffering, rotations, dynamic precision, and residual correction
+as prior art. Its frozen contribution question is narrower: whether choosing
+between legal c4 and c5 handoff boundaries by direct local handoff distortion
+improves reference-aligned trajectory drift and excess NLL for a physically
+packed RHT-CQER Gated DeltaNet checkpoint at exactly `3,454,664` resident
+bytes. No Experiment 010 quality result exists at protocol freeze.
 
 The frozen v0.2 protocol compares uniform INT4, one uniform INT8 reference,
 three same-byte random layer placements, MSE-selected placement, nearest and

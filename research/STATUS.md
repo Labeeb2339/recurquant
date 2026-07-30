@@ -2,7 +2,7 @@
 
 ## v0.3 experimental track
 
-Last updated: 2026-07-26
+Last updated: 2026-07-30
 
 Experiment 005 stopped before holdout after its frozen real-storage-boundary
 sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
@@ -73,6 +73,30 @@ verification record, and compact release manifest are:
 The public-stream application-level access boundary remains fixed in
 [`EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md).
 Ranked MBPP window `[8, 16)` remained protected.
+
+Experiment 010 is now preregistered as StateLease-H5. It keeps the frozen
+RHT-CQER checkpoint, allocates a five-token BF16 `(u, k)` plus FP32 `g` replay
+buffer per recurrent layer, and each layer independently makes one
+threshold-free choice between c4 and c5 only when its buffer is full. Both
+risks use the same normalized view of that layer's unchanged causal CQER EMA;
+no global synchronized choice is used. An exact tie selects c5. The complete
+logical persistent
+allocation is `3,454,664` bytes, or `5.857110` bits per recurrent-state
+element.
+
+The protocol requires schedule-matched fixed replay, equal-total-byte
+no-replay, mixed-bit, residual, FP32, and off-budget CC8 references. In
+particular, the expanded equal-total-byte RHT Q4/Q8 comparator promotes
+exactly 13,587 rows and contains 8 explicit reserved padding bytes. Stage A is
+limited to already-open task 666. No new development identity or Experiment
+010 quality result exists yet. Ranked MBPP window `[8, 16)` remains sealed and
+is not authorized for Experiment 010. See
+[`EXPERIMENT_010_STATELEASE_PROTOCOL.md`](EXPERIMENT_010_STATELEASE_PROTOCOL.md).
+
+Checkpoint/replay and Gated DeltaNet `(u, k, g)` buffering are established
+prior art through Nemotron 3 Ultra and ReplaySSM. Even a future protocol pass
+would not by itself support a first, novelty, speed, deployment,
+state-of-the-art, or breakthrough claim.
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
 packer and an exact dynamic-programming allocator. Its corrected two-bit
