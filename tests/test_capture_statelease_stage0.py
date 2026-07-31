@@ -17,7 +17,7 @@ import scripts.capture_statelease_stage0 as capture_stage0
 import scripts.verify_statelease_stage0 as verify_stage0
 from scripts.capture_statelease_stage0 import (
     DEFAULT_ARTIFACT,
-    EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
+    EXPERIMENT012_SOURCE_PROVENANCE_PATHS,
     EXPERIMENT_ID,
     PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256,
     REPO_ROOT,
@@ -42,7 +42,7 @@ from scripts.verify_statelease_stage0 import (
     verify_production_stage0,
 )
 from scripts.verify_statelease_stage0 import (
-    EXPERIMENT011_SOURCE_PROVENANCE_PATHS as VERIFIER_EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
+    EXPERIMENT012_SOURCE_PROVENANCE_PATHS as VERIFIER_EXPERIMENT012_SOURCE_PROVENANCE_PATHS,
 )
 from scripts.verify_statelease_stage0 import (
     EXPERIMENT_ID as VERIFIER_EXPERIMENT_ID,
@@ -170,8 +170,13 @@ def test_loaded_recurquant_module_closure_rejects_substitution_or_omission(
         capture_stage0._loaded_recurquant_module_paths()
 
 
-def test_experiment011_stage0_identity_and_provenance_are_exact() -> None:
+def test_experiment012_stage0_identity_and_provenance_are_exact() -> None:
     expected_provenance = (
+        "research/EXPERIMENT_012_STATELEASE_PROTOCOL.md",
+        "research/EXPERIMENT_012_STAGE_A_IDENTITY.md",
+        "research/EXPERIMENT_011_STAGE_A_ADMINISTRATIVE_NULL.md",
+        "evidence/experiment011-statelease-stage-a-administrative-null.json",
+        "artifacts/experiment011-statelease-stage-a-666.attempt.json",
         "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md",
         "research/EXPERIMENT_011_STAGE_A_IDENTITY.md",
         "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md",
@@ -181,11 +186,11 @@ def test_experiment011_stage0_identity_and_provenance_are_exact() -> None:
         "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
     )
 
-    assert EXPERIMENT_ID == VERIFIER_EXPERIMENT_ID == "experiment011"
-    assert SCHEMA_NAME == PRODUCTION_SCHEMA == "recurquant.experiment011.stage0.production.v1"
-    assert DEFAULT_ARTIFACT == REPO_ROOT / "artifacts" / "experiment011_stage0_production.pt"
-    assert expected_provenance == EXPERIMENT011_SOURCE_PROVENANCE_PATHS
-    assert expected_provenance == VERIFIER_EXPERIMENT011_SOURCE_PROVENANCE_PATHS
+    assert EXPERIMENT_ID == VERIFIER_EXPERIMENT_ID == "experiment012"
+    assert SCHEMA_NAME == PRODUCTION_SCHEMA == "recurquant.experiment012.stage0.production.v1"
+    assert DEFAULT_ARTIFACT == REPO_ROOT / "artifacts" / "experiment012_stage0_production.pt"
+    assert expected_provenance == EXPERIMENT012_SOURCE_PROVENANCE_PATHS
+    assert expected_provenance == VERIFIER_EXPERIMENT012_SOURCE_PROVENANCE_PATHS
     assert all(relative in SOURCE_IDENTITY_PATHS for relative in expected_provenance)
     assert all(relative in VERIFIER_SOURCE_IDENTITY_PATHS for relative in expected_provenance)
 
@@ -862,7 +867,7 @@ def test_full_production_capture_completes_only_after_independent_verification(
     }
 
 
-def test_serialized_schema_loads_with_weights_only_and_pins_plan(
+def test_serialized_schema_loads_with_weights_only_and_pins_effective_plan_summary(
     authenticated_artifact: Path,
 ) -> None:
     artifact = torch.load(

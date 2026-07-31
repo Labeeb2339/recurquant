@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import types
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -799,6 +800,182 @@ def test_experiment010_result_must_remain_absent(
         stage_a.authenticate_experiment010_administrative_null(tmp_path)
 
 
+def test_experiment011_administrative_null_preserves_unknown_result_semantics() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    lineage = stage_a._authenticate_experiment011_lineage_files(repo_root)
+    assert lineage["administrative_null_note_file_sha256"] == (
+        stage_a.EXPERIMENT011_ADMIN_NULL_NOTE_FILE_SHA256
+    )
+    assert lineage["stage_a_identity_file_sha256"] == (
+        stage_a.EXPERIMENT011_IDENTITY_NOTE_FILE_SHA256
+    )
+    assert lineage["statelease_protocol_file_sha256"] == (
+        stage_a.EXPERIMENT011_PROTOCOL_NOTE_FILE_SHA256
+    )
+    artifact = json.loads(
+        (repo_root / stage_a.EXPERIMENT011_ADMIN_NULL_RELATIVE_PATH).read_text(encoding="utf-8")
+    )
+    semantics = stage_a._validate_experiment011_administrative_null(artifact)
+    assert semantics["task_row_loaded"] is True
+    assert semantics["tokenizer_loaded"] is True
+    assert semantics["model_weights_loaded"] is True
+    assert semantics["evaluation_entered"] is True
+    assert semantics["evaluation_returned"] is None
+    assert semantics["forward_passes"] is None
+    assert semantics["quality_result_computed"] is None
+    assert semantics["completed_task_ids"] == []
+    assert semantics["result_artifact_created"] is False
+    assert semantics["rerun_occurred"] is False
+
+    false_unknown = copy.deepcopy(artifact)
+    false_unknown["evidence"]["access_boundary"]["evaluation_returned"] = False
+    with pytest.raises(stage_a.StageAAuthenticationError, match="access boundary drifted"):
+        stage_a._validate_experiment011_administrative_null(false_unknown)
+
+    rerun = copy.deepcopy(artifact)
+    rerun["evidence"]["original_attempt"]["rerun_occurred"] = True
+    with pytest.raises(stage_a.StageAAuthenticationError, match="attempt provenance drifted"):
+        stage_a._validate_experiment011_administrative_null(rerun)
+
+    receipt = json.loads(
+        (repo_root / stage_a.EXPERIMENT011_ATTEMPT_RELATIVE_PATH).read_text(encoding="utf-8")
+    )
+    prior010 = receipt["experiment010_administrative_null"]
+    stage_a._validate_experiment011_failed_receipt(
+        receipt,
+        experiment010_admin_null=prior010,
+    )
+    computed_false = copy.deepcopy(receipt)
+    computed_false["quality_result_computed"] = False
+    with pytest.raises(stage_a.StageAAuthenticationError, match="semantics drifted"):
+        stage_a._validate_experiment011_failed_receipt(
+            computed_false,
+            experiment010_admin_null=prior010,
+        )
+    result_injected = copy.deepcopy(receipt)
+    result_injected["stage_a_gate"] = {"passed": False}
+    with pytest.raises(stage_a.StageAAuthenticationError, match="result evidence"):
+        stage_a._validate_experiment011_failed_receipt(
+            result_injected,
+            experiment010_admin_null=prior010,
+        )
+
+
+@pytest.mark.parametrize(
+    "tampered_relative",
+    (
+        stage_a.EXPERIMENT011_ADMIN_NULL_NOTE_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_IDENTITY_NOTE_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_PROTOCOL_NOTE_RELATIVE_PATH,
+    ),
+)
+def test_experiment011_lineage_files_fail_closed_on_current_file_drift(
+    tmp_path: Path,
+    tampered_relative: str,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    lineage_paths = (
+        stage_a.EXPERIMENT011_ADMIN_NULL_NOTE_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_IDENTITY_NOTE_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_PROTOCOL_NOTE_RELATIVE_PATH,
+    )
+    for relative in lineage_paths:
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((repo_root / relative).read_bytes())
+    (tmp_path / tampered_relative).write_bytes(b"tampered historical lineage\n")
+    with pytest.raises(stage_a.StageAAuthenticationError, match="file hash drifted"):
+        stage_a._authenticate_experiment011_lineage_files(tmp_path)
+
+
+@pytest.mark.parametrize("entry_kind", ("file", "dangling_symlink"))
+def test_experiment011_result_must_remain_absent(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    for relative in (
+        stage_a.EXPERIMENT011_ADMIN_NULL_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_ATTEMPT_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_ADMIN_NULL_NOTE_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_IDENTITY_NOTE_RELATIVE_PATH,
+        stage_a.EXPERIMENT011_PROTOCOL_NOTE_RELATIVE_PATH,
+    ):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((repo_root / relative).read_bytes())
+    receipt = json.loads(
+        (repo_root / stage_a.EXPERIMENT011_ATTEMPT_RELATIVE_PATH).read_text(encoding="utf-8")
+    )
+    old_result = tmp_path / stage_a.EXPERIMENT011_OUTPUT_RELATIVE_PATH
+    old_result.parent.mkdir(parents=True, exist_ok=True)
+    if entry_kind == "file":
+        old_result.write_text("forbidden", encoding="utf-8")
+    else:
+        try:
+            old_result.symlink_to(old_result.with_name("missing-target.json"))
+        except OSError:
+            pytest.skip("symlink creation is unavailable")
+        assert not old_result.exists()
+        assert stage_a._path_entry_exists(old_result)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="result must remain absent"):
+        stage_a.authenticate_experiment011_administrative_null(
+            tmp_path,
+            experiment010_admin_null=receipt["experiment010_administrative_null"],
+        )
+
+
+def test_current_one_run_paths_reject_dangling_symlink_before_resolution(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / stage_a.OUTPUT_RELATIVE_PATH
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output.symlink_to(output.with_name("missing-output-target.json"))
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    assert not output.exists()
+    assert stage_a._path_entry_exists(output)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="already exists"):
+        stage_a._assert_ignored_exact_output(tmp_path)
+
+
+def test_experiment011_git_history_authenticates_exact_h0_seal_tree_and_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    stage_a._authenticate_experiment011_git_history(repo_root)
+    real_git = stage_a._git
+
+    def wrong_parent(repo: Path, *arguments: str) -> str:
+        if arguments == (
+            "show",
+            "-s",
+            "--format=%P",
+            stage_a.EXPERIMENT011_SEAL_COMMIT,
+        ):
+            return "0" * 40
+        return real_git(repo, *arguments)
+
+    monkeypatch.setattr(stage_a, "_git", wrong_parent)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="ancestry or tree drifted"):
+        stage_a._authenticate_experiment011_git_history(repo_root)
+
+    def missing_marker(repo: Path, *arguments: str) -> str:
+        if arguments == (
+            "show",
+            "-s",
+            "--format=%B",
+            stage_a.EXPERIMENT011_SEAL_COMMIT,
+        ):
+            return "tampered one-run message"
+        return real_git(repo, *arguments)
+
+    monkeypatch.setattr(stage_a, "_git", missing_marker)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="seal message drifted"):
+        stage_a._authenticate_experiment011_git_history(repo_root)
+
+
 def test_old_marker_is_required_while_new_marker_prevents_rerun(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -878,10 +1055,24 @@ def test_anchor_validation_rejects_task_or_token_manifest_drift() -> None:
         stage_a._validate_anchor_payload(artifact)
 
 
+def _install_expected_stage0_test_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[Path, Path]:
+    monkeypatch.setattr(stage_a, "REPO_ROOT", tmp_path)
+    artifact = tmp_path / stage_a.STAGE0_ARTIFACT_RELATIVE_PATH
+    sidecar = tmp_path / stage_a.STAGE0_SHA256_RELATIVE_PATH
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"synthetic Stage-0 test artifact")
+    sidecar.write_bytes(b"synthetic Stage-0 test sidecar\n")
+    return artifact, sidecar
+
+
 def test_stage0_incomplete_report_fails_before_any_quality_access(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    artifact, _sidecar = _install_expected_stage0_test_paths(monkeypatch, tmp_path)
     verifier = SimpleNamespace(
         verify_production_stage0=lambda *_args, **_kwargs: {
             "status": "verifier_self_test_pass",
@@ -892,13 +1083,14 @@ def test_stage0_incomplete_report_fails_before_any_quality_access(
     )
     monkeypatch.setattr(stage_a, "_script_module", lambda _name: verifier)
     with pytest.raises(stage_a.StageAAuthenticationError, match="complete synthetic-only"):
-        stage_a.authenticate_stage0(tmp_path / "stage0.pt", None)
+        stage_a.authenticate_stage0(artifact, None)
 
 
 def test_stage0_artifact_head_must_equal_current_repository_head(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    artifact, _sidecar = _install_expected_stage0_test_paths(monkeypatch, tmp_path)
     verifier = SimpleNamespace(
         verify_production_stage0=lambda *_args, **_kwargs: {
             "status": "production_stage0_pass",
@@ -911,10 +1103,75 @@ def test_stage0_artifact_head_must_equal_current_repository_head(
     monkeypatch.setattr(stage_a, "_script_module", lambda _name: verifier)
     with pytest.raises(stage_a.StageAAuthenticationError, match="does not equal"):
         stage_a.authenticate_stage0(
-            tmp_path / "stage0.pt",
+            artifact,
             None,
             expected_repo_head="current-head",
         )
+
+
+def test_stage0_accepts_only_the_exact_documented_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact, sidecar = _install_expected_stage0_test_paths(monkeypatch, tmp_path)
+    verifier = SimpleNamespace(
+        verify_production_stage0=lambda *_args, **_kwargs: {
+            "status": "production_stage0_pass",
+            "experiment_stage0_complete": True,
+            "quality_data_accessed": False,
+            "protected_mbpp_window_accessed": False,
+            "repository_commit": "current-head",
+        }
+    )
+    monkeypatch.setattr(stage_a, "_script_module", lambda _name: verifier)
+    report, authenticated_artifact, authenticated_sidecar = stage_a.authenticate_stage0(
+        artifact,
+        sidecar,
+        expected_repo_head="current-head",
+    )
+    assert report["artifact"] == Path(stage_a.STAGE0_ARTIFACT_RELATIVE_PATH).name
+    assert report["sidecar"] == Path(stage_a.STAGE0_SHA256_RELATIVE_PATH).name
+    assert authenticated_artifact == artifact.resolve()
+    assert authenticated_sidecar == sidecar.resolve()
+
+    alternate_artifact = tmp_path / "artifacts" / "copied_stage0.pt"
+    alternate_sidecar = alternate_artifact.with_suffix(".pt.sha256")
+    alternate_artifact.write_bytes(artifact.read_bytes())
+    alternate_sidecar.write_bytes(sidecar.read_bytes())
+    with pytest.raises(stage_a.StageAAuthenticationError, match="exact frozen"):
+        stage_a.authenticate_stage0(alternate_artifact, alternate_sidecar)
+
+
+@pytest.mark.parametrize("symlink_name", ("artifact", "sidecar"))
+def test_stage0_rejects_symlink_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    symlink_name: str,
+) -> None:
+    artifact, sidecar = _install_expected_stage0_test_paths(monkeypatch, tmp_path)
+    selected = artifact if symlink_name == "artifact" else sidecar
+    target = tmp_path / f"real-{selected.name}"
+    target.write_bytes(selected.read_bytes())
+    selected.unlink()
+    try:
+        selected.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+    monkeypatch.setattr(stage_a, "_script_module", _unused)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="non-symlink"):
+        stage_a.authenticate_stage0(artifact, sidecar)
+
+
+def test_stage0_rejects_non_regular_exact_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact, sidecar = _install_expected_stage0_test_paths(monkeypatch, tmp_path)
+    artifact.unlink()
+    artifact.mkdir()
+    monkeypatch.setattr(stage_a, "_script_module", _unused)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="regular non-symlink"):
+        stage_a.authenticate_stage0(artifact, sidecar)
 
 
 def test_one_run_receipt_is_exclusive_and_never_overwritten(tmp_path: Path) -> None:
@@ -931,7 +1188,7 @@ def test_prepared_receipt_promotion_rejects_on_disk_tampering(
 ) -> None:
     path = tmp_path / "attempt.json"
     prepared = {
-        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "schema": "recurquant.experiment012.stage-a-attempt.v1",
         "status": "prepared_before_head_cas",
     }
     path.write_bytes(stage_a.canonical_json_bytes(prepared))
@@ -1087,6 +1344,42 @@ def test_git_identity_rejects_alternates_replacements_grafts_and_shallow_history
         stage_a._assert_git_repository_identity(repo)
 
 
+@pytest.mark.parametrize(
+    ("set_flag", "clear_flag"),
+    [
+        ("--assume-unchanged", "--no-assume-unchanged"),
+        ("--skip-worktree", "--no-skip-worktree"),
+    ],
+)
+def test_git_identity_rejects_hidden_index_flags(
+    tmp_path: Path,
+    set_flag: str,
+    clear_flag: str,
+) -> None:
+    repo = tmp_path / "repo"
+    _h0, git = _init_synthetic_git_repository(repo)
+    git("update-index", set_flag, "tracked.txt")
+    try:
+        with pytest.raises(stage_a.StageAAuthenticationError, match="repository binding failed"):
+            stage_a._assert_git_repository_identity(repo)
+    finally:
+        git("update-index", clear_flag, "tracked.txt")
+
+
+def test_git_identity_binds_safe_config_and_rejects_unsafe_config(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _h0, git = _init_synthetic_git_repository(repo)
+    before = stage_a._assert_git_repository_identity(repo)
+    git("config", "user.email", "changed@example.invalid")
+    after = stage_a._assert_git_repository_identity(repo)
+    assert before["local_config_sha256"] != after["local_config_sha256"]
+    assert before["stage0_repository_binding"] != after["stage0_repository_binding"]
+
+    git("config", "core.fsmonitor", "true")
+    with pytest.raises(stage_a.StageAAuthenticationError, match="repository binding failed"):
+        stage_a._assert_git_repository_identity(repo)
+
+
 def test_source_head_authentication_hashes_raw_bytes_without_clean_filters(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1155,6 +1448,10 @@ def test_empty_commit_seal_is_durable_after_local_receipt_deletion(
             "scientific_result_available": False,
             "canonical_provenance_sha256": "6" * 64,
         },
+        experiment011_admin_null={
+            "scientific_result_available": False,
+            "canonical_provenance_sha256": "7" * 64,
+        },
         attempt_path=attempt_path,
     )
     configuration = stage_a.ModelConfiguration(
@@ -1173,7 +1470,7 @@ def test_empty_commit_seal_is_durable_after_local_receipt_deletion(
         lambda *_args: {key: True for key in stage_a.PRESEAL_FRESHNESS_KEYS},
     )
     readiness_receipt = {
-        "schema": "recurquant.experiment011.runtime-readiness.v1",
+        "schema": "recurquant.experiment012.runtime-readiness.v1",
         "accelerator": {"requested_device": "cuda"},
     }
     readiness = stage_a.RuntimeReadiness(
@@ -1189,10 +1486,13 @@ def test_empty_commit_seal_is_durable_after_local_receipt_deletion(
     assert git("show", "-s", "--format=%an <%ae>", reservation.seal_commit) == (
         "Synthetic Test <synthetic@example.invalid>"
     )
-    assert reservation.receipt["schema"] == "recurquant.experiment011.stage-a-attempt.v1"
+    assert reservation.receipt["schema"] == "recurquant.experiment012.stage-a-attempt.v1"
     assert reservation.receipt["runtime_readiness"] == stage_a._readiness_bundle(readiness)
     assert reservation.receipt["experiment010_administrative_null"] == (
         preflight.experiment010_admin_null
+    )
+    assert reservation.receipt["experiment011_administrative_null"] == (
+        preflight.experiment011_admin_null
     )
     seal_message = git("show", "-s", "--format=%B", reservation.seal_commit)
     assert stage_a.ONE_RUN_MARKER in seal_message
@@ -1254,6 +1554,10 @@ def _synthetic_two_phase_reservation(
             "scientific_result_available": False,
             "canonical_provenance_sha256": "6" * 64,
         },
+        experiment011_admin_null={
+            "scientific_result_available": False,
+            "canonical_provenance_sha256": "7" * 64,
+        },
         attempt_path=tmp_path / "attempt.json",
     )
     configuration = stage_a.ModelConfiguration(
@@ -1261,7 +1565,7 @@ def _synthetic_two_phase_reservation(
         identity={"id": stage_a.MODEL_ID, "revision": stage_a.MODEL_REVISION},
     )
     readiness_receipt = {
-        "schema": "recurquant.experiment011.runtime-readiness.v1",
+        "schema": "recurquant.experiment012.runtime-readiness.v1",
         "accelerator": {"requested_device": "cuda"},
     }
     readiness = stage_a.RuntimeReadiness(
@@ -1343,6 +1647,8 @@ def test_post_cas_promotion_crash_leaves_prepared_consumed_receipt(
     assert seal_payload["preseal_freshness"] == {
         key: True for key in stage_a.PRESEAL_FRESHNESS_KEYS
     }
+    assert seal_payload["experiment010_administrative_null"] == (preflight.experiment010_admin_null)
+    assert seal_payload["experiment011_administrative_null"] == (preflight.experiment011_admin_null)
     assert seal_payload["attempt_path"] == stage_a.ATTEMPT_RELATIVE_PATH
     assert seal_payload["output_path"] == stage_a.OUTPUT_RELATIVE_PATH
     assert seal_payload["claim_boundary"] == stage_a.CLAIM_BOUNDARY
@@ -1354,6 +1660,8 @@ def test_post_cas_promotion_crash_leaves_prepared_consumed_receipt(
     assert receipt["task_row_loaded"] is False
     assert receipt["model_weights_loaded"] is False
     assert receipt["quality_aggregate_exposed"] is False
+    assert receipt["experiment010_administrative_null"] == preflight.experiment010_admin_null
+    assert receipt["experiment011_administrative_null"] == preflight.experiment011_admin_null
     with pytest.raises(stage_a.StageAAuthenticationError, match="HEAD changed"):
         stage_a.reserve_one_run(preflight, configuration, readiness)
     assert git("rev-parse", "HEAD") == seal
@@ -1761,6 +2069,7 @@ def test_finalize_runs_second_integrity_check_before_publication(
         source_hashes_start={},
         identity_clarification={},
         experiment010_admin_null={},
+        experiment011_admin_null={},
         anchor={},
         selector_identity={},
         plan=object(),
@@ -1875,16 +2184,20 @@ def test_end_integrity_reauthenticates_unchanged_runtime_and_admin_provenance(
     tmp_path: Path,
 ) -> None:
     readiness_receipt = {
-        "schema": "recurquant.experiment011.runtime-readiness.v1",
+        "schema": "recurquant.experiment012.runtime-readiness.v1",
         "accelerator": {"requested_device": "cuda"},
     }
     readiness = stage_a.RuntimeReadiness(
         receipt=readiness_receipt,
         canonical_sha256=stage_a._canonical_sha256(readiness_receipt),
     )
-    admin = {
+    admin010 = {
         "scientific_result_available": False,
         "canonical_provenance_sha256": "a" * 64,
+    }
+    admin011 = {
+        "scientific_result_available": False,
+        "canonical_provenance_sha256": "f" * 64,
     }
     stage0_artifact = tmp_path / "stage0.pt"
     stage0_sidecar = tmp_path / "stage0.pt.sha256"
@@ -1893,7 +2206,8 @@ def test_end_integrity_reauthenticates_unchanged_runtime_and_admin_provenance(
         repo_root=tmp_path,
         repository_start={"git_identity": git_identity},
         source_hashes_start={},
-        experiment010_admin_null=admin,
+        experiment010_admin_null=admin010,
+        experiment011_admin_null=admin011,
         stage0={
             "artifact_file_sha256": "b" * 64,
             "sidecar_file_sha256": "c" * 64,
@@ -1910,6 +2224,7 @@ def test_end_integrity_reauthenticates_unchanged_runtime_and_admin_provenance(
                 "new_marker_absent": True,
                 "stage0_reauthenticated": True,
                 "experiment010_administrative_null_reauthenticated": True,
+                "experiment011_administrative_null_reauthenticated": True,
                 "runtime_readiness_reauthenticated": True,
                 "configuration_reauthenticated_local_only": True,
             },
@@ -1957,7 +2272,14 @@ def test_end_integrity_reauthenticates_unchanged_runtime_and_admin_provenance(
     monkeypatch.setattr(
         stage_a,
         "authenticate_experiment010_administrative_null",
-        lambda _root: copy.deepcopy(admin),
+        lambda _root: copy.deepcopy(admin010),
+    )
+    monkeypatch.setattr(
+        stage_a,
+        "authenticate_experiment011_administrative_null",
+        lambda _root, *, experiment010_admin_null: (
+            copy.deepcopy(admin011) if experiment010_admin_null == admin010 else _unused()
+        ),
     )
     monkeypatch.setattr(
         stage_a,
@@ -1967,6 +2289,7 @@ def test_end_integrity_reauthenticates_unchanged_runtime_and_admin_provenance(
     integrity = stage_a._assert_end_integrity(preflight, reservation)
     assert integrity["runtime_readiness_reauthenticated"] is True
     assert integrity["experiment010_administrative_null_reauthenticated"] is True
+    assert integrity["experiment011_administrative_null_reauthenticated"] is True
 
     changed_receipt = copy.deepcopy(readiness_receipt)
     changed_receipt["accelerator"]["resolved_device"] = "drift"
@@ -2576,7 +2899,10 @@ def test_gate_consumes_only_recomputed_metrics_and_trajectories(
     assert captured["statelease_storage"] is statelease["storage"]
 
 
-def _serialized_storage_candidates() -> dict[str, dict[str, object]]:
+def _serialized_storage_candidates(
+    *,
+    exact_plan_sha256: str,
+) -> dict[str, dict[str, object]]:
     def schemas(
         names: set[str] | frozenset[str],
         total_bytes: int,
@@ -2643,6 +2969,8 @@ def _serialized_storage_candidates() -> dict[str, dict[str, object]]:
             storage = {
                 **common,
                 "resident_bytes_including_statelease": FROZEN_STATELEASE_RESIDENT_BYTES,
+                "authenticated_exact_row_plan_sha256": exact_plan_sha256,
+                "exact_row_plan_identity_verified": True,
             }
         elif method in FIXED_REPLAY_METHODS:
             storage = {
@@ -2651,6 +2979,8 @@ def _serialized_storage_candidates() -> dict[str, dict[str, object]]:
                 "logical_resident_capacity_bytes": FROZEN_STATELEASE_RESIDENT_BYTES,
                 "capacity_fully_allocated": True,
                 "off_budget": False,
+                "authenticated_exact_row_plan_sha256": exact_plan_sha256,
+                "exact_row_plan_identity_verified": True,
             }
         else:
             storage = {
@@ -2664,14 +2994,31 @@ def _serialized_storage_candidates() -> dict[str, dict[str, object]]:
 
 
 def test_storage_contract_authenticates_every_runtime_comparator() -> None:
-    candidates = _serialized_storage_candidates()
-    receipts = stage_a._validate_candidate_storage_results(candidates)
+    _config, plan = _exact_geometry_config_and_plan()
+    exact_plan_sha256 = stage_a._exact_statelease_plan_sha256(plan)
+    candidates = _serialized_storage_candidates(exact_plan_sha256=exact_plan_sha256)
+    receipts = stage_a._validate_candidate_storage_results(
+        candidates,
+        expected_plan=plan,
+    )
     assert set(receipts) == set(stage_a.QUALITY_METHODS)
+    assert receipts[STATELEASE_METHOD]["authenticated_exact_row_plan_sha256"] == (exact_plan_sha256)
 
+    candidates[STATELEASE_METHOD]["storage"]["authenticated_exact_row_plan_sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="serialized storage contract drifted"):
+        stage_a._validate_candidate_storage_results(
+            candidates,
+            expected_plan=plan,
+        )
+
+    candidates = _serialized_storage_candidates(exact_plan_sha256=exact_plan_sha256)
     fixed = FIXED_REPLAY_METHODS[0]
     candidates[fixed]["storage"]["logical_resident_capacity_bytes"] -= 1
     with pytest.raises(RuntimeError, match="serialized storage contract drifted"):
-        stage_a._validate_candidate_storage_results(candidates)
+        stage_a._validate_candidate_storage_results(
+            candidates,
+            expected_plan=plan,
+        )
 
 
 def test_historical_rht_storage_requires_shared_schema_but_not_transaction_field(
@@ -2778,15 +3125,11 @@ def test_reachable_storage_closure_accepts_declared_empty_zero_storage_component
     )
 
 
-def test_real_exact_geometry_caches_pass_synthetic_storage_closure_smoke() -> None:
+def _exact_geometry_config_and_plan() -> tuple[object, object]:
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
-    from recurquant.packed_cache import (
-        RightRhtQueryEmaMixedPackedRecurrentStateCache,
-    )
     from recurquant.qwen35 import EXPERIMENT010_STATELEASE_LAYER_QUOTAS
     from recurquant.row_policy import ExactBudgetRowPlan, RowLocation
-    from recurquant.statelease_cache import StateLeaseRecurrentStateCache
 
     rows = tuple(
         RowLocation(
@@ -2823,10 +3166,10 @@ def test_real_exact_geometry_caches_pass_synthetic_storage_closure_smoke() -> No
         head_dim=16,
         max_position_embeddings=128,
         linear_conv_kernel_dim=2,
-        linear_key_head_dim=8,
-        linear_value_head_dim=8,
-        linear_num_key_heads=2,
-        linear_num_value_heads=2,
+        linear_key_head_dim=128,
+        linear_value_head_dim=128,
+        linear_num_key_heads=16,
+        linear_num_value_heads=16,
         layer_types=[
             "linear_attention" if index in linear else "full_attention" for index in range(24)
         ],
@@ -2837,28 +3180,30 @@ def test_real_exact_geometry_caches_pass_synthetic_storage_closure_smoke() -> No
             "mrope_section": [3, 3, 2],
         },
     )
+    return config, plan
 
-    def initialize_shared(cache: object) -> None:
-        for layer_index, layer in enumerate(cache.layers):
-            if layer_index in linear:
-                layer.conv_states[0] = torch.zeros((1, 1, 2), dtype=torch.bfloat16)
-                layer.is_conv_states_initialized[0] = True
-            else:
-                layer.keys = torch.zeros((1, 1, 2, 1), dtype=torch.bfloat16)
-                layer.values = torch.zeros((1, 1, 2, 1), dtype=torch.bfloat16)
-                layer.is_initialized = True
 
+def _initialize_exact_geometry_shared(cache: object) -> None:
+    linear = set(stage_a.LINEAR_LAYER_INDICES)
+    for layer_index, layer in enumerate(cache.layers):
+        if layer_index in linear:
+            layer.conv_states[0] = torch.zeros((1, 1, 2), dtype=torch.bfloat16)
+            layer.is_conv_states_initialized[0] = True
+        else:
+            layer.keys = torch.zeros((1, 1, 2, 1), dtype=torch.bfloat16)
+            layer.values = torch.zeros((1, 1, 2, 1), dtype=torch.bfloat16)
+            layer.is_initialized = True
+
+
+def _stage_exact_geometry_statelease_prefill(cache: object) -> None:
     state = torch.zeros((1, 16, 128, 128), dtype=torch.float32)
     query = torch.zeros((1, 1, 16, 128), dtype=torch.float32)
     key = torch.zeros_like(query)
     value = torch.zeros_like(query)
     log_decay = torch.zeros((1, 1, 16), dtype=torch.float32)
     beta = torch.zeros_like(log_decay)
-
-    statelease = StateLeaseRecurrentStateCache(config, plan=plan)
-    initialize_shared(statelease)
     for layer_index in stage_a.LINEAR_LAYER_INDICES:
-        statelease.stage_statelease_observation(
+        cache.stage_statelease_observation(
             layer_index,
             query,
             key,
@@ -2868,11 +3213,28 @@ def test_real_exact_geometry_caches_pass_synthetic_storage_closure_smoke() -> No
             None,
             state,
         )
-        statelease.update_recurrent_state(state, layer_idx=layer_index)
+        cache.update_recurrent_state(state, layer_idx=layer_index)
+
+
+def test_real_exact_geometry_caches_pass_synthetic_storage_closure_smoke() -> None:
+    from recurquant.packed_cache import (
+        RightRhtQueryEmaMixedPackedRecurrentStateCache,
+    )
+    from recurquant.qwen35 import create_qwen35_experiment010_statelease_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    statelease = create_qwen35_experiment010_statelease_cache(
+        config,
+        plan=plan,
+        record_evidence=True,
+    )
+    _initialize_exact_geometry_shared(statelease)
+    _stage_exact_geometry_statelease_prefill(statelease)
     statelease_summary = stage_a._validated_storage_summary(
         STATELEASE_METHOD,
         statelease,
         reference_shared_schema=stage_a._shared_cache_schema(statelease),
+        expected_plan=plan,
     )
     assert (
         statelease_summary["candidate_persistent_storage_bytes"] == FROZEN_STATELEASE_RESIDENT_BYTES
@@ -2883,7 +3245,9 @@ def test_real_exact_geometry_caches_pass_synthetic_storage_closure_smoke() -> No
     )
 
     historical = RightRhtQueryEmaMixedPackedRecurrentStateCache(config, plan=plan)
-    initialize_shared(historical)
+    _initialize_exact_geometry_shared(historical)
+    state = torch.zeros((1, 16, 128, 128), dtype=torch.float32)
+    query = torch.zeros((1, 1, 16, 128), dtype=torch.float32)
     for layer_index in stage_a.LINEAR_LAYER_INDICES:
         historical.stage_query_observation(layer_index, query)
         historical.update_recurrent_state(state, layer_idx=layer_index)
@@ -2897,6 +3261,234 @@ def test_real_exact_geometry_caches_pass_synthetic_storage_closure_smoke() -> No
         method=RHT_CQER_METHOD,
         storage=historical_summary,
     )
+
+
+@pytest.mark.parametrize("method", FIXED_REPLAY_METHODS)
+def test_real_exact_geometry_fixed_replay_factory_passes_storage_closure(
+    method: str,
+) -> None:
+    from recurquant.qwen35 import create_qwen35_experiment010_fixed_replay_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    cache = create_qwen35_experiment010_fixed_replay_cache(
+        config,
+        plan=plan,
+        mode=method,
+        record_evidence=True,
+    )
+    _initialize_exact_geometry_shared(cache)
+    _stage_exact_geometry_statelease_prefill(cache)
+    summary = stage_a._validated_storage_summary(
+        method,
+        cache,
+        reference_shared_schema=stage_a._shared_cache_schema(cache),
+        expected_plan=plan,
+    )
+    assert summary["candidate_persistent_storage_bytes"] == FROZEN_STATELEASE_RESIDENT_BYTES
+    assert summary["logical_resident_capacity_bytes"] == FROZEN_STATELEASE_RESIDENT_BYTES
+    assert stage_a._validate_serialized_tensor_schemas(
+        method=method,
+        storage=summary,
+    )
+
+
+def test_fixed_replay_attestation_rejects_wrong_factory_mode() -> None:
+    from recurquant.qwen35 import create_qwen35_experiment010_fixed_replay_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    wrong_mode = create_qwen35_experiment010_fixed_replay_cache(
+        config,
+        plan=plan,
+        mode="fixed_cc2",
+    )
+    with pytest.raises(RuntimeError, match="fixed replay policy drifted"):
+        stage_a._statelease_candidate_tensors(
+            wrong_mode,
+            method="fixed_cc1",
+            expected_plan=plan,
+        )
+
+
+def test_fixed_replay_attestation_rejects_same_mode_schedule_drift() -> None:
+    from recurquant.qwen35 import create_qwen35_experiment010_fixed_replay_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    cache = create_qwen35_experiment010_fixed_replay_cache(
+        config,
+        plan=plan,
+        mode="fixed_cc1",
+    )
+    cache.policy = replace(cache.policy, checkpoint_period=2)
+    with pytest.raises(RuntimeError, match="cache fixed replay policy drifted"):
+        stage_a._statelease_candidate_tensors(
+            cache,
+            method="fixed_cc1",
+            expected_plan=plan,
+        )
+
+
+@pytest.mark.parametrize("tamper", ("experiment_identity", "effective_plan"))
+def test_fixed_replay_attestation_rejects_effective_plan_identity_drift(
+    tamper: str,
+) -> None:
+    from recurquant.qwen35 import create_qwen35_experiment010_fixed_replay_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    cache = create_qwen35_experiment010_fixed_replay_cache(
+        config,
+        plan=plan,
+        mode="fixed_cc1",
+    )
+    if tamper == "experiment_identity":
+        cache.experiment_identity_sha256 = "0" * 64
+        expected_message = "cache experiment identity drifted"
+    else:
+        cache.plan = replace(cache.plan, resident_bytes=cache.plan.resident_bytes + 64)
+        expected_message = "exact row-plan identity drifted"
+    with pytest.raises(RuntimeError, match=expected_message):
+        stage_a._statelease_candidate_tensors(
+            cache,
+            method="fixed_cc1",
+            expected_plan=plan,
+        )
+
+
+@pytest.mark.parametrize("method", (STATELEASE_METHOD, "fixed_cc1"))
+def test_statelease_attestation_rejects_within_layer_row_swap_hidden_by_quota_hash(
+    method: str,
+) -> None:
+    from recurquant.qwen35 import (
+        create_qwen35_experiment010_fixed_replay_cache,
+        create_qwen35_experiment010_statelease_cache,
+        experiment010_statelease_effective_plan_sha256,
+    )
+    from recurquant.row_policy import RowLocation
+
+    config, expected_plan = _exact_geometry_config_and_plan()
+    original = RowLocation(layer_index=0, head_index=0, row_index=0)
+    replacement = RowLocation(layer_index=0, head_index=15, row_index=127)
+    assert original in expected_plan.high_precision_rows
+    assert replacement not in expected_plan.high_precision_rows
+    swapped_rows = tuple(
+        sorted(
+            replacement if location == original else location
+            for location in expected_plan.high_precision_rows
+        )
+    )
+    swapped_plan = replace(expected_plan, high_precision_rows=swapped_rows)
+    assert experiment010_statelease_effective_plan_sha256(swapped_plan) == (
+        experiment010_statelease_effective_plan_sha256(expected_plan)
+    )
+    assert swapped_plan != expected_plan
+    if method == STATELEASE_METHOD:
+        cache = create_qwen35_experiment010_statelease_cache(
+            config,
+            plan=swapped_plan,
+        )
+    else:
+        cache = create_qwen35_experiment010_fixed_replay_cache(
+            config,
+            plan=swapped_plan,
+            mode=method,
+        )
+
+    with pytest.raises(RuntimeError, match="exact row-plan identity drifted"):
+        stage_a._statelease_candidate_tensors(
+            cache,
+            method=method,
+            expected_plan=expected_plan,
+        )
+
+
+def test_statelease_attestation_rejects_layer_group_identity_drift() -> None:
+    from recurquant.qwen35 import create_qwen35_experiment010_statelease_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    cache = create_qwen35_experiment010_statelease_cache(
+        config,
+        plan=plan,
+    )
+    layer_index, layer = next(cache.statelease_layers())
+    groups = list(layer.high_precision_group_indices)
+    groups[0] = 2_047
+    layer.high_precision_group_indices = tuple(sorted(groups))
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"layer {layer_index} high-precision group identity drifted",
+    ):
+        stage_a._statelease_candidate_tensors(
+            cache,
+            method=STATELEASE_METHOD,
+            expected_plan=plan,
+        )
+
+
+def test_fixed_replay_attestation_rejects_specialized_cache_type() -> None:
+    from recurquant.qwen35 import EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256
+    from recurquant.statelease_baselines import FixedCC1RecurrentStateCache
+
+    config, plan = _exact_geometry_config_and_plan()
+    specialized = FixedCC1RecurrentStateCache(
+        config,
+        plan=plan,
+        selection_method="fixed_cc1_right_rht_query_ema32_weighted_mse_fisher_quota",
+        experiment_identity_sha256=EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
+    )
+    with pytest.raises(RuntimeError, match="cache type drifted"):
+        stage_a._statelease_candidate_tensors(
+            specialized,
+            method="fixed_cc1",
+            expected_plan=plan,
+        )
+
+
+def test_fixed_replay_attestation_rejects_cache_selection_identity_drift() -> None:
+    from recurquant.qwen35 import create_qwen35_experiment010_fixed_replay_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    cache = create_qwen35_experiment010_fixed_replay_cache(
+        config,
+        plan=plan,
+        mode="fixed_cc1",
+    )
+    cache.selection_method = "fixed_cc1_unfrozen_selector"
+    with pytest.raises(RuntimeError, match="cache selection identity drifted"):
+        stage_a._statelease_candidate_tensors(
+            cache,
+            method="fixed_cc1",
+            expected_plan=plan,
+        )
+
+
+@pytest.mark.parametrize("tamper", ("policy", "selection", "replay_capacity"))
+def test_fixed_replay_attestation_rejects_layer_contract_drift(
+    tamper: str,
+) -> None:
+    from recurquant.qwen35 import create_qwen35_experiment010_fixed_replay_cache
+
+    config, plan = _exact_geometry_config_and_plan()
+    cache = create_qwen35_experiment010_fixed_replay_cache(
+        config,
+        plan=plan,
+        mode="fixed_cc1",
+    )
+    _layer_index, layer = next(cache.statelease_layers())
+    if tamper == "policy":
+        layer.policy = replace(layer.policy, checkpoint_period=2)
+        expected_message = "fixed replay policy drifted"
+    elif tamper == "selection":
+        layer.selection_method = "fixed_cc1_unfrozen_selector"
+        expected_message = "selection identity drifted"
+    else:
+        layer.replay_capacity += 1
+        expected_message = "fixed replay policy drifted"
+    with pytest.raises(RuntimeError, match=expected_message):
+        stage_a._statelease_candidate_tensors(
+            cache,
+            method="fixed_cc1",
+            expected_plan=plan,
+        )
 
 
 def test_stage_a_gate_includes_historical_anchor_and_fails_closed() -> None:
@@ -2932,28 +3524,144 @@ def test_stage_a_source_set_covers_stage0_and_historical_comparator_sources() ->
     from scripts import capture_statelease_stage0 as stage0_capture
 
     assert set(stage0_capture.SOURCE_IDENTITY_PATHS) <= set(stage_a.SOURCE_FILES)
+    expected_required_modules = dict(stage0_capture.REQUIRED_LOADED_RECURQUANT_MODULE_PATHS)
+    expected_required_modules.update(
+        {
+            "recurquant.cache": "src/recurquant/cache.py",
+            "recurquant.evaluation": "src/recurquant/evaluation.py",
+            "recurquant.metrics": "src/recurquant/metrics.py",
+        }
+    )
+    assert dict(stage_a.REQUIRED_LOADED_RECURQUANT_MODULE_PATHS) == expected_required_modules
     assert "scripts/screen_rht_cqer.py" in stage_a.SOURCE_FILES
     assert stage_a.EXPERIMENT010_ATTEMPT_RELATIVE_PATH in stage_a.SOURCE_FILES
     assert stage_a.EXPERIMENT010_ADMIN_NULL_RELATIVE_PATH in stage_a.SOURCE_FILES
     assert stage_a.EXPERIMENT010_ADMIN_NULL_NOTE_RELATIVE_PATH in stage_a.SOURCE_FILES
+    assert stage_a.EXPERIMENT011_ATTEMPT_RELATIVE_PATH in stage_a.SOURCE_FILES
+    assert stage_a.EXPERIMENT011_ADMIN_NULL_RELATIVE_PATH in stage_a.SOURCE_FILES
+    assert stage_a.EXPERIMENT011_ADMIN_NULL_NOTE_RELATIVE_PATH in stage_a.SOURCE_FILES
     assert "research/EXPERIMENT_010_STAGE_A_IDENTITY.md" in stage_a.SOURCE_FILES
     assert "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md" in stage_a.SOURCE_FILES
     assert "research/EXPERIMENT_011_STAGE_A_IDENTITY.md" in stage_a.SOURCE_FILES
     assert "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md" in stage_a.SOURCE_FILES
+    assert "research/EXPERIMENT_012_STAGE_A_IDENTITY.md" in stage_a.SOURCE_FILES
+    assert "research/EXPERIMENT_012_STATELEASE_PROTOCOL.md" in stage_a.SOURCE_FILES
 
 
 def test_loaded_local_module_outside_source_set_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    module = types.ModuleType("recurquant.synthetic_omitted")
-    module.__file__ = str(tmp_path / "src" / "recurquant" / "synthetic_omitted.py")
+    source = tmp_path / "synthetic_external.py"
+    source.write_text("external = True\n", encoding="utf-8")
+    module = types.ModuleType("recurquant.synthetic_external")
+    module.__file__ = str(source)
     monkeypatch.setitem(sys.modules, module.__name__, module)
     with pytest.raises(
         stage_a.StageAAuthenticationError,
-        match="absent from the frozen source set",
+        match="outside the authenticated repository",
     ):
-        stage_a._assert_loaded_local_modules_declared(tmp_path)
+        stage_a._assert_loaded_local_modules_declared(Path(__file__).resolve().parents[1])
+
+
+def test_loaded_recurquant_module_closure_requires_exact_core_name_path_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    loaded = stage_a._assert_loaded_local_modules_declared(repo_root)
+    required_paths = dict(stage_a.REQUIRED_LOADED_RECURQUANT_MODULE_PATHS).values()
+    assert set(required_paths) <= set(loaded)
+    assert "scripts/screen_statelease_stage_a.py" in loaded
+
+    cache_module = sys.modules["recurquant.cache"]
+    monkeypatch.setattr(
+        cache_module,
+        "__file__",
+        str(repo_root / "src" / "recurquant" / "qwen35.py"),
+    )
+    with pytest.raises(stage_a.StageAAuthenticationError, match="closure differs"):
+        stage_a._assert_loaded_local_modules_declared(repo_root)
+
+
+def test_loaded_recurquant_module_closure_rejects_missing_required_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.delitem(sys.modules, "recurquant.cache")
+    with pytest.raises(stage_a.StageAAuthenticationError, match="closure differs"):
+        stage_a._assert_loaded_local_modules_declared(repo_root)
+
+
+def test_loaded_recurquant_module_closure_rejects_missing_file_or_symlink(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    no_file = types.ModuleType("recurquant.synthetic_without_file")
+    monkeypatch.setitem(sys.modules, no_file.__name__, no_file)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="no regular source file"):
+        stage_a._assert_loaded_local_modules_declared(repo_root)
+
+    monkeypatch.delitem(sys.modules, no_file.__name__)
+    link = tmp_path / "linked_module.py"
+    try:
+        link.symlink_to(repo_root / "src" / "recurquant" / "cache.py")
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    linked = types.ModuleType("recurquant.synthetic_symlink")
+    linked.__file__ = str(link)
+    monkeypatch.setitem(sys.modules, linked.__name__, linked)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="source is a symlink"):
+        stage_a._assert_loaded_local_modules_declared(repo_root)
+
+
+def test_script_module_never_falls_back_after_internal_dependency_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = (
+        Path(__file__).resolve().parents[1]
+        / stage_a.AUTHENTICATED_SCRIPT_MODULE_PATHS["verify_statelease_stage0"]
+    )
+    spec = SimpleNamespace(origin=str(expected))
+    calls: list[str] = []
+    monkeypatch.setattr(stage_a.importlib.util, "find_spec", lambda _name: spec)
+
+    def missing_dependency(name: str) -> object:
+        calls.append(name)
+        raise ModuleNotFoundError("missing internal dependency", name="synthetic_dependency")
+
+    monkeypatch.setattr(stage_a.importlib, "import_module", missing_dependency)
+    with pytest.raises(stage_a.StageAAuthenticationError, match="dependency is missing"):
+        stage_a._script_module("verify_statelease_stage0")
+    assert calls == ["scripts.verify_statelease_stage0"]
+
+
+def test_script_module_bare_fallback_requires_exact_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = (
+        Path(__file__).resolve().parents[1]
+        / stage_a.AUTHENTICATED_SCRIPT_MODULE_PATHS["verify_statelease_stage0"]
+    )
+    exact_spec = SimpleNamespace(origin=str(expected))
+    module = types.ModuleType("verify_statelease_stage0")
+    module.__file__ = str(expected)
+
+    def find_spec(name: str) -> object | None:
+        return None if name == "scripts.verify_statelease_stage0" else exact_spec
+
+    monkeypatch.setattr(stage_a.importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(stage_a.importlib, "import_module", lambda name: module)
+    assert stage_a._script_module("verify_statelease_stage0") is module
+
+    external_spec = SimpleNamespace(origin=str(expected.parent / "external_verifier.py"))
+    monkeypatch.setattr(
+        stage_a.importlib.util,
+        "find_spec",
+        lambda name: None if name == "scripts.verify_statelease_stage0" else external_spec,
+    )
+    with pytest.raises(stage_a.StageAAuthenticationError, match="origin is unavailable"):
+        stage_a._script_module("verify_statelease_stage0")
 
 
 def test_stage_a_method_matrix_and_claim_boundary_are_explicit() -> None:
@@ -2965,7 +3673,7 @@ def test_stage_a_method_matrix_and_claim_boundary_are_explicit() -> None:
     ) == stage_a.QUALITY_METHODS
     assert "cannot support a public improvement" in stage_a.CLAIM_BOUNDARY
     assert "breakthrough claim" in stage_a.CLAIM_BOUNDARY
-    assert "Experiment 011" in stage_a.CLAIM_BOUNDARY
+    assert "Experiment 012" in stage_a.CLAIM_BOUNDARY
 
 
 def test_cli_has_no_output_override_and_requires_explicit_mode() -> None:
@@ -2999,13 +3707,31 @@ def test_cli_has_no_output_override_and_requires_explicit_mode() -> None:
         )
 
 
-def test_experiment011_paths_marker_and_schema_are_unique() -> None:
-    assert "experiment011" in stage_a.OUTPUT_RELATIVE_PATH
-    assert "experiment011" in stage_a.ATTEMPT_RELATIVE_PATH
+def test_experiment012_paths_marker_and_schema_are_unique() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    assert "experiment012" in stage_a.OUTPUT_RELATIVE_PATH
+    assert "experiment012" in stage_a.ATTEMPT_RELATIVE_PATH
     assert stage_a.OUTPUT_RELATIVE_PATH != stage_a.EXPERIMENT010_OUTPUT_RELATIVE_PATH
+    assert stage_a.OUTPUT_RELATIVE_PATH != stage_a.EXPERIMENT011_OUTPUT_RELATIVE_PATH
     assert stage_a.ATTEMPT_RELATIVE_PATH != stage_a.EXPERIMENT010_ATTEMPT_RELATIVE_PATH
+    assert stage_a.ATTEMPT_RELATIVE_PATH != stage_a.EXPERIMENT011_ATTEMPT_RELATIVE_PATH
     assert stage_a.ONE_RUN_MARKER != stage_a.EXPERIMENT010_ONE_RUN_MARKER
-    assert stage_a.ARTIFACT_KIND.startswith("recurquant_experiment011_")
+    assert stage_a.ONE_RUN_MARKER != stage_a.EXPERIMENT011_ONE_RUN_MARKER
+    assert stage_a.ARTIFACT_KIND.startswith("recurquant_experiment012_")
+    assert stage_a.IDENTITY_NOTE_RELATIVE_PATH.endswith("EXPERIMENT_012_STAGE_A_IDENTITY.md")
+    assert stage_a.PROTOCOL_NOTE_RELATIVE_PATH.endswith("EXPERIMENT_012_STATELEASE_PROTOCOL.md")
+    assert stage_a.STAGE0_ARTIFACT_RELATIVE_PATH == ("artifacts/experiment012_stage0_production.pt")
+    assert stage_a.STAGE0_SHA256_RELATIVE_PATH == (
+        "artifacts/experiment012_stage0_production.pt.sha256"
+    )
+    assert (
+        hashlib.sha256((repo_root / stage_a.IDENTITY_NOTE_RELATIVE_PATH).read_bytes()).hexdigest()
+        == stage_a.IDENTITY_NOTE_FILE_SHA256
+    )
+    assert (
+        hashlib.sha256((repo_root / stage_a.PROTOCOL_NOTE_RELATIVE_PATH).read_bytes()).hexdigest()
+        == stage_a.PROTOCOL_NOTE_FILE_SHA256
+    )
 
 
 def test_preflight_performs_readiness_without_task_tokenizer_weights_or_seal(
@@ -3015,9 +3741,10 @@ def test_preflight_performs_readiness_without_task_tokenizer_weights_or_seal(
     preflight = SimpleNamespace(
         repository_start={"commit": "0" * 40},
         experiment010_admin_null={"scientific_result_available": False},
+        experiment011_admin_null={"scientific_result_available": False},
     )
     readiness_receipt = {
-        "schema": "recurquant.experiment011.runtime-readiness.v1",
+        "schema": "recurquant.experiment012.runtime-readiness.v1",
         "accelerator": {"requested_device": "cuda"},
     }
     readiness = stage_a.RuntimeReadiness(
@@ -3067,6 +3794,8 @@ def test_preflight_performs_readiness_without_task_tokenizer_weights_or_seal(
     assert report["tokenizer_loaded"] is False
     assert report["model_weights_loaded"] is False
     assert report["one_run_reserved"] is False
+    assert report["experiment010_administrative_null"] == (preflight.experiment010_admin_null)
+    assert report["experiment011_administrative_null"] == (preflight.experiment011_admin_null)
 
 
 def test_recorded_command_redacts_local_stage0_directories(

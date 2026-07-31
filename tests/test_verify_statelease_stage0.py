@@ -16,7 +16,7 @@ import scripts.verify_statelease_stage0 as verify_stage0
 from scripts.verify_statelease_stage0 import (
     CHECKPOINT_BYTES,
     EXPANDED_Q48_PROMOTIONS,
-    EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
+    EXPERIMENT012_SOURCE_PROVENANCE_PATHS,
     EXPERIMENT_ID,
     FROZEN_SEED,
     KEY_NORM_EPS,
@@ -63,8 +63,13 @@ from scripts.verify_statelease_stage0 import (
 SCRIPT = Path(__file__).parents[1] / "scripts" / "verify_statelease_stage0.py"
 
 
-def test_experiment011_verifier_identity_pins_complete_provenance() -> None:
+def test_experiment012_verifier_identity_pins_complete_provenance() -> None:
     expected_provenance = (
+        "research/EXPERIMENT_012_STATELEASE_PROTOCOL.md",
+        "research/EXPERIMENT_012_STAGE_A_IDENTITY.md",
+        "research/EXPERIMENT_011_STAGE_A_ADMINISTRATIVE_NULL.md",
+        "evidence/experiment011-statelease-stage-a-administrative-null.json",
+        "artifacts/experiment011-statelease-stage-a-666.attempt.json",
         "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md",
         "research/EXPERIMENT_011_STAGE_A_IDENTITY.md",
         "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md",
@@ -74,9 +79,9 @@ def test_experiment011_verifier_identity_pins_complete_provenance() -> None:
         "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
     )
 
-    assert EXPERIMENT_ID == "experiment011"
-    assert PRODUCTION_SCHEMA == "recurquant.experiment011.stage0.production.v1"
-    assert expected_provenance == EXPERIMENT011_SOURCE_PROVENANCE_PATHS
+    assert EXPERIMENT_ID == "experiment012"
+    assert PRODUCTION_SCHEMA == "recurquant.experiment012.stage0.production.v1"
+    assert expected_provenance == EXPERIMENT012_SOURCE_PROVENANCE_PATHS
     assert all(relative in SOURCE_IDENTITY_PATHS for relative in expected_provenance)
 
 

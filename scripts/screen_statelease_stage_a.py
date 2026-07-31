@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Run the one permitted Experiment 011 StateLease Stage-A falsification screen.
+"""Run the one permitted Experiment 012 StateLease Stage-A falsification screen.
 
 The command is deliberately difficult to run accidentally.  It authenticates
-the Experiment 010 administrative-null provenance, committed Experiment 009
-task-666 evidence, both frozen selector artifacts, an independently verified
-production Stage-0 artifact, the exact repository source set, the complete
-runtime/dependency readiness receipt, and the pinned model configuration
-before reserving the single Stage-A attempt.  Only then may it read the
-already-open task 666, tokenize it, or load model weights.
+the Experiment 010 and Experiment 011 administrative-null provenance,
+committed Experiment 009 task-666 evidence, both frozen selector artifacts, an
+independently verified production Stage-0 artifact, the exact repository
+source set, the complete runtime/dependency readiness receipt, and the pinned
+model configuration before reserving the single Stage-A attempt.  Only then
+may it read the already-open task 666, tokenize it, or load model weights.
 
 Stage A cannot support a public improvement, novelty, deployment, speed,
 state-of-the-art, or breakthrough claim, even when every frozen gate passes.
@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import dataclasses
 import gc
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import math
 import os
@@ -53,13 +55,14 @@ from recurquant.statelease_evaluation import (
 )
 
 SEED = 2339
-ARTIFACT_KIND = "recurquant_experiment011_statelease_stage_a_falsification"
+ARTIFACT_KIND = "recurquant_experiment012_statelease_stage_a_falsification"
 ARTIFACT_SCHEMA_VERSION = 1
 
 MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
 MODEL_REVISION = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
 MODEL_DTYPE = torch.bfloat16
 TASK_ID = 666
+REPO_ROOT = Path(__file__).resolve().parents[1]
 TASK_ROW_SHA256 = "b4f5989005c921c3ab94ab52c8115e79f99a22390bc1d6e6235d36fd02687fb9"
 PROMPT_TEXT_SHA256 = "b6f0f93b9d15b96ac42bbabbdb349a09d2d24e57667d47cafe900c1ea91fd64b"
 CODE_TEXT_SHA256 = "d2701e79ccd968c9e5af78474af16256f3bbf39cdfedbec2199ac92e1a4f397e"
@@ -159,13 +162,54 @@ EXPERIMENT010_SEAL_COMMIT = "c0ef99c924121b981d7bbda8ba4b9b76d3b14f51"
 EXPERIMENT010_SEAL_TREE = "e271ba8f11bdf588c361e6ffc797ec795671e7f8"
 EXPERIMENT010_ONE_RUN_MARKER = "RecurQuant-One-Run: experiment010-stage-a-task666-v1"
 
-OUTPUT_RELATIVE_PATH = "artifacts/experiment011-statelease-stage-a-666.json"
-ATTEMPT_RELATIVE_PATH = "artifacts/experiment011-statelease-stage-a-666.attempt.json"
-IDENTITY_NOTE_RELATIVE_PATH = "research/EXPERIMENT_011_STAGE_A_IDENTITY.md"
-IDENTITY_NOTE_FILE_SHA256 = "9a1a855df14ba96e05bc948d016d1f360dadcdb5a510a15f02b87f26e4390536"
-PROTOCOL_NOTE_RELATIVE_PATH = "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md"
-PROTOCOL_NOTE_FILE_SHA256 = "29ad6a7d6c6eec243191a0d444a748219ed2ed12ab42f48e01af7316c8ab2737"
-ONE_RUN_MARKER = "RecurQuant-One-Run: experiment011-stage-a-task666-v1"
+EXPERIMENT011_ADMIN_NULL_RELATIVE_PATH = (
+    "evidence/experiment011-statelease-stage-a-administrative-null.json"
+)
+EXPERIMENT011_ADMIN_NULL_FILE_SHA256 = (
+    "9a50de42c5e0eabad97798d90459aee938be2521a53a503c62159204fba308a2"
+)
+EXPERIMENT011_ADMIN_NULL_CANONICAL_SHA256 = (
+    "c3ab1763502e3fac91166337dbc9fb536bd66258fbb17128f617911a2d6db387"
+)
+EXPERIMENT011_ADMIN_NULL_NOTE_RELATIVE_PATH = (
+    "research/EXPERIMENT_011_STAGE_A_ADMINISTRATIVE_NULL.md"
+)
+EXPERIMENT011_ADMIN_NULL_NOTE_FILE_SHA256 = (
+    "0aace5364b92b06232526bacc70d30bc15c0fde2910d171c971052e42b337376"
+)
+EXPERIMENT011_IDENTITY_NOTE_RELATIVE_PATH = "research/EXPERIMENT_011_STAGE_A_IDENTITY.md"
+EXPERIMENT011_IDENTITY_NOTE_FILE_SHA256 = (
+    "9a1a855df14ba96e05bc948d016d1f360dadcdb5a510a15f02b87f26e4390536"
+)
+EXPERIMENT011_PROTOCOL_NOTE_RELATIVE_PATH = "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md"
+EXPERIMENT011_PROTOCOL_NOTE_FILE_SHA256 = (
+    "29ad6a7d6c6eec243191a0d444a748219ed2ed12ab42f48e01af7316c8ab2737"
+)
+EXPERIMENT011_ATTEMPT_RELATIVE_PATH = "artifacts/experiment011-statelease-stage-a-666.attempt.json"
+EXPERIMENT011_ATTEMPT_FILE_SHA256 = (
+    "f7c7f68adf5078cbbe24b47d17f17fa1e2fdbbd4a9f6fc8229f8d2c7a5dcb9b4"
+)
+EXPERIMENT011_OUTPUT_RELATIVE_PATH = "artifacts/experiment011-statelease-stage-a-666.json"
+EXPERIMENT011_H0_COMMIT = "827bcadacd6231e521f9e2f2ea92582dd4d68cef"
+EXPERIMENT011_SEAL_COMMIT = "0b236c4b46d54ece36f9518ef791a90cf113f0fe"
+EXPERIMENT011_SEAL_TREE = "5596ed305246750da1bacc576002aae828acc045"
+EXPERIMENT011_ONE_RUN_MARKER = "RecurQuant-One-Run: experiment011-stage-a-task666-v1"
+EXPERIMENT011_SEAL_MESSAGE_SHA256 = (
+    "386cede6c5e324707be730f4d451ac376ab4dac4b978ded6d8a83ace7ca49c2e"
+)
+EXPERIMENT011_FAILURE_DETAIL_SHA256 = (
+    "4e714f51191d838888188dbfbb33eeb98ae54eaf5383f4ec89a9c05f3b093573"
+)
+
+OUTPUT_RELATIVE_PATH = "artifacts/experiment012-statelease-stage-a-666.json"
+ATTEMPT_RELATIVE_PATH = "artifacts/experiment012-statelease-stage-a-666.attempt.json"
+STAGE0_ARTIFACT_RELATIVE_PATH = "artifacts/experiment012_stage0_production.pt"
+STAGE0_SHA256_RELATIVE_PATH = f"{STAGE0_ARTIFACT_RELATIVE_PATH}.sha256"
+IDENTITY_NOTE_RELATIVE_PATH = "research/EXPERIMENT_012_STAGE_A_IDENTITY.md"
+IDENTITY_NOTE_FILE_SHA256 = "46a11afd1cad1837b5391c624fff971aeaa4a5794fbe2104b8a56e1a55a9d389"
+PROTOCOL_NOTE_RELATIVE_PATH = "research/EXPERIMENT_012_STATELEASE_PROTOCOL.md"
+PROTOCOL_NOTE_FILE_SHA256 = "ca663e88435d3489fdc0fa86cbe94164cfdf72b37d87f2567493845871d7ace8"
+ONE_RUN_MARKER = "RecurQuant-One-Run: experiment012-stage-a-task666-v1"
 ONE_RUN_LIMITATION = (
     "The local Git commit plus reflog is tamper-evident for normal repository "
     "operations, not cryptographically non-bypassable against deliberate ref and "
@@ -317,6 +361,8 @@ SOURCE_FILES = (
     "pyproject.toml",
     EXPERIMENT010_ATTEMPT_RELATIVE_PATH,
     EXPERIMENT010_ADMIN_NULL_RELATIVE_PATH,
+    EXPERIMENT011_ATTEMPT_RELATIVE_PATH,
+    EXPERIMENT011_ADMIN_NULL_RELATIVE_PATH,
     "scripts/capture_statelease_stage0.py",
     "scripts/screen_rht_cqer.py",
     "scripts/screen_statelease_stage_a.py",
@@ -326,6 +372,9 @@ SOURCE_FILES = (
     "research/EXPERIMENT_010_STAGE_A_IDENTITY.md",
     "research/EXPERIMENT_010_STATELEASE_PROTOCOL.md",
     EXPERIMENT010_ADMIN_NULL_NOTE_RELATIVE_PATH,
+    EXPERIMENT011_IDENTITY_NOTE_RELATIVE_PATH,
+    EXPERIMENT011_PROTOCOL_NOTE_RELATIVE_PATH,
+    EXPERIMENT011_ADMIN_NULL_NOTE_RELATIVE_PATH,
     "src/recurquant/__init__.py",
     "src/recurquant/cache.py",
     "src/recurquant/cli.py",
@@ -383,8 +432,51 @@ SOURCE_FILES = (
     "tests/test_verify_statelease_stage0.py",
 )
 
+REQUIRED_LOADED_RECURQUANT_MODULE_PATHS = (
+    ("recurquant", "src/recurquant/__init__.py"),
+    ("recurquant.cache", "src/recurquant/cache.py"),
+    ("recurquant.evaluation", "src/recurquant/evaluation.py"),
+    ("recurquant.evidence", "src/recurquant/evidence.py"),
+    ("recurquant.finite_difference", "src/recurquant/finite_difference.py"),
+    ("recurquant.fisher_sensitivity", "src/recurquant/fisher_sensitivity.py"),
+    ("recurquant.horizon", "src/recurquant/horizon.py"),
+    ("recurquant.horizon_calibration", "src/recurquant/horizon_calibration.py"),
+    ("recurquant.intervention", "src/recurquant/intervention.py"),
+    ("recurquant.metrics", "src/recurquant/metrics.py"),
+    ("recurquant.mixed_quantization", "src/recurquant/mixed_quantization.py"),
+    ("recurquant.model_fisher", "src/recurquant/model_fisher.py"),
+    ("recurquant.multibit_policy", "src/recurquant/multibit_policy.py"),
+    ("recurquant.multibit_quantization", "src/recurquant/multibit_quantization.py"),
+    ("recurquant.packed_cache", "src/recurquant/packed_cache.py"),
+    ("recurquant.quantization", "src/recurquant/quantization.py"),
+    ("recurquant.query_energy", "src/recurquant/query_energy.py"),
+    ("recurquant.qwen35", "src/recurquant/qwen35.py"),
+    ("recurquant.rht", "src/recurquant/rht.py"),
+    ("recurquant.row_policy", "src/recurquant/row_policy.py"),
+    ("recurquant.statelease", "src/recurquant/statelease.py"),
+    ("recurquant.statelease_baselines", "src/recurquant/statelease_baselines.py"),
+    ("recurquant.statelease_cache", "src/recurquant/statelease_cache.py"),
+    (
+        "recurquant.statelease_equal_byte_baselines",
+        "src/recurquant/statelease_equal_byte_baselines.py",
+    ),
+    (
+        "recurquant.statelease_equal_byte_cache",
+        "src/recurquant/statelease_equal_byte_cache.py",
+    ),
+    ("recurquant.statelease_evaluation", "src/recurquant/statelease_evaluation.py"),
+    ("recurquant.statelease_observer", "src/recurquant/statelease_observer.py"),
+    ("recurquant.transition_observer", "src/recurquant/transition_observer.py"),
+)
+
+AUTHENTICATED_SCRIPT_MODULE_PATHS = {
+    "capture_statelease_stage0": "scripts/capture_statelease_stage0.py",
+    "screen_rht_cqer": "scripts/screen_rht_cqer.py",
+    "verify_statelease_stage0": "scripts/verify_statelease_stage0.py",
+}
+
 CLAIM_BOUNDARY = (
-    "Experiment 011 Stage A is one-task, already-open falsification evidence. "
+    "Experiment 012 Stage A is one-task, already-open falsification evidence. "
     "Passing only authorizes the separately frozen development-identity step. "
     "It cannot support a public improvement, novelty, deployment, speed, "
     "state-of-the-art, or breakthrough claim."
@@ -396,6 +488,7 @@ PRESEAL_FRESHNESS_KEYS = frozenset(
         "new_marker_absent",
         "stage0_reauthenticated",
         "experiment010_administrative_null_reauthenticated",
+        "experiment011_administrative_null_reauthenticated",
         "runtime_readiness_reauthenticated",
         "configuration_reauthenticated_local_only",
     }
@@ -417,6 +510,7 @@ class StageAPreflight:
     source_hashes_start: dict[str, str]
     identity_clarification: dict[str, object]
     experiment010_admin_null: dict[str, object]
+    experiment011_admin_null: dict[str, object]
     anchor: dict[str, object]
     selector_identity: dict[str, object]
     plan: object
@@ -652,11 +746,107 @@ def run_ordered_access(hooks: AccessHooks) -> object:
         raise
 
 
-def _script_module(name: str) -> Any:
+def _expected_script_module_path(name: str) -> Path:
     try:
-        return importlib.import_module(f"scripts.{name}")
-    except ModuleNotFoundError:
-        return importlib.import_module(name)
+        relative = AUTHENTICATED_SCRIPT_MODULE_PATHS[name]
+    except KeyError as error:
+        raise StageAAuthenticationError(
+            f"unauthenticated Stage-A helper module requested: {name}"
+        ) from error
+    expected = REPO_ROOT / relative
+    if expected.is_symlink():
+        raise StageAAuthenticationError(f"Stage-A helper source is a symlink: {name}")
+    try:
+        resolved = expected.resolve(strict=True)
+    except OSError as error:
+        raise StageAAuthenticationError(f"Stage-A helper source is unavailable: {name}") from error
+    if not resolved.is_file():
+        raise StageAAuthenticationError(f"Stage-A helper source is not a regular file: {name}")
+    return resolved
+
+
+def _validated_script_module_origin(module: object, *, name: str, expected: Path) -> Any:
+    raw_path = getattr(module, "__file__", None)
+    if not isinstance(raw_path, (str, os.PathLike)):
+        raise StageAAuthenticationError(f"Stage-A helper module has no source file: {name}")
+    declared = Path(raw_path)
+    if declared.is_symlink():
+        raise StageAAuthenticationError(f"Stage-A helper module source is a symlink: {name}")
+    try:
+        resolved = declared.resolve(strict=True)
+    except OSError as error:
+        raise StageAAuthenticationError(
+            f"Stage-A helper module source is unavailable: {name}"
+        ) from error
+    if not resolved.is_file() or resolved != expected:
+        raise StageAAuthenticationError(
+            f"Stage-A helper module origin is not the authenticated repository file: {name}"
+        )
+    return module
+
+
+def _validated_script_spec_origin(spec: object, *, name: str, expected: Path) -> None:
+    raw_origin = getattr(spec, "origin", None)
+    if not isinstance(raw_origin, (str, os.PathLike)):
+        raise StageAAuthenticationError(f"Stage-A helper import has no source origin: {name}")
+    declared = Path(raw_origin)
+    if declared.is_symlink():
+        raise StageAAuthenticationError(f"Stage-A helper import origin is a symlink: {name}")
+    try:
+        resolved = declared.resolve(strict=True)
+    except OSError as error:
+        raise StageAAuthenticationError(
+            f"Stage-A helper import origin is unavailable: {name}"
+        ) from error
+    if not resolved.is_file() or resolved != expected:
+        raise StageAAuthenticationError(
+            f"Stage-A helper import origin is not the authenticated repository file: {name}"
+        )
+
+
+def _script_module(name: str) -> Any:
+    """Import one exact local helper without executing an unauthenticated fallback."""
+
+    expected = _expected_script_module_path(name)
+    qualified = f"scripts.{name}"
+    try:
+        qualified_spec = importlib.util.find_spec(qualified)
+    except ModuleNotFoundError as error:
+        if error.name not in {"scripts", qualified}:
+            raise StageAAuthenticationError(
+                f"authenticated Stage-A helper dependency is missing: {qualified}"
+            ) from error
+        qualified_spec = None
+    except (ImportError, AttributeError, ValueError) as error:
+        raise StageAAuthenticationError(
+            f"cannot resolve authenticated Stage-A helper import: {qualified}"
+        ) from error
+    if qualified_spec is not None:
+        _validated_script_spec_origin(qualified_spec, name=qualified, expected=expected)
+        try:
+            module = importlib.import_module(qualified)
+        except ModuleNotFoundError as error:
+            raise StageAAuthenticationError(
+                f"authenticated Stage-A helper dependency is missing: {qualified}"
+            ) from error
+        return _validated_script_module_origin(module, name=qualified, expected=expected)
+
+    try:
+        bare_spec = importlib.util.find_spec(name)
+    except (ImportError, AttributeError, ValueError) as error:
+        raise StageAAuthenticationError(
+            f"cannot resolve authenticated Stage-A helper fallback: {name}"
+        ) from error
+    if bare_spec is None:
+        raise StageAAuthenticationError(f"authenticated Stage-A helper is unavailable: {name}")
+    _validated_script_spec_origin(bare_spec, name=name, expected=expected)
+    try:
+        module = importlib.import_module(name)
+    except ModuleNotFoundError as error:
+        raise StageAAuthenticationError(
+            f"authenticated Stage-A helper dependency is missing: {name}"
+        ) from error
+    return _validated_script_module_origin(module, name=name, expected=expected)
 
 
 def _file_sha256(path: Path) -> str:
@@ -665,6 +855,12 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _path_entry_exists(path: Path) -> bool:
+    """Return true for every directory entry, including a dangling symlink."""
+
+    return os.path.lexists(os.fspath(path))
 
 
 def _canonical_sha256(value: object) -> str:
@@ -849,7 +1045,7 @@ def _assert_git_repository_identity(repo_root: Path) -> dict[str, object]:
     alternates = object_dir / "info" / "alternates"
     http_alternates = object_dir / "info" / "http-alternates"
     for alternate_file in (alternates, http_alternates):
-        if not alternate_file.exists():
+        if not _path_entry_exists(alternate_file):
             continue
         try:
             alternate_bytes = alternate_file.read_bytes()
@@ -858,7 +1054,7 @@ def _assert_git_repository_identity(repo_root: Path) -> dict[str, object]:
         if alternate_bytes.strip():
             raise StageAAuthenticationError("Git alternate object stores are forbidden")
     shallow = common_dir / "shallow"
-    if shallow.exists():
+    if _path_entry_exists(shallow):
         try:
             shallow_bytes = shallow.read_bytes()
         except OSError as error:
@@ -868,7 +1064,7 @@ def _assert_git_repository_identity(repo_root: Path) -> dict[str, object]:
     if _git(repo_root, "for-each-ref", "--format=%(refname)", "refs/replace"):
         raise StageAAuthenticationError("Git replacement refs are forbidden")
     grafts = common_dir / "info" / "grafts"
-    if grafts.exists():
+    if _path_entry_exists(grafts):
         try:
             graft_bytes = grafts.read_bytes()
         except OSError as error:
@@ -879,6 +1075,30 @@ def _assert_git_repository_identity(repo_root: Path) -> dict[str, object]:
     def identity_digest(path: Path) -> str:
         normalized = os.path.normcase(str(path))
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    verifier = _script_module("verify_statelease_stage0")
+    binding_function = getattr(verifier, "_current_repository_binding", None)
+    binding_schema = getattr(verifier, "GIT_REPOSITORY_BINDING_SCHEMA", None)
+    if not callable(binding_function) or binding_schema != "recurquant.git-repository-binding.v1":
+        raise StageAAuthenticationError(
+            "independent Stage-0 Git repository-binding verifier is unavailable"
+        )
+    try:
+        stage0_repository_binding = binding_function(repo_root)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise StageAAuthenticationError(
+            "Stage-A Git repository binding failed independent Stage-0 authentication"
+        ) from error
+    if (
+        not isinstance(stage0_repository_binding, Mapping)
+        or stage0_repository_binding.get("schema") != binding_schema
+        or stage0_repository_binding.get("hidden_index_flags_absent") is not True
+        or stage0_repository_binding.get("unsafe_local_config_absent") is not True
+        or not isinstance(stage0_repository_binding.get("local_config_sha256"), str)
+    ):
+        raise StageAAuthenticationError(
+            "independent Stage-0 Git repository-binding receipt is malformed"
+        )
 
     return {
         "top_level_matches_repo_root": True,
@@ -895,6 +1115,10 @@ def _assert_git_repository_identity(repo_root: Path) -> dict[str, object]:
         "object_format": "sha1",
         "inherited_git_environment_scrubbed": True,
         "system_and_global_git_config_disabled": True,
+        "unsafe_local_config_absent": True,
+        "hidden_index_flags_absent": True,
+        "local_config_sha256": stage0_repository_binding["local_config_sha256"],
+        "stage0_repository_binding": dict(stage0_repository_binding),
         "worktree_layout": worktree_layout,
         "top_level_identity_sha256": identity_digest(top_level),
         "git_directory_identity_sha256": identity_digest(git_dir),
@@ -931,31 +1155,107 @@ def _source_hashes(repo_root: Path) -> dict[str, str]:
 
 
 def _assert_loaded_local_modules_declared(repo_root: Path) -> tuple[str, ...]:
-    root = repo_root.resolve()
-    declared = set(SOURCE_FILES)
-    loaded: set[str] = set()
-    for module in tuple(sys.modules.values()):
-        raw_path = getattr(module, "__file__", None)
-        if not isinstance(raw_path, str):
-            continue
-        try:
-            path = Path(raw_path).resolve()
-            relative = path.relative_to(root).as_posix()
-        except (OSError, ValueError):
-            continue
-        if relative.startswith("src/recurquant/") or relative in {
-            "scripts/capture_statelease_stage0.py",
-            "scripts/screen_rht_cqer.py",
-            "scripts/screen_statelease_stage_a.py",
-            "scripts/verify_statelease_stage0.py",
-        }:
-            loaded.add(relative)
-    omitted = sorted(loaded - declared)
-    if omitted:
+    """Bind every loaded RecurQuant/helper module to its canonical local source."""
+
+    try:
+        root = repo_root.resolve(strict=True)
+        expected_root = REPO_ROOT.resolve(strict=True)
+    except OSError as error:
         raise StageAAuthenticationError(
-            f"loaded local modules are absent from the frozen source set: {omitted}"
+            "authenticated module repository root is unavailable"
+        ) from error
+    if root != expected_root:
+        raise StageAAuthenticationError(
+            "loaded-module authentication requires the exact Stage-A repository root"
         )
-    return tuple(sorted(loaded))
+
+    declared = set(SOURCE_FILES)
+    required = dict(REQUIRED_LOADED_RECURQUANT_MODULE_PATHS)
+    observed: dict[str, str] = {}
+    for module_name, module in sorted(tuple(sys.modules.items())):
+        if module_name != "recurquant" and not module_name.startswith("recurquant."):
+            continue
+        raw_path = getattr(module, "__file__", None)
+        if not isinstance(raw_path, (str, os.PathLike)):
+            raise StageAAuthenticationError(
+                f"loaded RecurQuant module has no regular source file: {module_name}"
+            )
+        declared_path = Path(raw_path)
+        if declared_path.is_symlink():
+            raise StageAAuthenticationError(
+                f"loaded RecurQuant module source is a symlink: {module_name}"
+            )
+        try:
+            resolved = declared_path.resolve(strict=True)
+            relative = resolved.relative_to(root).as_posix()
+        except (OSError, ValueError) as error:
+            raise StageAAuthenticationError(
+                f"loaded RecurQuant module is outside the authenticated repository: {module_name}"
+            ) from error
+        if not resolved.is_file():
+            raise StageAAuthenticationError(
+                f"loaded RecurQuant module source is not a regular file: {module_name}"
+            )
+        observed[module_name] = relative
+
+    missing = sorted(set(required) - set(observed))
+    mismatched = sorted(
+        module_name
+        for module_name in set(required) & set(observed)
+        if observed[module_name] != required[module_name]
+    )
+    unauthenticated: list[str] = []
+    for module_name, relative in observed.items():
+        canonical_paths = (
+            {"src/recurquant/__init__.py"}
+            if module_name == "recurquant"
+            else {
+                f"src/{module_name.replace('.', '/')}.py",
+                f"src/{module_name.replace('.', '/')}/__init__.py",
+            }
+        )
+        if relative not in declared or relative not in canonical_paths:
+            unauthenticated.append(module_name)
+    if missing or mismatched or unauthenticated:
+        raise StageAAuthenticationError(
+            "loaded RecurQuant module closure differs from the authenticated local closure "
+            f"(missing={missing}, mismatched={mismatched}, "
+            f"unauthenticated={sorted(unauthenticated)})"
+        )
+
+    screen_relative = "scripts/screen_statelease_stage_a.py"
+    screen_source = Path(__file__)
+    expected_screen = root / screen_relative
+    if screen_source.is_symlink():
+        raise StageAAuthenticationError("Stage-A evaluator source is a symlink")
+    try:
+        resolved_screen = screen_source.resolve(strict=True)
+        resolved_expected_screen = expected_screen.resolve(strict=True)
+    except OSError as error:
+        raise StageAAuthenticationError("Stage-A evaluator source is unavailable") from error
+    if (
+        not resolved_screen.is_file()
+        or resolved_screen != resolved_expected_screen
+        or screen_relative not in declared
+    ):
+        raise StageAAuthenticationError(
+            "Stage-A evaluator is not the authenticated repository source"
+        )
+
+    loaded_paths = {screen_relative, *observed.values()}
+    for helper_name, relative in AUTHENTICATED_SCRIPT_MODULE_PATHS.items():
+        expected = _expected_script_module_path(helper_name)
+        for module_key in (f"scripts.{helper_name}", helper_name):
+            module = sys.modules.get(module_key)
+            if module is None:
+                continue
+            _validated_script_module_origin(module, name=module_key, expected=expected)
+            if relative not in declared:
+                raise StageAAuthenticationError(
+                    f"loaded helper is absent from the frozen source set: {relative}"
+                )
+            loaded_paths.add(relative)
+    return tuple(sorted(loaded_paths))
 
 
 def _assert_sources_match_head(repo_root: Path) -> None:
@@ -1168,7 +1468,7 @@ def authenticate_experiment010_administrative_null(
     ):
         raise StageAAuthenticationError("Experiment 010 raw failed-attempt receipt hash drifted")
     _validate_experiment010_failed_receipt(_json_mapping(receipt_path))
-    if (repo_root / EXPERIMENT010_OUTPUT_RELATIVE_PATH).exists():
+    if _path_entry_exists(repo_root / EXPERIMENT010_OUTPUT_RELATIVE_PATH):
         raise StageAAuthenticationError(
             "Experiment 010 result must remain absent after its administrative null"
         )
@@ -1192,6 +1492,342 @@ def authenticate_experiment010_administrative_null(
     return provenance
 
 
+def _authenticate_experiment011_lineage_files(
+    repo_root: Path,
+) -> dict[str, object]:
+    expected_files = (
+        (
+            "administrative_null_note",
+            EXPERIMENT011_ADMIN_NULL_NOTE_RELATIVE_PATH,
+            EXPERIMENT011_ADMIN_NULL_NOTE_FILE_SHA256,
+        ),
+        (
+            "stage_a_identity",
+            EXPERIMENT011_IDENTITY_NOTE_RELATIVE_PATH,
+            EXPERIMENT011_IDENTITY_NOTE_FILE_SHA256,
+        ),
+        (
+            "statelease_protocol",
+            EXPERIMENT011_PROTOCOL_NOTE_RELATIVE_PATH,
+            EXPERIMENT011_PROTOCOL_NOTE_FILE_SHA256,
+        ),
+    )
+    authenticated: dict[str, object] = {}
+    for label, relative, expected_sha256 in expected_files:
+        path = repo_root / relative
+        if path.is_symlink() or not path.is_file() or _file_sha256(path) != expected_sha256:
+            raise StageAAuthenticationError(
+                f"Experiment 011 {label.replace('_', ' ')} file hash drifted"
+            )
+        authenticated[f"{label}_path"] = relative
+        authenticated[f"{label}_file_sha256"] = expected_sha256
+    return authenticated
+
+
+def _validate_experiment011_administrative_null(
+    artifact: Mapping[str, object],
+) -> dict[str, object]:
+    if set(artifact) != {
+        "artifact_kind",
+        "canonical_evidence_sha256",
+        "evidence",
+    }:
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null artifact schema drifted"
+        )
+    if (
+        artifact.get("artifact_kind")
+        != "recurquant_experiment011_statelease_stage_a_administrative_null"
+        or artifact.get("canonical_evidence_sha256") != EXPERIMENT011_ADMIN_NULL_CANONICAL_SHA256
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null artifact identity drifted"
+        )
+    evidence = artifact.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise StageAAuthenticationError("Experiment 011 administrative-null evidence is missing")
+    if (
+        evidence.get("artifact_kind")
+        != "recurquant_experiment011_statelease_stage_a_administrative_null"
+        or evidence.get("classification")
+        != "administrative_null_after_evaluation_entry_before_authenticated_return"
+        or evidence.get("scientific_result_available") is not False
+    ):
+        raise StageAAuthenticationError("Experiment 011 administrative-null classification drifted")
+
+    expected_access = {
+        "completed_task_ids": [],
+        "evaluation_entered": True,
+        "evaluation_returned": None,
+        "finalization_entered": False,
+        "forward_passes": None,
+        "minimum_forward_passes": 0,
+        "model_weights_loaded": True,
+        "quality_aggregate_exposed": False,
+        "quality_result_computed": None,
+        "result_artifact_created": False,
+        "task_id": TASK_ID,
+        "task_row_loaded": True,
+        "tokenizer_loaded": True,
+        "unknown_value_semantics": (
+            "A null field was not durably authenticated after evaluation entry "
+            "and must not be interpreted as false or zero."
+        ),
+        "verified_by": "authenticated monotonic attempt receipt and ordered control flow",
+    }
+    access = evidence.get("access_boundary")
+    if not isinstance(access, Mapping) or dict(access) != expected_access:
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null access boundary drifted"
+        )
+
+    failure = evidence.get("failure")
+    expected_failure = {
+        "category": "runtime",
+        "detail_sha256": EXPERIMENT011_FAILURE_DETAIL_SHA256,
+        "failed_before": "StateLease storage summary construction",
+        "privacy_boundary": ("No absolute path, raw exception message, or traceback is included."),
+        "summary": (
+            "A fail-closed runtime type attestation rejected the genuine base "
+            "FixedReplayRecurrentStateCache instance before its storage summary "
+            "was produced."
+        ),
+        "type": "RuntimeError",
+    }
+    if not isinstance(failure, Mapping) or dict(failure) != expected_failure:
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null failure classification drifted"
+        )
+
+    original = evidence.get("original_attempt")
+    expected_original = {
+        "attempt_number": 1,
+        "automatic_rerun_authorized": False,
+        "h0_commit": EXPERIMENT011_H0_COMMIT,
+        "h0_tree": EXPERIMENT011_SEAL_TREE,
+        "one_run_marker": EXPERIMENT011_ONE_RUN_MARKER,
+        "raw_receipt_file_sha256": EXPERIMENT011_ATTEMPT_FILE_SHA256,
+        "receipt_schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "receipt_status": "failed_without_authenticated_stage_a_result",
+        "rerun_occurred": False,
+        "result_artifact_created": False,
+        "seal_commit": EXPERIMENT011_SEAL_COMMIT,
+        "seal_parent": EXPERIMENT011_H0_COMMIT,
+        "seal_tree": EXPERIMENT011_SEAL_TREE,
+        "seal_tree_matches_h0": True,
+    }
+    if not isinstance(original, Mapping) or dict(original) != expected_original:
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null attempt provenance drifted"
+        )
+
+    recovery = evidence.get("recovery_disposition")
+    if (
+        not isinstance(recovery, Mapping)
+        or recovery.get("corrected_run_requires_new_identity") is not True
+        or recovery.get("experiment011_resume_authorized") is not False
+        or recovery.get("failed_seal_and_receipt_preserved") is not True
+        or recovery.get("next_identity") != "Experiment 012"
+        or recovery.get("scientific_method_or_gate_changed") is not False
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null recovery disposition drifted"
+        )
+    return {
+        "classification": (
+            "administrative_null_after_evaluation_entry_before_authenticated_return"
+        ),
+        "scientific_result_available": False,
+        "quality_data_accessed": True,
+        "task_row_loaded": True,
+        "tokenizer_loaded": True,
+        "model_weights_loaded": True,
+        "evaluation_entered": True,
+        "evaluation_returned": None,
+        "forward_passes": None,
+        "forward_passes_minimum": 0,
+        "quality_result_computed": None,
+        "completed_task_ids": [],
+        "result_artifact_created": False,
+        "rerun_occurred": False,
+        "original_h0_commit": EXPERIMENT011_H0_COMMIT,
+        "original_seal_commit": EXPERIMENT011_SEAL_COMMIT,
+        "original_seal_tree": EXPERIMENT011_SEAL_TREE,
+        "original_one_run_marker": EXPERIMENT011_ONE_RUN_MARKER,
+        "experiment011_resume_authorized": False,
+        "next_experiment": "Experiment 012",
+    }
+
+
+def _validate_experiment011_failed_receipt(
+    receipt: Mapping[str, object],
+    *,
+    experiment010_admin_null: Mapping[str, object],
+) -> None:
+    expected = {
+        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "status": "failed_without_authenticated_stage_a_result",
+        "attempt_number": 1,
+        "task_id": TASK_ID,
+        "attempt_path": EXPERIMENT011_ATTEMPT_RELATIVE_PATH,
+        "output_path": EXPERIMENT011_OUTPUT_RELATIVE_PATH,
+        "h0_repository_commit": EXPERIMENT011_H0_COMMIT,
+        "one_run_seal_commit": EXPERIMENT011_SEAL_COMMIT,
+        "one_run_seal_tree": EXPERIMENT011_SEAL_TREE,
+        "one_run_marker": EXPERIMENT011_ONE_RUN_MARKER,
+        "one_run_seal_message_sha256": EXPERIMENT011_SEAL_MESSAGE_SHA256,
+        "completed_task_ids": [],
+        "quality_data_accessed": True,
+        "task_row_loaded": True,
+        "tokenizer_loaded": True,
+        "model_weights_loaded": True,
+        "evaluation_entered": True,
+        "evaluation_returned": None,
+        "forward_passes": None,
+        "forward_passes_minimum": 0,
+        "quality_result_computed": None,
+        "quality_aggregate_exposed": False,
+        "rerun_automatically_authorized": False,
+        "failure_type": "RuntimeError",
+        "failure_category": "runtime",
+        "failure_detail_recorded": False,
+        "failure_detail_sha256": EXPERIMENT011_FAILURE_DETAIL_SHA256,
+        "failure_summary": "runtime failure; raw detail withheld",
+    }
+    if any(key not in receipt or receipt.get(key) != value for key, value in expected.items()):
+        raise StageAAuthenticationError("Experiment 011 failed-attempt receipt semantics drifted")
+    expected_ledger = {
+        "evaluation_entered": True,
+        "evaluation_returned": None,
+        "finalization_entered": False,
+        "forward_passes": None,
+        "forward_passes_minimum": 0,
+        "model_weights_entered": True,
+        "model_weights_loaded": True,
+        "phase": "evaluation_entered",
+        "quality_result_computed": None,
+        "task_load_entered": True,
+        "task_row_loaded": True,
+        "tokenizer_entered": True,
+        "tokenizer_loaded": True,
+    }
+    ledger = receipt.get("access_ledger")
+    if not isinstance(ledger, Mapping) or dict(ledger) != expected_ledger:
+        raise StageAAuthenticationError("Experiment 011 failed-attempt access ledger drifted")
+    if receipt.get("experiment010_administrative_null") != dict(experiment010_admin_null):
+        raise StageAAuthenticationError(
+            "Experiment 011 failed receipt lost Experiment 010 provenance"
+        )
+    forbidden_result_fields = {
+        "canonical_evidence_sha256",
+        "output_canonical_evidence_sha256",
+        "output_file_sha256",
+        "output_published",
+        "result",
+        "result_available",
+        "stage_a_gate",
+        "stage_a_gate_passed",
+        "stage_a_gate_sha256",
+    }
+    if forbidden_result_fields & set(receipt):
+        raise StageAAuthenticationError(
+            "Experiment 011 failed receipt unexpectedly contains result evidence"
+        )
+
+
+def _authenticate_experiment011_git_history(repo_root: Path) -> None:
+    reachable = set(_git(repo_root, "rev-list", "--all", "--reflog").splitlines())
+    if EXPERIMENT011_H0_COMMIT not in reachable or EXPERIMENT011_SEAL_COMMIT not in reachable:
+        raise StageAAuthenticationError(
+            "Experiment 011 H0 and one-run seal are not preserved in repository history"
+        )
+    if (
+        _git(repo_root, "show", "-s", "--format=%P", EXPERIMENT011_SEAL_COMMIT)
+        != EXPERIMENT011_H0_COMMIT
+        or _git(repo_root, "show", "-s", "--format=%T", EXPERIMENT011_SEAL_COMMIT)
+        != EXPERIMENT011_SEAL_TREE
+        or _git(repo_root, "show", "-s", "--format=%T", EXPERIMENT011_H0_COMMIT)
+        != EXPERIMENT011_SEAL_TREE
+    ):
+        raise StageAAuthenticationError("Experiment 011 preserved H0/seal ancestry or tree drifted")
+    old_message = _git(
+        repo_root,
+        "show",
+        "-s",
+        "--format=%B",
+        EXPERIMENT011_SEAL_COMMIT,
+    )
+    if (
+        EXPERIMENT011_ONE_RUN_MARKER not in old_message
+        or hashlib.sha256(old_message.encode("utf-8")).hexdigest()
+        != EXPERIMENT011_SEAL_MESSAGE_SHA256
+    ):
+        raise StageAAuthenticationError("Experiment 011 preserved one-run seal message drifted")
+
+
+def authenticate_experiment011_administrative_null(
+    repo_root: Path,
+    *,
+    experiment010_admin_null: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    prior010 = (
+        authenticate_experiment010_administrative_null(repo_root)
+        if experiment010_admin_null is None
+        else dict(experiment010_admin_null)
+    )
+    lineage_files = _authenticate_experiment011_lineage_files(repo_root)
+    admin_path = repo_root / EXPERIMENT011_ADMIN_NULL_RELATIVE_PATH
+    if not admin_path.is_file() or _file_sha256(admin_path) != EXPERIMENT011_ADMIN_NULL_FILE_SHA256:
+        raise StageAAuthenticationError(
+            "committed Experiment 011 administrative-null file hash drifted"
+        )
+    verification = verify_evidence_artifact(admin_path)
+    if (
+        verification.get("valid") is not True
+        or verification.get("file_sha256") != EXPERIMENT011_ADMIN_NULL_FILE_SHA256
+        or verification.get("computed_canonical_evidence_sha256")
+        != EXPERIMENT011_ADMIN_NULL_CANONICAL_SHA256
+    ):
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null canonical verification failed"
+        )
+    semantics = _validate_experiment011_administrative_null(_json_mapping(admin_path))
+
+    receipt_path = repo_root / EXPERIMENT011_ATTEMPT_RELATIVE_PATH
+    if (
+        not receipt_path.is_file()
+        or _file_sha256(receipt_path) != EXPERIMENT011_ATTEMPT_FILE_SHA256
+    ):
+        raise StageAAuthenticationError("Experiment 011 raw failed-attempt receipt hash drifted")
+    _validate_experiment011_failed_receipt(
+        _json_mapping(receipt_path),
+        experiment010_admin_null=prior010,
+    )
+    if _path_entry_exists(repo_root / EXPERIMENT011_OUTPUT_RELATIVE_PATH):
+        raise StageAAuthenticationError(
+            "Experiment 011 result must remain absent after its administrative null"
+        )
+
+    _authenticate_experiment011_git_history(repo_root)
+    provenance = {
+        **semantics,
+        **lineage_files,
+        "administrative_null_path": EXPERIMENT011_ADMIN_NULL_RELATIVE_PATH,
+        "administrative_null_file_sha256": EXPERIMENT011_ADMIN_NULL_FILE_SHA256,
+        "administrative_null_canonical_evidence_sha256": (
+            EXPERIMENT011_ADMIN_NULL_CANONICAL_SHA256
+        ),
+        "raw_failed_receipt_path": EXPERIMENT011_ATTEMPT_RELATIVE_PATH,
+        "raw_failed_receipt_file_sha256": EXPERIMENT011_ATTEMPT_FILE_SHA256,
+        "experiment011_result_path": EXPERIMENT011_OUTPUT_RELATIVE_PATH,
+        "experiment011_result_absent": True,
+        "preserved_git_history_authenticated": True,
+        "experiment010_administrative_null": prior010,
+    }
+    provenance["canonical_provenance_sha256"] = _canonical_sha256(provenance)
+    return provenance
+
+
 def _assert_repository_start(repo_root: Path) -> tuple[dict[str, object], dict[str, str]]:
     state = _repository_state(repo_root)
     if state["worktree_clean"] is not True:
@@ -1204,8 +1840,15 @@ def _assert_repository_start(repo_root: Path) -> tuple[dict[str, object], dict[s
 
 
 def _assert_ignored_exact_output(repo_root: Path) -> tuple[Path, Path]:
-    output = (repo_root / OUTPUT_RELATIVE_PATH).resolve()
-    attempt = (repo_root / ATTEMPT_RELATIVE_PATH).resolve()
+    raw_output = repo_root / OUTPUT_RELATIVE_PATH
+    raw_attempt = repo_root / ATTEMPT_RELATIVE_PATH
+    for path in (raw_output, raw_attempt):
+        if _path_entry_exists(path):
+            raise StageAAuthenticationError(
+                f"one-run artifact already exists; refusing another Stage-A run: {path.name}"
+            )
+    output = raw_output.resolve()
+    attempt = raw_attempt.resolve()
     expected_output = (repo_root.resolve() / OUTPUT_RELATIVE_PATH).resolve()
     expected_attempt = (repo_root.resolve() / ATTEMPT_RELATIVE_PATH).resolve()
     if output != expected_output or attempt != expected_attempt:
@@ -1215,10 +1858,6 @@ def _assert_ignored_exact_output(repo_root: Path) -> tuple[Path, Path]:
         if ignored.returncode != 0:
             raise StageAAuthenticationError(
                 f"one-run artifact path is not Git-ignored: {path.name}"
-            )
-        if path.exists():
-            raise StageAAuthenticationError(
-                f"one-run artifact already exists; refusing another Stage-A run: {path.name}"
             )
     return output, attempt
 
@@ -1329,10 +1968,10 @@ def authenticate_stage_a_identity_clarification(
     protocol_path = repo_root / PROTOCOL_NOTE_RELATIVE_PATH
     if not path.is_file() or _file_sha256(path) != IDENTITY_NOTE_FILE_SHA256:
         raise StageAAuthenticationError(
-            "Experiment 011 Stage-A identity clarification hash drifted"
+            "Experiment 012 Stage-A identity clarification hash drifted"
         )
     if not protocol_path.is_file() or _file_sha256(protocol_path) != PROTOCOL_NOTE_FILE_SHA256:
-        raise StageAAuthenticationError("Experiment 011 StateLease protocol hash drifted")
+        raise StageAAuthenticationError("Experiment 012 StateLease protocol hash drifted")
     return {
         "path": IDENTITY_NOTE_RELATIVE_PATH,
         "file_sha256": IDENTITY_NOTE_FILE_SHA256,
@@ -1408,12 +2047,28 @@ def authenticate_stage0(
     *,
     expected_repo_head: str | None = None,
 ) -> tuple[dict[str, object], Path, Path]:
-    artifact = artifact_path.resolve()
-    sidecar = (
-        artifact.with_suffix(artifact.suffix + ".sha256")
+    raw_artifact = artifact_path
+    raw_sidecar = (
+        raw_artifact.with_suffix(raw_artifact.suffix + ".sha256")
         if sha256_path is None
-        else sha256_path.resolve()
+        else sha256_path
     )
+    if raw_artifact.is_symlink() or raw_sidecar.is_symlink():
+        raise StageAAuthenticationError(
+            "production Stage-0 artifact and sidecar must be regular non-symlink files"
+        )
+    artifact = raw_artifact.resolve()
+    sidecar = raw_sidecar.resolve()
+    expected_artifact = (REPO_ROOT / STAGE0_ARTIFACT_RELATIVE_PATH).resolve()
+    expected_sidecar = (REPO_ROOT / STAGE0_SHA256_RELATIVE_PATH).resolve()
+    if artifact != expected_artifact or sidecar != expected_sidecar:
+        raise StageAAuthenticationError(
+            "production Stage-0 artifact and sidecar must use the exact frozen Experiment 012 paths"
+        )
+    if not artifact.is_file() or not sidecar.is_file():
+        raise StageAAuthenticationError(
+            "production Stage-0 artifact and sidecar must be regular non-symlink files"
+        )
     verifier = _script_module("verify_statelease_stage0")
     try:
         report = verifier.verify_production_stage0(
@@ -1455,6 +2110,10 @@ def authenticate_static_inputs(args: argparse.Namespace) -> StageAPreflight:
     output_path, attempt_path = _assert_ignored_exact_output(repo_root)
     identity_clarification = authenticate_stage_a_identity_clarification(repo_root)
     experiment010_admin_null = authenticate_experiment010_administrative_null(repo_root)
+    experiment011_admin_null = authenticate_experiment011_administrative_null(
+        repo_root,
+        experiment010_admin_null=experiment010_admin_null,
+    )
     anchor = authenticate_experiment009_anchor(repo_root)
     selector_identity, plan = authenticate_selectors(repo_root, anchor)
     stage0, stage0_artifact, stage0_sha256 = authenticate_stage0(
@@ -1469,6 +2128,7 @@ def authenticate_static_inputs(args: argparse.Namespace) -> StageAPreflight:
         source_hashes_start=source_hashes_start,
         identity_clarification=identity_clarification,
         experiment010_admin_null=experiment010_admin_null,
+        experiment011_admin_null=experiment011_admin_null,
         anchor=anchor,
         selector_identity=selector_identity,
         plan=plan,
@@ -1725,7 +2385,7 @@ def _authenticate_cached_dataset_resources(
 
 def authenticate_runtime_readiness(*, device_name: str) -> RuntimeReadiness:
     if device_name not in {"auto", "cuda"}:
-        raise StageAAuthenticationError("Experiment 011 supports only the pinned CUDA BF16 path")
+        raise StageAAuthenticationError("Experiment 012 supports only the pinned CUDA BF16 path")
     packages = _runtime_dependency_versions()
     try:
         datasets_module = importlib.import_module("datasets")
@@ -1737,22 +2397,22 @@ def authenticate_runtime_readiness(*, device_name: str) -> RuntimeReadiness:
         raise StageAAuthenticationError("datasets.load_dataset is unavailable or non-callable")
     if not torch.cuda.is_available():
         raise StageAAuthenticationError(
-            "the frozen Experiment 011 Stage-A CUDA device is unavailable"
+            "the frozen Experiment 012 Stage-A CUDA device is unavailable"
         )
     visible_device_count = int(torch.cuda.device_count())
     if visible_device_count < 1:
         raise StageAAuthenticationError(
-            "the frozen Experiment 011 Stage-A runtime has no visible CUDA device"
+            "the frozen Experiment 012 Stage-A runtime has no visible CUDA device"
         )
     bf16_check = getattr(torch.cuda, "is_bf16_supported", None)
     if not callable(bf16_check) or bf16_check() is not True:
         raise StageAAuthenticationError(
-            "the frozen Experiment 011 Stage-A CUDA device lacks BF16 support"
+            "the frozen Experiment 012 Stage-A CUDA device lacks BF16 support"
         )
     dataset_resources = _authenticate_cached_dataset_resources(datasets_module)
     model_resources = _authenticate_cached_model_resources()
     receipt: dict[str, object] = {
-        "schema": "recurquant.experiment011.runtime-readiness.v1",
+        "schema": "recurquant.experiment012.runtime-readiness.v1",
         "packages": packages,
         "package_manifest_sha256": EXPECTED_RUNTIME_PACKAGE_MANIFEST_SHA256,
         "package_imports": dict(RUNTIME_PACKAGE_IMPORTS),
@@ -1813,7 +2473,7 @@ def load_and_authenticate_config(
     del preflight
     if local_files_only is not True:
         raise StageAAuthenticationError(
-            "Experiment 011 configuration authentication requires --local-files-only"
+            "Experiment 012 configuration authentication requires --local-files-only"
         )
     from transformers import AutoConfig
 
@@ -1870,7 +2530,7 @@ def _atomic_replace_owned(path: Path, payload: bytes) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
-        if temporary.exists():
+        if _path_entry_exists(temporary):
             temporary.unlink()
 
 
@@ -1936,13 +2596,14 @@ def _seal_message(
 ) -> str:
     initial_access_ledger = _expected_access_snapshot("reserved_before_task_entry")
     payload = {
-        "schema": "recurquant.experiment011.stage-a-one-run-seal.v1",
+        "schema": "recurquant.experiment012.stage-a-one-run-seal.v1",
         "marker": ONE_RUN_MARKER,
         "h0_commit": preflight.repository_start["commit"],
         "source_set_sha256": _canonical_sha256(preflight.source_hashes_start),
         "identity_note_file_sha256": IDENTITY_NOTE_FILE_SHA256,
         "protocol_note_file_sha256": PROTOCOL_NOTE_FILE_SHA256,
         "experiment010_administrative_null": preflight.experiment010_admin_null,
+        "experiment011_administrative_null": preflight.experiment011_admin_null,
         "experiment009_file_sha256": EXPERIMENT009_STAGE_A_FILE_SHA256,
         "stage0_artifact_file_sha256": preflight.stage0.get("artifact_file_sha256"),
         "stage0_sidecar_file_sha256": preflight.stage0.get("sidecar_file_sha256"),
@@ -1976,7 +2637,7 @@ def _seal_message(
     payload_bytes = canonical_json_bytes(payload)
     payload_hash = hashlib.sha256(payload_bytes).hexdigest()
     return (
-        "chore: reserve Experiment 011 Stage-A one-run\n\n"
+        "chore: reserve Experiment 012 Stage-A one-run\n\n"
         f"{ONE_RUN_MARKER}\n"
         f"RecurQuant-One-Run-Payload-SHA256: {payload_hash}\n\n"
         f"{payload_bytes.decode('utf-8')}"
@@ -2040,7 +2701,7 @@ def _validate_one_run_seal(
     if not isinstance(model_identity, Mapping):
         raise StageAAuthenticationError("one-run receipt model identity is malformed")
     expected_receipt_identity = {
-        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "schema": "recurquant.experiment012.stage-a-attempt.v1",
         "attempt_number": 1,
         "task_id": TASK_ID,
         "output_path": OUTPUT_RELATIVE_PATH,
@@ -2110,6 +2771,13 @@ def _validate_one_run_seal(
         raise StageAAuthenticationError(
             "one-run receipt Experiment 010 administrative-null provenance drifted"
         )
+    if (
+        reservation.receipt.get("experiment011_administrative_null")
+        != preflight.experiment011_admin_null
+    ):
+        raise StageAAuthenticationError(
+            "one-run receipt Experiment 011 administrative-null provenance drifted"
+        )
     readiness = _runtime_readiness_from_bundle(reservation.receipt.get("runtime_readiness"))
     preseal_freshness = _validated_preseal_freshness(reservation.receipt.get("preseal_freshness"))
     expected_message = _seal_message(
@@ -2158,7 +2826,7 @@ def _assert_preseal_freshness(
     state = _repository_state(preflight.repo_root)
     start_git_identity = preflight.repository_start.get("git_identity")
     if state["worktree_clean"] is not True or state["commit"] != h0_commit:
-        raise StageAAuthenticationError("repository identity changed before Experiment 011 sealing")
+        raise StageAAuthenticationError("repository identity changed before Experiment 012 sealing")
     if not isinstance(start_git_identity, Mapping) or state.get("git_identity") != dict(
         start_git_identity
     ):
@@ -2167,7 +2835,7 @@ def _assert_preseal_freshness(
     _assert_no_prior_stage_a_seal(preflight.repo_root)
     if _source_hashes(preflight.repo_root) != preflight.source_hashes_start:
         raise StageAAuthenticationError(
-            "authenticated source hashes changed before Experiment 011 sealing"
+            "authenticated source hashes changed before Experiment 012 sealing"
         )
 
     stage0_now, artifact_now, sidecar_now = authenticate_stage0(
@@ -2181,12 +2849,20 @@ def _assert_preseal_freshness(
         or sidecar_now != preflight.stage0_sha256
     ):
         raise StageAAuthenticationError(
-            "production Stage-0 identity changed before Experiment 011 sealing"
+            "production Stage-0 identity changed before Experiment 012 sealing"
         )
     admin_now = authenticate_experiment010_administrative_null(preflight.repo_root)
     if admin_now != preflight.experiment010_admin_null:
         raise StageAAuthenticationError(
             "Experiment 010 administrative-null provenance changed before sealing"
+        )
+    admin011_now = authenticate_experiment011_administrative_null(
+        preflight.repo_root,
+        experiment010_admin_null=admin_now,
+    )
+    if admin011_now != preflight.experiment011_admin_null:
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null provenance changed before sealing"
         )
 
     accelerator = readiness.receipt.get("accelerator")
@@ -2224,6 +2900,7 @@ def _assert_preseal_freshness(
         "new_marker_absent": True,
         "stage0_reauthenticated": True,
         "experiment010_administrative_null_reauthenticated": True,
+        "experiment011_administrative_null_reauthenticated": True,
         "runtime_readiness_reauthenticated": True,
         "configuration_reauthenticated_local_only": True,
     }
@@ -2261,10 +2938,12 @@ def _authenticate_prepared_attempt_receipt(
     seal_commit: str,
     tree: str,
     seal_message_sha256: str,
+    experiment010_admin_null: Mapping[str, object],
+    experiment011_admin_null: Mapping[str, object],
 ) -> str:
     initial_access_ledger = _expected_access_snapshot("reserved_before_task_entry")
     expected_identity = {
-        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "schema": "recurquant.experiment012.stage-a-attempt.v1",
         "status": "prepared_before_head_cas",
         "attempt_number": 1,
         "task_id": TASK_ID,
@@ -2275,6 +2954,8 @@ def _authenticate_prepared_attempt_receipt(
         "one_run_seal_tree": tree,
         "one_run_marker": ONE_RUN_MARKER,
         "one_run_seal_message_sha256": seal_message_sha256,
+        "experiment010_administrative_null": dict(experiment010_admin_null),
+        "experiment011_administrative_null": dict(experiment011_admin_null),
         "completed_task_ids": [],
         "quality_data_accessed": False,
         "task_row_loaded": False,
@@ -2346,7 +3027,7 @@ def reserve_one_run(
     seal_message_sha256 = hashlib.sha256(message.encode("utf-8")).hexdigest()
     initial_access_ledger = _expected_access_snapshot("reserved_before_task_entry")
     prepared = {
-        "schema": "recurquant.experiment011.stage-a-attempt.v1",
+        "schema": "recurquant.experiment012.stage-a-attempt.v1",
         "status": "prepared_before_head_cas",
         "created_at_utc": datetime.now(UTC).isoformat(),
         "attempt_number": 1,
@@ -2362,6 +3043,7 @@ def reserve_one_run(
         "postseal_receipt_limitation": POSTSEAL_RECEIPT_LIMITATION,
         "source_hashes": preflight.source_hashes_start,
         "experiment010_administrative_null": preflight.experiment010_admin_null,
+        "experiment011_administrative_null": preflight.experiment011_admin_null,
         "experiment009_file_sha256": EXPERIMENT009_STAGE_A_FILE_SHA256,
         "stage0_artifact_file_sha256": preflight.stage0.get("artifact_file_sha256"),
         "stage0_sidecar_file_sha256": preflight.stage0.get("sidecar_file_sha256"),
@@ -2394,6 +3076,8 @@ def reserve_one_run(
         seal_commit=seal_commit,
         tree=tree,
         seal_message_sha256=seal_message_sha256,
+        experiment010_admin_null=preflight.experiment010_admin_null,
+        experiment011_admin_null=preflight.experiment011_admin_null,
     )
     _assert_git_repository_identity(preflight.repo_root)
     process = _run_git_process(
@@ -2545,7 +3229,7 @@ def record_attempt_failure(
         RESULT_PUBLICATION_FAILED_STATUS,
     }
     if status in completion_statuses:
-        if preflight.output_path.exists():
+        if _path_entry_exists(preflight.output_path):
             publication = _validate_published_output_against_receipt(
                 preflight.output_path,
                 disk_receipt,
@@ -2582,7 +3266,7 @@ def record_attempt_failure(
         RESULT_PROMOTION_INTERRUPTED_STATUS,
     }:
         return
-    if preflight.output_path.exists():
+    if _path_entry_exists(preflight.output_path):
         raise StageAAuthenticationError(
             "existing Stage-A output has no authenticated completion binding; "
             "refusing to downgrade it to a no-result failure"
@@ -2727,7 +3411,7 @@ def tokenize_authenticated_task(
 ) -> TokenizedTask:
     if local_files_only is not True:
         raise StageAAuthenticationError(
-            "Experiment 011 tokenizer loading requires --local-files-only"
+            "Experiment 012 tokenizer loading requires --local-files-only"
         )
     from transformers import AutoTokenizer
 
@@ -2845,7 +3529,7 @@ def load_model_weights(
     from transformers import Qwen3_5ForCausalLM
 
     if local_files_only is not True:
-        raise StageAAuthenticationError("Experiment 011 model loading requires --local-files-only")
+        raise StageAAuthenticationError("Experiment 012 model loading requires --local-files-only")
     snapshot, cache_receipt = _authenticate_model_snapshot()
     if (
         configuration.identity.get("authenticated_snapshot_resource_id")
@@ -3409,19 +4093,34 @@ def _assert_shared_cache_schema(
     return actual
 
 
+def _exact_statelease_plan_sha256(plan: object) -> str:
+    from recurquant.row_policy import ExactBudgetRowPlan, RowLocation
+
+    if type(plan) is not ExactBudgetRowPlan or any(
+        type(location) is not RowLocation for location in plan.high_precision_rows
+    ):
+        raise TypeError("plan must be an exact ExactBudgetRowPlan with exact RowLocation entries")
+    return hashlib.sha256(canonical_json_bytes(dataclasses.asdict(plan))).hexdigest()
+
+
 def _statelease_candidate_tensors(
     cache: object,
     *,
     method: str,
+    expected_plan: object,
 ) -> dict[str, torch.Tensor]:
     from recurquant.mixed_quantization import PackedMixedQuantizedTensor
+    from recurquant.qwen35 import (
+        EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
+        STATELEASE_SELECTION_METHOD,
+        experiment010_statelease_effective_plan_sha256,
+    )
+    from recurquant.row_policy import ExactBudgetRowPlan, RowLocation
     from recurquant.statelease_baselines import (
-        FixedCC1RecurrentStateCache,
-        FixedCC2RecurrentStateCache,
-        FixedCC4RecurrentStateCache,
-        FixedCC5RecurrentStateCache,
-        FixedCut4In5RecurrentStateCache,
         FixedReplayLinearAttentionLayer,
+        FixedReplayPolicy,
+        FixedReplayRecurrentStateCache,
+        fixed_replay_policy,
     )
     from recurquant.statelease_cache import (
         StateLeaseLinearAttentionLayer,
@@ -3429,33 +4128,83 @@ def _statelease_candidate_tensors(
         _StateLeaseStateView,
     )
 
-    expected_cache_types = {
-        STATELEASE_METHOD: StateLeaseRecurrentStateCache,
-        "fixed_cc1": FixedCC1RecurrentStateCache,
-        "fixed_cc2": FixedCC2RecurrentStateCache,
-        "fixed_cc4": FixedCC4RecurrentStateCache,
-        "fixed_cc5": FixedCC5RecurrentStateCache,
-        "fixed_cut4_in5": FixedCut4In5RecurrentStateCache,
-    }
-    expected_cache = expected_cache_types[method]
+    expected_fixed_policy: FixedReplayPolicy | None = None
+    expected_selection_method: str | None = None
+    if method == STATELEASE_METHOD:
+        expected_cache = StateLeaseRecurrentStateCache
+        expected_layer = StateLeaseLinearAttentionLayer
+        expected_selection_method = STATELEASE_SELECTION_METHOD
+    elif method in FIXED_REPLAY_METHODS:
+        expected_cache = FixedReplayRecurrentStateCache
+        expected_layer = FixedReplayLinearAttentionLayer
+        expected_fixed_policy = fixed_replay_policy(method)
+        expected_selection_method = f"{method}_right_rht_query_ema32_weighted_mse_fisher_quota"
+    else:
+        raise ValueError(f"{method} has no StateLease candidate-storage schema")
     if type(cache) is not expected_cache:
         raise RuntimeError(
             f"{method} cache type drifted: {type(cache).__module__}.{type(cache).__qualname__}"
         )
+    if type(expected_plan) is not ExactBudgetRowPlan or any(
+        type(location) is not RowLocation for location in expected_plan.high_precision_rows
+    ):
+        raise RuntimeError("authenticated selector plan is malformed")
+    cache_plan = getattr(cache, "plan", None)
+    if type(cache_plan) is not ExactBudgetRowPlan or any(
+        type(location) is not RowLocation for location in cache_plan.high_precision_rows
+    ):
+        raise RuntimeError(f"{method} cache exact row plan is malformed")
+    expected_plan_payload = canonical_json_bytes(dataclasses.asdict(expected_plan))
+    cache_plan_payload = canonical_json_bytes(dataclasses.asdict(cache_plan))
+    if cache_plan_payload != expected_plan_payload or cache_plan != expected_plan:
+        raise RuntimeError(f"{method} cache exact row-plan identity drifted")
+    if method in FIXED_REPLAY_METHODS:
+        policy = getattr(cache, "policy", None)
+        if type(policy) is not FixedReplayPolicy or policy != expected_fixed_policy:
+            raise RuntimeError(f"{method} cache fixed replay policy drifted")
+    if getattr(cache, "selection_method", None) != expected_selection_method:
+        raise RuntimeError(f"{method} cache selection identity drifted")
+    if (
+        getattr(cache, "experiment_identity_sha256", None)
+        != EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256
+    ):
+        raise RuntimeError(f"{method} cache experiment identity drifted")
+    try:
+        effective_plan_sha256 = experiment010_statelease_effective_plan_sha256(cache_plan)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"{method} cache effective plan is malformed") from error
+    if effective_plan_sha256 != EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256:
+        raise RuntimeError(f"{method} cache effective-plan hash drifted")
     layers = tuple(cache.statelease_layers())
     if tuple(index for index, _layer in layers) != LINEAR_LAYER_INDICES:
         raise RuntimeError(f"{method} recurrent layer identities drifted")
-    expected_layer = (
-        StateLeaseLinearAttentionLayer
-        if method == STATELEASE_METHOD
-        else FixedReplayLinearAttentionLayer
-    )
     result: dict[str, torch.Tensor] = {}
     for layer_index, layer in layers:
         if type(layer) is not expected_layer or type(layer.recurrent_states) is not (
             _StateLeaseStateView
         ):
             raise RuntimeError(f"{method} layer {layer_index} type or state view drifted")
+        try:
+            expected_groups = tuple(sorted(expected_plan.groups_for_layer(layer_index)))
+        except KeyError as error:
+            raise RuntimeError(
+                f"authenticated selector plan lacks recurrent layer {layer_index}"
+            ) from error
+        actual_groups = getattr(layer, "high_precision_group_indices", None)
+        if type(actual_groups) is not tuple or actual_groups != expected_groups:
+            raise RuntimeError(
+                f"{method} layer {layer_index} high-precision group identity drifted"
+            )
+        if getattr(layer, "selection_method", None) != expected_selection_method:
+            raise RuntimeError(f"{method} layer {layer_index} selection identity drifted")
+        if method in FIXED_REPLAY_METHODS:
+            layer_policy = getattr(layer, "policy", None)
+            if (
+                type(layer_policy) is not FixedReplayPolicy
+                or layer_policy != expected_fixed_policy
+                or getattr(layer, "replay_capacity", None) != expected_fixed_policy.replay_capacity
+            ):
+                raise RuntimeError(f"{method} layer {layer_index} fixed replay policy drifted")
         packed = layer.packed_checkpoint
         if type(packed) is not PackedMixedQuantizedTensor:
             raise RuntimeError(f"{method} layer {layer_index} checkpoint type drifted")
@@ -3595,12 +4344,20 @@ def _rht_candidate_tensors(cache: object) -> dict[str, torch.Tensor]:
 def _candidate_persistent_tensors(
     method: str,
     cache: object,
+    *,
+    expected_plan: object | None,
 ) -> dict[str, torch.Tensor]:
     if method == ORIGINAL_RHT_METHOD:
         result = _rht_candidate_tensors(cache)
         expected_resident = 2_711_552
     elif method in {STATELEASE_METHOD, *FIXED_REPLAY_METHODS}:
-        result = _statelease_candidate_tensors(cache, method=method)
+        if expected_plan is None:
+            raise RuntimeError(f"{method} lacks the authenticated selector plan")
+        result = _statelease_candidate_tensors(
+            cache,
+            method=method,
+            expected_plan=expected_plan,
+        )
         expected_resident = FROZEN_STATELEASE_RESIDENT_BYTES
     elif method in EQUAL_BYTE_NO_REPLAY_METHODS:
         result = _equal_byte_candidate_tensors(cache, method=method)
@@ -3778,6 +4535,7 @@ def _audit_persistent_raw_state(
     *,
     method: str,
     reference_shared_schema: Mapping[str, object],
+    expected_plan: object | None,
 ) -> dict[str, object]:
     shared = _shared_cache_tensors(cache)
     shared_schema = _assert_shared_cache_schema(
@@ -3785,7 +4543,11 @@ def _audit_persistent_raw_state(
         reference_shared_schema,
         method=method,
     )
-    candidate = _candidate_persistent_tensors(method, cache)
+    candidate = _candidate_persistent_tensors(
+        method,
+        cache,
+        expected_plan=expected_plan,
+    )
     shared_keys = {_tensor_storage_key(tensor) for tensor in shared.values()}
     candidate_keys = {
         _tensor_storage_key(tensor) for tensor in candidate.values() if tensor.numel() != 0
@@ -3816,6 +4578,8 @@ def _validated_storage_summary(
     method: str,
     cache: object,
     reference_shared_schema: Mapping[str, object] | None = None,
+    *,
+    expected_plan: object | None = None,
 ) -> dict[str, object]:
     summary = _storage_summary(cache)
     transactional = method in {
@@ -3839,6 +4603,7 @@ def _validated_storage_summary(
                 cache,
                 method=method,
                 reference_shared_schema=reference_shared_schema,
+                expected_plan=expected_plan,
             )
         )
     elif method == STATELEASE_METHOD:
@@ -3851,8 +4616,14 @@ def _validated_storage_summary(
                 cache,
                 method=method,
                 reference_shared_schema=reference_shared_schema,
+                expected_plan=expected_plan,
             )
         )
+        assert expected_plan is not None
+        summary["authenticated_exact_row_plan_sha256"] = _exact_statelease_plan_sha256(
+            expected_plan
+        )
+        summary["exact_row_plan_identity_verified"] = True
         summary["stage0_independently_verified_no_hidden_fp32_state_mirror"] = True
     elif method in FIXED_REPLAY_METHODS:
         expected = FROZEN_STATELEASE_RESIDENT_BYTES
@@ -3870,8 +4641,14 @@ def _validated_storage_summary(
                 cache,
                 method=method,
                 reference_shared_schema=reference_shared_schema,
+                expected_plan=expected_plan,
             )
         )
+        assert expected_plan is not None
+        summary["authenticated_exact_row_plan_sha256"] = _exact_statelease_plan_sha256(
+            expected_plan
+        )
+        summary["exact_row_plan_identity_verified"] = True
         summary["stage0_independently_verified_no_hidden_fp32_state_mirror"] = True
     elif method in EQUAL_BYTE_NO_REPLAY_METHODS:
         expected = FROZEN_STATELEASE_RESIDENT_BYTES
@@ -3889,6 +4666,7 @@ def _validated_storage_summary(
                 cache,
                 method=method,
                 reference_shared_schema=reference_shared_schema,
+                expected_plan=expected_plan,
             )
         )
         summary["stage0_independently_verified_no_hidden_fp32_state_mirror"] = True
@@ -4115,7 +4893,9 @@ def _run_candidate(
 ) -> dict[str, object]:
     gc.collect()
     measurement = _cuda_measurement_start(device)
-    cache, observer = _candidate_factory(method, model, plan)
+    expected_plan = copy.deepcopy(plan)
+    factory_plan = copy.deepcopy(expected_plan)
+    cache, observer = _candidate_factory(method, model, factory_plan)
     prompt = tokenized.prompt_ids.to(device)
     code = tokenized.code_ids.to(device)
     accumulator = _AlignedAccumulator.empty()
@@ -4196,6 +4976,7 @@ def _run_candidate(
             reference.get("shared_storage_schema")
             if isinstance(reference.get("shared_storage_schema"), Mapping)
             else None,
+            expected_plan=expected_plan,
         ),
         "update_evidence": _evidence_records(cache),
         "diagnostics": _diagnostics(cache),
@@ -4269,7 +5050,7 @@ def _assert_end_integrity(
     if _file_sha256(preflight.repo_root / PROTOCOL_NOTE_RELATIVE_PATH) != (
         PROTOCOL_NOTE_FILE_SHA256
     ):
-        raise StageAAuthenticationError("Experiment 011 StateLease protocol changed during Stage A")
+        raise StageAAuthenticationError("Experiment 012 StateLease protocol changed during Stage A")
     selector_hashes = {
         "selector": _file_sha256(preflight.repo_root / SELECTOR_RELATIVE_PATH),
         "loss_selector": _file_sha256(preflight.repo_root / LOSS_SELECTOR_RELATIVE_PATH),
@@ -4289,6 +5070,14 @@ def _assert_end_integrity(
     if experiment010_admin_null_end != preflight.experiment010_admin_null:
         raise StageAAuthenticationError(
             "Experiment 010 administrative-null provenance changed during Stage A"
+        )
+    experiment011_admin_null_end = authenticate_experiment011_administrative_null(
+        preflight.repo_root,
+        experiment010_admin_null=experiment010_admin_null_end,
+    )
+    if experiment011_admin_null_end != preflight.experiment011_admin_null:
+        raise StageAAuthenticationError(
+            "Experiment 011 administrative-null provenance changed during Stage A"
         )
     readiness_start = _runtime_readiness_from_bundle(reservation.receipt.get("runtime_readiness"))
     preseal_freshness = _validated_preseal_freshness(reservation.receipt.get("preseal_freshness"))
@@ -4312,6 +5101,8 @@ def _assert_end_integrity(
         "identity_clarification_reauthenticated": True,
         "experiment010_administrative_null": experiment010_admin_null_end,
         "experiment010_administrative_null_reauthenticated": True,
+        "experiment011_administrative_null": experiment011_admin_null_end,
+        "experiment011_administrative_null_reauthenticated": True,
         "runtime_readiness": _readiness_bundle(readiness_end),
         "runtime_readiness_reauthenticated": True,
         "preseal_freshness": dict(preseal_freshness),
@@ -4424,7 +5215,10 @@ def _validate_serialized_tensor_schemas(
 
 def _validate_candidate_storage_results(
     candidates: Mapping[str, object],
+    *,
+    expected_plan: object,
 ) -> dict[str, object]:
+    expected_plan_sha256 = _exact_statelease_plan_sha256(expected_plan)
     receipts: dict[str, object] = {}
     for method in QUALITY_METHODS:
         candidate = candidates.get(method)
@@ -4445,6 +5239,12 @@ def _validate_candidate_storage_results(
             and storage.get("persistent_fp32_state_mirror") is False
             and _validate_serialized_tensor_schemas(method=method, storage=storage)
         )
+        exact_plan_passed = (
+            storage.get("exact_row_plan_identity_verified") is True
+            and storage.get("authenticated_exact_row_plan_sha256") == expected_plan_sha256
+            if method in {STATELEASE_METHOD, *FIXED_REPLAY_METHODS}
+            else True
+        )
         if method == ORIGINAL_RHT_METHOD:
             passed = (
                 common_passed
@@ -4455,12 +5255,14 @@ def _validate_candidate_storage_results(
         elif method == STATELEASE_METHOD:
             passed = (
                 common_passed
+                and exact_plan_passed
                 and storage.get("resident_bytes_including_statelease")
                 == FROZEN_STATELEASE_RESIDENT_BYTES
             )
         elif method in FIXED_REPLAY_METHODS:
             passed = (
                 common_passed
+                and exact_plan_passed
                 and storage.get("resident_bytes_including_statelease")
                 == FROZEN_STATELEASE_RESIDENT_BYTES
                 and storage.get("logical_resident_capacity_bytes")
@@ -4486,6 +5288,14 @@ def _validate_candidate_storage_results(
                     "resident_bytes_including_statelease",
                     storage.get("resident_bytes"),
                 )
+            ),
+            **(
+                {
+                    "exact_row_plan_identity_verified": True,
+                    "authenticated_exact_row_plan_sha256": expected_plan_sha256,
+                }
+                if method in {STATELEASE_METHOD, *FIXED_REPLAY_METHODS}
+                else {}
             ),
         }
     return receipts
@@ -4974,7 +5784,10 @@ def _build_artifact(
         raise RuntimeError("Stage-A candidate result set is incomplete")
     if not isinstance(reference, Mapping):
         raise RuntimeError("Stage-A reference result is missing")
-    storage_contracts = _validate_candidate_storage_results(candidates)
+    storage_contracts = _validate_candidate_storage_results(
+        candidates,
+        expected_plan=preflight.plan,
+    )
 
     gate = _evaluate_gate_from_recomputed_evidence(
         candidates=candidates,
@@ -5010,7 +5823,7 @@ def _build_artifact(
         "one_authenticated_quality_run": True,
         "claim_boundary": CLAIM_BOUNDARY,
         "protocol": {
-            "name": "Experiment 011 Stage A",
+            "name": "Experiment 012 Stage A",
             "method": "StateLease-H5",
             "task_locked": True,
             "thresholds_locked": True,
@@ -5021,6 +5834,7 @@ def _build_artifact(
         "input_authentication": {
             "stage_a_identity_clarification": preflight.identity_clarification,
             "experiment010_administrative_null": integrity["experiment010_administrative_null"],
+            "experiment011_administrative_null": integrity["experiment011_administrative_null"],
             "runtime_readiness": integrity["runtime_readiness"],
             "preseal_freshness": integrity["preseal_freshness"],
             "experiment009_stage_a": {
@@ -5164,7 +5978,7 @@ def _atomic_publish_new(path: Path, payload: bytes) -> None:
                 f"refusing to overwrite one-run artifact {path.name}"
             ) from error
     finally:
-        if temporary.exists():
+        if _path_entry_exists(temporary):
             temporary.unlink()
 
 
@@ -5175,7 +5989,7 @@ def _prepare_completed_artifact(
     payload = canonical_json_bytes(artifact)
     output_parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".experiment011-stage-a-verify.",
+        prefix=".experiment012-stage-a-verify.",
         suffix=".json",
         dir=output_parent,
     )
@@ -5197,7 +6011,7 @@ def _prepare_completed_artifact(
             raise RuntimeError("temporary Stage-A verification receipt drifted")
         return payload, file_hash, canonical_hash
     finally:
-        if temporary.exists():
+        if _path_entry_exists(temporary):
             temporary.unlink()
 
 
@@ -5507,6 +6321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "repository_commit": preflight.repository_start["commit"],
                     "runtime_readiness": _readiness_bundle(readiness),
                     "experiment010_administrative_null": (preflight.experiment010_admin_null),
+                    "experiment011_administrative_null": (preflight.experiment011_admin_null),
                     "model": configuration.identity,
                     "output": OUTPUT_RELATIVE_PATH,
                     "claim_boundary": CLAIM_BOUNDARY,

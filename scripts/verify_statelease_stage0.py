@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Independent synthetic Stage-0 verifier for Experiment 011.
+"""Independent synthetic Stage-0 verifier for Experiment 012.
 
 This file deliberately contains its own dense Gated DeltaNet recurrence,
 randomized-Hadamard transform, signed bit packing, row quantizers, boundary
@@ -71,7 +71,7 @@ RESIDUAL_Q4_BASE_BYTES = 2_585_088
 RESIDUAL_Q4_ROWS = 13_175
 RESIDUAL_Q4_PADDING_BYTES = 26
 
-EXPERIMENT_ID = "experiment011"
+EXPERIMENT_ID = "experiment012"
 PRODUCTION_SCHEMA = f"recurquant.{EXPERIMENT_ID}.stage0.production.v1"
 PRODUCTION_SCHEMA_VERSION = 1
 GIT_REPOSITORY_BINDING_SCHEMA = "recurquant.git-repository-binding.v1"
@@ -131,7 +131,12 @@ LAYER_QUOTAS = {
     21: 7,
     22: 55,
 }
-EXPERIMENT011_SOURCE_PROVENANCE_PATHS = (
+EXPERIMENT012_SOURCE_PROVENANCE_PATHS = (
+    "research/EXPERIMENT_012_STATELEASE_PROTOCOL.md",
+    "research/EXPERIMENT_012_STAGE_A_IDENTITY.md",
+    "research/EXPERIMENT_011_STAGE_A_ADMINISTRATIVE_NULL.md",
+    "evidence/experiment011-statelease-stage-a-administrative-null.json",
+    "artifacts/experiment011-statelease-stage-a-666.attempt.json",
     "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md",
     "research/EXPERIMENT_011_STAGE_A_IDENTITY.md",
     "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md",
@@ -145,7 +150,7 @@ SOURCE_IDENTITY_PATHS = (
     "scripts/capture_statelease_stage0.py",
     "scripts/screen_statelease_stage_a.py",
     "scripts/verify_statelease_stage0.py",
-    *EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
+    *EXPERIMENT012_SOURCE_PROVENANCE_PATHS,
     "src/recurquant/__init__.py",
     "src/recurquant/cache.py",
     "src/recurquant/cli.py",
@@ -376,7 +381,7 @@ def derive_successful_record(
     ).to(torch.float32)
     batch, heads, rows, width = state.shape
     if batch != 1:
-        raise ValueError("Experiment 011 replay verification requires batch size one")
+        raise ValueError("Experiment 012 replay verification requires batch size one")
     if tuple(key.shape) != (batch, 1, heads, rows):
         raise ValueError("consumed_key must have shape [1, 1, heads, rows]")
     if tuple(value.shape) != (batch, 1, heads, width):
@@ -1949,7 +1954,7 @@ def guard_protected_mbpp_window(
 
     normalized_stage = stage.strip().lower()
     if normalized_stage not in {"stage0", "stagea", "stageb", "stagec"}:
-        raise ValueError("unknown Experiment 011 stage")
+        raise ValueError("unknown Experiment 012 stage")
     if any(isinstance(index, bool) or not isinstance(index, int) for index in ranked_indices):
         raise TypeError("ranked_indices must contain integers")
     if any(8 <= index < 16 for index in ranked_indices):
@@ -2939,7 +2944,7 @@ def _verify_source_and_method_identity(
         "layer_quotas": {str(index): quota for index, quota in LAYER_QUOTAS.items()},
     }
     if dict(method) != expected_method:
-        _fail("method or frozen plan identity differs")
+        _fail("method or frozen effective-plan summary differs")
 
 
 def _runtime_package_manifest() -> tuple[dict[str, str], str]:
@@ -2950,7 +2955,7 @@ def _runtime_package_manifest() -> tuple[dict[str, str], str]:
     payload = json.dumps(packages, sort_keys=True, separators=(",", ":")) + "\n"
     manifest_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     if manifest_sha256 != PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256:
-        _fail("current runtime package manifest differs from the Experiment 011 identity")
+        _fail("current runtime package manifest differs from the Experiment 012 identity")
     return packages, manifest_sha256
 
 

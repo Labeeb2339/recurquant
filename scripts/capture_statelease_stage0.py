@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Capture authenticated production receipts for Experiment 011 Stage 0.
+"""Capture authenticated production receipts for Experiment 012 Stage 0.
 
 The producer is intentionally allowed to import RecurQuant.  It runs only
 deterministic synthetic recurrent-state transitions, serializes a closed
@@ -61,7 +61,7 @@ from recurquant.statelease_equal_byte_baselines import (
 )
 from recurquant.statelease_observer import Qwen35StateLeaseObserver
 
-EXPERIMENT_ID = "experiment011"
+EXPERIMENT_ID = "experiment012"
 SCHEMA_NAME = f"recurquant.{EXPERIMENT_ID}.stage0.production.v1"
 SCHEMA_VERSION = 1
 FROZEN_SEED = 2339
@@ -86,7 +86,12 @@ LINEAR_LAYER_INDICES = tuple(EXPERIMENT010_STATELEASE_LAYER_QUOTAS)
 FROZEN_STATELEASE_RESIDENT_BYTES = 3_454_664
 RAW_STATE_ELEMENTS_PER_LAYER = 16 * 128 * 128
 RAW_STATE_ELEMENTS_ALL_LAYERS = len(LINEAR_LAYER_INDICES) * RAW_STATE_ELEMENTS_PER_LAYER
-EXPERIMENT011_SOURCE_PROVENANCE_PATHS = (
+EXPERIMENT012_SOURCE_PROVENANCE_PATHS = (
+    "research/EXPERIMENT_012_STATELEASE_PROTOCOL.md",
+    "research/EXPERIMENT_012_STAGE_A_IDENTITY.md",
+    "research/EXPERIMENT_011_STAGE_A_ADMINISTRATIVE_NULL.md",
+    "evidence/experiment011-statelease-stage-a-administrative-null.json",
+    "artifacts/experiment011-statelease-stage-a-666.attempt.json",
     "research/EXPERIMENT_011_STATELEASE_PROTOCOL.md",
     "research/EXPERIMENT_011_STAGE_A_IDENTITY.md",
     "research/EXPERIMENT_010_STAGE_A_ADMINISTRATIVE_NULL.md",
@@ -100,7 +105,7 @@ SOURCE_IDENTITY_PATHS = (
     "scripts/capture_statelease_stage0.py",
     "scripts/screen_statelease_stage_a.py",
     "scripts/verify_statelease_stage0.py",
-    *EXPERIMENT011_SOURCE_PROVENANCE_PATHS,
+    *EXPERIMENT012_SOURCE_PROVENANCE_PATHS,
     "src/recurquant/__init__.py",
     "src/recurquant/cache.py",
     "src/recurquant/cli.py",
@@ -317,7 +322,9 @@ def _frozen_plan() -> ExactBudgetRowPlan:
         experiment010_statelease_effective_plan_sha256(plan)
         != EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256
     ):
-        raise RuntimeError("constructed Stage-0 plan does not match the frozen identity")
+        raise RuntimeError(
+            "constructed Stage-0 plan does not match the frozen storage-and-quota summary"
+        )
     return plan
 
 
@@ -1639,7 +1646,7 @@ def _runtime_package_manifest() -> tuple[dict[str, str], str]:
     manifest_sha256 = _sha256_bytes(payload.encode("utf-8"))
     if manifest_sha256 != PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256:
         raise RuntimeError(
-            "the Experiment 011 runtime package manifest differs from the frozen identity"
+            "the Experiment 012 runtime package manifest differs from the frozen identity"
         )
     return packages, manifest_sha256
 
