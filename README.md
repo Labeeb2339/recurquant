@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="#quickstart"><b>Quickstart</b></a> |
+  <a href="#experiment-012-statelease-h5-stage-a"><b>StateLease-H5</b></a> |
   <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> |
   <a href="#what-is-physically-smaller"><b>Storage</b></a> |
   <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> |
@@ -292,13 +293,28 @@ CQER-minus-RHT improvement was `0.170815` nats/token and its frozen
 ![Per-task paired CQER-32 minus RHT-CQER-32 excess-NLL differences.](assets/experiment009-stage-b-paired.svg)
 
 This is positive development evidence on one pinned model and task window, not
-held-out confirmation for RHT-CQER-32. Randomized Hadamard quantization is
-prior art, and the current Python implementation has no fused-kernel, latency,
-peak-memory, cross-model, or independent external-reproduction result. See the
-[full Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md),
+held-out confirmation for RHT-CQER-32. Randomized Hadamard and
+rotation quantization are prior art, and the current Python implementation has no
+fused-kernel, latency, peak-memory, cross-model, or independent
+external-reproduction result. See the [full Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md),
 [verification receipt](research/EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md),
 and
 [machine-readable release manifest](evidence/experiment009-rht-cqer-stage-b-result-manifest.json).
+
+## Experiment 012 StateLease-H5 Stage-A
+
+This is the one-task falsification step after Experiment 009 and Experiment 010.
+I keep this pass narrow: it verifies whether the new controller improves
+StateLease-H5 quality under a strict byte contract and fixed comparator set.
+
+StateLease-H5 passed Stage-A on task 666. It improved excess NLL versus `fixed_cc1`
+and the historical anchor `rht_cqer32` while preserving the exact `3,454,664`-byte
+resident recurrent-state contract and all one-run integrity gates.
+
+![StateLease-H5 one-task excess NLL comparison](assets/experiment012-stage-a-excess-nll.svg)
+
+For the full table, evidence hashes, and gate outcomes, use
+[EXPERIMENT_012_STAGE_A_RESULT.md](research/EXPERIMENT_012_STAGE_A_RESULT.md).
 
 ## Scope
 
@@ -350,6 +366,7 @@ result. See the
 - [CORA-C2 development result](research/EXPERIMENT_008_RESULT.md)
 - [Experiment 009 frozen protocol](research/EXPERIMENT_009_RHT_CQER_PROTOCOL.md)
 - [Experiment 009 Stage-A result](research/EXPERIMENT_009_STAGE_A_RESULT.md)
+- [Experiment 012 StateLease-H5 Stage-A result](research/EXPERIMENT_012_STAGE_A_RESULT.md)
 - [Experiment 009 Stage-B identity freeze](research/EXPERIMENT_009_STAGE_B_IDENTITY.md)
 - [Experiment 009 Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md)
 - [Experiment 009 verification receipt](research/EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md)

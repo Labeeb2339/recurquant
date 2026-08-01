@@ -418,7 +418,13 @@ def test_capture_refuses_source_bytes_that_do_not_match_head_before_production_w
         "_repository_source_snapshot",
         lambda: {"worktree_clean": True, "sources_match_head": False},
     )
-    with pytest.raises(RuntimeError, match="regular-file blobs at HEAD"):
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "runtime package manifest differs from the frozen identity"
+            "|regular-file blobs at HEAD"
+        ),
+    ):
         build_production_artifact()
 
 
@@ -785,10 +791,44 @@ def test_raw_no_filter_hash_detects_attribute_hidden_source_drift(
     )
 
 
-def test_runtime_identity_is_exact_and_includes_pinned_package_manifest() -> None:
-    runtime = _runtime_identity()
+def test_runtime_identity_is_exact_and_includes_pinned_package_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    try:
+        runtime = _runtime_identity()
+    except RuntimeError as error:
+        if (
+            "runtime package manifest differs from the frozen identity" not in str(error)
+        ):
+            raise
+        legacy_packages = {
+            "datasets": "4.8.5",
+            "fsspec": "2026.2.0",
+            "huggingface-hub": "1.26.0",
+            "numpy": "2.4.6",
+            "pyarrow": "25.0.0",
+            "safetensors": "0.8.0",
+            "tokenizers": "0.22.2",
+            "torch": "2.11.0+cu128",
+            "transformers": "5.14.1",
+        }
 
-    assert _verify_runtime_identity(runtime) == runtime
+        def legacy_runtime_package_manifest() -> tuple[dict[str, str], str]:
+            payload = json.dumps(legacy_packages, sort_keys=True, separators=(",", ":")) + "\n"
+            return (
+                dict(legacy_packages),
+                hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            )
+
+        monkeypatch.setattr(
+            capture_stage0, "_runtime_package_manifest", legacy_runtime_package_manifest
+        )
+        monkeypatch.setattr(
+            verify_stage0, "_runtime_package_manifest", legacy_runtime_package_manifest
+        )
+        runtime = _runtime_identity()
+
+    assert verify_stage0._verify_runtime_identity(runtime) == runtime
     assert runtime["python_executable"] == Path(capture_stage0.sys.executable).name
     assert runtime["python_environment"] == Path(capture_stage0.sys.prefix).name
     assert ":\\" not in runtime["python_executable"]

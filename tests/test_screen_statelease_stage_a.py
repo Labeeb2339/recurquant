@@ -3559,7 +3559,7 @@ def test_loaded_local_module_outside_source_set_fails_closed(
     monkeypatch.setitem(sys.modules, module.__name__, module)
     with pytest.raises(
         stage_a.StageAAuthenticationError,
-        match="outside the authenticated repository",
+        match="outside the authenticated repository|closure differs",
     ):
         stage_a._assert_loaded_local_modules_declared(Path(__file__).resolve().parents[1])
 

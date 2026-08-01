@@ -112,6 +112,14 @@ materializes FP32 transform workspaces in the current Python path. The result
 does not establish novelty or speed because randomized Hadamard and rotation
 quantizers are prior art and the implementation has no fused-kernel benchmark.
 
+Experiment 012 extended the falsification protocol with StateLease-H5, a
+replay-driven per-layer c4/c5 policy over the same byte budget. Its one-task
+Stage-A screen passed all gate checks with `statelease_h5` scoring better excess
+NLL than the strongest fixed comparator and historical anchor under that exact
+protocol contract. This result is not held-out confirmation and remains a narrow
+method gate, not a cross-window, cross-model, speed, deployment, or breakthrough
+finding.
+
 ## Claims prohibited without new evidence
 
 - "First recurrent-state quantization method."
