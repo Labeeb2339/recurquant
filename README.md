@@ -20,13 +20,14 @@
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
 
-I wrote RecurQuant to test one narrow question:
-can the recurrent memory of a linear-attention model keep generation quality with much less memory if we quantize only that path?
+I built RecurQuant as a real, constrained experiment. The question was very specific:
+can the recurrent memory in Qwen3.5 Gated DeltaNet hold generation quality with much
+less memory if we quantize that path only?
 
-In practice, it is an alpha Python package that physically packs the persistent
-recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. You pass its cache
-into ordinary eager Transformers model calls so those states remain grouped INT4 or
-INT8 payloads between calls.
+In practice, it is a narrow Python package that physically packs persistent recurrent
+matrix states used by Qwen3.5 Gated DeltaNet layers. You pass its cache into
+ordinary eager Transformers model calls so those states stay grouped INT4 or INT8
+payloads between calls.
 
 Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced
 recurrent-state fidelity protocol. Relative to uniform INT4, task-macro excess
@@ -34,7 +35,7 @@ NLL above the matched FP32-state reference was 72.75% lower while the packed
 persistent recurrent state, including payloads, FP16 scales, and precision
 masks, occupied exactly 2,564,096 resident bytes.
 
-The experimental v0.3 RHT-CQER-32 method has now also passed its separate
+The experimental v0.3 RHT-CQER-32 path has now also passed its separate
 32-task development gate: aligned excess NLL was 52.73% lower than CQER-32 at
 the same packed-state and selector byte counts. That newer result is
 development evidence, not held-out confirmation.
@@ -43,6 +44,22 @@ It currently targets
 [`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base).
 RecurQuant does not quantize model weights or ordinary attention KV caches, and
 its current Python path dequantizes one recurrent state while that layer runs.
+
+## Why this project looks the way it does
+
+I run projects like this the same way I want interviews and collaborators to see them:
+claims are narrow, scripts are reproducible, and every result has a clear stop
+condition.
+
+- I do not ship broad AI claims from one test.
+- I keep failures in the same section as wins (the negative signal check is part
+  of the method).
+- If a result is diagnostic or development-only, the repo says so explicitly.
+- If something is missing (latency, deployment-ready speed, whole-model memory), it
+  is written in the boundary sections, not in a later README paragraph.
+
+That is why this repo is long around experiment text, manifests, and evidence files:
+it is not to look impressive in a few lines, but to survive future scrutiny.
 
 I built and maintain RecurQuant as an open research project.
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
