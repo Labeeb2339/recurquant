@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/recurquant-hero.png" width="100%" alt="RecurQuant — packed recurrent state for Qwen3.5">
+  <img src="assets/recurquant-hero.png" width="100%" alt="RecurQuant - packed recurrent state for Qwen3.5">
 </p>
 
 <p align="center">
@@ -11,25 +11,28 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart"><b>Quickstart</b></a> ·
-  <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> ·
-  <a href="#what-is-physically-smaller"><b>Storage</b></a> ·
-  <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> ·
-  <a href="#experiment-009-stage-b-development"><b>Stage B</b></a> ·
-  <a href="docs/compatibility.md"><b>Compatibility</b></a> ·
+  <a href="#quickstart"><b>Quickstart</b></a> |
+  <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> |
+  <a href="#what-is-physically-smaller"><b>Storage</b></a> |
+  <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> |
+  <a href="#experiment-009-stage-b-development"><b>Stage B</b></a> |
+  <a href="docs/compatibility.md"><b>Compatibility</b></a> |
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
 
-RecurQuant is an alpha Python package that physically packs the persistent
-recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. Pass its cache to
-ordinary eager Transformers model calls to keep those states as grouped INT4 or
+I wrote RecurQuant to test one narrow question:
+can the recurrent memory of a linear-attention model keep generation quality with much less memory if we quantize only that path?
+
+In practice, it is an alpha Python package that physically packs the persistent
+recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. You pass its cache
+into ordinary eager Transformers model calls so those states remain grouped INT4 or
 INT8 payloads between calls.
 
 Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced
 recurrent-state fidelity protocol. Relative to uniform INT4, task-macro excess
 NLL above the matched FP32-state reference was 72.75% lower while the packed
-persistent recurrent state—including payloads, FP16 scales, and precision
-masks—occupied exactly 2,564,096 resident bytes.
+persistent recurrent state, including payloads, FP16 scales, and precision
+masks, occupied exactly 2,564,096 resident bytes.
 
 The experimental v0.3 RHT-CQER-32 method has now also passed its separate
 32-task development gate: aligned excess NLL was 52.73% lower than CQER-32 at
@@ -41,7 +44,7 @@ It currently targets
 RecurQuant does not quantize model weights or ordinary attention KV caches, and
 its current Python path dequantizes one recurrent state while that layer runs.
 
-I built and maintain RecurQuant as an open research project. —
+I built and maintain RecurQuant as an open research project.
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
 [Apache-2.0](LICENSE).
 
@@ -104,6 +107,30 @@ one machine-readable result containing the generated text, pinned model
 provenance, selected policy, and raw storage counters. Read the
 [compatibility contract](docs/compatibility.md) before using a different model,
 Transformers version, device layout, or generation mode.
+
+### Reproducible research commands
+
+I keep Stage-B experiments reproducible with explicit, auditable artifacts.
+These commands are wrappers around the existing RHT-CQER Stage-B pipeline with
+stateful naming for StateLease.
+
+```powershell
+# Identity pass: resolves only artifact contracts, no model loading
+.\.venv\Scripts\recurquant.exe resolve-statelease-stage-b-identity ^
+  --output evidence/statelease-stage-b-identity.json
+
+# Development evaluation pass: consumes the stage artifacts and writes a result artifact
+.\.venv\Scripts\recurquant.exe evaluate-statelease-stage-b ^
+  --stage-a-artifact artifacts\experiment009-rht-cqer-stage-a-666-5be8d48.json ^
+  --identity-artifact evidence/statelease-stage-b-identity.json ^
+  --output evidence/statelease-stage-b-result.json ^
+  --device cuda ^
+  --local-files-only
+```
+
+Both runs are strict about file kinds, evidence hashes, and source-path
+provenance. They are for development evidence only; they are not a production
+quantization claim by themselves.
 
 ## Use it in Python
 
@@ -221,7 +248,7 @@ Important boundaries:
   [`CONFIRMATION_002.md`](research/CONFIRMATION_002.md).
 - Tokens were scored teacher-forced. Candidate-generated code was not fed back,
   executed, or graded for correctness.
-- The MSE selector also chose layer 0, so it is the exact same candidate—not
+- The MSE selector also chose layer 0, so it is the exact same candidate and not
   independent evidence that the read-risk selector is novel or superior.
 - This supports one pinned recurrent-state fidelity and resident-byte result.
   It does not support generated-code quality, speed, peak memory, whole-model
@@ -326,3 +353,4 @@ and work toward a fused packed recurrent kernel. Open an
 [issue](https://github.com/Labeeb2339/recurquant/issues) with a minimal
 reproducer and `cache.storage_summary()`; never include access tokens, private
 prompts, or authentication files.
+

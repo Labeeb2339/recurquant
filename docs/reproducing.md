@@ -354,3 +354,45 @@ change, and include the exact command, environment, artifact, metric definition,
 and claim boundary. Read the complete frozen design in
 [`PUBLIC_EVAL_PROTOCOL_V02.md`](../research/PUBLIC_EVAL_PROTOCOL_V02.md) and the
 current restrictions in [`CLAIM_BOUNDARY.md`](../research/CLAIM_BOUNDARY.md).
+
+## 5. Run the StateLease Stage-B development workflow
+
+StateLease commands are now available through the same `recurquant.cli` entrypoint:
+
+```powershell
+# Resolve the frozen StateLease identity.
+.venv\Scripts\python.exe -m recurquant.cli resolve-statelease-stage-b-identity `
+  --output evidence\statelease-stage-b-identity.json `
+  --local-files-only
+```
+
+```bash
+# Resolve the frozen StateLease identity.
+.venv/bin/python -m recurquant.cli resolve-statelease-stage-b-identity \
+  --output evidence/statelease-stage-b-identity.json \
+  --local-files-only
+```
+
+```powershell
+# Run a Stage-B development sweep on the frozen Stage-A result.
+.venv\Scripts\python.exe -m recurquant.cli evaluate-statelease-stage-b `
+  --stage-a-artifact artifacts\experiment009-rht-cqer-stage-a-666-5be8d48.json `
+  --identity-artifact evidence\statelease-stage-b-identity.json `
+  --output evidence\statelease-stage-b-result.json `
+  --device auto `
+  --local-files-only
+```
+
+```bash
+# Run a Stage-B development sweep on the frozen Stage-A result.
+.venv/bin/python -m recurquant.cli evaluate-statelease-stage-b \
+  --stage-a-artifact artifacts/experiment009-rht-cqer-stage-a-666-5be8d48.json \
+  --identity-artifact evidence/statelease-stage-b-identity.json \
+  --output evidence/statelease-stage-b-result.json \
+  --device auto \
+  --local-files-only
+```
+
+These commands keep evidence hashing, artifact schema checks, and reproducibility
+boundaries explicit. They are development evidence only and are not a
+deployment or breakthrough claim.
