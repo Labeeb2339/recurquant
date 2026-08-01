@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/recurquant-hero.png" width="100%" alt="RecurQuant - packed recurrent state for Qwen3.5">
+  <img src="assets/recurquant-hero.svg" width="100%" alt="RecurQuant - recurrent state quantization for Qwen3.5">
 </p>
 
 <p align="center">
@@ -20,34 +20,32 @@
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
 
-I built RecurQuant as a real, constrained experiment. The question was very specific:
-can the recurrent memory in Qwen3.5 Gated DeltaNet hold generation quality with much
-less memory if we quantize that path only?
+I built RecurQuant to answer one practical question for local inference:
+can we quantize only the recurrent memory path in Qwen3.5 Gated DeltaNet and keep
+fidelity while dropping state size?
 
-In practice, it is a narrow Python package that physically packs persistent recurrent
-matrix states used by Qwen3.5 Gated DeltaNet layers. You pass its cache into
-ordinary eager Transformers model calls so those states stay grouped INT4 or INT8
-payloads between calls.
+I intentionally kept this project narrow: RecurQuant is a Python package that
+packs only the persistent recurrent matrix states used by those layers. You pass
+its cache into standard eager Transformers generation, so the quantization is only
+where it is likely to matter most.
 
-Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced
-recurrent-state fidelity protocol. Relative to uniform INT4, task-macro excess
-NLL above the matched FP32-state reference was 72.75% lower while the packed
-persistent recurrent state, including payloads, FP16 scales, and precision
-masks, occupied exactly 2,564,096 resident bytes.
+The frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
+protocol. Compared with uniform INT4, task-macro excess NLL was 72.75% lower while
+the packed recurrent-state footprint was `2,564,096` bytes (including payloads,
+FP16 scales, and precision masks).
 
-The experimental v0.3 RHT-CQER-32 path has now also passed its separate
-32-task development gate: aligned excess NLL was 52.73% lower than CQER-32 at
-the same packed-state and selector byte counts. That newer result is
-development evidence, not held-out confirmation.
+An experimental v0.3 path, RHT-CQER-32, also cleared its separate 32-task
+development gate: aligned excess NLL was 52.73% lower than CQER-32 at the same
+packed-state and selector-byte budget. That result is development-only.
 
-It currently targets
-[`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base).
-RecurQuant does not quantize model weights or ordinary attention KV caches, and
-its current Python path dequantizes one recurrent state while that layer runs.
+This repo currently targets
+[`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base) and
+does not quantize model weights or standard attention KV caches. The current Python
+implementation still dequantizes one recurrent state during the forward pass.
 
 ## Why this project looks the way it does
 
-I run projects like this the same way I want interviews and collaborators to see them:
+I run this repo with the same style I want recruiters and collaborators to see:
 claims are narrow, scripts are reproducible, and every result has a clear stop
 condition.
 

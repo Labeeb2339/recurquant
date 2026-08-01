@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 420" role="img" aria-labelledby="title desc">
+  <title id="title">RecurQuant: mixed-precision recurrent cache quantization</title>
+  <desc id="desc">Minimal animated banner showing quantization-aware recurrent state packing for Qwen3.5 Gated DeltaNet</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#050814" />
+      <stop offset="100%" stop-color="#0f1730" />
+    </linearGradient>
+    <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6ae3ff" />
+      <stop offset="50%" stop-color="#7b7dff" />
+      <stop offset="100%" stop-color="#ff8fe0" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1400" height="420" fill="url(#bg)" />
+
+  <g fill="none" stroke-width="2">
+    <path d="M0 320 C140 300 250 240 350 260 S620 360 820 280 S1130 260 1400 320" stroke="url(#lineGrad)" opacity="0.45">
+      <animate attributeName="d" dur="8s" repeatCount="indefinite" values="
+        M0 320 C140 300 250 240 350 260 S620 360 820 280 S1130 260 1400 320;
+        M0 320 C140 280 260 300 360 240 S620 340 820 300 S1130 200 1400 320;
+        M0 320 C140 300 250 240 350 260 S620 360 820 280 S1130 260 1400 320" />
+    </path>
+    <path d="M0 220 C180 250 360 180 560 200 S1000 290 1400 210" stroke="#89ffaf" opacity="0.35">
+      <animate attributeName="d" dur="10s" repeatCount="indefinite" values="
+        M0 220 C180 250 360 180 560 200 S1000 290 1400 210;
+        M0 220 C180 220 360 210 560 230 S1000 250 1400 250;
+        M0 220 C180 250 360 180 560 200 S1000 290 1400 210" />
+    </path>
+  </g>
+
+  <g transform="translate(80 90)">
+    <rect x="0" y="0" width="1240" height="240" rx="18" fill="#0d1530" stroke="#8f95ff" stroke-opacity="0.35" />
+    <text x="42" y="56" fill="#f8fbff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="44" font-weight="700">
+      RecurQuant
+    </text>
+    <text x="42" y="96" fill="#9db2ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="21" font-weight="500">
+      State-quantization for recurrent memory in Qwen3.5 Gated DeltaNet
+    </text>
+    <text x="42" y="128" fill="#97ffcc" font-family="Consolas,Monaco,monospace" font-size="17">
+      Layer-0 INT8 + Layer-1..18 INT4
+    </text>
+
+    <g transform="translate(42 152)">
+      <text fill="#b8c4ff" font-family="Consolas,Monaco,monospace" font-size="17">
+        python -m recurquant benchmark --policy mixed-layer-0 --model Qwen/Qwen3.5-0.8B-Base
+      </text>
+    </g>
+
+    <g transform="translate(42 176)">
+      <rect x="0" y="0" width="420" height="28" rx="14" fill="#14204c" stroke="#6ae3ff" stroke-opacity="0.6" />
+      <rect x="0" y="0" width="180" height="28" rx="14" fill="#6ae3ff" opacity="0.9">
+        <animate attributeName="width" dur="2.5s" repeatCount="indefinite" values="180;240;180" />
+      </rect>
+      <text x="12" y="18" fill="#081033" font-family="Consolas,Monaco,monospace" font-size="14" font-weight="700">
+        2,564,096 bytes
+      </text>
+      <rect x="560" y="0" width="420" height="28" rx="14" fill="#1f2f61" stroke="#ffd37a" stroke-opacity="0.5" />
+      <text x="575" y="18" fill="#ffd37a" font-family="Consolas,Monaco,monospace" font-size="14">
+        18,874,368 bytes (FP32 baseline)
+      </text>
+      <rect x="560" y="-3" width="300" height="34" rx="17" fill="#14204c" stroke="#97ffcc" stroke-opacity="0.5">
+        <animate attributeName="opacity" dur="1.5s" repeatCount="indefinite" values="1;0.35;1" />
+      </rect>
+      <text x="575" y="20" fill="#97ffcc" font-family="Consolas,Monaco,monospace" font-size="13">
+        72.75% held-out reduction
+      </text>
+    </g>
+
+    <g transform="translate(950 48)">
+      <text fill="#c6cffe" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">
+        Public release: constrained, reproducible, claim-limited.
+      </text>
+    </g>
+
+    <g transform="translate(42 214)" fill="none" stroke-linecap="round">
+      <line x1="0" y1="0" x2="360" y2="0" stroke="#6f77d4" stroke-opacity="0.45" />
+      <line x1="0" y1="22" x2="420" y2="22" stroke="#6f77d4" stroke-opacity="0.35" />
+      <line x1="0" y1="44" x2="320" y2="44" stroke="#6f77d4" stroke-opacity="0.45" />
+      <line x1="0" y1="66" x2="390" y2="66" stroke="#6f77d4" stroke-opacity="0.32" />
+      <g fill="#6ae3ff" opacity="0.8">
+        <circle cx="45" cy="0" r="5">
+          <animate attributeName="opacity" dur="2s" repeatCount="indefinite" values="0.2;1;0.2" />
+        </circle>
+        <circle cx="160" cy="22" r="5">
+          <animate attributeName="opacity" dur="2s" repeatCount="indefinite" values="0.6;1;0.6" begin="0.5s" />
+        </circle>
+        <circle cx="300" cy="44" r="5" />
+        <circle cx="230" cy="66" r="5">
+          <animate attributeName="opacity" dur="2s" repeatCount="indefinite" values="1;0.2;1" begin="1s" />
+        </circle>
+      </g>
+    </g>
+  </g>
+</svg>
