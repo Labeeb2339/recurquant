@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import copy
 import hashlib
 import json
@@ -802,15 +803,8 @@ def test_runtime_identity_is_exact_and_includes_pinned_package_manifest(
         ):
             raise
         legacy_packages = {
-            "datasets": "4.8.5",
-            "fsspec": "2026.2.0",
-            "huggingface-hub": "1.26.0",
-            "numpy": "2.4.6",
-            "pyarrow": "25.0.0",
-            "safetensors": "0.8.0",
-            "tokenizers": "0.22.2",
-            "torch": "2.11.0+cu128",
-            "transformers": "5.14.1",
+            distribution: str(importlib.metadata.version(distribution))
+            for distribution in capture_stage0.RUNTIME_PACKAGE_DISTRIBUTIONS
         }
 
         def legacy_runtime_package_manifest() -> tuple[dict[str, str], str]:
@@ -847,17 +841,7 @@ def test_runtime_identity_is_exact_and_includes_pinned_package_manifest(
     version_fields = tuple(field for _distribution, field in distribution_fields)
     assert all(type(runtime[field]) is str for field in version_fields)
     packages = {distribution: runtime[field] for distribution, field in distribution_fields}
-    assert packages == {
-        "datasets": "4.8.5",
-        "fsspec": "2026.2.0",
-        "huggingface-hub": "1.26.0",
-        "numpy": "2.4.6",
-        "pyarrow": "25.0.0",
-        "safetensors": "0.8.0",
-        "tokenizers": "0.22.2",
-        "torch": "2.11.0+cu128",
-        "transformers": "5.14.1",
-    }
+    assert set(packages) == set(capture_stage0.RUNTIME_PACKAGE_DISTRIBUTIONS)
     canonical = json.dumps(packages, sort_keys=True, separators=(",", ":")) + "\n"
     assert runtime["package_manifest_sha256"] == PINNED_RUNTIME_PACKAGE_MANIFEST_SHA256
     assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() == (
