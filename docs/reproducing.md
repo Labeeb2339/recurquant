@@ -43,7 +43,7 @@ Create the normal contributor environment from the repository root:
 ```powershell
 uv venv --python 3.11 .venv
 uv pip install --python .venv\Scripts\python.exe -e ".[dev,eval]"
-.venv\Scripts\python.exe -m pytest
+.venv\Scripts\python.exe -m pytest  # uses ./.pytest-ci by default
 .venv\Scripts\python.exe -m ruff check .
 ```
 
@@ -52,7 +52,7 @@ Linux or macOS:
 ```bash
 uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -e ".[dev,eval]"
-.venv/bin/python -m pytest
+.venv/bin/python -m pytest  # uses ./.pytest-ci by default
 .venv/bin/python -m ruff check .
 ```
 
