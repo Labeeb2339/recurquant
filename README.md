@@ -13,6 +13,7 @@
 <p align="center">
   <a href="#quickstart"><b>Quickstart</b></a> |
   <a href="#experiment-012-statelease-h5-stage-a"><b>StateLease-H5</b></a> |
+  <a href="#rank-fused-statelease-h5-quickstart"><b>Rank-Fused Quickstart</b></a> |
   <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> |
   <a href="#what-is-physically-smaller"><b>Storage</b></a> |
   <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> |
@@ -21,14 +22,13 @@
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
 
-I started RecurQuant around one practical question for local inference:
-can we quantize only the recurrent memory path in Qwen3.5 Gated DeltaNet and keep
-token-level quality while reducing persistent-state memory?
+I built RecurQuant to answer one practical question:
+Can we quantize only the recurrent memory path in Qwen3.5 Gated DeltaNet and keep
+token-level quality from a fixed byte budget?
 
-I deliberately scoped it this way. This repo is a narrow experiment runner:
-it touches only the recurrent-state tensor path, keeps model weights unchanged,
-and uses a standard eager Transformers forward with a pluggable cache.
-That keeps the signal cleaner when we compare methods.
+I kept this repo narrow on purpose. It does not change model weights and it uses
+the normal eager Transformers forward with a pluggable cache. That keeps each
+experiment clean enough to reproduce.
 
 The frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
 protocol. Compared with uniform INT4, task-macro excess NLL was 72.75% lower while
@@ -46,7 +46,7 @@ implementation still dequantizes one recurrent state during the forward pass.
 
 ## Why this readme is long
 
-I keep this repo claim-first and reproducible for reviewers:
+I keep this repo claim-first and reproducible:
 
 - claims are narrow and tied to a protocol or evidence file,
 - failures stay visible next to the positive result,
@@ -54,8 +54,8 @@ I keep this repo claim-first and reproducible for reviewers:
 - missing work (latency, deployment, cross-model claims) is written explicitly in
   the boundary and scope sections.
 
-That is why the experiment notes, manifest files, and evidence records are in the
-same repo as the code. It is not to be fancy; it is to be defensible.
+That is why experiment notes, manifest files, and evidence are stored with the
+code and not in separate posts. It is not for polish; it is for defensibility.
 
 I built and maintain RecurQuant as an open research project.
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
@@ -214,6 +214,41 @@ unsupported Transformers versions, non-eager attention, training mode,
 multi-device placement, and incompatible Qwen configurations early. The
 returned cache exposes exact live tensor byte accounting through
 `storage_summary()`.
+
+## Rank-fused StateLease-H5 quickstart
+
+After the negative-signal pivot (heuristic gates did not generalize), I kept the
+same evidence format and added one practical path that fuses static Fisher signals
+with per-update MSE rank decisions.
+
+`recurquant qwen35` now accepts:
+
+- `--policy rank-fused-target-fisher`
+- `--selector-artifact` with score arrays and a target-fisher plan
+- `--selector-method` (`target_directional_fisher_difference_int4` is the default)
+- `--static-rank-weight` in `[0, 1]` for static-vs-dynamic contribution
+
+The command fails fast if the artifact is missing, malformed, or does not match
+the contract plan hash.
+
+```powershell
+# Validate the selector artifact path once; then reuse it for any run.
+.\.venv\Scripts\recurquant.exe qwen35 `
+  --policy rank-fused-target-fisher `
+  --selector-artifact artifacts\experiment006-hrr-selector-8task-c2ad68b.json `
+  --selector-method target_directional_fisher_difference_int4 `
+  --static-rank-weight 0.5 `
+  --max-new-tokens 16 `
+  --local-files-only `
+  --json
+```
+
+The `--json` output now includes `selector_artifact`, `selector_method`, and
+`static_rank_weight` next to the prompt/output and storage summary, so your CI
+and dashboards can compare rank-fused and non-rank-fused runs with the same fields.
+
+I still label this path as **development** in this repo: it is not yet paired with a
+fused dequant kernel or cross-model validation.
 
 ## What is physically smaller
 
