@@ -21,14 +21,14 @@
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
 
-I built RecurQuant to answer one practical question for local inference:
+I started RecurQuant around one practical question for local inference:
 can we quantize only the recurrent memory path in Qwen3.5 Gated DeltaNet and keep
-fidelity while dropping state size?
+token-level quality while reducing persistent-state memory?
 
-I intentionally kept this project narrow: RecurQuant is a Python package that
-packs only the persistent recurrent matrix states used by those layers. You pass
-its cache into standard eager Transformers generation, so the quantization is only
-where it is likely to matter most.
+I deliberately scoped it this way. This repo is a narrow experiment runner:
+it touches only the recurrent-state tensor path, keeps model weights unchanged,
+and uses a standard eager Transformers forward with a pluggable cache.
+That keeps the signal cleaner when we compare methods.
 
 The frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
 protocol. Compared with uniform INT4, task-macro excess NLL was 72.75% lower while
@@ -44,21 +44,18 @@ This repo currently targets
 does not quantize model weights or standard attention KV caches. The current Python
 implementation still dequantizes one recurrent state during the forward pass.
 
-## Why this project looks the way it does
+## Why this readme is long
 
-I run this repo with the same style I want recruiters and collaborators to see:
-claims are narrow, scripts are reproducible, and every result has a clear stop
-condition.
+I keep this repo claim-first and reproducible for reviewers:
 
-- I do not ship broad AI claims from one test.
-- I keep failures in the same section as wins (the negative signal check is part
-  of the method).
-- If a result is diagnostic or development-only, the repo says so explicitly.
-- If something is missing (latency, deployment-ready speed, whole-model memory), it
-  is written in the boundary sections, not in a later README paragraph.
+- claims are narrow and tied to a protocol or evidence file,
+- failures stay visible next to the positive result,
+- every development-only result is labeled, and
+- missing work (latency, deployment, cross-model claims) is written explicitly in
+  the boundary and scope sections.
 
-That is why this repo is long around experiment text, manifests, and evidence files:
-it is not to look impressive in a few lines, but to survive future scrutiny.
+That is why the experiment notes, manifest files, and evidence records are in the
+same repo as the code. It is not to be fancy; it is to be defensible.
 
 I built and maintain RecurQuant as an open research project.
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
