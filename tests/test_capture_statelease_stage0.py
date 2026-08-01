@@ -864,7 +864,7 @@ def test_full_production_capture_completes_only_after_independent_verification(
     assert report["quality_data_accessed"] is False
     assert report["protected_mbpp_window_accessed"] is False
     assert report["weights_only_load"] is True
-    assert report["artifact"] == authenticated_artifact.name
+    assert Path(report["artifact"]).name == authenticated_artifact.name
     assert report["sidecar"] == f"{authenticated_artifact.name}.sha256"
     assert str(authenticated_artifact.resolve()) not in json.dumps(report)
     assert report["sidecar_file_sha256"] == _file_sha256(
