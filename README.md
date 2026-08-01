@@ -1,51 +1,58 @@
 # RecurQuant
 
-RecurQuant is an experimental drop-in cache for **physically packed persistent
-recurrent states in Gated DeltaNet language models**.
+<p align="center">
+  <img src="./assets/recurquant-hero.svg" width="100%" alt="RecurQuant banner" />
+</p>
 
-> **Current status:** INT4 and INT8 recurrent-state payloads now remain packed
-> between layer calls. On Qwen3.5-0.8B-Base, the frozen mixed layout occupies
-> 2,564,096 resident state bytes instead of 18,874,368 FP32-state bytes. This is
-> a recurrent-state-only result; the Python path still materializes one state
-> while its layer executes and makes no speed or whole-model memory claim.
+I built RecurQuant as a constrained systems-research project:
+keep recurrent state packed as long as possible, keep claims auditable,
+and keep every result reproducible.
 
-After correcting v0.1 to emulate its declared FP16 scale storage, retaining only
-Gated DeltaNet layer 0 at INT8 and using INT4 for the other 17 layers reduced
-worst-5% token KL by 83.1% on a retrieval trace, 62.7% on a code trace, and
-75.2% on a multilingual correction replay relative to uniform INT4. These are
-short diagnostics, not a public benchmark or a breakthrough claim. The frozen
-[MBPP public-evaluation protocol](research/PUBLIC_EVAL_PROTOCOL_V02.md) is the
-next credibility gate.
+**Current status:** On **Qwen3.5-0.8B-Base**, the frozen mixed layout uses
+`2,564,096` recurrent-state bytes versus `18,874,368` FP32-state bytes.
+This is a recurrent-state-only result; the Python path still materializes one
+state while its layer executes.
+
+![Recurrent-state storage comparison](./assets/recurrent-state-storage.svg)
+
+After fixing the v0.1 FP16 scale-correction issue, retaining layer 0 as INT8 and
+all other recurrent rows at INT4 reduced worst-5% token KL by:
+
+- 83.1% on retrieval
+- 62.7% on code
+- 75.2% on multilingual correction replay
+
+against uniform INT4 in short diagnostics.
+
+![Diagnostic CVaR95 KL comparison](./assets/diagnostic-tail-kl.svg)
+
+These are short checks, not a public benchmark. The frozen public-eval gate is the
+[MBPP confirmation](research/CONFIRMATION_002.md).
 
 ## Research question
 
-Can sub-8-bit storage of Gated DeltaNet's fixed recurrent matrix state allocate
-precision from query-weighted read sensitivity to preserve difficult
-long-context behavior better than uniform quantization at the same modeled bit
-budget?
+Can sub-8-bit recurrent-state storage in Gated DeltaNet allocate more precision
+where it reduces future-read error most, with the same byte budget?
 
 [Qwen3.5-0.8B-Base](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base) is the first
-target. Its language model repeats three Gated DeltaNet layers followed by one
-full-attention layer, giving 18 persistent recurrent states and six ordinary KV
-caches across 24 layers.
+target. Its recurrent stack has 18 states across 18 linear-attention layers.
 
 ## What this repository measures
 
-- Deterministic grouped INT8, INT6, and INT4 state round trips.
+- Deterministic grouped INT4, INT6, and INT8 state round trips.
 - Physical INT4 nibble packing and INT8 payload storage with FP16/FP32 scales.
-- A `transformers` cache that keeps Gated DeltaNet states packed between calls.
-- Per-layer state size and numerical error.
+- A transformers cache that keeps Gated DeltaNet recurrent state packed between calls.
+- Per-layer state size and error.
 - Paired token-level KL divergence and top-1 agreement against an FP32-state run.
-- Tail error rather than only average perplexity.
+- Tail error, not only average perplexity.
 - State-update magnitude for later sensitivity analysis.
-- Query-weighted recurrent-read error, which measures the effect of state error
-  on the actual `q^T S` read.
-- Exact resident payload and scale bytes, including group padding.
+- Query-weighted recurrent-read error (`q^T S`) as a proxy for impact.
+- Exact resident payload and scale bytes, including group-padding overhead.
 
-The current implementation reduces the resident tensors used for persistent
-recurrent-state storage. It dequantizes one state for the unmodified layer
-kernel, so it **does not prove lower peak CUDA memory or faster inference**. A
-fused quantized recurrent kernel is still required for those systems claims.
+The implementation targets **recurrent-state compression only**. It still
+materializes one state for the unmodified kernel, so this project does not yet
+claim lower peak CUDA memory or faster inference. A fused recurrent kernel is the
+next systems milestone.
 
 ## Use the packed cache
 
@@ -62,34 +69,28 @@ print(cache.storage_summary())
 ```
 
 This v0.2 development release targets
-`transformers>=5.14.1,<5.15` because it integrates with that version's linear
-attention cache contract. The default cache does not retain per-token evidence,
-so its bookkeeping remains bounded with sequence length.
+`transformers==5.14.1` because it is the tested cache contract in this codebase.
+The default cache does not retain per-token evidence, so bookkeeping stays bounded
+with sequence length.
+
+I keep scope explicit in code: this is a constrained research implementation, not a
+full production deployment.
 
 ## Claim boundary
 
 Quantizing recurrent states is not new. Existing SSM work includes
-[Quamba2](https://arxiv.org/abs/2503.22879), while newer systems use quantized
-state checkpoints, stochastic rounding, and replay. Gated DeltaNet work also
-uses update residuals to manage auxiliary memory. RecurQuant therefore does not
-claim to be the first recurrent-cache quantizer, update-aware memory method, or
-state-replay system.
+[Quamba2](https://arxiv.org/abs/2503.22879), and prior systems use quantized
+state checkpoints, stochastic rounding, replay, and query-aware allocation.
+RecurQuant does **not** claim novelty for the problem class.
 
-The narrower hypothesis under investigation is **precision allocation for the
-persistent Gated DeltaNet matrix state**, conditioned on Gated DeltaNet dynamics
-and compared at an equal bit budget. See
-[the claim boundary](research/CLAIM_BOUNDARY.md) and
-[pilot protocol](research/PILOT_PROTOCOL.md). The documented experiment trail
-preserves the [failed signals and replacement](research/EXPERIMENT_001_SIGNAL_PIVOT.md)
-and the [untouched confirmation](research/CONFIRMATION_001.md).
-The later [scale-format correction and packed parity record](research/EXPERIMENT_002_SCALE_CORRECTION.md)
-supersedes the original numerical headline while preserving its history.
-
-The user-suggested
-[Gated DeltaNet-2 paper](https://arxiv.org/abs/2605.22791) reinforces why erase,
-write, and decay behavior should be analyzed separately. Its non-commercial
-reference code is not a RecurQuant dependency, and the initial target remains
-Apache-2.0 Qwen3.5.
+The narrow experiment is **precision allocation for the persistent Gated DeltaNet
+matrix state** under equal-byte constraints.
+See
+[the claim boundary](research/CLAIM_BOUNDARY.md),
+[pilot protocol](research/PILOT_PROTOCOL.md),
+[failed signal pivot](research/EXPERIMENT_001_SIGNAL_PIVOT.md),
+and the
+[corrected v0.1 evidence trail](research/EXPERIMENT_002_SCALE_CORRECTION.md).
 
 ## Local setup
 
@@ -103,13 +104,10 @@ uv pip install --python .venv\Scripts\python.exe -e ".[dev,eval]"
 .venv\Scripts\recurquant.exe demo --bits 4 --group-size 128
 ```
 
-The model experiment is intentionally separate from the unit-test suite because
-it downloads approximately 1.75 GB of public model weights.
+The model experiment is intentionally separate from tests because it downloads
+roughly 1.75 GB of public model weights.
 
 ## Reproduce the frozen confirmation
-
-The script pins the model revision and records the environment, token digest,
-state layout, metrics, and canonical evidence hash:
 
 ```powershell
 .venv\Scripts\python.exe scripts\run_qwen35_smoke.py `
@@ -121,22 +119,20 @@ state layout, metrics, and canonical evidence hash:
   --output artifacts\multilingual-confirmation.json
 ```
 
-This reruns the already disclosed confirmation profile; it is a reproducibility
-check, not a new held-out test. The recorded result and its limitations are in
-[Confirmation 001](research/CONFIRMATION_001.md).
+This reproduces the published confirmation inputs and records environment,
+manifest hashes, and token provenance for auditing. The recorded result and
+boundary are in [Confirmation 001](research/CONFIRMATION_001.md).
 
 ## Research discipline
 
 - Model and tokenizer revisions are pinned in evidence artifacts.
-- Calibration, development, and confirmation prompts must remain separate.
-- Static baselines run before any adaptive policy is tuned.
-- Simple averages of decay, write, update norm, and residual magnitude are kept
-  as negative pilot evidence; they did not predict layer sensitivity reliably.
-- Real latency is reported only after a packed kernel exists.
-- Failed gates and negative results remain visible.
-- Derived checkpoints must retain the base model's name, license, and lineage.
+- Calibration, development, and confirmation prompts stay separate.
+- Baselines run before any adaptive policy is tuned.
+- Short-run negative signals are kept visible (they are part of the method).
+- No latency claim is made until a fused quantized kernel path is ready.
+- Derived checkpoints keep the model and license lineage intact.
 
 ## License
 
-RecurQuant code is licensed under Apache-2.0. Referenced papers, models, datasets,
-and repositories retain their own licenses.
+RecurQuant code is Apache-2.0. External papers, models, datasets, and
+repositories keep their own licenses.
