@@ -104,6 +104,11 @@ from .statelease import (
     replay_gated_delta_updates,
     select_statelease_boundary,
 )
+from .statelease_artifact import (
+    EXPERIMENT012_CANONICAL_EVIDENCE_SHA256,
+    EXPERIMENT012_FILE_SHA256,
+    verify_experiment012_statelease_stage_a,
+)
 from .statelease_baselines import (
     EQUAL_ALLOCATION_REPLAY_CAPACITY,
     OFF_BUDGET_CC8_REPLAY_CAPACITY,
@@ -182,6 +187,8 @@ __all__ = [
     "EQUAL_ALLOCATION_REPLAY_CAPACITY",
     "EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256",
     "EXPERIMENT010_STATELEASE_LAYER_QUOTAS",
+    "EXPERIMENT012_CANONICAL_EVIDENCE_SHA256",
+    "EXPERIMENT012_FILE_SHA256",
     "FiniteDifferencePoint",
     "FIXED_REPLAY_METHODS",
     "FixedCC1RecurrentStateCache",
@@ -312,6 +319,7 @@ __all__ = [
     "target_nll_values",
     "update_causal_query_ema",
     "verify_evidence_artifact",
+    "verify_experiment012_statelease_stage_a",
 ]
 
 __version__ = "0.2.0a1"

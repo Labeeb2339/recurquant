@@ -2336,7 +2336,7 @@ def test_failure_receipt_withholds_aggregate_and_forbids_automatic_rerun(
         lambda *_args, **_kwargs: {"empty_tree_commit": True},
     )
     private_detail = (
-        r"C:\Users\Labeeb\private\model.safetensors "
+        r"C:\Users\ExampleUser\private\model.safetensors "
         "sk-proj-synthetic-secret-do-not-publish"
     )
     stage_a.record_attempt_failure(

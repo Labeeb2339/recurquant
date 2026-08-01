@@ -2,20 +2,19 @@
 
 > **Status: all frozen Stage-A checks passed on the one-task falsification screen.**
 >
-> StateLease-H5 beats the strongest fixed-replay comparator by a small but
-> meaningful margin under the same byte contract on MBPP task `666`, and it
-> preserves the full authenticated repository and runtime provenance required by the
-> protocol. This is not held-out confirmation, a speed claim, deployment claim,
-> or novelty claim.
+> StateLease-H5 beat the strongest fixed-replay schedule by `17.90%` excess NLL
+> under the same byte contract on MBPP task `666`. It did not beat the two
+> strongest equal-total-byte no-replay codecs. This is a one-task screening
+> result, not development evidence, held-out confirmation, or a general
+> advantage claim.
 
 Date recorded: 2026-07-31
 
-The immutable artifact and strengthened post-result audit are documented in:
+The immutable result and its frozen identity are documented in:
 
-- `artifacts/experiment012-statelease-stage-a-666.json`
+- [`../evidence/experiment012-statelease-stage-a-666.json`](../evidence/experiment012-statelease-stage-a-666.json)
 - `research/EXPERIMENT_012_STATELEASE_PROTOCOL.md`
 - `research/EXPERIMENT_012_STAGE_A_IDENTITY.md`
-- `artifacts/experiment012-statelease-stage-a-666.attempt.json`
 
 I also keep the full attempt history and pre-existing administrative records from
 Experiments 010 and 011 in:
@@ -27,7 +26,7 @@ Experiments 010 and 011 in:
 
 | Field | Value |
 | --- | --- |
-| Artifact | `artifacts/experiment012-statelease-stage-a-666.json` |
+| Artifact | `evidence/experiment012-statelease-stage-a-666.json` |
 | Artifact kind | `recurquant_experiment012_statelease_stage_a_falsification` |
 | Clean H0 commit | `c3999c8ff7cc25b02a70da98b0d8faba388d3319` |
 | One-run seal commit | `eeeab4b8d5962066e225ea856e83a5ccc24b7dfb` |
@@ -43,6 +42,14 @@ Experiments 010 and 011 in:
 | Stage-0 artifact SHA-256 | `b6d40f126b9fca7578f3dd36d3bf26deeb20e81d270d3b1114dc9e27fd4a3551` |
 | Forward passes | 429 |
 
+The package verifier recomputes the stored per-token summaries, each method's
+38-write-by-18-layer trajectory summary, physical tensor-schema totals, and
+every gate field without importing the experiment runner:
+
+```text
+recurquant verify-statelease-stage-a evidence/experiment012-statelease-stage-a-666.json
+```
+
 ## Frozen method set and screen rule
 
 StateLease-H5 was evaluated as:
@@ -52,50 +59,57 @@ StateLease-H5 was evaluated as:
 - historical anchor: `rht_cqer32`
 - state lease candidate: `statelease_h5`
 
-The one-shot gate required all candidates to be exact-byte-comparable,
-falsification-safe, and pre-specified under the fixed protocol.
+The one-shot gate required every method to be prespecified and storage-audited.
+It required StateLease to beat `fixed_cc1` and remain within 5% of the strongest
+fixed-replay schedule. It did not require StateLease to beat the no-replay
+codecs; those become mandatory comparators at Stage B.
 
 ## Frozen one-task screen result
 
 | Method | Excess NLL (38 tokens) | Top-1 agreement | Mean KL | CVaR95 KL | Max KL |
 | --- | ---: | ---: | ---: | ---: | ---: |
+| `rht_q4_q6_q8` | `-0.000014` | `1.000000` | `0.005318` | `0.024342` | `0.026786` |
+| `expanded_rht_q4_q8` | `0.002461` | `1.000000` | `0.009735` | `0.042403` | `0.061300` |
 | `statelease_h5` | `0.023349` | `0.947368` | `0.027658` | `0.193988` | `0.267577` |
 | `fixed_cut4_in5` | `0.028442` | `0.947368` | `0.030580` | `0.225663` | `0.323064` |
+| `rht_residual_q4` | `0.034794` | `0.973684` | `0.012522` | `0.083783` | `0.090904` |
 | `fixed_cc5` | `0.056124` | `0.947368` | `0.021947` | `0.076099` | `0.076178` |
 | `fixed_cc4` | `0.093655` | `0.947368` | `0.077519` | `0.833122` | `0.960356` |
-| `fixed_cc2` | `0.147195` | `0.947368` | `0.059956` | `0.392832` | `0.505890` |
 | `fixed_cc1` | `0.136328` | `0.868421` | `0.154371` | `1.022590` | `1.397867` |
 | `rht_cqer32` | `0.136328` | `0.868421` | `0.154371` | `1.022590` | `1.397867` |
+| `fixed_cc2` | `0.147195` | `0.947368` | `0.059956` | `0.392832` | `0.505890` |
 
-StateLease-H5 is `82.87%` lower on excess NLL than both `fixed_cc1` and
-`rht_cqer32`, and it is `17.90%` better than the strongest fixed comparator
-in the gate definition.
+StateLease-H5 was `17.90%` lower on excess NLL than the strongest fixed-replay
+schedule in the gate definition and `82.87%` lower than `fixed_cc1`. It was
+worse than both `rht_q4_q6_q8` and `expanded_rht_q4_q8` at the same total byte
+budget. One task is too small for uncertainty or a general ranking.
 
 ![StateLease-H5 one-task excess NLL comparison](../assets/experiment012-stage-a-excess-nll.svg)
 
 ## Exact physical contract
 
-StateLease-H5 and every fixed comparator share the same stateful budget:
+StateLease-H5 and every fixed-replay comparator share the same allocated budget:
 
-- 3,454,664 persistent recurrent-state bytes for StateLease payload + query/EMA
-  state
+- 3,454,664 allocated persistent bytes in total
 - 18,874,368 full FP32 recurrent-state bytes as the exact reference
-- 2,564,096 shared recurrent-state payload bytes
+- 2,564,096-byte physically packed checkpoint
 - 2,485,760 q4/q8 payload bytes
 - 73,728 FP16 scales bytes
-- 4,608 precision masks
+- 4,608 precision-mask bytes
 - 147,456 FP32 query-EMA selector bytes
-- 289,032 of 743,112 replay-capacity bytes occupied during the one-task run
+- 743,112 allocated replay-buffer/count bytes; 289,032 bytes occupied at the
+  end of this run
 - 5.857109917534722 bits per state element
 
 ## Integrity and gate checks
 
-All nine frozen Stage-A checks passed:
+All eight frozen Stage-A checks passed:
 
+- all primary values were finite;
 - exact allocation:
   `3454664` candidate persistent bytes vs `3454664` expected
 - `fixed_cc1` improvement threshold:
-  statelease excess NLL was `0.136327` lower than `fixed_cc1` by `82.87%`
+  StateLease excess NLL was `0.112978` lower than `fixed_cc1`, or `82.87%`
 - top-1 agreement:
   StateLease `0.947368` tied with best fixed comparator (`fixed_cc2`) and
   trail `0.0` with a `0.01` ceiling
@@ -103,20 +117,26 @@ All nine frozen Stage-A checks passed:
   relative disadvantage `-0.1790` (statelease better)
 - trajectory-nmse:
   StateLease AUC `0.019805` < `fixed_cc1` AUC `0.050699`
+- replay actions stayed within the frozen C4/C5 controller set, with ties
+  deterministically assigned to C5; and
+- the Stage-0 checkpoint, one-run seal, output artifact, diagnostics, and
+  update-evidence integrity checks all passed.
 
-The artifact was published in one monotonic two-phase step and no replay or
-rerun occurred.
+The artifact was published in one monotonic two-phase step and no rerun occurred.
 
 ## Decision
 
-This is a successful one-task falsification screen. It is permission for the next
-administratively frozen research step, not held-out confirmation and not a
-deployment, novelty, speed, or breakthrough result.
+This is a successful one-task falsification screen against the prespecified
+fixed-replay gate. The stronger no-replay results make practical advantage an
+open question. Any Stage-B run needs a new committed three-workload identity and
+a genuine StateLease evaluator; Experiment 009 cannot be relabelled for that
+purpose.
 
 ## Limitations
 
-- This is a synthetic teacher-forced token stream (1 task, 38 scored tokens).
+- This is one public MBPP calibration-task reference-code trace (38 scored
+  teacher-forced tokens).
 - The Stage-A pass does not establish cross-window, multi-seed, cross-code,
   latency, or speed claims.
-- The repository still has no fused packed dequant kernel in this pass; inference
-  is still pure Python dequantization during recurrent-state updates.
+- The correctness-first path still materializes floating-point workspaces and
+  has no end-to-end fused recurrent kernel or speed result.

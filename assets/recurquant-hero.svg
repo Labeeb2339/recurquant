@@ -1,97 +1,65 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 420" role="img" aria-labelledby="title desc">
-  <title id="title">RecurQuant: mixed-precision recurrent cache quantization</title>
-  <desc id="desc">Minimal animated banner showing quantization-aware recurrent state packing for Qwen3.5 Gated DeltaNet</desc>
-
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 360" role="img" aria-labelledby="title desc">
+  <title id="title">RecurQuant</title>
+  <desc id="desc">Animated research banner for packed recurrent-state quantization. One of eighteen recurrent layers is highlighted at higher precision.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#050814" />
-      <stop offset="100%" stop-color="#0f1730" />
-    </linearGradient>
-    <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#6ae3ff" />
-      <stop offset="50%" stop-color="#7b7dff" />
-      <stop offset="100%" stop-color="#ff8fe0" />
-    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#202535" stroke-width="1"/>
+    </pattern>
+    <clipPath id="lane-clip">
+      <rect x="862" y="68" width="458" height="224" rx="14"/>
+    </clipPath>
   </defs>
 
-  <rect width="1400" height="420" fill="url(#bg)" />
+  <rect width="1400" height="360" fill="#0b0d12"/>
+  <rect width="1400" height="360" fill="url(#grid)" opacity="0.34"/>
+  <line x1="742" y1="54" x2="742" y2="306" stroke="#34394a"/>
 
-  <g fill="none" stroke-width="2">
-    <path d="M0 320 C140 300 250 240 350 260 S620 360 820 280 S1130 260 1400 320" stroke="url(#lineGrad)" opacity="0.45">
-      <animate attributeName="d" dur="8s" repeatCount="indefinite" values="
-        M0 320 C140 300 250 240 350 260 S620 360 820 280 S1130 260 1400 320;
-        M0 320 C140 280 260 300 360 240 S620 340 820 300 S1130 200 1400 320;
-        M0 320 C140 300 250 240 350 260 S620 360 820 280 S1130 260 1400 320" />
-    </path>
-    <path d="M0 220 C180 250 360 180 560 200 S1000 290 1400 210" stroke="#89ffaf" opacity="0.35">
-      <animate attributeName="d" dur="10s" repeatCount="indefinite" values="
-        M0 220 C180 250 360 180 560 200 S1000 290 1400 210;
-        M0 220 C180 220 360 210 560 230 S1000 250 1400 250;
-        M0 220 C180 250 360 180 560 200 S1000 290 1400 210" />
-    </path>
-  </g>
+  <g font-family="Inter, Segoe UI, Helvetica Neue, Arial, sans-serif">
+    <text x="64" y="112" fill="#f2f4f8" font-size="54" font-weight="650" letter-spacing="-1">RecurQuant</text>
+    <text x="66" y="151" fill="#a8afbf" font-size="21">packed recurrent-state research</text>
+    <text x="66" y="207" fill="#d8dcf4" font-size="17">Qwen3.5 Gated DeltaNet</text>
+    <text x="66" y="235" fill="#8f98aa" font-size="15">layer 0 INT8 · 17 other recurrent layers INT4</text>
 
-  <g transform="translate(80 90)">
-    <rect x="0" y="0" width="1240" height="240" rx="18" fill="#0d1530" stroke="#8f95ff" stroke-opacity="0.35" />
-    <text x="42" y="56" fill="#f8fbff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="44" font-weight="700">
-      RecurQuant
-    </text>
-    <text x="42" y="96" fill="#9db2ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="21" font-weight="500">
-      State-quantization for recurrent memory in Qwen3.5 Gated DeltaNet
-    </text>
-    <text x="42" y="128" fill="#97ffcc" font-family="Consolas,Monaco,monospace" font-size="17">
-      Layer-0 INT8 + Layer-1..18 INT4
-    </text>
-
-    <g transform="translate(42 152)">
-      <text fill="#b8c4ff" font-family="Consolas,Monaco,monospace" font-size="17">
-        python -m recurquant benchmark --policy mixed-layer-0 --model Qwen/Qwen3.5-0.8B-Base
-      </text>
+    <g transform="translate(66 274)" font-size="13" font-weight="600">
+      <rect width="92" height="28" rx="6" fill="#222638" stroke="#555c78"/>
+      <text x="46" y="19" fill="#c8cce1" text-anchor="middle">INT4 / INT8</text>
+      <rect x="104" width="118" height="28" rx="6" fill="#222638" stroke="#555c78"/>
+      <text x="163" y="19" fill="#c8cce1" text-anchor="middle">physical packing</text>
+      <rect x="234" width="108" height="28" rx="6" fill="#222638" stroke="#555c78"/>
+      <text x="288" y="19" fill="#c8cce1" text-anchor="middle">open evidence</text>
     </g>
 
-    <g transform="translate(42 176)">
-      <rect x="0" y="0" width="420" height="28" rx="14" fill="#14204c" stroke="#6ae3ff" stroke-opacity="0.6" />
-      <rect x="0" y="0" width="180" height="28" rx="14" fill="#6ae3ff" opacity="0.9">
-        <animate attributeName="width" dur="2.5s" repeatCount="indefinite" values="180;240;180" />
-      </rect>
-      <text x="12" y="18" fill="#081033" font-family="Consolas,Monaco,monospace" font-size="14" font-weight="700">
-        2,564,096 bytes
-      </text>
-      <rect x="560" y="0" width="420" height="28" rx="14" fill="#1f2f61" stroke="#ffd37a" stroke-opacity="0.5" />
-      <text x="575" y="18" fill="#ffd37a" font-family="Consolas,Monaco,monospace" font-size="14">
-        18,874,368 bytes (FP32 baseline)
-      </text>
-      <rect x="560" y="-3" width="300" height="34" rx="17" fill="#14204c" stroke="#97ffcc" stroke-opacity="0.5">
-        <animate attributeName="opacity" dur="1.5s" repeatCount="indefinite" values="1;0.35;1" />
-      </rect>
-      <text x="575" y="20" fill="#97ffcc" font-family="Consolas,Monaco,monospace" font-size="13">
-        72.75% held-out reduction
-      </text>
-    </g>
-
-    <g transform="translate(950 48)">
-      <text fill="#c6cffe" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">
-        Public release: constrained, reproducible, claim-limited.
-      </text>
-    </g>
-
-    <g transform="translate(42 214)" fill="none" stroke-linecap="round">
-      <line x1="0" y1="0" x2="360" y2="0" stroke="#6f77d4" stroke-opacity="0.45" />
-      <line x1="0" y1="22" x2="420" y2="22" stroke="#6f77d4" stroke-opacity="0.35" />
-      <line x1="0" y1="44" x2="320" y2="44" stroke="#6f77d4" stroke-opacity="0.45" />
-      <line x1="0" y1="66" x2="390" y2="66" stroke="#6f77d4" stroke-opacity="0.32" />
-      <g fill="#6ae3ff" opacity="0.8">
-        <circle cx="45" cy="0" r="5">
-          <animate attributeName="opacity" dur="2s" repeatCount="indefinite" values="0.2;1;0.2" />
-        </circle>
-        <circle cx="160" cy="22" r="5">
-          <animate attributeName="opacity" dur="2s" repeatCount="indefinite" values="0.6;1;0.6" begin="0.5s" />
-        </circle>
-        <circle cx="300" cy="44" r="5" />
-        <circle cx="230" cy="66" r="5">
-          <animate attributeName="opacity" dur="2s" repeatCount="indefinite" values="1;0.2;1" begin="1s" />
-        </circle>
+    <g clip-path="url(#lane-clip)">
+      <rect x="862" y="68" width="458" height="224" rx="14" fill="#11141c" stroke="#383e50"/>
+      <g fill="#34394a">
+        <rect x="890" y="94" width="348" height="6" rx="3"/>
+        <rect x="890" y="106" width="382" height="6" rx="3"/>
+        <rect x="890" y="118" width="320" height="6" rx="3"/>
+        <rect x="890" y="130" width="366" height="6" rx="3"/>
+        <rect x="890" y="142" width="334" height="6" rx="3"/>
+        <rect x="890" y="154" width="390" height="6" rx="3"/>
+        <rect x="890" y="166" width="352" height="6" rx="3"/>
+        <rect x="890" y="178" width="374" height="6" rx="3"/>
+        <rect x="890" y="190" width="330" height="6" rx="3"/>
+        <rect x="890" y="202" width="384" height="6" rx="3"/>
+        <rect x="890" y="214" width="344" height="6" rx="3"/>
+        <rect x="890" y="226" width="370" height="6" rx="3"/>
+        <rect x="890" y="238" width="326" height="6" rx="3"/>
+        <rect x="890" y="250" width="380" height="6" rx="3"/>
+        <rect x="890" y="262" width="338" height="6" rx="3"/>
+        <rect x="890" y="274" width="360" height="6" rx="3"/>
       </g>
+      <rect x="890" y="82" width="396" height="7" rx="3.5" fill="#a78bfa"/>
+      <rect x="820" y="80" width="76" height="11" rx="5.5" fill="#d8b4fe" opacity="0.75">
+        <animate attributeName="x" values="820;1292;820" dur="4.8s" repeatCount="indefinite"/>
+        <animate attributeName="opacity" values="0;0.85;0" dur="4.8s" repeatCount="indefinite"/>
+      </rect>
+      <circle cx="1286" cy="85.5" r="4" fill="#67e8f9">
+        <animate attributeName="opacity" values="0.3;1;0.3" dur="1.8s" repeatCount="indefinite"/>
+      </circle>
     </g>
+
+    <text x="1088" y="323" fill="#c7cce0" font-size="14" text-anchor="middle">untouched MBPP test split</text>
+    <text x="1088" y="344" fill="#9ca5ba" font-size="13" text-anchor="middle">72.75% lower task-macro excess NLL vs uniform INT4</text>
   </g>
 </svg>

@@ -147,6 +147,40 @@ def test_confirmation_pareto_uses_authenticated_storage_and_fidelity() -> None:
     assert "state-of-the-art" not in svg.lower()
 
 
+def test_statelease_stage_a_chart_includes_the_stronger_no_replay_comparators() -> None:
+    data = assets._statelease_stage_a_data()
+    svg = assets._statelease_stage_a_svg(data)
+    assets._validate_svg(
+        svg,
+        assets.ASSETS / "experiment012-stage-a-excess-nll.svg",
+    )
+
+    assert svg == assets._statelease_stage_a_svg(data)
+    record = _metadata(svg)
+    assert record["chart"] == "experiment012-statelease-stage-a-excess-nll"
+    assert record["source_artifact_sha256"] == assets.STATELEASE_STAGE_A_ARTIFACT_SHA256
+    assert (
+        record["canonical_evidence_sha256"]
+        == assets.STATELEASE_STAGE_A_CANONICAL_SHA256
+    )
+    assert record["task_id"] == 666
+    assert record["token_count"] == 38
+    assert record["gate_check_count"] == 8
+    assert record["gate_passed"] is True
+
+    values = record["values"]
+    assert isinstance(values, list)
+    by_method = {row["method"]: row for row in values}
+    assert set(by_method) == set(assets.STATELEASE_STAGE_A_METHODS)
+    assert by_method["rht_q4_q6_q8"]["delta_nll"] < by_method["statelease_h5"][
+        "delta_nll"
+    ]
+    assert by_method["expanded_rht_q4_q8"]["delta_nll"] < by_method[
+        "statelease_h5"
+    ]["delta_nll"]
+    assert "did not beat" in str(record["claim_boundary"])
+
+
 def test_stage_b_assets_use_strict_loader_and_embed_authenticated_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

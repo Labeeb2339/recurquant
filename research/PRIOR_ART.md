@@ -1,6 +1,6 @@
 # Prior-art audit
 
-Last searched: 2026-07-30
+Last searched: 2026-08-02
 
 This is a living claim boundary, not proof that no related work exists. Repeat
 the search before any paper or novelty statement.

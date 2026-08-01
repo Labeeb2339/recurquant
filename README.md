@@ -12,12 +12,11 @@
 
 <p align="center">
   <a href="#quickstart"><b>Quickstart</b></a> |
-  <a href="#experiment-012-statelease-h5-stage-a"><b>StateLease-H5</b></a> |
-  <a href="#rank-fused-statelease-h5-quickstart"><b>Rank-Fused Quickstart</b></a> |
   <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> |
   <a href="#what-is-physically-smaller"><b>Storage</b></a> |
   <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> |
   <a href="#experiment-009-stage-b-development"><b>Stage B</b></a> |
+  <a href="#experiment-012-statelease-h5-screen"><b>StateLease-H5</b></a> |
   <a href="docs/compatibility.md"><b>Compatibility</b></a> |
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
@@ -32,8 +31,8 @@ experiment clean enough to reproduce.
 
 The frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
 protocol. Compared with uniform INT4, task-macro excess NLL was 72.75% lower while
-the packed recurrent-state footprint was `2,564,096` bytes (including payloads,
-FP16 scales, and precision masks).
+the packed recurrent-state footprint was `2,564,096` bytes (packed payloads plus
+FP16 scales).
 
 An experimental v0.3 path, RHT-CQER-32, also cleared its separate 32-task
 development gate: aligned excess NLL was 52.73% lower than CQER-32 at the same
@@ -43,19 +42,6 @@ This repo currently targets
 [`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base) and
 does not quantize model weights or standard attention KV caches. The current Python
 implementation still dequantizes one recurrent state during the forward pass.
-
-## Why this readme is long
-
-I keep this repo claim-first and reproducible:
-
-- claims are narrow and tied to a protocol or evidence file,
-- failures stay visible next to the positive result,
-- every development-only result is labeled, and
-- missing work (latency, deployment, cross-model claims) is written explicitly in
-  the boundary and scope sections.
-
-That is why experiment notes, manifest files, and evidence are stored with the
-code and not in separate posts. It is not for polish; it is for defensibility.
 
 I built and maintain RecurQuant as an open research project.
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
@@ -120,30 +106,6 @@ one machine-readable result containing the generated text, pinned model
 provenance, selected policy, and raw storage counters. Read the
 [compatibility contract](docs/compatibility.md) before using a different model,
 Transformers version, device layout, or generation mode.
-
-### Reproducible research commands
-
-I keep Stage-B experiments reproducible with explicit, auditable artifacts.
-These commands are wrappers around the existing RHT-CQER Stage-B pipeline with
-stateful naming for StateLease.
-
-```powershell
-# Identity pass: resolves only artifact contracts, no model loading
-.\.venv\Scripts\recurquant.exe resolve-statelease-stage-b-identity ^
-  --output evidence/statelease-stage-b-identity.json
-
-# Development evaluation pass: consumes the stage artifacts and writes a result artifact
-.\.venv\Scripts\recurquant.exe evaluate-statelease-stage-b ^
-  --stage-a-artifact artifacts\experiment009-rht-cqer-stage-a-666-5be8d48.json ^
-  --identity-artifact evidence/statelease-stage-b-identity.json ^
-  --output evidence/statelease-stage-b-result.json ^
-  --device cuda ^
-  --local-files-only
-```
-
-Both runs are strict about file kinds, evidence hashes, and source-path
-provenance. They are for development evidence only; they are not a production
-quantization claim by themselves.
 
 ## Use it in Python
 
@@ -214,41 +176,6 @@ unsupported Transformers versions, non-eager attention, training mode,
 multi-device placement, and incompatible Qwen configurations early. The
 returned cache exposes exact live tensor byte accounting through
 `storage_summary()`.
-
-## Rank-fused StateLease-H5 quickstart
-
-After the negative-signal pivot (heuristic gates did not generalize), I kept the
-same evidence format and added one practical path that fuses static Fisher signals
-with per-update MSE rank decisions.
-
-`recurquant qwen35` now accepts:
-
-- `--policy rank-fused-target-fisher`
-- `--selector-artifact` with score arrays and a target-fisher plan
-- `--selector-method` (`target_directional_fisher_difference_int4` is the default)
-- `--static-rank-weight` in `[0, 1]` for static-vs-dynamic contribution
-
-The command fails fast if the artifact is missing, malformed, or does not match
-the contract plan hash.
-
-```powershell
-# Validate the selector artifact path once; then reuse it for any run.
-.\.venv\Scripts\recurquant.exe qwen35 `
-  --policy rank-fused-target-fisher `
-  --selector-artifact artifacts\experiment006-hrr-selector-8task-c2ad68b.json `
-  --selector-method target_directional_fisher_difference_int4 `
-  --static-rank-weight 0.5 `
-  --max-new-tokens 16 `
-  --local-files-only `
-  --json
-```
-
-The `--json` output now includes `selector_artifact`, `selector_method`, and
-`static_rank_weight` next to the prompt/output and storage summary, so your CI
-and dashboards can compare rank-fused and non-rank-fused runs with the same fields.
-
-I still label this path as **development** in this repo: it is not yet paired with a
-fused dequant kernel or cross-model validation.
 
 ## What is physically smaller
 
@@ -333,20 +260,29 @@ external-reproduction result. See the [full Stage-B result](research/EXPERIMENT_
 and
 [machine-readable release manifest](evidence/experiment009-rht-cqer-stage-b-result-manifest.json).
 
-## Experiment 012 StateLease-H5 Stage-A
+## Experiment 012: StateLease-H5 screen
 
-This is the one-task falsification step after Experiment 009 and Experiment 010.
-I keep this pass narrow: it verifies whether the new controller improves
-StateLease-H5 quality under a strict byte contract and fixed comparator set.
+StateLease-H5 passed all eight prespecified Stage-A screening checks on one
+previously opened MBPP calibration task (38 scored tokens). At exactly
+`3,454,664` allocated resident bytes, its excess NLL was `0.023349` versus
+`0.028442` for the strongest fixed-replay schedule, `fixed_cut4_in5`—a
+descriptive `17.90%` reduction on this one trace.
 
-StateLease-H5 passed Stage-A on task 666. It improved excess NLL versus `fixed_cc1`
-and the historical anchor `rht_cqer32` while preserving the exact `3,454,664`-byte
-resident recurrent-state contract and all one-run integrity gates.
+It did **not** beat the two strongest equal-total-byte no-replay codecs. The
+Q4/Q6/Q8 comparator reached `-0.000014` excess NLL and expanded Q4/Q8 reached
+`0.002461`. This is therefore a falsification-screen pass, not a development,
+held-out, general-advantage, or breakthrough result.
 
-![StateLease-H5 one-task excess NLL comparison](assets/experiment012-stage-a-excess-nll.svg)
+![One-task excess NLL for StateLease-H5 and the prespecified comparators](assets/experiment012-stage-a-excess-nll.svg)
 
-For the full table, evidence hashes, and gate outcomes, use
-[EXPERIMENT_012_STAGE_A_RESULT.md](research/EXPERIMENT_012_STAGE_A_RESULT.md).
+The [full Stage-A record](evidence/experiment012-statelease-stage-a-666.json)
+is committed with file SHA-256
+`1e92b0bea176154496c7d5e45013bf051ef3f388352c1267d86910f81844fd22`.
+After installing the current source tree, run
+`recurquant verify-statelease-stage-a evidence/experiment012-statelease-stage-a-666.json`
+to recompute its metrics, storage contracts, and eight gate decisions offline.
+See the [result note](research/EXPERIMENT_012_STAGE_A_RESULT.md) for the complete
+method table, storage breakdown, gate outcomes, and claim boundary.
 
 ## Scope
 

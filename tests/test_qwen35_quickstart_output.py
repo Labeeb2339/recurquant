@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -42,12 +41,6 @@ class _FakeModel:
         self.training = False
         return self
 
-    def parameters(self) -> object:
-        return iter(())
-
-    def buffers(self) -> object:
-        return iter(())
-
     def __call__(self, **kwargs: object) -> SimpleNamespace:
         assert kwargs["use_cache"] is True
         assert kwargs["logits_to_keep"] == 1
@@ -86,11 +79,7 @@ def fake_workflow(monkeypatch: pytest.MonkeyPatch) -> _FakeCache:
         assert kwargs["local_files_only"] is True
         return model
 
-    def create_cache(
-        loaded_model: torch.nn.Module,
-        policy: str,
-        _args: object,
-    ) -> _FakeCache:
+    def create_cache(loaded_model: torch.nn.Module, policy: str) -> _FakeCache:
         assert loaded_model is model
         assert policy == quickstart.MIXED_POLICY
         return cache
@@ -118,9 +107,6 @@ def test_json_mode_prints_one_complete_document(
         "model_id": quickstart.MODEL_ID,
         "model_revision": quickstart.MODEL_REVISION,
         "policy": quickstart.MIXED_POLICY,
-        "selector_artifact": None,
-        "selector_method": None,
-        "static_rank_weight": None,
         "storage_summary": fake_workflow.summary,
     }
 
@@ -145,90 +131,3 @@ def test_human_mode_preserves_existing_output(
         "resident_compression_ratio=8.000x\n"
         "physical_reduction_realized=True\n"
     )
-
-
-def test_rank_fused_policy_uses_artifact_and_prints_machine_fields(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    tokenizer = _FakeTokenizer()
-    model = _FakeModel()
-    cache = _FakeCache()
-
-    def model_call(*args: object, **kwargs: object):
-        del args
-        del kwargs
-        logits = torch.tensor([[[0.0, 0.0, 1.0]]])
-        return SimpleNamespace(logits=logits)
-
-    model.__call__ = model_call.__get__(model)
-
-    selector_file = tmp_path / "selector-artifact.json"
-    selector_file.write_text("{}", encoding="utf-8")
-
-    def load_tokenizer(*_, **__) -> _FakeTokenizer:
-        return tokenizer
-
-    def load_model(*_, **__) -> object:
-        return model
-
-    def load_selector(
-        _path: Path, selector_method: str
-    ) -> tuple[object, dict[int, torch.Tensor]]:
-        assert selector_method == quickstart.DEFAULT_SELECTOR_METHOD
-        return object(), {0: torch.tensor([[1.0, 0.5], [0.2, 0.1]])}
-
-    def create_rank_fused(
-        loaded_model: object,
-        *,
-        plan: object,
-        static_scores_by_layer: dict[int, torch.Tensor],
-        static_rank_weight: float,
-        **_kwargs: object,
-    ) -> _FakeCache:
-        assert loaded_model is model
-        assert plan is not None
-        assert static_rank_weight == 0.25
-        assert set(static_scores_by_layer) == {0}
-        return cache
-
-    monkeypatch.setattr(quickstart.AutoTokenizer, "from_pretrained", load_tokenizer)
-    monkeypatch.setattr(quickstart.AutoModelForCausalLM, "from_pretrained", load_model)
-    monkeypatch.setattr(quickstart, "_load_rank_fused_selector_artifact", load_selector)
-    monkeypatch.setattr(
-        quickstart,
-        "create_qwen35_rank_fused_exact_budget_cache",
-        create_rank_fused,
-    )
-
-    result = quickstart.main(
-        [
-            "--device",
-            "cpu",
-            "--policy",
-            quickstart.RANK_FUSED_POLICY,
-            "--selector-artifact",
-            str(selector_file),
-            "--static-rank-weight",
-            "0.25",
-            "--max-new-tokens",
-            "1",
-            "--local-files-only",
-            "--json",
-        ]
-    )
-
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert result == 0
-    assert payload == {
-        "generated_text": "synthetic completion",
-        "model_id": quickstart.MODEL_ID,
-        "model_revision": quickstart.MODEL_REVISION,
-        "policy": quickstart.RANK_FUSED_POLICY,
-        "selector_method": quickstart.DEFAULT_SELECTOR_METHOD,
-        "selector_artifact": str(selector_file),
-        "static_rank_weight": 0.25,
-        "storage_summary": cache.summary,
-    }

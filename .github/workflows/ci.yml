@@ -35,6 +35,10 @@ jobs:
             evidence/mbpp-v02-confirmation-manifest.json \
             --expect-artifact-sha256 70394c419298fc872cdd08e8aec12d17d5a56aa20f7d3c9f09fe8fdbf26c6ba9 \
             --expect-artifact-evidence-sha256 2a652df92f99fa81f785244d966829e909d31f200e5a1520b76e6b46fb45d3e0
+      - name: Verify frozen StateLease Stage-A record
+        run: >-
+          recurquant verify-statelease-stage-a
+          evidence/experiment012-statelease-stage-a-666.json
       - name: Lint
         run: ruff check .
       - name: Test

@@ -355,44 +355,23 @@ and claim boundary. Read the complete frozen design in
 [`PUBLIC_EVAL_PROTOCOL_V02.md`](../research/PUBLIC_EVAL_PROTOCOL_V02.md) and the
 current restrictions in [`CLAIM_BOUNDARY.md`](../research/CLAIM_BOUNDARY.md).
 
-## 5. Run the StateLease Stage-B development workflow
+## StateLease-H5 Stage-A evidence
 
-StateLease commands are now available through the same `recurquant.cli` entrypoint:
+Experiment 012 is a one-task falsification screen, not a Stage-B development
+result. The dedicated verifier checks the committed hashes, strict JSON,
+per-token aggregates, 38-by-18 trajectory record, tensor storage schemas, and
+all eight gate decisions without importing the experiment runner:
 
 ```powershell
-# Resolve the frozen StateLease identity.
-.venv\Scripts\python.exe -m recurquant.cli resolve-statelease-stage-b-identity `
-  --output evidence\statelease-stage-b-identity.json `
-  --local-files-only
+.venv\Scripts\recurquant.exe verify-statelease-stage-a `
+  evidence\experiment012-statelease-stage-a-666.json
 ```
 
 ```bash
-# Resolve the frozen StateLease identity.
-.venv/bin/python -m recurquant.cli resolve-statelease-stage-b-identity \
-  --output evidence/statelease-stage-b-identity.json \
-  --local-files-only
+.venv/bin/recurquant verify-statelease-stage-a \
+  evidence/experiment012-statelease-stage-a-666.json
 ```
 
-```powershell
-# Run a Stage-B development sweep on the frozen Stage-A result.
-.venv\Scripts\python.exe -m recurquant.cli evaluate-statelease-stage-b `
-  --stage-a-artifact artifacts\experiment009-rht-cqer-stage-a-666-5be8d48.json `
-  --identity-artifact evidence\statelease-stage-b-identity.json `
-  --output evidence\statelease-stage-b-result.json `
-  --device auto `
-  --local-files-only
-```
-
-```bash
-# Run a Stage-B development sweep on the frozen Stage-A result.
-.venv/bin/python -m recurquant.cli evaluate-statelease-stage-b \
-  --stage-a-artifact artifacts/experiment009-rht-cqer-stage-a-666-5be8d48.json \
-  --identity-artifact evidence/statelease-stage-b-identity.json \
-  --output evidence/statelease-stage-b-result.json \
-  --device auto \
-  --local-files-only
-```
-
-These commands keep evidence hashing, artifact schema checks, and reproducibility
-boundaries explicit. They are development evidence only and are not a
-deployment or breakthrough claim.
+No StateLease Stage-B command is published yet. Experiment 012's protocol
+requires a new three-workload identity and a genuine StateLease evaluator before
+any model-backed Stage-B run.

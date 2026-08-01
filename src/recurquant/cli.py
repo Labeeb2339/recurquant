@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import torch
@@ -13,6 +12,7 @@ from .confirmation import verify_mbpp_confirmation
 from .evidence import verify_evidence_artifact
 from .quantization import QuantizationSpec, quantize_dequantize
 from .qwen35_quickstart import add_qwen35_arguments, run_qwen35_quickstart
+from .statelease_artifact import verify_experiment012_statelease_stage_a
 
 
 def _demo(args: argparse.Namespace) -> int:
@@ -58,41 +58,10 @@ def _verify_confirmation(args: argparse.Namespace) -> int:
     return 0 if report["valid"] else 1
 
 
-def _statelease_stage_b_identity(args: argparse.Namespace) -> int:
-    """Run the frozen StateLease Stage-B identity adapter."""
-
-    from scripts import resolve_statelease_stage_b_identity as identity_resolver
-
-    argv = ["--output", str(args.output)]
-    if bool(args.local_files_only):
-        argv.append("--local-files-only")
-
-    old_argv = sys.argv
-    try:
-        sys.argv = ["scripts/resolve_statelease_stage_b_identity.py", *argv]
-        return identity_resolver.main()
-    finally:
-        sys.argv = old_argv
-
-
-def _statelease_stage_b_evaluate(args: argparse.Namespace) -> int:
-    """Run the frozen StateLease Stage-B development quality evaluator."""
-
-    from scripts import evaluate_statelease_stage_b as evaluator
-
-    argv = [
-        "--stage-a-artifact",
-        str(args.stage_a_artifact),
-        "--identity-artifact",
-        str(args.identity_artifact),
-        "--output",
-        str(args.output),
-        "--device",
-        str(args.device),
-    ]
-    if bool(args.local_files_only):
-        argv.append("--local-files-only")
-    return evaluator.main(argv)
+def _verify_statelease_stage_a(args: argparse.Namespace) -> int:
+    report = verify_experiment012_statelease_stage_a(args.artifact)
+    print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if report["valid"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -139,28 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     confirmation.add_argument("--expect-artifact-evidence-sha256")
     confirmation.set_defaults(handler=_verify_confirmation)
 
-    statelease_identity = subparsers.add_parser(
-        "resolve-statelease-stage-b-identity",
-        help="Resolve frozen StateLease Stage-B identities without loading model weights.",
+    statelease = subparsers.add_parser(
+        "verify-statelease-stage-a",
+        help="Independently verify the frozen Experiment 012 Stage-A artifact.",
     )
-    statelease_identity.add_argument("--output", type=Path, required=True)
-    statelease_identity.add_argument("--local-files-only", action="store_true")
-    statelease_identity.set_defaults(handler=_statelease_stage_b_identity)
-
-    statelease_evaluate = subparsers.add_parser(
-        "evaluate-statelease-stage-b",
-        help="Evaluate the frozen StateLease Stage-B development window.",
-    )
-    statelease_evaluate.add_argument("--stage-a-artifact", type=Path, required=True)
-    statelease_evaluate.add_argument("--identity-artifact", type=Path, required=True)
-    statelease_evaluate.add_argument("--output", type=Path, required=True)
-    statelease_evaluate.add_argument(
-        "--device",
-        choices=("auto", "cpu", "cuda"),
-        default="auto",
-    )
-    statelease_evaluate.add_argument("--local-files-only", action="store_true")
-    statelease_evaluate.set_defaults(handler=_statelease_stage_b_evaluate)
+    statelease.add_argument("artifact", type=Path)
+    statelease.set_defaults(handler=_verify_statelease_stage_a)
 
     return parser
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import importlib.metadata
 import copy
 import hashlib
+import importlib.metadata
 import json
 import subprocess
 from collections import OrderedDict
