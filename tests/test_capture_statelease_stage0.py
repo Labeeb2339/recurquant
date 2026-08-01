@@ -689,6 +689,7 @@ def test_repository_binding_rejects_unsafe_object_views(
     ("key", "value"),
     [
         ("filter.attacker.clean", "type"),
+        ("includeIf.gitdir:C:/repo/.git.path", "credentials.config"),
         ("core.fsmonitor", "true"),
         ("core.untrackedCache", "true"),
         ("core.hooksPath", "hooks"),

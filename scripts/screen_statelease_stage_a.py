@@ -35,7 +35,7 @@ import types
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import torch
@@ -5308,14 +5308,16 @@ def _sanitized_command() -> list[str]:
     redact_next_path = False
     for argument in sys.argv[1:]:
         if redact_next_path:
-            result.append(Path(argument).name)
+            # PureWindowsPath treats both slash styles as separators on every
+            # host, preventing Windows source paths from leaking on Linux CI.
+            result.append(PureWindowsPath(argument).name)
             redact_next_path = False
             continue
         matched_inline_path = False
         for option in ("--stage0-artifact", "--stage0-sha256"):
             prefix = f"{option}="
             if argument.startswith(prefix):
-                result.append(f"{prefix}{Path(argument[len(prefix) :]).name}")
+                result.append(f"{prefix}{PureWindowsPath(argument[len(prefix) :]).name}")
                 matched_inline_path = True
                 break
         if matched_inline_path:

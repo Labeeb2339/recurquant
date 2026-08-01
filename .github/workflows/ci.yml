@@ -19,6 +19,10 @@ jobs:
           # Historical evidence authentication checks recorded commits against
           # HEAD, so the test job needs the complete ancestry graph.
           fetch-depth: 0
+          # This job only reads repository history. Avoid checkout's temporary
+          # credential includeIf entries so provenance tests see a closed local
+          # Git configuration without weakening their fail-closed guard.
+          persist-credentials: false
       - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.11"
@@ -27,7 +31,7 @@ jobs:
           python-version: "3.11"
           version: "0.11.31"
       - name: Install
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install --system -e ".[dev,eval]"
       - name: Verify frozen MBPP confirmation
         run: |
           recurquant verify-confirmation \
