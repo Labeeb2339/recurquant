@@ -143,10 +143,15 @@ recurquant.experiment013.humaneval-plus.stage-c.v1\0
 ```
 
 The canonical PG19 ID is the exact UTF-8 `url` field; the pinned PG19 schema
-does not contain a `book_id` field. A training book is eligible when the pinned
-tokenizer produces at least 2,304 tokens. Rank all 13,684 training URLs before
-opening text, then inspect them in that fixed order only until 16 eligible
-books have been accepted. For an accepted book with `N` tokens, define
+does not contain a `book_id` field. The population is the ordered `url`
+projection from the active Hugging Face Dataset Viewer `/parquet` manifest for
+the `default` configuration and pinned split. The capture must authenticate the
+manifest's `x-revision`, hash that complete ordered projection, and exclude
+repository-tree parquet files that the active manifest does not reference. A
+training book is eligible when the pinned tokenizer produces at least 2,304
+tokens. Rank all 13,684 training URLs before opening text, then inspect them in
+that fixed order only until 16 eligible books have been accepted. For an
+accepted book with `N` tokens, define
 
 ```text
 M = N - 2304
