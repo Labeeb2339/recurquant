@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/recurquant-hero.png" width="100%" alt="RecurQuant — packed recurrent state for Qwen3.5">
+  <img src="assets/recurquant-hero.svg" width="100%" alt="RecurQuant - recurrent state quantization for Qwen3.5">
 </p>
 
 <p align="center">
@@ -11,37 +11,39 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart"><b>Quickstart</b></a> ·
-  <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> ·
-  <a href="#what-is-physically-smaller"><b>Storage</b></a> ·
-  <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> ·
-  <a href="#experiment-009-stage-b-development"><b>Stage B</b></a> ·
-  <a href="docs/compatibility.md"><b>Compatibility</b></a> ·
+  <a href="#quickstart"><b>Quickstart</b></a> |
+  <a href="#verified-storage-fidelity-frontier"><b>Trade-off</b></a> |
+  <a href="#what-is-physically-smaller"><b>Storage</b></a> |
+  <a href="#held-out-confirmation"><b>v0.2 evidence</b></a> |
+  <a href="#experiment-009-stage-b-development"><b>Stage B</b></a> |
+  <a href="#experiment-012-statelease-h5-screen"><b>StateLease-H5</b></a> |
+  <a href="docs/compatibility.md"><b>Compatibility</b></a> |
   <a href="docs/reproducing.md"><b>Reproduce</b></a>
 </p>
 
-RecurQuant is an alpha Python package that physically packs the persistent
-recurrent matrix states used by Qwen3.5 Gated DeltaNet layers. Pass its cache to
-ordinary eager Transformers model calls to keep those states as grouped INT4 or
-INT8 payloads between calls.
+I built RecurQuant to answer one practical question:
+Can we quantize only the recurrent memory path in Qwen3.5 Gated DeltaNet and keep
+token-level quality from a fixed byte budget?
 
-Its frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced
-recurrent-state fidelity protocol. Relative to uniform INT4, task-macro excess
-NLL above the matched FP32-state reference was 72.75% lower while the packed
-persistent recurrent state—including payloads, FP16 scales, and precision
-masks—occupied exactly 2,564,096 resident bytes.
+I kept this repo narrow on purpose. It does not change model weights and it uses
+the normal eager Transformers forward with a pluggable cache. That keeps each
+experiment clean enough to reproduce.
 
-The experimental v0.3 RHT-CQER-32 method has now also passed its separate
-32-task development gate: aligned excess NLL was 52.73% lower than CQER-32 at
-the same packed-state and selector byte counts. That newer result is
-development evidence, not held-out confirmation.
+The frozen v0.2 layout passed a 500-task held-out MBPP teacher-forced fidelity
+protocol. Compared with uniform INT4, task-macro excess NLL was 72.75% lower while
+the packed recurrent-state footprint was `2,564,096` bytes (packed payloads plus
+FP16 scales).
 
-It currently targets
-[`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base).
-RecurQuant does not quantize model weights or ordinary attention KV caches, and
-its current Python path dequantizes one recurrent state while that layer runs.
+An experimental v0.3 path, RHT-CQER-32, also cleared its separate 32-task
+development gate: aligned excess NLL was 52.73% lower than CQER-32 at the same
+packed-state and selector-byte budget. That result is development-only.
 
-I built and maintain RecurQuant as an open research project. —
+This repo currently targets
+[`Qwen/Qwen3.5-0.8B-Base`](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base) and
+does not quantize model weights or standard attention KV caches. The current Python
+implementation still dequantizes one recurrent state during the forward pass.
+
+I built and maintain RecurQuant as an open research project.
 [Muhammad Labeeb Aryan](https://github.com/Labeeb2339). Licensed under
 [Apache-2.0](LICENSE).
 
@@ -221,7 +223,7 @@ Important boundaries:
   [`CONFIRMATION_002.md`](research/CONFIRMATION_002.md).
 - Tokens were scored teacher-forced. Candidate-generated code was not fed back,
   executed, or graded for correctness.
-- The MSE selector also chose layer 0, so it is the exact same candidate—not
+- The MSE selector also chose layer 0, so it is the exact same candidate and not
   independent evidence that the read-risk selector is novel or superior.
 - This supports one pinned recurrent-state fidelity and resident-byte result.
   It does not support generated-code quality, speed, peak memory, whole-model
@@ -250,13 +252,37 @@ CQER-minus-RHT improvement was `0.170815` nats/token and its frozen
 ![Per-task paired CQER-32 minus RHT-CQER-32 excess-NLL differences.](assets/experiment009-stage-b-paired.svg)
 
 This is positive development evidence on one pinned model and task window, not
-held-out confirmation for RHT-CQER-32. Randomized Hadamard quantization is
-prior art, and the current Python implementation has no fused-kernel, latency,
-peak-memory, cross-model, or independent external-reproduction result. See the
-[full Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md),
+held-out confirmation for RHT-CQER-32. Randomized Hadamard and
+rotation quantization are prior art, and the current Python implementation has no
+fused-kernel, latency, peak-memory, cross-model, or independent
+external-reproduction result. See the [full Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md),
 [verification receipt](research/EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md),
 and
 [machine-readable release manifest](evidence/experiment009-rht-cqer-stage-b-result-manifest.json).
+
+## Experiment 012: StateLease-H5 screen
+
+StateLease-H5 passed all eight prespecified Stage-A screening checks on one
+previously opened MBPP calibration task (38 scored tokens). At exactly
+`3,454,664` allocated resident bytes, its excess NLL was `0.023349` versus
+`0.028442` for the strongest fixed-replay schedule, `fixed_cut4_in5`—a
+descriptive `17.90%` reduction on this one trace.
+
+It did **not** beat the two strongest equal-total-byte no-replay codecs. The
+Q4/Q6/Q8 comparator reached `-0.000014` excess NLL and expanded Q4/Q8 reached
+`0.002461`. This is therefore a falsification-screen pass, not a development,
+held-out, general-advantage, or breakthrough result.
+
+![One-task excess NLL for StateLease-H5 and the prespecified comparators](assets/experiment012-stage-a-excess-nll.svg)
+
+The [full Stage-A record](evidence/experiment012-statelease-stage-a-666.json)
+is committed with file SHA-256
+`1e92b0bea176154496c7d5e45013bf051ef3f388352c1267d86910f81844fd22`.
+After installing the current source tree, run
+`recurquant verify-statelease-stage-a evidence/experiment012-statelease-stage-a-666.json`
+to recompute its metrics, storage contracts, and eight gate decisions offline.
+See the [result note](research/EXPERIMENT_012_STAGE_A_RESULT.md) for the complete
+method table, storage breakdown, gate outcomes, and claim boundary.
 
 ## Scope
 
@@ -308,6 +334,7 @@ result. See the
 - [CORA-C2 development result](research/EXPERIMENT_008_RESULT.md)
 - [Experiment 009 frozen protocol](research/EXPERIMENT_009_RHT_CQER_PROTOCOL.md)
 - [Experiment 009 Stage-A result](research/EXPERIMENT_009_STAGE_A_RESULT.md)
+- [Experiment 012 StateLease-H5 Stage-A result](research/EXPERIMENT_012_STAGE_A_RESULT.md)
 - [Experiment 009 Stage-B identity freeze](research/EXPERIMENT_009_STAGE_B_IDENTITY.md)
 - [Experiment 009 Stage-B result](research/EXPERIMENT_009_STAGE_B_RESULT.md)
 - [Experiment 009 verification receipt](research/EXPERIMENT_009_STAGE_B_VERIFICATION_RECEIPT.md)
@@ -326,3 +353,4 @@ and work toward a fused packed recurrent kernel. Open an
 [issue](https://github.com/Labeeb2339/recurquant/issues) with a minimal
 reproducer and `cache.storage_summary()`; never include access tokens, private
 prompts, or authentication files.
+

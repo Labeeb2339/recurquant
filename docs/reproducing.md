@@ -43,7 +43,7 @@ Create the normal contributor environment from the repository root:
 ```powershell
 uv venv --python 3.11 .venv
 uv pip install --python .venv\Scripts\python.exe -e ".[dev,eval]"
-.venv\Scripts\python.exe -m pytest
+.venv\Scripts\python.exe -m pytest  # uses ./.pytest-ci by default
 .venv\Scripts\python.exe -m ruff check .
 ```
 
@@ -52,7 +52,7 @@ Linux or macOS:
 ```bash
 uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -e ".[dev,eval]"
-.venv/bin/python -m pytest
+.venv/bin/python -m pytest  # uses ./.pytest-ci by default
 .venv/bin/python -m ruff check .
 ```
 
@@ -354,3 +354,24 @@ change, and include the exact command, environment, artifact, metric definition,
 and claim boundary. Read the complete frozen design in
 [`PUBLIC_EVAL_PROTOCOL_V02.md`](../research/PUBLIC_EVAL_PROTOCOL_V02.md) and the
 current restrictions in [`CLAIM_BOUNDARY.md`](../research/CLAIM_BOUNDARY.md).
+
+## StateLease-H5 Stage-A evidence
+
+Experiment 012 is a one-task falsification screen, not a Stage-B development
+result. The dedicated verifier checks the committed hashes, strict JSON,
+per-token aggregates, 38-by-18 trajectory record, tensor storage schemas, and
+all eight gate decisions without importing the experiment runner:
+
+```powershell
+.venv\Scripts\recurquant.exe verify-statelease-stage-a `
+  evidence\experiment012-statelease-stage-a-666.json
+```
+
+```bash
+.venv/bin/recurquant verify-statelease-stage-a \
+  evidence/experiment012-statelease-stage-a-666.json
+```
+
+No StateLease Stage-B command is published yet. Experiment 012's protocol
+requires a new three-workload identity and a genuine StateLease evaluator before
+any model-backed Stage-B run.

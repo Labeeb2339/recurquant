@@ -12,6 +12,7 @@ from .confirmation import verify_mbpp_confirmation
 from .evidence import verify_evidence_artifact
 from .quantization import QuantizationSpec, quantize_dequantize
 from .qwen35_quickstart import add_qwen35_arguments, run_qwen35_quickstart
+from .statelease_artifact import verify_experiment012_statelease_stage_a
 
 
 def _demo(args: argparse.Namespace) -> int:
@@ -53,6 +54,12 @@ def _verify_confirmation(args: argparse.Namespace) -> int:
         expected_artifact_sha256=args.expect_artifact_sha256,
         expected_artifact_evidence_sha256=args.expect_artifact_evidence_sha256,
     )
+    print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+    return 0 if report["valid"] else 1
+
+
+def _verify_statelease_stage_a(args: argparse.Namespace) -> int:
+    report = verify_experiment012_statelease_stage_a(args.artifact)
     print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
     return 0 if report["valid"] else 1
 
@@ -100,6 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
     confirmation.add_argument("--expect-artifact-sha256")
     confirmation.add_argument("--expect-artifact-evidence-sha256")
     confirmation.set_defaults(handler=_verify_confirmation)
+
+    statelease = subparsers.add_parser(
+        "verify-statelease-stage-a",
+        help="Independently verify the frozen Experiment 012 Stage-A artifact.",
+    )
+    statelease.add_argument("artifact", type=Path)
+    statelease.set_defaults(handler=_verify_statelease_stage_a)
+
     return parser
 
 

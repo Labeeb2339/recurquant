@@ -63,7 +63,7 @@ recurquant = "recurquant.cli:main"
 packages = ["src/recurquant"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q --basetemp ./.pytest-ci"
 testpaths = ["tests"]
 
 [tool.ruff]

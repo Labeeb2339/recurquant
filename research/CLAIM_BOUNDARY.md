@@ -1,6 +1,6 @@
 # Claim boundary
 
-Last reviewed: 2026-07-26
+Last reviewed: 2026-08-02
 
 ## What is already established
 
@@ -111,6 +111,15 @@ end-to-end systems result. The codec regenerates SHA-256-derived signs and
 materializes FP32 transform workspaces in the current Python path. The result
 does not establish novelty or speed because randomized Hadamard and rotation
 quantizers are prior art and the implementation has no fused-kernel benchmark.
+
+Experiment 012 extended the falsification protocol with StateLease-H5, a
+replay-driven per-layer c4/c5 policy over the same byte budget. Its one-task
+Stage-A screen passed all gate checks with `statelease_h5` scoring better excess
+NLL than the strongest fixed-replay comparator under that protocol contract.
+At the same total byte budget, however, the Q4/Q6/Q8 and expanded Q4/Q8
+no-replay codecs both had lower excess NLL on the task. This remains a narrow
+one-task method gate, not development evidence or a cross-window, cross-model,
+speed, deployment, practical-advantage, or breakthrough finding.
 
 ## Claims prohibited without new evidence
 

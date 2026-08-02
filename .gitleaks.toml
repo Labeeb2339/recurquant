@@ -19,3 +19,36 @@ regexTarget = "line"
 regexes = [
   '''"(?:code_token_ids_sha256|prompt_token_ids_sha256|token_manifest_sha256)"\s*:\s*"[0-9a-f]{64}"''',
 ]
+
+[[allowlists]]
+description = "Public experiment identity digests in Markdown"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''(?:prompt-token-ID|code-token-ID|token-ID|token-manifest) SHA-256:\s*`?[0-9a-f]{64}`?''',
+]
+
+[[allowlists]]
+description = "Frozen Stage-A token digest constants"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''(?:PROMPT|CODE)_TOKEN_IDS_SHA256\s*=\s*"[0-9a-f]{64}"''',
+]
+
+[[allowlists]]
+description = "Authenticated evidence manifest digests"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''"actual_token_manifest_sha256"\s*:\s*"[0-9a-f]{64}"''',
+  '''"[A-Za-z0-9_./-]+\.md"\s*:\s*"[0-9a-f]{64}"''',
+]
+
+[[allowlists]]
+description = "Dtype assertions on recurrent-state buffers"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''(?:layer\.normalized_key_buffer|buffers\.normalized_keys)\.dtype\s*==\s*torch\.[a-z0-9_]+''',
+]

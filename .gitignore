@@ -1,9 +1,13 @@
 .venv/
+.venv-kernel/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .pytest-tmp-*/
+.pytest-*/
+.pytest-of-*/
+.pytest/
 .ruff_cache/
 .coverage
 htmlcov/

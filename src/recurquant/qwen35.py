@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import Counter
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +24,15 @@ from .packed_cache import (
 )
 from .quantization import QuantizationSpec, RoundingMode
 from .row_policy import ExactBudgetRowPlan
+from .statelease_baselines import (
+    FixedReplayMode,
+    FixedReplayRecurrentStateCache,
+    fixed_replay_policy,
+)
+from .statelease_cache import (
+    STATELEASE_SELECTION_METHOD,
+    StateLeaseRecurrentStateCache,
+)
 
 if TYPE_CHECKING:
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
@@ -32,6 +44,29 @@ else:
 _SUPPORTED_TRANSFORMERS_REQUIREMENT = "transformers==5.14.1"
 _SUPPORTED_TRANSFORMERS_SPEC = SpecifierSet("==5.14.1")
 _SUPPORTED_LAYER_TYPES = frozenset({"linear_attention", "full_attention"})
+EXPERIMENT010_STATELEASE_LAYER_QUOTAS: dict[int, int] = {
+    0: 355,
+    1: 380,
+    2: 269,
+    4: 179,
+    5: 185,
+    6: 105,
+    8: 80,
+    9: 43,
+    10: 84,
+    12: 30,
+    13: 62,
+    14: 54,
+    16: 45,
+    17: 27,
+    18: 7,
+    20: 9,
+    21: 7,
+    22: 55,
+}
+EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256 = (
+    "6b7d8f6b7a4b1142f0363bf3387fa20f8d3e3b0656c4367680f84d76ee528640"
+)
 
 
 def _validate_transformers_compatibility() -> Version:
@@ -44,11 +79,7 @@ def _validate_transformers_compatibility() -> Version:
             "Install a stable tested release with: "
             f"pip install '{_SUPPORTED_TRANSFORMERS_REQUIREMENT}'."
         ) from None
-    if (
-        parsed.is_prerelease
-        or parsed.is_devrelease
-        or parsed not in _SUPPORTED_TRANSFORMERS_SPEC
-    ):
+    if parsed.is_prerelease or parsed.is_devrelease or parsed not in _SUPPORTED_TRANSFORMERS_SPEC:
         raise RuntimeError(
             "RecurQuant's Qwen3.5 cache is tested only with "
             f"{_SUPPORTED_TRANSFORMERS_REQUIREMENT}; "
@@ -369,6 +400,166 @@ def create_qwen35_right_rht_query_ema_exact_budget_cache(
         rounding=rounding,
         seed=seed,
         record_evidence=record_evidence,
+    )
+
+
+def experiment010_statelease_effective_plan_sha256(
+    plan: ExactBudgetRowPlan,
+) -> str:
+    """Hash every plan field that can affect the frozen StateLease codec."""
+
+    if not isinstance(plan, ExactBudgetRowPlan):
+        raise TypeError("plan must be an ExactBudgetRowPlan")
+    quotas = Counter(location.layer_index for location in plan.high_precision_rows)
+    summary = {
+        "low_bits": plan.low_bits,
+        "high_bits": plan.high_bits,
+        "group_size": plan.group_size,
+        "scale_bits": plan.scale_bits,
+        "total_groups": plan.total_groups,
+        "mask_bytes": plan.mask_bytes,
+        "promotion_increment_bytes": plan.promotion_increment_bytes,
+        "target_resident_bytes": plan.target_resident_bytes,
+        "resident_bytes": plan.resident_bytes,
+        "promoted_group_count": plan.promoted_group_count,
+        "score_shapes": [list(shape) for shape in sorted(plan.score_shapes)],
+        "layer_quotas": {str(layer_index): quotas[layer_index] for layer_index in sorted(quotas)},
+    }
+    payload = json.dumps(
+        summary,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_experiment010_statelease_plan(plan: ExactBudgetRowPlan) -> None:
+    expected_shapes = tuple(
+        (layer_index, 16, 128) for layer_index in EXPERIMENT010_STATELEASE_LAYER_QUOTAS
+    )
+    expected_scalars = {
+        "low_bits": 4,
+        "high_bits": 8,
+        "group_size": 128,
+        "scale_bits": 16,
+        "total_groups": 36_864,
+        "mask_bytes": 4_608,
+        "promotion_increment_bytes": 64,
+        "target_resident_bytes": 2_564_096,
+        "resident_bytes": 2_564_096,
+        "promoted_group_count": 1_976,
+    }
+    actual_scalars = {
+        "low_bits": plan.low_bits,
+        "high_bits": plan.high_bits,
+        "group_size": plan.group_size,
+        "scale_bits": plan.scale_bits,
+        "total_groups": plan.total_groups,
+        "mask_bytes": plan.mask_bytes,
+        "promotion_increment_bytes": plan.promotion_increment_bytes,
+        "target_resident_bytes": plan.target_resident_bytes,
+        "resident_bytes": plan.resident_bytes,
+        "promoted_group_count": plan.promoted_group_count,
+    }
+    mismatched = {
+        name: (actual_scalars[name], expected)
+        for name, expected in expected_scalars.items()
+        if actual_scalars[name] != expected
+    }
+    if mismatched:
+        raise ValueError(
+            f"plan does not match the frozen Experiment 010 storage identity: {mismatched}"
+        )
+    if tuple(sorted(plan.score_shapes)) != expected_shapes:
+        raise ValueError("plan does not contain the frozen 18-layer [16, 128] StateLease geometry")
+    quotas = Counter(location.layer_index for location in plan.high_precision_rows)
+    if dict(sorted(quotas.items())) != EXPERIMENT010_STATELEASE_LAYER_QUOTAS:
+        raise ValueError(
+            "plan does not contain the frozen Experiment 010 target-Fisher "
+            "per-layer promotion quotas"
+        )
+    digest = experiment010_statelease_effective_plan_sha256(plan)
+    if digest != EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256:
+        raise ValueError("plan does not match the frozen Experiment 010 effective-plan hash")
+
+
+def create_qwen35_statelease_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    rounding: RoundingMode = "nearest",
+    seed: int = 2339,
+    record_evidence: bool = False,
+) -> StateLeaseRecurrentStateCache:
+    """Create a configurable five-record StateLease research cache for Qwen3.5.
+
+    The supplied exact row plan defines the RHT-CQER INT4/INT8 checkpoint.
+    StateLease additionally keeps a fixed-capacity BF16 ``(k, u)`` and FP32
+    ``g`` replay lease plus one FP32 causal query-energy EMA per recurrent
+    layer. At every full five-record event, each layer independently chooses
+    the lower-risk cut-4 or cut-5 checkpoint boundary; exact ties choose cut 5.
+
+    Every model forward using the returned cache must run inside
+    :class:`recurquant.Qwen35StateLeaseObserver` so the cache receives the
+    successful Gated DeltaNet transition before its state write. The current
+    implementation is batch-one, inference-only, and correctness-first; it
+    makes no fused-kernel, latency, or allocator-peak claim.
+
+    This generic factory intentionally reports a configurable method identity.
+    Use :func:`create_qwen35_experiment010_statelease_cache` when reproducing
+    the frozen Experiment 010 protocol.
+    """
+
+    return StateLeaseRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        rounding=rounding,
+        seed=seed,
+        record_evidence=record_evidence,
+    )
+
+
+def create_qwen35_experiment010_statelease_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    record_evidence: bool = False,
+) -> StateLeaseRecurrentStateCache:
+    """Create only the byte- and policy-locked Experiment 010 StateLease cache."""
+
+    _validate_experiment010_statelease_plan(plan)
+    return StateLeaseRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        rounding="nearest",
+        seed=2339,
+        record_evidence=record_evidence,
+        selection_method=STATELEASE_SELECTION_METHOD,
+        experiment_identity_sha256=EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
+    )
+
+
+def create_qwen35_experiment010_fixed_replay_cache(
+    model_or_config: Qwen35Source,
+    *,
+    plan: ExactBudgetRowPlan,
+    mode: FixedReplayMode | str,
+    record_evidence: bool = False,
+) -> FixedReplayRecurrentStateCache:
+    """Create one policy- and byte-locked Experiment 010 replay baseline."""
+
+    _validate_experiment010_statelease_plan(plan)
+    policy = fixed_replay_policy(mode)
+    selection_method = f"{policy.mode}_right_rht_query_ema32_weighted_mse_fisher_quota"
+    return FixedReplayRecurrentStateCache(
+        _validated_exact_budget_config(model_or_config, plan=plan),
+        plan=plan,
+        mode=policy.mode,
+        rounding="nearest",
+        seed=2339,
+        record_evidence=record_evidence,
+        selection_method=selection_method,
+        experiment_identity_sha256=EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
     )
 
 

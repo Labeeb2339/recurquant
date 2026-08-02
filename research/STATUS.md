@@ -2,7 +2,7 @@
 
 ## v0.3 experimental track
 
-Last updated: 2026-07-26
+Last updated: 2026-08-02
 
 Experiment 005 stopped before holdout after its frozen real-storage-boundary
 sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
@@ -73,6 +73,47 @@ verification record, and compact release manifest are:
 The public-stream application-level access boundary remains fixed in
 [`EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md`](EXPERIMENT_009_DATA_ACCESS_CLARIFICATION.md).
 Ranked MBPP window `[8, 16)` remained protected.
+
+Experiment 012 tested the next falsification step for the StateLease controller.
+StateLease-H5 adds replay-driven per-layer c4/c5 arbitration with an exact
+`3,454,664`-byte allocation (`5.857110` bits per recurrent-state element). Its
+one-task Stage-A screen on task `666` passed all eight frozen checks. Excess NLL
+was `0.023349`, 17.90% below the strongest fixed-replay schedule at `0.028442`.
+It was worse than the two strongest equal-total-byte no-replay codecs, at
+`-0.000014` and `0.002461`, so the result does not establish a practical or
+general advantage.
+
+The full record is:
+
+- [Experiment 012 StateLease-H5 identity](EXPERIMENT_012_STAGE_A_IDENTITY.md)
+- [Experiment 012 StateLease-H5 protocol](EXPERIMENT_012_STATELEASE_PROTOCOL.md)
+- [Experiment 012 StateLease-H5 Stage-A result](EXPERIMENT_012_STAGE_A_RESULT.md)
+- [Experiment 012 machine-readable result](../evidence/experiment012-statelease-stage-a-666.json)
+
+The StateLease-H5 design originated in Experiment 010. It keeps the frozen
+RHT-CQER checkpoint, allocates a five-token BF16 `(u, k)` plus FP32 `g` replay
+buffer per recurrent layer, and each layer independently makes one
+threshold-free choice between c4 and c5 only when its buffer is full. Both
+risks use the same normalized view of that layer's unchanged causal CQER EMA;
+no global synchronized choice is used. An exact tie selects c5. The complete
+logical persistent
+allocation is `3,454,664` bytes, or `5.857110` bits per recurrent-state
+element.
+
+The protocol requires schedule-matched fixed replay, equal-total-byte
+no-replay, mixed-bit, residual, FP32, and off-budget CC8 references. In
+particular, the expanded equal-total-byte RHT Q4/Q8 comparator promotes
+exactly 13,587 rows and contains 8 explicit reserved padding bytes. Stage A is
+limited to already-open task 666. No StateLease Stage-B development result
+exists. Ranked MBPP window `[8, 16)` remains sealed and is not authorized for
+this experiment. Stage-A status for this controller is documented in
+[`EXPERIMENT_012_STAGE_A_RESULT.md`](EXPERIMENT_012_STAGE_A_RESULT.md). See
+[`EXPERIMENT_010_STATELEASE_PROTOCOL.md`](EXPERIMENT_010_STATELEASE_PROTOCOL.md).
+
+Checkpoint/replay and Gated DeltaNet `(u, k, g)` buffering are established
+prior art through Nemotron 3 Ultra and ReplaySSM. Even a future protocol pass
+would not by itself support a first, novelty, speed, deployment,
+state-of-the-art, or breakthrough claim.
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
 packer and an exact dynamic-programming allocator. Its corrected two-bit

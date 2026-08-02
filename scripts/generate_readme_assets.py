@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "research" / "EXPERIMENT_002_SCALE_CORRECTION.md"
 DEVELOPMENT_SOURCE = ROOT / "evidence" / "mbpp-v02-development.json"
 CONFIRMATION_SOURCE = ROOT / "evidence" / "mbpp-v02-confirmation.json"
+STATELEASE_STAGE_A_SOURCE = ROOT / "evidence" / "experiment012-statelease-stage-a-666.json"
 STAGE_B_SOURCE = ROOT / "artifacts" / "experiment009-rht-cqer-stage-b-result-cdc603b.json"
 STAGE_B_MANIFEST = ROOT / "evidence" / "experiment009-rht-cqer-stage-b-result-manifest.json"
 ASSETS = ROOT / "assets"
@@ -51,6 +52,26 @@ STAGE_B_METHODS = (
 )
 STAGE_B_CQER_METHOD = "query_ema32_weighted_mse_target_fisher_quota"
 STAGE_B_RHT_METHOD = "right_rht_query_ema32_weighted_mse_target_fisher_quota"
+
+STATELEASE_STAGE_A_ARTIFACT_KIND = "recurquant_experiment012_statelease_stage_a_falsification"
+STATELEASE_STAGE_A_ARTIFACT_SHA256 = (
+    "1e92b0bea176154496c7d5e45013bf051ef3f388352c1267d86910f81844fd22"
+)
+STATELEASE_STAGE_A_CANONICAL_SHA256 = (
+    "d4bd2c89bb265e5e1dab81a7bf89d97e71fa4a6822bef5d56142428e16b897c1"
+)
+STATELEASE_STAGE_A_METHODS = (
+    "rht_q4_q6_q8",
+    "expanded_rht_q4_q8",
+    "statelease_h5",
+    "fixed_cut4_in5",
+    "rht_residual_q4",
+    "fixed_cc5",
+    "fixed_cc4",
+    "fixed_cc1",
+    "rht_cqer32",
+    "fixed_cc2",
+)
 
 
 def _capture(source: str, pattern: str, label: str) -> tuple[str, ...]:
@@ -1744,16 +1765,218 @@ def _validate_stage_b_graph_assets_from_manifest() -> None:
             raise ValueError(f"embedded graph evidence is incomplete for {relative_path}")
 
 
+def _statelease_stage_a_data() -> dict[str, object]:
+    raw = STATELEASE_STAGE_A_SOURCE.read_bytes()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    if file_sha256 != STATELEASE_STAGE_A_ARTIFACT_SHA256:
+        raise ValueError("Experiment 012 Stage-A artifact file hash drifted")
+
+    document = json.loads(raw.decode("utf-8"), parse_constant=_reject_non_finite)
+    if document.get("artifact_kind") != STATELEASE_STAGE_A_ARTIFACT_KIND:
+        raise ValueError("Experiment 012 Stage-A artifact kind drifted")
+    evidence = document.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("Experiment 012 Stage-A evidence is missing")
+    canonical = hashlib.sha256(
+        (json.dumps(evidence, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    ).hexdigest()
+    if (
+        canonical != STATELEASE_STAGE_A_CANONICAL_SHA256
+        or document.get("canonical_evidence_sha256") != canonical
+    ):
+        raise ValueError("Experiment 012 Stage-A canonical evidence hash drifted")
+
+    dataset = evidence.get("dataset")
+    gate = evidence.get("stage_a_gate")
+    metrics = evidence.get("metrics_aligned")
+    if not isinstance(dataset, dict) or not isinstance(gate, dict) or not isinstance(metrics, dict):
+        raise ValueError("Experiment 012 Stage-A evidence schema drifted")
+    identity = dataset.get("identity")
+    checks = gate.get("checks")
+    if (
+        not isinstance(identity, dict)
+        or identity.get("task_id") != 666
+        or evidence.get("metric_contract", {}).get("aligned_token_count") != 38
+        or gate.get("passed") is not True
+        or not isinstance(checks, dict)
+        or len(checks) != 8
+        or any(not isinstance(check, dict) or check.get("passed") is not True for check in checks.values())
+    ):
+        raise ValueError("Experiment 012 Stage-A identity or gate drifted")
+
+    roles = {
+        "rht_q4_q6_q8": "no replay",
+        "expanded_rht_q4_q8": "no replay",
+        "statelease_h5": "StateLease",
+        "fixed_cut4_in5": "fixed replay",
+        "rht_residual_q4": "no replay",
+        "fixed_cc5": "fixed replay",
+        "fixed_cc4": "fixed replay",
+        "fixed_cc1": "fixed replay",
+        "rht_cqer32": "historical lower-byte anchor",
+        "fixed_cc2": "fixed replay",
+    }
+    labels = {
+        "rht_q4_q6_q8": "RHT Q4/Q6/Q8",
+        "expanded_rht_q4_q8": "Expanded RHT Q4/Q8",
+        "statelease_h5": "StateLease-H5",
+        "fixed_cut4_in5": "Fixed cut4-in5",
+        "rht_residual_q4": "RHT residual-Q4",
+        "fixed_cc5": "Fixed CC5",
+        "fixed_cc4": "Fixed CC4",
+        "fixed_cc1": "Fixed CC1",
+        "rht_cqer32": "RHT-CQER-32",
+        "fixed_cc2": "Fixed CC2",
+    }
+    rows = []
+    for method in STATELEASE_STAGE_A_METHODS:
+        row = metrics.get(method)
+        if not isinstance(row, dict):
+            raise ValueError(f"Experiment 012 metrics missing {method}")
+        delta_nll = row.get("delta_nll")
+        if isinstance(delta_nll, bool) or not isinstance(delta_nll, (int, float)) or not math.isfinite(delta_nll):
+            raise ValueError(f"Experiment 012 delta NLL is invalid for {method}")
+        rows.append(
+            {
+                "method": method,
+                "label": labels[method],
+                "role": roles[method],
+                "delta_nll": float(delta_nll),
+            }
+        )
+    return {
+        "artifact_kind": STATELEASE_STAGE_A_ARTIFACT_KIND,
+        "source_artifact_sha256": file_sha256,
+        "canonical_evidence_sha256": canonical,
+        "task_id": 666,
+        "token_count": 38,
+        "gate_check_count": 8,
+        "gate_passed": True,
+        "rows": rows,
+    }
+
+
+def _statelease_stage_a_svg(data: dict[str, object]) -> str:
+    rows = data["rows"]
+    assert isinstance(rows, list)
+    plot_x = 330.0
+    plot_width = 480.0
+    axis_max = 0.15
+    row_top = 112.0
+    row_gap = 40.0
+    row_markup = []
+    for index, row in enumerate(rows):
+        assert isinstance(row, dict)
+        value = float(row["delta_nll"])
+        y = row_top + index * row_gap
+        endpoint = plot_x + value / axis_max * plot_width
+        css_class = {
+            "StateLease": "statelease",
+            "no replay": "noreplay",
+            "fixed replay": "fixed",
+            "historical lower-byte anchor": "historical",
+        }[str(row["role"])]
+        row_markup.append(
+            f'''  <g>
+    <text class="label" x="304" y="{y - 2:.0f}" text-anchor="end">{html.escape(str(row["label"]))}</text>
+    <text class="role" x="304" y="{y + 13:.0f}" text-anchor="end">{html.escape(str(row["role"]))}</text>
+    <line class="stem {css_class}" x1="{plot_x:.2f}" y1="{y:.2f}" x2="{endpoint:.2f}" y2="{y:.2f}" />
+    <circle class="point {css_class}" cx="{endpoint:.2f}" cy="{y:.2f}" r="5" />
+    <text class="value" x="836" y="{y + 4:.0f}">{value:.6f}</text>
+  </g>'''
+        )
+
+    ticks = []
+    for tick in (0.0, 0.05, 0.10, 0.15):
+        x = plot_x + tick / axis_max * plot_width
+        ticks.append(
+            f'''  <line class="grid" x1="{x:.2f}" y1="88" x2="{x:.2f}" y2="508" />
+  <text class="tick" x="{x:.2f}" y="530" text-anchor="middle">{tick:.2f}</text>'''
+        )
+
+    metadata = _metadata(
+        {
+            "chart": "experiment012-statelease-stage-a-excess-nll",
+            "artifact_kind": data["artifact_kind"],
+            "source_artifact_sha256": data["source_artifact_sha256"],
+            "canonical_evidence_sha256": data["canonical_evidence_sha256"],
+            "task_id": data["task_id"],
+            "token_count": data["token_count"],
+            "gate_check_count": data["gate_check_count"],
+            "gate_passed": data["gate_passed"],
+            "values": rows,
+            "claim_boundary": (
+                "One-task falsification-screen evidence only. StateLease-H5 did not beat "
+                "the two strongest equal-total-byte no-replay codecs."
+            ),
+        },
+        source_document="evidence/experiment012-statelease-stage-a-666.json",
+    )
+    description = (
+        "Experiment 012 excess negative log-likelihood on one previously opened MBPP "
+        "calibration task with 38 teacher-forced scored tokens. Lower is better. "
+        "StateLease-H5 passed the fixed-replay screen but did not beat the two strongest "
+        "equal-total-byte no-replay codecs."
+    )
+    return f'''<!-- Generated by scripts/generate_readme_assets.py; do not edit by hand. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" role="img" aria-labelledby="statelease-title statelease-desc">
+  <title id="statelease-title">Experiment 012 StateLease-H5 one-task screen</title>
+  <desc id="statelease-desc">{html.escape(description)}</desc>
+  <metadata id="recurquant-provenance">{metadata}</metadata>
+  <style>
+    svg {{ background-color: #ffffff; }}
+    text {{ font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #172033; }}
+    .title {{ font-size: 22px; font-weight: 600; }}
+    .subtitle, .role, .tick, .note {{ fill: #5d687a; }}
+    .subtitle {{ font-size: 14px; }}
+    .label, .value {{ font-size: 13px; font-weight: 550; }}
+    .role, .tick, .note, .legend {{ font-size: 11px; }}
+    .grid {{ stroke: #d9dee7; stroke-width: 1; }}
+    .stem {{ stroke-width: 5; stroke-linecap: round; }}
+    .point {{ stroke: #ffffff; stroke-width: 2; }}
+    .statelease {{ stroke: #7c3aed; fill: #7c3aed; }}
+    .noreplay {{ stroke: #0f9f84; fill: #0f9f84; }}
+    .fixed {{ stroke: #3974c6; fill: #3974c6; }}
+    .historical {{ stroke: #7b8494; fill: #7b8494; }}
+    @media (prefers-color-scheme: dark) {{
+      svg {{ background-color: #0d1117; }}
+      text {{ fill: #e6edf3; }}
+      .subtitle, .role, .tick, .note {{ fill: #a9b4c2; }}
+      .grid {{ stroke: #343d4b; }}
+      .point {{ stroke: #0d1117; }}
+      .statelease {{ stroke: #a78bfa; fill: #a78bfa; }}
+      .noreplay {{ stroke: #45cdb2; fill: #45cdb2; }}
+      .fixed {{ stroke: #6da7ed; fill: #6da7ed; }}
+      .historical {{ stroke: #9aa4b3; fill: #9aa4b3; }}
+    }}
+  </style>
+  <text class="title" x="28" y="32">StateLease-H5 one-task screening result</text>
+  <text class="subtitle" x="28" y="56">MBPP calibration task 666 · 38 scored tokens · excess NLL vs FP32 state · lower is better</text>
+  <circle class="point statelease" cx="616" cy="76" r="5" /><text class="legend" x="628" y="80">StateLease</text>
+  <circle class="point noreplay" cx="712" cy="76" r="5" /><text class="legend" x="724" y="80">no replay</text>
+  <circle class="point fixed" cx="805" cy="76" r="5" /><text class="legend" x="817" y="80">fixed replay</text>
+{chr(10).join(ticks)}
+{chr(10).join(row_markup)}
+  <text class="note" x="28" y="566">StateLease passed all eight prespecified Stage-A checks against the fixed-replay gate.</text>
+  <text class="note" x="28" y="584">It did not beat the two strongest same-total-byte no-replay codecs; this is not development or held-out evidence.</text>
+</svg>
+'''
+
+
 def _legacy_outputs() -> dict[Path, str]:
     data = _source_data()
     development_data = _development_data()
     confirmation_data = _confirmation_data()
+    statelease_stage_a_data = _statelease_stage_a_data()
     return {
         ASSETS / "recurrent-state-storage.svg": _storage_svg(data),
         ASSETS / "diagnostic-tail-kl.svg": _diagnostic_svg(data),
         ASSETS / "mbpp-development-fidelity.svg": _development_svg(development_data),
         ASSETS / "mbpp-confirmation-fidelity.svg": _confirmation_svg(confirmation_data),
         ASSETS / "mbpp-confirmation-pareto.svg": _confirmation_pareto_svg(confirmation_data),
+        ASSETS / "experiment012-stage-a-excess-nll.svg": _statelease_stage_a_svg(
+            statelease_stage_a_data
+        ),
     }
 
 
