@@ -16,6 +16,71 @@ artifact-file hashes, and replaces an invalid first-output-only RULER target
 with the complete task-aware serialization below. No model weights or quality
 results had been opened.
 
+Second pre-resolution audit amendment: 2026-08-02. Launcher v2 generated all
+16 calibration receipts but failed before the first Stage-A receipt when
+Windows attempted to encode non-ASCII prompt text as `cp1252` on the isolated
+tokenizer subprocess stdin. That partial batch is rejected. A first sender-only
+UTF-8 correction, launcher v3, was also rejected on its first receipt because
+the isolated child still decoded stdin under the Windows locale and therefore
+failed the independent-length check. Launcher v4 fixes both ends: strict UTF-8
+on the parent pipe plus Python `-X utf8` in the isolated child. It is
+authenticated by a new source hash. No identity had been promoted and no model
+weights or quality results had been opened.
+
+Third pre-resolution audit amendment: 2026-08-02. The first hardened launcher
+v4 run stopped before publishing a receipt because Python `-I` ignored the
+`PYTHONDONTWRITEBYTECODE` environment variable and imported bytecode changed the
+otherwise authenticated staged-source inventory. The first v5 bootstrap smoke
+then stopped nonzero because the isolated import path omitted the task script's
+authenticated sibling directory. Both failed attempts are rejected. Launcher
+v5 adds explicit `-B` and prepends only the authenticated task directory and
+data root. A live single-receipt regression then passed every generator-side
+source, runtime, command, raw-row, and tokenizer check. No identity was promoted
+and no model weights or quality results were opened.
+
+Fourth pre-resolution audit amendment: 2026-08-02. Launcher v5 subsequently
+generated all 20 required receipts, but an independent producer-to-consumer
+audit found that its runtime manifest could never pass identity capture: the
+producer emitted isolation `flags` but omitted `machine`, while the strict
+consumer required `machine` and rejected `flags` as an extra field. The entire
+v5 batch is therefore rejected and is not evidence. Launcher v6 and RULER
+runtime-manifest schema v3 bind both non-empty `machine` identity and the exact
+isolated flags (`ignore_environment=1`, `isolated=1`, `no_user_site=1`). A
+producer-to-consumer regression and a new complete 20-receipt batch are required
+before identity resolution. No identity was promoted and no model weights or
+quality results were opened.
+
+Fifth pre-resolution audit amendment: 2026-08-02. A startup audit showed that
+`-I -B` alone still permits `site`, virtual-environment `.pth` hooks, and reads
+of unbound bytecode. Launcher v6 therefore uses `-I -S -B`, UTF-8 mode, and a
+fresh verified-empty bytecode prefix; stages a complete authenticated Python
+standard-library and adjacent-DLL tree; stages only RECORD-declared package
+files; excludes the two exact verified virtual-environment startup files; and
+binds the tokenizer and both Punkt resource layouts before each child. The
+producer and consumer now agree on runtime-manifest v3. A real isolated probe
+on this machine reported AMD64, 37 exact distributions, 829 Python-runtime
+files, and five runtime resources and normalized identically on both sides.
+This validates the launcher boundary, not any generated sequence. The v5
+receipts remain rejected; a fresh complete v6 batch is still required. No
+identity was promoted and no model weights or quality results were opened.
+
+Sixth pre-resolution audit amendment: 2026-08-02. The exact 20-entry v6
+command-manifest hash table is now regenerated from the authenticated launcher
+and frozen by a producer-to-consumer regression. Identity input, candidate, and
+frozen schemas advance together to v4 and bind a fourth execution artifact:
+the exact immutable-Parquet materialization manifest. Bulk population reads
+are restricted before network access to `url` for PG19 and `task_id` for
+HumanEval+; prompts, solutions, and book text cannot be requested through that
+surface. A live immutable-commit verification returned 13,684 PG19 training
+IDs (`31050fa90be75b8c49a33c0fef9e2b1891ded6791e81a33451a9f05b8980c355`),
+50 PG19 validation IDs
+(`68da047a7274c57c1ee938beb2a604d082314b831ed21ed5590c1584aa4ec354`),
+and 164 HumanEval+ IDs
+(`913967d673127c28dc6858d4ded52e063b87496c1b4424bee696535243ebff9d`).
+These are canonical projection hashes, not quality results. A clean source
+commit, sealed calibration runtime, fresh v6 receipt batch, and promoted v4
+identity are still required before model access.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout retain the
@@ -150,14 +215,15 @@ recurquant.experiment013.humaneval-plus.stage-c.v1\0
 
 The canonical PG19 ID is the exact UTF-8 `url` field; the pinned PG19 schema
 does not contain a `book_id` field. The population is the ordered `url`
-projection from the active Hugging Face Dataset Viewer `/parquet` manifest for
-the `default` configuration and pinned split. The capture must authenticate the
-manifest's `x-revision`, hash that complete ordered projection, and exclude
-repository-tree parquet files that the active manifest does not reference. A
-training book is eligible when the pinned tokenizer produces at least 2,304
-tokens. Rank all 13,684 training URLs before opening text, then inspect them in
-that fixed order only until 16 eligible books have been accepted. For an
-accepted book with `N` tokens, define
+projection from the exact Parquet objects at conversion commit
+`b3624dc44b60cb01e74876e8869234d2660812cf`. Capture authenticates the pinned
+source revision, conversion revision, ordered file paths, Git blob IDs, LFS
+SHA-256 identities and sizes, and row-group footer counts before and after the
+projection. It does not use a mutable Dataset Viewer endpoint. A training book
+is eligible when the pinned tokenizer produces at least 2,304 tokens. Rank all
+13,684 training URLs before opening text, then inspect them in that fixed order
+only until 16 eligible books have been accepted. For an accepted book with `N`
+tokens, define
 
 ```text
 M = N - 2304
@@ -217,7 +283,7 @@ length receipt separately. Anchors use the actual processed token count only.
 The pinned upstream `prepare.py` constructs its child command as a multiline
 shell string. On Windows, an initial compatibility smoke test returned exit
 zero but emitted only a truncated 155-token row with no generated context or
-question. That row is rejected and is not evidence. Experiment 013 launcher v2
+question. That row is rejected and is not evidence. Experiment 013 launcher v6
 invokes the pinned task generator directly with a no-shell argument vector.
 Every receipt must authenticate the RULER commit and source blobs, the exact
 launcher source,
@@ -304,6 +370,26 @@ candidate. A separate explicit promotion, checked by candidate SHA-256,
 creates the identity that must be committed before model weights are loaded.
 Stage-B and Stage-C content is protected and requires separate authorization;
 ordinary resolver tests and dry runs must not read it.
+
+Identity schema v4 also binds four exact pre-model evidence files under
+`execution_bindings`:
+
+```text
+repository_source_manifest_file_sha256
+calibration_runtime_manifest_file_sha256
+model_file_manifest_file_sha256
+parquet_materialization_manifest_file_sha256
+```
+
+The source manifest authenticates the implementation, tests, protocol, and
+runner at point of use. The runtime manifest authenticates the Python and
+installed package-code inventory used by calibration. The model manifest is
+derived from immutable Hub repository/LFS metadata without downloading or
+opening weight payloads. The Parquet manifest authenticates the source and
+conversion commits plus the selected Parquet Git/LFS objects. Only after
+promotion may the runner hash local model files and compare them with the
+frozen model manifest. A missing, malformed, or byte-different dependency
+stops before adapter data access or model loading.
 
 Stage-A resolution additionally consumes one strictly decoded
 `experiment-013-stage-a-calibration-binding-v2` artifact. The resolved Stage-A
@@ -450,8 +536,9 @@ already fits calibration-based mixed-precision rate-distortion policies for KV
 caches. [Q-Mamba](https://aclanthology.org/2025.findings-acl.551/) quantizes
 Mamba state caches, while [Quamba2](https://arxiv.org/abs/2503.22879v4) provides
 quantized SSM deployment and kernels. [Gated DeltaNet-2](https://arxiv.org/abs/2605.22791v1)
-motivates the architecture family, but its public reproducibility remains
-blocked. Therefore only a confirmed exact-byte static Q4/Q6/Q8 packed-native
+motivates the architecture family. Its official repository currently provides
+training code but no tagged release or pretrained checkpoint for the reported
+1.3B run. Therefore only a confirmed exact-byte static Q4/Q6/Q8 packed-native
 Gated DeltaNet path plus end-to-end adoption benefit could be differentiated;
 this protocol makes no novelty claim.
 

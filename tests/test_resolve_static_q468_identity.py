@@ -33,6 +33,14 @@ FIXTURE_BINDING = {
     "static_k27030_policy_file_sha256": resolver.sha256_bytes(b"k27030-policy"),
     "static_k29334_policy_file_sha256": resolver.sha256_bytes(b"k29334-policy"),
 }
+FIXTURE_EXECUTION_BINDINGS = {
+    "repository_source_manifest_file_sha256": resolver.sha256_bytes(b"source-manifest"),
+    "calibration_runtime_manifest_file_sha256": resolver.sha256_bytes(b"runtime-manifest"),
+    "model_file_manifest_file_sha256": resolver.sha256_bytes(b"model-manifest"),
+    "parquet_materialization_manifest_file_sha256": (
+        resolver.PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
+    ),
+}
 
 
 def _hash(label: str) -> str:
@@ -242,6 +250,7 @@ def _stage_a_source() -> dict[str, Any]:
         "datasets": _datasets(),
         "tokenizer": _tokenizer(),
         "records": list(reversed(records)),
+        "execution_bindings": dict(FIXTURE_EXECUTION_BINDINGS),
         "model_weights_loaded": False,
         "calibration_binding": dict(FIXTURE_BINDING),
     }
@@ -289,9 +298,35 @@ def test_stage_a_candidate_is_deterministic_and_complete() -> None:
         *(["humaneval_plus"] * 4),
     ]
     assert evidence["tokenizer"]["file_manifest_sha256"] == _tokenizer_manifest_hash()
+    assert evidence["execution_bindings"] == FIXTURE_EXECUTION_BINDINGS
     assert evidence["content_manifest_sha256"] == resolver.sha256_bytes(
         resolver.canonical_json_bytes(evidence["records"])
     )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda evidence: evidence.update({"identity_only": 1}), "identity_only drifted"),
+        (
+            lambda evidence: evidence.update({"promotion_required": 1}),
+            "promotion_required drifted",
+        ),
+        (
+            lambda evidence: evidence["protected_identity"].update({"stage_b_read": 0}),
+            "protected identity boundary drifted",
+        ),
+    ],
+)
+def test_candidate_rejects_boolean_integer_aliases(mutate: Any, message: str) -> None:
+    candidate = _build_candidate(_stage_a_source())
+    mutate(candidate["evidence"])
+    candidate["canonical_evidence_sha256"] = resolver.sha256_bytes(
+        resolver.canonical_json_bytes(candidate["evidence"])
+    )
+
+    with pytest.raises(ValueError, match=message):
+        resolver.validate_candidate_artifact(candidate)
 
 
 def test_stage_a_candidate_requires_and_matches_a_verified_binding_artifact() -> None:
@@ -334,6 +369,18 @@ def test_raw_content_and_unknown_fields_fail_closed() -> None:
         (
             lambda source: source.update({"model_weights_loaded": True}),
             "before model weights",
+        ),
+        (
+            lambda source: source["execution_bindings"].update(
+                {"model_file_manifest_file_sha256": "not-a-sha256"}
+            ),
+            "model_file_manifest_file_sha256",
+        ),
+        (
+            lambda source: source["execution_bindings"].update(
+                {"parquet_materialization_manifest_file_sha256": "0" * 64}
+            ),
+            "Parquet materialization manifest file SHA-256 drifted",
         ),
         (
             lambda source: source["records"][0]["token_span"].update({"scored_start": 4_095}),
@@ -567,6 +614,11 @@ def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() 
     assert decoded.file_sha256 == resolver.sha256_bytes(frozen_bytes)
     assert len(decoded.records) == 12
     assert decoded.calibration_binding == FIXTURE_BINDING
+    assert decoded.execution_bindings == FIXTURE_EXECUTION_BINDINGS
+    assert (
+        decoded.parquet_materialization_manifest_file_sha256
+        == resolver.PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
+    )
 
     tampered = copy.deepcopy(frozen)
     tampered["evidence"]["records"][0]["source_content_sha256"] = "0" * 64

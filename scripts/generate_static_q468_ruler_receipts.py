@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import hashlib
+import importlib.metadata
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,8 +32,12 @@ from typing import Any, Final
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_PATH = REPOSITORY_ROOT / "scripts" / "capture_static_q468_identity_input.py"
 
-LAUNCHER_REVISION: Final = "experiment-013-ruler-argv-launcher-v2"
+LAUNCHER_REVISION: Final = "experiment-013-ruler-argv-launcher-v6"
+GENERATION_MANIFEST_SCHEMA: Final = "recurquant.experiment013.ruler-generation-manifest.v2"
+RUNTIME_MANIFEST_SCHEMA: Final = "recurquant.experiment013.ruler-runtime-manifest.v3"
 RUNTIME_PYTHON_VERSION: Final = "3.11.15"
+RUNTIME_PROBE_TIMEOUT_SECONDS: Final = 300
+TOKENIZER_TIMEOUT_SECONDS: Final = 180
 RUNTIME_PACKAGES: Final = {
     "PyYAML": "6.0.3",
     "annotated-doc": "0.0.5",
@@ -70,6 +77,127 @@ RUNTIME_PACKAGES: Final = {
     "typing-extensions": "4.16.0",
     "wonderwords": "3.0.1",
 }
+RUNTIME_IMPORTABLE_SUFFIXES: Final = frozenset({".dll", ".pyd", ".py", ".pyw", ".pth"})
+EXPECTED_EXCLUDED_VIRTUALENV_STARTUP_FILES: Final = {
+    "_virtualenv.pth": (
+        18,
+        "69ac3d8f27e679c81b94ab30b3b56e9cd138219b1ba94a1fa3606d5a76a1433d",
+    ),
+    "_virtualenv.py": (
+        5_246,
+        "cfb3db86aaa53bb62b5ff764970bec2d71c9228590a0ebec57f6ec926cc0bf1a",
+    ),
+}
+SEALED_STARTUP_POLICY: Final = {
+    "dont_write_bytecode": 1,
+    "no_site": 1,
+    "package_path_mode": "staged-record-only-site-packages-v1",
+    "pycache_mode": "verified-empty-prefix-no-write-v1",
+    "site_loaded": False,
+    "utf8_mode": 1,
+    "virtualenv_hook_loaded": False,
+}
+SEALED_STARTUP_BOOTSTRAP: Final = r"""
+import importlib.metadata as _rq_metadata
+import pathlib as _rq_pathlib
+import re as _rq_re
+import sys as _rq_sys
+
+_rq_package_root_raw = _rq_pathlib.Path(_rq_sys.argv[1])
+_rq_pycache_root_raw = _rq_pathlib.Path(_rq_sys.argv[2])
+if not _rq_package_root_raw.is_absolute() or not _rq_pycache_root_raw.is_absolute():
+    raise RuntimeError("sealed RULER startup paths must be absolute")
+_rq_package_root = _rq_package_root_raw.resolve()
+_rq_pycache_root = _rq_pycache_root_raw.resolve()
+_rq_reparse = lambda path: path.is_symlink() or bool(
+    getattr(path.stat(), "st_file_attributes", 0) & 0x400
+)
+if (
+    not _rq_package_root.is_dir()
+    or not _rq_pycache_root.is_dir()
+    or _rq_reparse(_rq_package_root)
+    or _rq_reparse(_rq_pycache_root)
+    or any(_rq_pycache_root.iterdir())
+):
+    raise RuntimeError("sealed RULER startup paths are missing, redirected, or non-empty")
+_rq_flags = {
+    "ignore_environment": _rq_sys.flags.ignore_environment,
+    "isolated": _rq_sys.flags.isolated,
+    "no_user_site": _rq_sys.flags.no_user_site,
+}
+if _rq_flags != {"ignore_environment": 1, "isolated": 1, "no_user_site": 1}:
+    raise RuntimeError("sealed RULER isolation flags drifted")
+if (
+    _rq_sys.flags.no_site != 1
+    or _rq_sys.flags.dont_write_bytecode != 1
+    or _rq_sys.flags.utf8_mode != 1
+    or _rq_sys.pycache_prefix is None
+    or _rq_pathlib.Path(_rq_sys.pycache_prefix).resolve() != _rq_pycache_root
+    or "site" in _rq_sys.modules
+    or "_virtualenv" in _rq_sys.modules
+):
+    raise RuntimeError("sealed RULER startup policy drifted")
+_rq_canonical = lambda name: _rq_re.sub(r"[-_.]+", "-", name).lower()
+_rq_expected_packages = __PACKAGE_VERSIONS__
+_rq_distributions = list(_rq_metadata.distributions(path=[str(_rq_package_root)]))
+_rq_by_name = {}
+for _rq_dist in _rq_distributions:
+    _rq_name = _rq_canonical(_rq_dist.metadata["Name"])
+    if _rq_name in _rq_by_name:
+        raise RuntimeError("sealed RULER package root contains a duplicate distribution")
+    _rq_by_name[_rq_name] = _rq_dist
+if {
+    name: dist.version for name, dist in _rq_by_name.items()
+} != {_rq_canonical(name): version for name, version in _rq_expected_packages.items()}:
+    raise RuntimeError("sealed RULER package root distribution set drifted")
+_rq_recorded_paths = set()
+for _rq_dist in _rq_distributions:
+    _rq_files = list(_rq_dist.files or ())
+    if not _rq_files:
+        raise RuntimeError("sealed RULER distribution has no RECORD inventory")
+    for _rq_item in _rq_files:
+        _rq_path = _rq_pathlib.Path(_rq_dist.locate_file(_rq_item))
+        if not _rq_path.is_file() or _rq_reparse(_rq_path):
+            raise RuntimeError("sealed RULER RECORD path is missing or redirected")
+        _rq_recorded_paths.add(_rq_path.resolve())
+for _rq_path in _rq_package_root.rglob("*"):
+    if _rq_path.is_symlink() or (
+        _rq_path.exists() and bool(getattr(_rq_path.stat(), "st_file_attributes", 0) & 0x400)
+    ):
+        raise RuntimeError("sealed RULER package root contains a redirected path")
+    if (
+        _rq_path.is_file()
+        and _rq_path.suffix.lower() in {".dll", ".pyd", ".py", ".pyw", ".pth"}
+        and _rq_path.resolve() not in _rq_recorded_paths
+    ):
+        raise RuntimeError("sealed RULER package root contains unrecorded importable code")
+_recurquant_startup_flags = _rq_flags
+_recurquant_startup_policy = {
+    "dont_write_bytecode": _rq_sys.flags.dont_write_bytecode,
+    "no_site": _rq_sys.flags.no_site,
+    "package_path_mode": "staged-record-only-site-packages-v1",
+    "pycache_mode": "verified-empty-prefix-no-write-v1",
+    "site_loaded": "site" in _rq_sys.modules,
+    "utf8_mode": _rq_sys.flags.utf8_mode,
+    "virtualenv_hook_loaded": "_virtualenv" in _rq_sys.modules,
+}
+_rq_sys.path.insert(0, str(_rq_package_root))
+""".strip().replace("__PACKAGE_VERSIONS__", repr(RUNTIME_PACKAGES))
+ISOLATED_SOURCE_BOOTSTRAP: Final = (
+    SEALED_STARTUP_BOOTSTRAP
+    + "\n"
+    + r"""
+import runpy as _rq_runpy
+
+_rq_root = _rq_pathlib.Path(_rq_sys.argv[3]).resolve()
+_rq_relative = _rq_pathlib.PurePosixPath(_rq_sys.argv[4])
+_rq_script = (_rq_root / _rq_relative).resolve()
+_rq_script.relative_to(_rq_root)
+_rq_sys.path[:0] = [str(_rq_script.parent), str(_rq_root)]
+_rq_sys.argv = [str(_rq_script), *_rq_sys.argv[5:]]
+_rq_runpy.run_path(str(_rq_script), run_name="__main__")
+""".strip()
+)
 
 EXPECTED_CORPORA: Final = {
     "PaulGrahamEssays.json": (
@@ -90,6 +218,10 @@ EXPECTED_CORPORA: Final = {
     ),
 }
 EXPECTED_PACKAGE_RESOURCES: Final = {
+    "nltk/punkt/english.pickle": (
+        433_305,
+        "dda37972ae88998a6fd3e3ec002697a6bd362b32d050fda7d7ca5276873092aa",
+    ),
     "nltk/punkt/PY3/english.pickle": (
         406_697,
         "5cad3758596392364e3be9803dbd7ebeda384b68937b488a01365f5551bb942c",
@@ -173,6 +305,34 @@ class TaskSpec:
     output_pattern: str | None = None
     outputs_must_appear: bool = False
     niah: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedRulerCheckout:
+    source_manifest: tuple[dict[str, object], ...]
+    source_files: Mapping[str, bytes]
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedStaticInputs:
+    entries: tuple[dict[str, object], ...]
+    corpus_files: Mapping[str, bytes]
+    sealed_runtime_files: Mapping[str, bytes]
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedRuntimePackageTree:
+    entries: tuple[dict[str, object], ...]
+    source_files: Mapping[str, Path]
+    excluded_startup_files: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedPythonRuntime:
+    entries: tuple[dict[str, object], ...]
+    source_files: Mapping[str, Path]
+    source_launcher: dict[str, object]
+    source_pyvenv_config: dict[str, object]
 
 
 TASK_SPECS: Final = {
@@ -370,6 +530,14 @@ def _canonical_distribution_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def _is_exact_one_flag_mapping(value: object, fields: frozenset[str]) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) == set(fields)
+        and all(type(value[field]) is int and value[field] == 1 for field in fields)
+    )
+
+
 def _subprocess_env(**updates: str) -> dict[str, str]:
     """Return a child environment without caller-controlled Python injection."""
 
@@ -379,10 +547,299 @@ def _subprocess_env(**updates: str) -> dict[str, str]:
     return env
 
 
+def _git_env() -> dict[str, str]:
+    """Return a Git environment without caller or machine configuration."""
+
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "LC_ALL": "C",
+            "LANG": "C",
+        }
+    )
+    return env
+
+
 def _file_entry(name: str, data: bytes) -> dict[str, object]:
     if not data:
         raise ValueError(f"bound file {name!r} is empty")
     return {"name": name, "sha256": _sha256_bytes(data), "size_bytes": len(data)}
+
+
+def _tree_file_entry(name: str, data: bytes) -> dict[str, object]:
+    return {"name": name, "sha256": _sha256_bytes(data), "size_bytes": len(data)}
+
+
+def _is_reparse_point(path: Path) -> bool:
+    return path.is_symlink() or bool(getattr(path.stat(), "st_file_attributes", 0) & 0x400)
+
+
+def _runtime_layout(python: Path) -> tuple[Path, Path, Path]:
+    unresolved_python = Path(os.path.abspath(python))
+    if not unresolved_python.is_file() or _is_reparse_point(unresolved_python):
+        raise ValueError("RULER Python executable is missing or redirected")
+    resolved_python = unresolved_python.resolve()
+    if (
+        resolved_python.name.casefold() != "python.exe"
+        or resolved_python.parent.name.casefold() != "scripts"
+    ):
+        raise ValueError("RULER Python executable is not in a Windows virtual environment")
+    runtime_root = resolved_python.parent.parent
+    package_root = runtime_root / "Lib" / "site-packages"
+    for path in (runtime_root, runtime_root / "Lib", package_root):
+        if not path.is_dir() or _is_reparse_point(path):
+            raise ValueError("RULER virtual-environment package path is missing or redirected")
+    return resolved_python, runtime_root.resolve(), package_root.resolve()
+
+
+def verify_python_runtime_source(python: Path) -> VerifiedPythonRuntime:
+    source_python, venv_root, _package_root = _runtime_layout(python)
+    pyvenv_path = venv_root / "pyvenv.cfg"
+    if not pyvenv_path.is_file() or _is_reparse_point(pyvenv_path):
+        raise ValueError("RULER Python virtual environment lacks a bound pyvenv.cfg")
+    pyvenv_data = pyvenv_path.read_bytes()
+    try:
+        config_lines = pyvenv_data.decode("utf-8").splitlines()
+    except UnicodeDecodeError as error:
+        raise ValueError("RULER pyvenv.cfg must be UTF-8") from error
+    config: dict[str, str] = {}
+    for line in config_lines:
+        if not line.strip():
+            continue
+        if line.count("=") != 1:
+            raise ValueError("RULER pyvenv.cfg is malformed")
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not key or key in config:
+            raise ValueError("RULER pyvenv.cfg contains a duplicate or empty key")
+        config[key] = value
+    if config.get("version_info") != "3.11" or config.get("include-system-site-packages") != (
+        "false"
+    ):
+        raise ValueError("RULER pyvenv.cfg version or site-package policy drifted")
+    raw_home = config.get("home")
+    if not raw_home:
+        raise ValueError("RULER pyvenv.cfg omitted its base runtime")
+    base_root = Path(raw_home)
+    if not base_root.is_absolute() or not base_root.is_dir() or _is_reparse_point(base_root):
+        raise ValueError("RULER base Python runtime is missing or redirected")
+    base_root = base_root.resolve()
+
+    source_files: dict[str, Path] = {}
+    for root_name in ("Lib", "DLLs"):
+        root = base_root / root_name
+        if not root.is_dir() or _is_reparse_point(root):
+            raise ValueError(f"RULER base Python runtime omitted {root_name}")
+        for path in root.rglob("*"):
+            if _is_reparse_point(path):
+                raise ValueError("RULER base Python runtime contains a redirected path")
+            if not path.is_file():
+                continue
+            relative = path.relative_to(base_root)
+            if "site-packages" in {part.casefold() for part in relative.parts}:
+                continue
+            if "__pycache__" in relative.parts or path.suffix.casefold() == ".pyc":
+                continue
+            source_files[relative.as_posix()] = path.resolve()
+    root_patterns = (
+        re.compile(r"^python.*\.(?:dll|exe|zip)$", flags=re.IGNORECASE),
+        re.compile(r"^vcruntime.*\.dll$", flags=re.IGNORECASE),
+    )
+    for path in base_root.iterdir():
+        if _is_reparse_point(path):
+            raise ValueError("RULER base Python root contains a redirected path")
+        if path.is_file() and any(pattern.fullmatch(path.name) for pattern in root_patterns):
+            source_files[path.name] = path.resolve()
+    required_names = {"python.exe", "python3.dll", "python311.dll"}
+    if not required_names <= set(source_files):
+        raise ValueError("RULER base Python runtime omitted an executable or adjacent DLL")
+    entries = tuple(
+        _tree_file_entry(name, source_files[name].read_bytes()) for name in sorted(source_files)
+    )
+    return VerifiedPythonRuntime(
+        entries=entries,
+        source_files=dict(source_files),
+        source_launcher=_tree_file_entry("source/python.exe", source_python.read_bytes()),
+        source_pyvenv_config=_tree_file_entry("source/pyvenv.cfg", pyvenv_data),
+    )
+
+
+def verify_staged_python_runtime(root: Path, *, expected: Sequence[Mapping[str, object]]) -> None:
+    root = root.resolve()
+    observed: dict[str, Path] = {}
+    for path in root.rglob("*"):
+        if _is_reparse_point(path):
+            raise ValueError("staged RULER Python runtime contains a redirected path")
+        if path.is_file():
+            observed[path.relative_to(root).as_posix()] = path
+    expected_by_name = {str(item["name"]): item for item in expected}
+    if set(observed) != set(expected_by_name):
+        raise ValueError("staged RULER Python runtime inventory drifted")
+    for name, path in observed.items():
+        if _tree_file_entry(name, path.read_bytes()) != expected_by_name[name]:
+            raise ValueError(f"staged RULER Python runtime bytes drifted: {name}")
+
+
+def stage_verified_python_runtime(root: Path, *, verified: VerifiedPythonRuntime) -> Path:
+    if root.exists():
+        raise FileExistsError(f"refusing to replace staged RULER Python runtime: {root}")
+    root.mkdir(parents=True)
+    for name, source in verified.source_files.items():
+        destination = root / Path(name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    verify_staged_python_runtime(root, expected=verified.entries)
+    python = root / "python.exe"
+    if not python.is_file():
+        raise ValueError("staged RULER Python runtime omitted python.exe")
+    return python
+
+
+def verify_runtime_package_source(python: Path) -> VerifiedRuntimePackageTree:
+    """Freeze a live venv into a RECORD-only, non-executable source inventory."""
+
+    _python, runtime_root, package_root = _runtime_layout(python)
+    distributions = list(importlib.metadata.distributions(path=[str(package_root)]))
+    by_name: dict[str, importlib.metadata.Distribution] = {}
+    for distribution in distributions:
+        canonical_name = _canonical_distribution_name(distribution.metadata["Name"])
+        if canonical_name in by_name:
+            raise ValueError("RULER runtime contains a duplicate installed distribution")
+        by_name[canonical_name] = distribution
+    expected_versions = {
+        _canonical_distribution_name(name): version for name, version in RUNTIME_PACKAGES.items()
+    }
+    if {name: distribution.version for name, distribution in by_name.items()} != expected_versions:
+        raise ValueError("RULER runtime installed-distribution inventory drifted")
+
+    entries_by_name: dict[str, dict[str, object]] = {}
+    source_files: dict[str, Path] = {}
+    recorded_paths: set[Path] = set()
+    for canonical_name in sorted(by_name):
+        distribution = by_name[canonical_name]
+        files = list(distribution.files or ())
+        records = [
+            item for item in files if str(item).replace("\\", "/").endswith(".dist-info/RECORD")
+        ]
+        if len(records) != 1:
+            raise ValueError(f"RULER package {canonical_name} must have exactly one RECORD")
+        for item in files:
+            unresolved = Path(distribution.locate_file(item))
+            if not unresolved.is_file() or _is_reparse_point(unresolved):
+                raise ValueError(f"RULER package {canonical_name} has a missing or redirected file")
+            resolved = unresolved.resolve()
+            try:
+                relative = resolved.relative_to(runtime_root).as_posix()
+            except ValueError as error:
+                raise ValueError(
+                    f"RULER package {canonical_name} RECORD escapes the virtual environment"
+                ) from error
+            data = resolved.read_bytes()
+            entry = _tree_file_entry(relative, data)
+            previous = entries_by_name.get(relative)
+            if previous is not None and previous != entry:
+                raise ValueError("RULER distributions disagree about a shared installed file")
+            entries_by_name[relative] = entry
+            source_files[relative] = resolved
+            recorded_paths.add(resolved)
+
+    excluded: dict[str, dict[str, object]] = {}
+    for path in package_root.rglob("*"):
+        if _is_reparse_point(path):
+            raise ValueError("RULER live package tree contains a redirected path")
+        if not path.is_file() or path.suffix.lower() not in RUNTIME_IMPORTABLE_SUFFIXES:
+            continue
+        resolved = path.resolve()
+        if resolved in recorded_paths:
+            continue
+        relative = path.relative_to(package_root).as_posix()
+        try:
+            expected_size, expected_sha256 = EXPECTED_EXCLUDED_VIRTUALENV_STARTUP_FILES[relative]
+        except KeyError as error:
+            raise ValueError(
+                f"RULER live package tree contains unrecorded importable code: {relative}"
+            ) from error
+        data = path.read_bytes()
+        entry = _tree_file_entry(relative, data)
+        if entry["size_bytes"] != expected_size or entry["sha256"] != expected_sha256:
+            raise ValueError(f"RULER excluded startup file drifted: {relative}")
+        excluded[relative] = entry
+    if set(excluded) != set(EXPECTED_EXCLUDED_VIRTUALENV_STARTUP_FILES):
+        raise ValueError("RULER excluded virtualenv startup-file inventory drifted")
+    entries = tuple(entries_by_name[name] for name in sorted(entries_by_name))
+    return VerifiedRuntimePackageTree(
+        entries=entries,
+        source_files=dict(source_files),
+        excluded_startup_files=tuple(excluded[name] for name in sorted(excluded)),
+    )
+
+
+def verify_staged_runtime_package_tree(
+    runtime_root: Path, *, expected: Sequence[Mapping[str, object]]
+) -> None:
+    runtime_root = runtime_root.resolve()
+    observed: dict[str, Path] = {}
+    for path in runtime_root.rglob("*"):
+        if _is_reparse_point(path):
+            raise ValueError("staged RULER runtime package tree contains a redirected path")
+        if path.is_file():
+            observed[path.relative_to(runtime_root).as_posix()] = path
+    expected_by_name = {str(entry["name"]): entry for entry in expected}
+    if set(observed) != set(expected_by_name):
+        raise ValueError("staged RULER runtime package inventory drifted")
+    for name, path in observed.items():
+        if _tree_file_entry(name, path.read_bytes()) != expected_by_name[name]:
+            raise ValueError(f"staged RULER runtime package bytes drifted: {name}")
+
+
+def stage_verified_runtime_package_tree(
+    runtime_root: Path, *, verified: VerifiedRuntimePackageTree
+) -> Path:
+    if runtime_root.exists():
+        raise FileExistsError(f"refusing to replace staged RULER runtime: {runtime_root}")
+    runtime_root.mkdir(parents=True)
+    for name, source in verified.source_files.items():
+        destination = runtime_root / Path(name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    verify_staged_runtime_package_tree(runtime_root, expected=verified.entries)
+    package_root = runtime_root / "Lib" / "site-packages"
+    if not package_root.is_dir():
+        raise ValueError("staged RULER runtime omitted its site-packages directory")
+    return package_root
+
+
+def _verify_empty_pycache_prefix(path: Path) -> None:
+    if not path.is_dir() or _is_reparse_point(path) or any(path.iterdir()):
+        raise ValueError("sealed RULER pycache prefix is missing, redirected, or non-empty")
+
+
+def _sealed_python_argv(
+    *,
+    python: Path,
+    package_root: Path,
+    pycache_prefix: Path,
+    code: str,
+    arguments: Sequence[str] = (),
+) -> list[str]:
+    return [
+        str(python.resolve()),
+        "-I",
+        "-S",
+        "-B",
+        "-X",
+        f"pycache_prefix={pycache_prefix.resolve()}",
+        "-X",
+        "utf8",
+        "-c",
+        code,
+        str(package_root.resolve()),
+        str(pycache_prefix.resolve()),
+        *arguments,
+    ]
 
 
 def _verified_file(path: Path, *, size: int, sha256: str, name: str) -> bytes:
@@ -501,44 +958,25 @@ def _launcher_source_entry() -> dict[str, object]:
     )
 
 
-def verify_ruler_checkout(ruler_root: Path, capture: Any) -> list[dict[str, object]]:
+def verify_ruler_checkout(ruler_root: Path, capture: Any) -> VerifiedRulerCheckout:
     ruler_root = ruler_root.resolve()
     result = subprocess.run(
         ["git", "-C", str(ruler_root), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
+        env=_git_env(),
     )
     head = result.stdout.strip()
     if head != capture.resolver.RULER_REVISION:
         raise ValueError("RULER checkout HEAD differs from the frozen revision")
     files: dict[str, bytes] = {}
     for relative, expected_blob in capture.RULER_GENERATOR_GIT_BLOBS.items():
-        path = ruler_root / relative
-        if not path.is_file():
-            raise FileNotFoundError(f"missing pinned RULER source file: {relative}")
-        # Git may legitimately smudge LF blobs to CRLF in a Windows checkout.
-        # Hash the worktree path through its clean filters, then bind the exact
-        # immutable object bytes used by the capture contract.
-        worktree_hash = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(ruler_root),
-                "hash-object",
-                f"--path={relative}",
-                str(path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        if worktree_hash != expected_blob:
-            raise ValueError(f"pinned RULER source file drifted: {relative}")
         data = subprocess.run(
             ["git", "-C", str(ruler_root), "cat-file", "blob", expected_blob],
             check=True,
             capture_output=True,
+            env=_git_env(),
         ).stdout
         if _git_blob_sha1(data) != expected_blob:
             raise RuntimeError(f"Git returned corrupt blob bytes for {relative}")
@@ -547,43 +985,114 @@ def verify_ruler_checkout(ruler_root: Path, capture: Any) -> list[dict[str, obje
         synthetic_yaml=files["scripts/synthetic.yaml"],
         constants_py=files["scripts/data/synthetic/constants.py"],
     )
-    return capture._ruler_generator_manifest(files)
+    return VerifiedRulerCheckout(
+        source_manifest=tuple(capture._ruler_generator_manifest(files)),
+        source_files=dict(files),
+    )
 
 
-def verify_runtime(python: Path, nltk_data: Path) -> tuple[dict[str, object], dict[str, Path]]:
+def verify_runtime(
+    python: Path,
+    nltk_data: Path,
+    *,
+    package_root: Path,
+    package_tree_manifest: Sequence[Mapping[str, object]],
+    excluded_startup_files: Sequence[Mapping[str, object]],
+    python_runtime_root: Path,
+    python_runtime_manifest: Sequence[Mapping[str, object]],
+    source_python: Mapping[str, object],
+    source_pyvenv_config: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, Path]]:
     code = """
 import importlib.metadata as metadata
 import importlib.util
+import hashlib
 import json
 import pathlib
 import platform
 import re
 import sys
-import nltk
-import wonderwords
 names = __PACKAGE_NAMES__
 forbidden = __FORBIDDEN_MODULES__
-root = pathlib.Path(wonderwords.__file__).resolve().parent
 canonical = lambda name: re.sub(r'[-_.]+', '-', name).lower()
+def distribution_inventory(name):
+    dist = metadata.distribution(name)
+    items = list(dist.files or ())
+    records = [
+        item
+        for item in items
+        if str(item).replace('\\\\', '/').endswith('.dist-info/RECORD')
+    ]
+    if len(records) != 1:
+        raise RuntimeError(f'{name} must have exactly one installed RECORD inventory')
+    record_path = pathlib.Path(dist.locate_file(records[0]))
+    if not record_path.is_file():
+        raise RuntimeError(f'{name} installed RECORD is unavailable')
+    record_bytes = record_path.read_bytes()
+    if not record_bytes:
+        raise RuntimeError(f'{name} installed RECORD is empty')
+    files = []
+    seen = set()
+    for item in items:
+        relative = str(item).replace('\\\\', '/')
+        if not relative or relative in seen:
+            raise RuntimeError(f'{name} has a duplicate or empty installed path')
+        seen.add(relative)
+        path = pathlib.Path(dist.locate_file(item))
+        if not path.is_file():
+            raise RuntimeError(f'{name} installed file is unavailable: {relative}')
+        data = path.read_bytes()
+        files.append({
+            'path': relative,
+            'sha256': hashlib.sha256(data).hexdigest(),
+            'size_bytes': len(data),
+        })
+    if not files:
+        raise RuntimeError(f'{name} has no installed files')
+    files.sort(key=lambda item: item['path'])
+    return {
+        'canonical_name': canonical(dist.metadata['Name']),
+        'version': dist.version,
+        'record_sha256': hashlib.sha256(record_bytes).hexdigest(),
+        'record_size_bytes': len(record_bytes),
+        'files': files,
+    }
+pre_inventory = {name: distribution_inventory(name) for name in names}
+pre_installed = {
+    canonical(dist.metadata['Name']): dist.version for dist in metadata.distributions()
+}
+import nltk
+import wonderwords
+root = pathlib.Path(wonderwords.__file__).resolve().parent
+post_inventory = {name: distribution_inventory(name) for name in names}
+post_installed = {
+    canonical(dist.metadata['Name']): dist.version for dist in metadata.distributions()
+}
+if post_inventory != pre_inventory or post_installed != pre_installed:
+    raise RuntimeError('RULER package code changed while imports were active')
 payload = {
     'python': sys.version.split()[0],
     'implementation': sys.implementation.name,
     'cache_tag': sys.implementation.cache_tag,
     'executable': str(pathlib.Path(sys.executable).resolve()),
     'platform': platform.platform(),
+    'machine': platform.machine(),
     'flags': {
-        'ignore_environment': sys.flags.ignore_environment,
-        'isolated': sys.flags.isolated,
-        'no_user_site': sys.flags.no_user_site,
+        **_recurquant_startup_flags,
     },
+    'startup_policy': _recurquant_startup_policy,
     'packages': {name: metadata.version(name) for name in names},
-    'installed_distributions': {
-        canonical(dist.metadata['Name']): dist.version for dist in metadata.distributions()
-    },
+    'installed_distributions': pre_installed,
+    'distribution_file_inventory': pre_inventory,
     'forbidden_modules': {
         name: importlib.util.find_spec(name) is not None for name in forbidden
     },
     'resources': {
+        'nltk/punkt/english.pickle': next(
+            str(pathlib.Path(data_root) / 'tokenizers' / 'punkt' / 'english.pickle')
+            for data_root in nltk.data.path
+            if (pathlib.Path(data_root) / 'tokenizers' / 'punkt' / 'english.pickle').is_file()
+        ),
         'nltk/punkt/PY3/english.pickle': str(nltk.data.find('tokenizers/punkt/english.pickle')),
         'wonderwords/adjectivelist.txt': str(root / 'assets' / 'adjectivelist.txt'),
         'wonderwords/nounlist.txt': str(root / 'assets' / 'nounlist.txt'),
@@ -601,13 +1110,38 @@ print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
         NLTK_DATA=str(nltk_data.resolve()),
         TOKENIZERS_PARALLELISM="false",
     )
-    result = subprocess.run(
-        [str(python), "-I", "-c", code],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    runtime_root = package_root.resolve().parents[1]
+    verify_staged_runtime_package_tree(runtime_root, expected=package_tree_manifest)
+    verify_staged_python_runtime(python_runtime_root, expected=python_runtime_manifest)
+    with tempfile.TemporaryDirectory(prefix="recurquant-exp013-ruler-pycache-") as temporary:
+        pycache_prefix = Path(temporary)
+        _verify_empty_pycache_prefix(pycache_prefix)
+        try:
+            result = subprocess.run(
+                _sealed_python_argv(
+                    python=python,
+                    package_root=package_root,
+                    pycache_prefix=pycache_prefix,
+                    code=SEALED_STARTUP_BOOTSTRAP + "\n" + code,
+                ),
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                env=env,
+                timeout=RUNTIME_PROBE_TIMEOUT_SECONDS,
+            )
+        finally:
+            _verify_empty_pycache_prefix(pycache_prefix)
+            verify_staged_runtime_package_tree(runtime_root, expected=package_tree_manifest)
+            verify_staged_python_runtime(python_runtime_root, expected=python_runtime_manifest)
+        if result.returncode != 0:
+            diagnostic = result.stderr[-4_000:].strip()
+            raise RuntimeError(
+                "sealed RULER runtime probe failed"
+                + (f": {diagnostic}" if diagnostic else " without stderr")
+            )
     payload = _strict_json(result.stdout.encode(), context="RULER runtime probe")
     if not isinstance(payload, Mapping):
         raise ValueError("RULER runtime probe did not return an object")
@@ -620,18 +1154,93 @@ print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
     }
     if payload.get("installed_distributions") != expected_distributions:
         raise ValueError("RULER installed-distribution inventory drifted")
+    file_inventory = payload.get("distribution_file_inventory")
+    if not isinstance(file_inventory, Mapping) or set(file_inventory) != set(RUNTIME_PACKAGES):
+        raise ValueError("RULER distribution-file inventory drifted")
+    for package_name, version in RUNTIME_PACKAGES.items():
+        raw_distribution = file_inventory[package_name]
+        if not isinstance(raw_distribution, Mapping) or set(raw_distribution) != {
+            "canonical_name",
+            "version",
+            "record_sha256",
+            "record_size_bytes",
+            "files",
+        }:
+            raise ValueError(f"RULER package-code inventory is malformed for {package_name}")
+        if (
+            raw_distribution["canonical_name"] != _canonical_distribution_name(package_name)
+            or raw_distribution["version"] != version
+        ):
+            raise ValueError(f"RULER package-code identity drifted for {package_name}")
+        record_sha256 = raw_distribution["record_sha256"]
+        record_size = raw_distribution["record_size_bytes"]
+        if (
+            not isinstance(record_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", record_sha256) is None
+            or isinstance(record_size, bool)
+            or not isinstance(record_size, int)
+            or record_size < 1
+        ):
+            raise ValueError(f"RULER package RECORD identity drifted for {package_name}")
+        files_value = raw_distribution["files"]
+        if isinstance(files_value, (str, bytes)) or not isinstance(files_value, Sequence):
+            raise ValueError(f"RULER package file list is malformed for {package_name}")
+        normalized_files: list[dict[str, object]] = []
+        for item in files_value:
+            if not isinstance(item, Mapping) or set(item) != {"path", "sha256", "size_bytes"}:
+                raise ValueError(f"RULER package file entry is malformed for {package_name}")
+            path_value = item["path"]
+            size_value = item["size_bytes"]
+            digest_value = item["sha256"]
+            if (
+                not isinstance(path_value, str)
+                or not path_value
+                or "\\" in path_value
+                or "\0" in path_value
+                or "\n" in path_value
+                or "\r" in path_value
+                or not isinstance(digest_value, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest_value) is None
+                or isinstance(size_value, bool)
+                or not isinstance(size_value, int)
+                or size_value < 0
+            ):
+                raise ValueError(f"RULER package file identity drifted for {package_name}")
+            normalized_files.append(dict(item))
+        if (
+            not normalized_files
+            or normalized_files != sorted(normalized_files, key=lambda item: str(item["path"]))
+            or len({str(item["path"]) for item in normalized_files}) != len(normalized_files)
+        ):
+            raise ValueError(f"RULER package file ordering drifted for {package_name}")
     expected_absence = {name: False for name in FORBIDDEN_RUNTIME_MODULES}
     if payload.get("forbidden_modules") != expected_absence:
         raise ValueError("RULER runtime contains a forbidden model framework")
     if payload.get("implementation") != "cpython":
         raise ValueError("RULER Python implementation drifted")
     flags = payload.get("flags")
-    if flags != {"ignore_environment": 1, "isolated": 1, "no_user_site": 1}:
+    if not _is_exact_one_flag_mapping(
+        flags, frozenset({"ignore_environment", "isolated", "no_user_site"})
+    ):
         raise ValueError("RULER runtime probe was not isolated")
+    startup_policy = payload.get("startup_policy")
+    if (
+        startup_policy != SEALED_STARTUP_POLICY
+        or not isinstance(startup_policy, Mapping)
+        or any(
+            type(startup_policy[field]) is not int or startup_policy[field] != 1
+            for field in ("dont_write_bytecode", "no_site", "utf8_mode")
+        )
+        or any(
+            type(startup_policy[field]) is not bool or startup_policy[field] is not False
+            for field in ("site_loaded", "virtualenv_hook_loaded")
+        )
+    ):
+        raise ValueError("RULER runtime probe was not sealed")
     executable = payload.get("executable")
     if not isinstance(executable, str) or not Path(executable).samefile(python):
         raise ValueError("RULER runtime probe used a different Python executable")
-    for field in ("cache_tag", "platform"):
+    for field in ("cache_tag", "platform", "machine"):
         if not isinstance(payload.get(field), str) or not payload[field]:
             raise ValueError(f"RULER runtime probe omitted {field}")
     resources = payload.get("resources")
@@ -642,19 +1251,68 @@ print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
         if not isinstance(raw_path, str):
             raise ValueError("RULER runtime returned a non-string resource path")
         paths[str(name)] = Path(raw_path)
+    expected_excluded = [
+        {"name": name, "sha256": digest, "size_bytes": size}
+        for name, (size, digest) in sorted(EXPECTED_EXCLUDED_VIRTUALENV_STARTUP_FILES.items())
+    ]
+    if [dict(item) for item in excluded_startup_files] != expected_excluded:
+        raise ValueError("RULER excluded startup-file binding drifted")
     executable_data = python.read_bytes()
     runtime_manifest = {
+        "schema": RUNTIME_MANIFEST_SCHEMA,
         "python": payload["python"],
         "implementation": payload["implementation"],
         "cache_tag": payload["cache_tag"],
         "platform": payload["platform"],
+        "machine": payload["machine"],
         "flags": payload["flags"],
+        "startup_policy": payload["startup_policy"],
+        "excluded_startup_files": [dict(item) for item in excluded_startup_files],
+        "source_python": dict(source_python),
+        "source_pyvenv_config": dict(source_pyvenv_config),
+        "python_runtime_files": [dict(item) for item in python_runtime_manifest],
         "executable": _file_entry("python.exe", executable_data),
         "packages": payload["packages"],
         "installed_distributions": payload["installed_distributions"],
+        "distribution_file_inventory": payload["distribution_file_inventory"],
         "forbidden_modules": payload["forbidden_modules"],
     }
     return runtime_manifest, paths
+
+
+def verify_static_runtime_input_source(
+    *, tokenizer_dir: Path, nltk_data: Path, capture: Any
+) -> dict[str, bytes]:
+    tokenizer_dir = tokenizer_dir.resolve()
+    if tokenizer_dir.name != capture.resolver.PRIMARY_MODEL_REVISION:
+        raise ValueError("tokenizer snapshot directory does not name the frozen revision")
+    files = {path.name: path for path in tokenizer_dir.iterdir() if path.is_file()}
+    if set(files) != set(EXPECTED_TOKENIZER_ASSETS):
+        raise ValueError("tokenizer-only asset inventory drifted")
+    for path in tokenizer_dir.rglob("*"):
+        if path.is_file() and capture.FORBIDDEN_MODEL_FILE_RE.search(
+            path.relative_to(tokenizer_dir).as_posix()
+        ):
+            raise ValueError(f"model-weight-like file is forbidden in tokenizer snapshot: {path}")
+    result: dict[str, bytes] = {}
+    for name, (size, sha256) in sorted(EXPECTED_TOKENIZER_ASSETS.items()):
+        result[f"tokenizer/{capture.resolver.PRIMARY_MODEL_REVISION}/{name}"] = _verified_file(
+            files[name],
+            size=size,
+            sha256=sha256,
+            name=f"tokenizer asset {name}",
+        )
+    for name in ("nltk/punkt/english.pickle", "nltk/punkt/PY3/english.pickle"):
+        relative = name.removeprefix("nltk/punkt/")
+        nltk_path = nltk_data.resolve() / "tokenizers" / "punkt" / Path(relative)
+        size, sha256 = EXPECTED_PACKAGE_RESOURCES[name]
+        result[f"nltk_data/tokenizers/punkt/{relative}"] = _verified_file(
+            nltk_path,
+            size=size,
+            sha256=sha256,
+            name=f"RULER NLTK punkt resource {relative}",
+        )
+    return result
 
 
 def verify_static_inputs(
@@ -664,8 +1322,10 @@ def verify_static_inputs(
     resource_paths: Mapping[str, Path],
     runtime_manifest: Mapping[str, object],
     capture: Any,
-) -> list[dict[str, object]]:
+) -> VerifiedStaticInputs:
     entries: list[dict[str, object]] = []
+    corpus_files: dict[str, bytes] = {}
+    sealed_runtime_files: dict[str, bytes] = {}
     corpus_root = ruler_root / "scripts" / "data" / "synthetic" / "json"
     for name, (size, sha256) in sorted(EXPECTED_CORPORA.items()):
         data = _verified_file(
@@ -675,6 +1335,7 @@ def verify_static_inputs(
             name=f"RULER corpus {name}",
         )
         entries.append(_file_entry(f"corpora/{name}", data))
+        corpus_files[name] = data
     for name, (size, sha256) in sorted(EXPECTED_PACKAGE_RESOURCES.items()):
         data = _verified_file(
             resource_paths[name],
@@ -683,6 +1344,9 @@ def verify_static_inputs(
             name=f"RULER package resource {name}",
         )
         entries.append(_file_entry(f"packages/{name}", data))
+        if name.startswith("nltk/punkt/"):
+            relative = name.removeprefix("nltk/punkt/")
+            sealed_runtime_files[f"nltk_data/tokenizers/punkt/{relative}"] = data
 
     tokenizer_dir = tokenizer_dir.resolve()
     if tokenizer_dir.name != capture.resolver.PRIMARY_MODEL_REVISION:
@@ -703,21 +1367,151 @@ def verify_static_inputs(
             name=f"tokenizer asset {name}",
         )
         entries.append(_file_entry(f"tokenizer/{name}", data))
+        sealed_runtime_files[f"tokenizer/{capture.resolver.PRIMARY_MODEL_REVISION}/{name}"] = data
 
     runtime_bytes = _canonical_json_bytes(runtime_manifest)
     entries.append(_file_entry("runtime/package-manifest.json", runtime_bytes))
     entries.append(_file_entry("runtime/requirements.txt", _requirements_bytes()))
     entries.append(_launcher_source_entry())
 
-    return sorted(entries, key=lambda item: str(item["name"]))
+    return VerifiedStaticInputs(
+        entries=tuple(sorted(entries, key=lambda item: str(item["name"]))),
+        corpus_files=corpus_files,
+        sealed_runtime_files=dict(sealed_runtime_files),
+    )
+
+
+def stage_verified_ruler_source(
+    root: Path,
+    *,
+    checkout: VerifiedRulerCheckout,
+    static_inputs: VerifiedStaticInputs,
+) -> dict[str, dict[str, object]]:
+    """Materialize only authenticated source/corpus bytes in a new isolated tree."""
+
+    root = root.resolve()
+    if root.exists() and any(root.iterdir()):
+        raise ValueError("isolated RULER source root must start empty")
+    root.mkdir(parents=True, exist_ok=True)
+    files: dict[str, bytes] = dict(checkout.source_files)
+    for name, data in static_inputs.corpus_files.items():
+        relative = f"scripts/data/synthetic/json/{name}"
+        if relative in files:
+            raise ValueError("isolated RULER source inventory contains a duplicate path")
+        files[relative] = data
+    manifest: dict[str, dict[str, object]] = {}
+    for relative, data in sorted(files.items()):
+        path = root.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as handle:
+            handle.write(data)
+        manifest[relative] = {
+            "sha256": _sha256_bytes(data),
+            "size_bytes": len(data),
+        }
+    verify_staged_ruler_source(root, expected=manifest)
+    return manifest
+
+
+def verify_staged_ruler_source(
+    root: Path,
+    *,
+    expected: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Reject added, removed, aliased, or modified staged import inputs."""
+
+    root = root.resolve()
+    observed: dict[str, Path] = {}
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("isolated RULER source tree may not contain symlinks")
+        if path.is_file():
+            relative = path.relative_to(root).as_posix()
+            observed[relative] = path
+    observed_names = set(observed)
+    expected_names = set(expected)
+    if observed_names != expected_names:
+        raise ValueError(
+            "isolated RULER source inventory drifted; "
+            f"missing={sorted(expected_names - observed_names)}, "
+            f"extra={sorted(observed_names - expected_names)}"
+        )
+    for relative, path in observed.items():
+        data = path.read_bytes()
+        identity = expected[relative]
+        if identity.get("sha256") != _sha256_bytes(data) or identity.get("size_bytes") != len(data):
+            raise ValueError(f"isolated RULER source bytes drifted: {relative}")
+
+
+def stage_verified_runtime_inputs(
+    root: Path, *, files: Mapping[str, bytes]
+) -> tuple[dict[str, dict[str, object]], Path, Path]:
+    if root.exists():
+        raise FileExistsError(f"refusing to replace staged RULER runtime inputs: {root}")
+    root.mkdir(parents=True)
+    manifest: dict[str, dict[str, object]] = {}
+    for relative, data in sorted(files.items()):
+        path = root.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as handle:
+            handle.write(data)
+        manifest[relative] = _tree_file_entry(relative, data)
+    verify_staged_runtime_inputs(root, expected=manifest)
+    tokenizer_parent = root / "tokenizer"
+    tokenizer_directories = (
+        [path for path in tokenizer_parent.iterdir() if path.is_dir()]
+        if tokenizer_parent.is_dir()
+        else []
+    )
+    nltk_data = root / "nltk_data"
+    if len(tokenizer_directories) != 1 or not nltk_data.is_dir():
+        raise ValueError("staged RULER tokenizer or NLTK data is missing")
+    return manifest, tokenizer_directories[0], nltk_data
+
+
+def verify_staged_runtime_inputs(
+    root: Path, *, expected: Mapping[str, Mapping[str, object]]
+) -> None:
+    root = root.resolve()
+    observed: dict[str, Path] = {}
+    for path in root.rglob("*"):
+        if _is_reparse_point(path):
+            raise ValueError("staged RULER runtime inputs contain a redirected path")
+        if path.is_file():
+            observed[path.relative_to(root).as_posix()] = path
+    if set(observed) != set(expected):
+        raise ValueError("staged RULER runtime-input inventory drifted")
+    for name, path in observed.items():
+        if _tree_file_entry(name, path.read_bytes()) != expected[name]:
+            raise ValueError(f"staged RULER runtime-input bytes drifted: {name}")
 
 
 class IndependentTokenizer:
     """Recompute token counts inside the verified tokenizer-only interpreter."""
 
-    def __init__(self, *, python: Path, tokenizer_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        python: Path,
+        tokenizer_dir: Path,
+        package_root: Path,
+        package_tree_manifest: Sequence[Mapping[str, object]],
+        runtime_input_root: Path,
+        runtime_input_manifest: Mapping[str, Mapping[str, object]],
+        python_runtime_root: Path,
+        python_runtime_manifest: Sequence[Mapping[str, object]],
+    ) -> None:
         self._python = python.resolve()
         self._tokenizer_dir = tokenizer_dir.resolve()
+        self._package_root = package_root.resolve()
+        self._runtime_root = self._package_root.parents[1]
+        self._package_tree_manifest = tuple(dict(item) for item in package_tree_manifest)
+        self._runtime_input_root = runtime_input_root.resolve()
+        self._runtime_input_manifest = {
+            str(name): dict(item) for name, item in runtime_input_manifest.items()
+        }
+        self._python_runtime_root = python_runtime_root.resolve()
+        self._python_runtime_manifest = tuple(dict(item) for item in python_runtime_manifest)
 
     def count_tokens(self, text: str) -> int:
         code = """
@@ -731,18 +1525,56 @@ tokenizer = AutoTokenizer.from_pretrained(
 print(json.dumps({'count': len(tokenizer.tokenize(request['text']))}))
 """
         request = {"text": text, "tokenizer_dir": str(self._tokenizer_dir)}
-        result = subprocess.run(
-            [str(self._python), "-I", "-c", code],
-            check=True,
-            capture_output=True,
-            text=True,
-            input=json.dumps(request, ensure_ascii=False, allow_nan=False),
-            env=_subprocess_env(
-                HF_HUB_OFFLINE="1",
-                TOKENIZERS_PARALLELISM="false",
-                TRANSFORMERS_OFFLINE="1",
-            ),
+        verify_staged_runtime_package_tree(self._runtime_root, expected=self._package_tree_manifest)
+        verify_staged_runtime_inputs(
+            self._runtime_input_root, expected=self._runtime_input_manifest
         )
+        verify_staged_python_runtime(
+            self._python_runtime_root, expected=self._python_runtime_manifest
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="recurquant-exp013-tokenizer-pycache-"
+        ) as temporary:
+            pycache_prefix = Path(temporary)
+            _verify_empty_pycache_prefix(pycache_prefix)
+            try:
+                result = subprocess.run(
+                    _sealed_python_argv(
+                        python=self._python,
+                        package_root=self._package_root,
+                        pycache_prefix=pycache_prefix,
+                        code=SEALED_STARTUP_BOOTSTRAP + "\n" + code,
+                    ),
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="strict",
+                    input=json.dumps(request, ensure_ascii=False, allow_nan=False),
+                    env=_subprocess_env(
+                        HF_HUB_OFFLINE="1",
+                        TOKENIZERS_PARALLELISM="false",
+                        TRANSFORMERS_OFFLINE="1",
+                    ),
+                    timeout=TOKENIZER_TIMEOUT_SECONDS,
+                )
+            finally:
+                _verify_empty_pycache_prefix(pycache_prefix)
+                verify_staged_runtime_package_tree(
+                    self._runtime_root, expected=self._package_tree_manifest
+                )
+                verify_staged_runtime_inputs(
+                    self._runtime_input_root, expected=self._runtime_input_manifest
+                )
+                verify_staged_python_runtime(
+                    self._python_runtime_root, expected=self._python_runtime_manifest
+                )
+            if result.returncode != 0:
+                diagnostic = result.stderr[-4_000:].strip()
+                raise RuntimeError(
+                    "sealed independent tokenizer failed"
+                    + (f": {diagnostic}" if diagnostic else " without stderr")
+                )
         payload = _strict_json(result.stdout.encode(), context="independent tokenizer count")
         if (
             not isinstance(payload, Mapping)
@@ -766,7 +1598,8 @@ def _token_count(tokenizer: Any, text: str) -> int:
 def generator_argv(
     *,
     python: Path,
-    ruler_root: Path,
+    package_root: Path,
+    staged_root: Path,
     raw_root: Path,
     receipt: Mapping[str, object],
 ) -> tuple[list[str], list[str]]:
@@ -775,37 +1608,48 @@ def generator_argv(
         spec = TASK_SPECS[config]
     except KeyError as error:
         raise ValueError(f"no frozen launcher specification for RULER config {config}") from error
-    script = ruler_root / "scripts" / "data" / "synthetic" / spec.script
-    actual = [
-        str(python.resolve()),
-        "-s",
-        str(script.resolve()),
-        "--save_dir",
-        str(raw_root.resolve()),
-        "--save_name",
-        config,
-        "--subset",
-        "validation",
-        "--tokenizer_path",
-        "<TOKENIZER_DIR>",
-        "--tokenizer_type",
-        "hf",
-        "--max_seq_length",
-        str(receipt["configured_length"]),
-        "--tokens_to_generate",
-        str(spec.tokens_to_generate),
-        "--num_samples",
-        "1",
-        "--random_seed",
-        str(receipt["seed"]),
-    ]
+    data_root = staged_root / "scripts" / "data"
+    pycache_prefix = raw_root / ".sealed-pycache"
+    script_relative = f"synthetic/{spec.script}"
+    actual = _sealed_python_argv(
+        python=python,
+        package_root=package_root,
+        pycache_prefix=pycache_prefix,
+        code=ISOLATED_SOURCE_BOOTSTRAP,
+        arguments=(
+            str(data_root.resolve()),
+            script_relative,
+            "--save_dir",
+            str(raw_root.resolve()),
+            "--save_name",
+            config,
+            "--subset",
+            "validation",
+            "--tokenizer_path",
+            "<TOKENIZER_DIR>",
+            "--tokenizer_type",
+            "hf",
+            "--max_seq_length",
+            str(receipt["configured_length"]),
+            "--tokens_to_generate",
+            str(spec.tokens_to_generate),
+            "--num_samples",
+            "1",
+            "--random_seed",
+            str(receipt["seed"]),
+        ),
+    )
     for name, value in spec.arguments:
         actual.extend((f"--{name}", value))
     actual.extend(("--template", spec.template))
     portable = list(actual)
     portable[0] = "<RULER_PYTHON>"
-    portable[2] = f"scripts/data/synthetic/{spec.script}"
-    portable[4] = "<RAW_RECEIPT_DIR>"
+    portable[5] = "pycache_prefix=<EMPTY_PYCACHE_PREFIX>"
+    portable[10] = "<RULER_SITE_PACKAGES>"
+    portable[11] = "<EMPTY_PYCACHE_PREFIX>"
+    portable[12] = "<STAGED_RULER_DATA_ROOT>"
+    portable[13] = script_relative
+    portable[15] = "<RAW_RECEIPT_DIR>"
     return actual, portable
 
 
@@ -952,7 +1796,8 @@ def _load_existing_receipt_result(
     receipt: Mapping[str, object],
     capture: Any,
     python: Path,
-    ruler_root: Path,
+    package_root: Path,
+    staged_root: Path,
     raw_root: Path,
     tokenizer: Any,
     static_entries: Sequence[Mapping[str, object]],
@@ -969,31 +1814,25 @@ def _load_existing_receipt_result(
         configured_length=int(receipt["configured_length"]),
         seed=int(receipt["seed"]),
     )
+    diagnostic_root = raw_root / path.name.removesuffix(".json")
+    command_path = diagnostic_root / "command-manifest.json"
+    raw_path = diagnostic_root / config / "validation.jsonl"
+    if not command_path.is_file() or not raw_path.is_file():
+        raise FileNotFoundError(f"existing RULER receipt lacks raw verification inputs: {path}")
+    raw_data = raw_path.read_bytes()
+    raw_lines = raw_data.splitlines()
+    if len(raw_lines) != 1 or not raw_lines[0]:
+        raise ValueError("existing RULER raw validation must contain exactly one row")
+    raw_row = _strict_json(raw_lines[0], context=f"existing raw RULER row {path.name}")
     normalized = _normalize_output_row(
-        {
-            "index": (
-                str(value["input"]).find(value["outputs"][0]) if TASK_SPECS[config].niah else 0
-            ),
-            "input": value["input"],
-            "outputs": value["outputs"],
-            "length": value["generator_reported_length"],
-            "length_w_model_temp": value["generator_reported_length"],
-            "answer_prefix": value["answer_prefix"],
-            **(
-                {
-                    "token_position_answer": _token_count(
-                        tokenizer,
-                        str(value["input"])[: str(value["input"]).find(value["outputs"][0])],
-                    )
-                }
-                if TASK_SPECS[config].niah
-                else {}
-            ),
-        },
+        raw_row,
         config=config,
         configured_length=int(receipt["configured_length"]),
         tokenizer=tokenizer,
     )
+    for field in ("input", "answer_prefix", "outputs", "generator_reported_length"):
+        if normalized[field] != value[field]:
+            raise ValueError(f"existing RULER receipt differs from raw generator row: {field}")
     auxiliary = value["auxiliary_files"]
     if not isinstance(auxiliary, Sequence):  # capture normalization already rejects this
         raise ValueError("existing RULER receipt auxiliary inventory is invalid")
@@ -1005,7 +1844,8 @@ def _load_existing_receipt_result(
             raise ValueError("existing RULER receipt has a stale static-input binding")
     _, portable = generator_argv(
         python=python,
-        ruler_root=ruler_root,
+        package_root=package_root,
+        staged_root=staged_root,
         raw_root=raw_root,
         receipt=receipt,
     )
@@ -1017,9 +1857,14 @@ def _load_existing_receipt_result(
             static_entries=static_entries,
         )
     )
+    if command_path.read_bytes() != command_bytes:
+        raise ValueError("existing RULER diagnostic command manifest drifted")
     expected_command = _file_entry("generator/command-manifest.json", command_bytes)
+    expected_raw = _file_entry("generator/raw-validation.jsonl", raw_data)
     if auxiliary_by_name.get("generator/command-manifest.json") != expected_command:
         raise ValueError("existing RULER receipt has a stale launcher binding")
+    if auxiliary_by_name.get("generator/raw-validation.jsonl") != expected_raw:
+        raise ValueError("existing RULER receipt has a stale raw-row binding")
     expected_names = {str(entry["name"]) for entry in static_entries} | {
         "generator/command-manifest.json",
         "generator/raw-validation.jsonl",
@@ -1027,12 +1872,101 @@ def _load_existing_receipt_result(
     if set(auxiliary_by_name) != expected_names:
         raise ValueError("existing RULER receipt auxiliary inventory drifted")
     return {
+        "category": receipt["category"],
+        "command_manifest": _strict_json(command_bytes, context="command manifest"),
+        "command_manifest_file": expected_command,
+        "config": config,
+        "configured_length": receipt["configured_length"],
         "filename": path.name,
+        "generator_reported_length": normalized["generator_reported_length"],
         "phase": receipt["phase"],
+        "raw_validation_base64": base64.b64encode(raw_data).decode("ascii"),
+        "raw_validation_file": expected_raw,
+        "seed": receipt["seed"],
         "sha256": _sha256_bytes(payload),
         "size_bytes": len(payload),
-        "generator_reported_length": normalized["generator_reported_length"],
     }
+
+
+def _verify_owned_orphan_tree(
+    path: Path,
+    *,
+    raw_root: Path,
+    config: str,
+    require_complete: bool,
+) -> None:
+    raw_root = raw_root.resolve()
+    if path.parent.resolve() != raw_root or not path.is_dir() or _is_reparse_point(path):
+        raise ValueError("RULER orphan candidate is outside the requested raw root")
+    allowed_directories = {"", config, ".sealed-pycache"}
+    allowed_files = {
+        "command-manifest.json",
+        "runtime-manifest.json",
+        "stdout.log",
+        "stderr.log",
+        f"{config}/validation.jsonl",
+    }
+    observed_files: set[str] = set()
+    for item in path.rglob("*"):
+        if _is_reparse_point(item):
+            raise ValueError("RULER orphan candidate contains a redirected path")
+        relative = item.relative_to(path).as_posix()
+        if item.is_dir():
+            if relative not in allowed_directories:
+                raise ValueError("RULER orphan candidate contains an unexpected directory")
+        elif item.is_file():
+            if relative not in allowed_files:
+                raise ValueError("RULER orphan candidate contains an unexpected file")
+            observed_files.add(relative)
+        else:
+            raise ValueError("RULER orphan candidate contains an unsupported filesystem object")
+    if require_complete and observed_files != allowed_files:
+        raise ValueError("published RULER diagnostic orphan is incomplete")
+
+
+def recover_owned_receipt_orphans(
+    *,
+    filename: str,
+    config: str,
+    raw_root: Path,
+    output_dir: Path,
+) -> tuple[str, ...]:
+    """Remove only exact generator-owned leftovers when no receipt was published."""
+
+    if Path(filename).name != filename or not filename.endswith(".json"):
+        raise ValueError("RULER receipt filename is not a canonical basename")
+    raw_root = Path(os.path.abspath(raw_root))
+    output_dir = Path(os.path.abspath(output_dir))
+    raw_root.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if _is_reparse_point(raw_root) or _is_reparse_point(output_dir):
+        raise ValueError("RULER raw or output root is redirected")
+    output_path = output_dir / filename
+    if output_path.parent.resolve() != output_dir.resolve():
+        raise ValueError("RULER receipt output escapes the requested output root")
+    if output_path.exists():
+        return ()
+    receipt_key = _sha256_bytes(filename.encode("utf-8"))[:12]
+    staging_pattern = re.compile(rf"^\.rq-{re.escape(receipt_key)}\.[A-Za-z0-9_-]+\.staging$")
+    candidates = sorted(
+        (path for path in raw_root.iterdir() if staging_pattern.fullmatch(path.name) is not None),
+        key=lambda path: path.name,
+    )
+    published = raw_root / filename.removesuffix(".json")
+    if published.exists():
+        candidates.append(published)
+    recovered: list[str] = []
+    for candidate in candidates:
+        _verify_owned_orphan_tree(
+            candidate,
+            raw_root=raw_root,
+            config=config,
+            require_complete=candidate == published,
+        )
+    for candidate in candidates:
+        shutil.rmtree(candidate)
+        recovered.append(candidate.name)
+    return tuple(recovered)
 
 
 def generate_receipt(
@@ -1040,7 +1974,14 @@ def generate_receipt(
     receipt: Mapping[str, object],
     capture: Any,
     python: Path,
-    ruler_root: Path,
+    package_root: Path,
+    package_tree_manifest: Sequence[Mapping[str, object]],
+    python_runtime_root: Path,
+    python_runtime_manifest: Sequence[Mapping[str, object]],
+    runtime_input_root: Path,
+    runtime_input_manifest: Mapping[str, Mapping[str, object]],
+    staged_root: Path,
+    staged_manifest: Mapping[str, Mapping[str, object]],
     tokenizer_dir: Path,
     nltk_data: Path,
     raw_root: Path,
@@ -1052,17 +1993,36 @@ def generate_receipt(
 ) -> dict[str, object]:
     filename = str(receipt["filename"])
     output_path = output_dir / filename
+    recovered = recover_owned_receipt_orphans(
+        filename=filename,
+        config=str(receipt["config"]),
+        raw_root=raw_root,
+        output_dir=output_dir,
+    )
+    if recovered:
+        print(
+            f"recovered {len(recovered)} generator-owned orphan(s) for {filename}",
+            flush=True,
+        )
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite RULER receipt: {output_path}")
-    raw_root.mkdir(parents=True, exist_ok=True)
+    published_raw_root = raw_root / filename.removesuffix(".json")
+    if published_raw_root.exists():
+        raise FileExistsError(
+            f"refusing to replace existing RULER diagnostics: {published_raw_root}"
+        )
     receipt_key = _sha256_bytes(filename.encode("utf-8"))[:12]
     receipt_raw_root = Path(
         tempfile.mkdtemp(prefix=f".rq-{receipt_key}.", suffix=".staging", dir=raw_root)
     )
+    pycache_prefix = receipt_raw_root / ".sealed-pycache"
+    pycache_prefix.mkdir()
+    _verify_empty_pycache_prefix(pycache_prefix)
 
     actual, portable = generator_argv(
         python=python,
-        ruler_root=ruler_root,
+        package_root=package_root,
+        staged_root=staged_root,
         raw_root=receipt_raw_root,
         receipt=receipt,
     )
@@ -1082,19 +2042,34 @@ def generate_receipt(
     env = _subprocess_env(
         HF_HUB_OFFLINE="1",
         NLTK_DATA=str(nltk_data.resolve()),
+        PYTHONDONTWRITEBYTECODE="1",
         PYTHONHASHSEED="0",
         TOKENIZERS_PARALLELISM="false",
         TRANSFORMERS_OFFLINE="1",
     )
-    result = subprocess.run(
-        actual,
-        cwd=ruler_root / "scripts" / "data",
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
+    runtime_root = package_root.resolve().parents[1]
+    verify_staged_runtime_package_tree(runtime_root, expected=package_tree_manifest)
+    verify_staged_python_runtime(python_runtime_root, expected=python_runtime_manifest)
+    verify_staged_runtime_inputs(runtime_input_root, expected=runtime_input_manifest)
+    try:
+        result = subprocess.run(
+            actual,
+            cwd=staged_root / "scripts" / "data",
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=timeout_seconds,
+            check=False,
+        )
+    finally:
+        verify_staged_ruler_source(staged_root, expected=staged_manifest)
+        verify_staged_runtime_package_tree(runtime_root, expected=package_tree_manifest)
+        verify_staged_python_runtime(python_runtime_root, expected=python_runtime_manifest)
+        verify_staged_runtime_inputs(runtime_input_root, expected=runtime_input_manifest)
+        _verify_empty_pycache_prefix(pycache_prefix)
+        pycache_prefix.rmdir()
     (receipt_raw_root / "stdout.log").write_text(result.stdout, encoding="utf-8")
     (receipt_raw_root / "stderr.log").write_text(result.stderr, encoding="utf-8")
     if result.returncode != 0:
@@ -1144,26 +2119,92 @@ def generate_receipt(
         seed=int(receipt["seed"]),
     )
     payload = _canonical_json_bytes(receipt_data)
+    # Publish the diagnostics first.  A crash can therefore leave an obvious,
+    # fail-closed orphan, but can never leave a receipt without the raw inputs
+    # needed to reproduce it.
+    receipt_raw_root.rename(published_raw_root)
     _atomic_publish_new(output_path, payload)
-    published_raw_root = raw_root / filename.removesuffix(".json")
-    try:
-        receipt_raw_root.rename(published_raw_root)
-    except FileExistsError:
-        # Raw logs are diagnostics, not publication inputs. Keep this staged
-        # run rather than replacing an older diagnostic directory.
-        print(
-            f"warning: kept raw diagnostics at {receipt_raw_root} because "
-            f"{published_raw_root} already exists",
-            file=sys.stderr,
-            flush=True,
-        )
+    command_entry = _file_entry("generator/command-manifest.json", command_bytes)
+    raw_entry = _file_entry("generator/raw-validation.jsonl", raw_data)
     return {
+        "category": receipt["category"],
+        "command_manifest": command_manifest,
+        "command_manifest_file": command_entry,
+        "config": config,
+        "configured_length": receipt["configured_length"],
         "filename": filename,
+        "generator_reported_length": normalized["generator_reported_length"],
         "phase": receipt["phase"],
+        "raw_validation_base64": base64.b64encode(raw_data).decode("ascii"),
+        "raw_validation_file": raw_entry,
+        "seed": receipt["seed"],
         "sha256": _sha256_bytes(payload),
         "size_bytes": len(payload),
-        "generator_reported_length": normalized["generator_reported_length"],
     }
+
+
+def finalize_generation_manifest_if_complete(
+    *,
+    required: Sequence[Mapping[str, object]],
+    output_dir: Path,
+    raw_root: Path,
+    capture: Any,
+    python: Path,
+    package_root: Path,
+    staged_root: Path,
+    tokenizer: Any,
+    static_entries: Sequence[Mapping[str, object]],
+    source_manifest: Sequence[Mapping[str, object]],
+    runtime_manifest: Mapping[str, object],
+) -> dict[str, object] | None:
+    """Publish the sole manifest only after re-verifying the full 20-file set."""
+
+    manifest_path = output_dir / "generation-manifest.json"
+    missing = [
+        str(item["filename"])
+        for item in required
+        if not (output_dir / str(item["filename"])).is_file()
+    ]
+    if missing:
+        if manifest_path.exists():
+            raise ValueError("complete RULER generation manifest exists beside an incomplete set")
+        return None
+
+    # Do not trust results retained from the generation loop: independently
+    # reopen every receipt, raw row, and command binding in canonical order.
+    results = [
+        _load_existing_receipt_result(
+            path=output_dir / str(receipt["filename"]),
+            receipt=receipt,
+            capture=capture,
+            python=python,
+            package_root=package_root,
+            staged_root=staged_root,
+            raw_root=raw_root,
+            tokenizer=tokenizer,
+            static_entries=static_entries,
+        )
+        for receipt in required
+    ]
+    launcher_entry = _entry_named(static_entries, "launcher/generate_static_q468_ruler_receipts.py")
+    source_manifest_value = [dict(item) for item in source_manifest]
+    manifest: dict[str, object] = {
+        "schema": GENERATION_MANIFEST_SCHEMA,
+        "launcher_revision": LAUNCHER_REVISION,
+        "launcher_source": dict(launcher_entry),
+        "ruler_revision": capture.resolver.RULER_REVISION,
+        "source_manifest": source_manifest_value,
+        "source_manifest_sha256": _sha256_bytes(_canonical_json_bytes(source_manifest_value)),
+        "runtime_manifest": dict(runtime_manifest),
+        "runtime_manifest_sha256": _sha256_bytes(_canonical_json_bytes(runtime_manifest)),
+        "static_inputs": [dict(item) for item in static_entries],
+        "receipt_count": len(results),
+        "receipts": results,
+    }
+    if len(results) != 20:
+        raise ValueError("complete RULER generation manifest must contain exactly 20 receipts")
+    _atomic_publish_same(manifest_path, _canonical_json_bytes(manifest))
+    return manifest
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1189,23 +2230,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.timeout_seconds < 1:
         raise ValueError("--timeout-seconds must be positive")
     capture = _load_capture_module()
-    source_manifest = verify_ruler_checkout(args.ruler_root, capture)
-    runtime_manifest, resource_paths = verify_runtime(args.python, args.nltk_data)
-    static_entries = verify_static_inputs(
-        ruler_root=args.ruler_root,
+    checkout = verify_ruler_checkout(args.ruler_root, capture)
+    verified_package_tree = verify_runtime_package_source(args.python)
+    verified_python_runtime = verify_python_runtime_source(args.python)
+    static_runtime_files = verify_static_runtime_input_source(
         tokenizer_dir=args.tokenizer_dir,
-        resource_paths=resource_paths,
-        runtime_manifest=runtime_manifest,
+        nltk_data=args.nltk_data,
         capture=capture,
     )
-    static_entries = sorted(
-        [
-            *static_entries,
-            _file_entry("ruler/source-manifest.json", _canonical_json_bytes(source_manifest)),
-        ],
-        key=lambda item: str(item["name"]),
-    )
-    tokenizer = IndependentTokenizer(python=args.python, tokenizer_dir=args.tokenizer_dir)
     required = list(capture.required_ruler_receipts())
     by_filename = {str(item["filename"]): item for item in required}
     if len(by_filename) != len(required):
@@ -1231,55 +2263,147 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected = [by_filename[name] for name in args.receipt]
     else:
         selected = required
-    results = []
-    for index, receipt in enumerate(selected, start=1):
-        output_path = args.output_dir / str(receipt["filename"])
-        if output_path.exists():
-            print(
-                f"[{index}/{len(selected)}] verifying existing {receipt['filename']}",
-                flush=True,
+    with tempfile.TemporaryDirectory(prefix="recurquant-exp013-ruler-sealed-") as temporary:
+        temporary_root = Path(temporary)
+        python_runtime_root = temporary_root / "python-runtime"
+        staged_python = stage_verified_python_runtime(
+            python_runtime_root, verified=verified_python_runtime
+        )
+        package_runtime_root = temporary_root / "package-runtime"
+        package_root = stage_verified_runtime_package_tree(
+            package_runtime_root, verified=verified_package_tree
+        )
+        runtime_input_root = temporary_root / "runtime-inputs"
+        runtime_input_manifest, staged_tokenizer_dir, staged_nltk_data = (
+            stage_verified_runtime_inputs(
+                runtime_input_root,
+                files=static_runtime_files,
             )
-            result = _load_existing_receipt_result(
-                path=output_path,
-                receipt=receipt,
-                capture=capture,
-                python=args.python,
-                ruler_root=args.ruler_root,
-                raw_root=args.raw_dir,
-                tokenizer=tokenizer,
-                static_entries=static_entries,
-            )
-        else:
-            print(f"[{index}/{len(selected)}] generating {receipt['filename']}", flush=True)
-            result = generate_receipt(
-                receipt=receipt,
-                capture=capture,
-                python=args.python,
-                ruler_root=args.ruler_root,
-                tokenizer_dir=args.tokenizer_dir,
-                nltk_data=args.nltk_data,
-                raw_root=args.raw_dir,
-                output_dir=args.output_dir,
-                tokenizer=tokenizer,
-                static_entries=static_entries,
-                runtime_manifest=runtime_manifest,
-                timeout_seconds=args.timeout_seconds,
-            )
-        results.append(result)
-    launcher_entry = _entry_named(static_entries, "launcher/generate_static_q468_ruler_receipts.py")
-    manifest = {
-        "schema": "recurquant.experiment013.ruler-generation-manifest.v1",
-        "launcher_revision": LAUNCHER_REVISION,
-        "launcher_source_sha256": launcher_entry["sha256"],
-        "ruler_revision": capture.resolver.RULER_REVISION,
-        "source_manifest_sha256": _sha256_bytes(_canonical_json_bytes(source_manifest)),
-        "runtime_manifest_sha256": _sha256_bytes(_canonical_json_bytes(runtime_manifest)),
-        "selected_receipts": results,
-    }
-    _atomic_publish_same(
-        args.output_dir / "generation-manifest.json", _canonical_json_bytes(manifest)
-    )
-    print(json.dumps(manifest, indent=2, sort_keys=True), flush=True)
+        )
+        runtime_manifest, resource_paths = verify_runtime(
+            staged_python,
+            staged_nltk_data,
+            package_root=package_root,
+            package_tree_manifest=verified_package_tree.entries,
+            excluded_startup_files=verified_package_tree.excluded_startup_files,
+            python_runtime_root=python_runtime_root,
+            python_runtime_manifest=verified_python_runtime.entries,
+            source_python=verified_python_runtime.source_launcher,
+            source_pyvenv_config=verified_python_runtime.source_pyvenv_config,
+        )
+        verified_static_inputs = verify_static_inputs(
+            ruler_root=args.ruler_root,
+            tokenizer_dir=staged_tokenizer_dir,
+            resource_paths=resource_paths,
+            runtime_manifest=runtime_manifest,
+            capture=capture,
+        )
+        if verified_static_inputs.sealed_runtime_files != static_runtime_files:
+            raise ValueError("staged RULER tokenizer or NLTK bytes drifted during verification")
+        static_entries = sorted(
+            [
+                *verified_static_inputs.entries,
+                _file_entry(
+                    "ruler/source-manifest.json",
+                    _canonical_json_bytes(list(checkout.source_manifest)),
+                ),
+            ],
+            key=lambda item: str(item["name"]),
+        )
+        tokenizer = IndependentTokenizer(
+            python=staged_python,
+            tokenizer_dir=staged_tokenizer_dir,
+            package_root=package_root,
+            package_tree_manifest=verified_package_tree.entries,
+            runtime_input_root=runtime_input_root,
+            runtime_input_manifest=runtime_input_manifest,
+            python_runtime_root=python_runtime_root,
+            python_runtime_manifest=verified_python_runtime.entries,
+        )
+        staged_root = temporary_root / "ruler-source"
+        staged_manifest = stage_verified_ruler_source(
+            staged_root,
+            checkout=checkout,
+            static_inputs=verified_static_inputs,
+        )
+        for index, receipt in enumerate(selected, start=1):
+            output_path = args.output_dir / str(receipt["filename"])
+            if output_path.exists():
+                print(
+                    f"[{index}/{len(selected)}] verifying existing {receipt['filename']}",
+                    flush=True,
+                )
+                _load_existing_receipt_result(
+                    path=output_path,
+                    receipt=receipt,
+                    capture=capture,
+                    python=staged_python,
+                    package_root=package_root,
+                    staged_root=staged_root,
+                    raw_root=args.raw_dir,
+                    tokenizer=tokenizer,
+                    static_entries=static_entries,
+                )
+            else:
+                print(f"[{index}/{len(selected)}] generating {receipt['filename']}", flush=True)
+                generate_receipt(
+                    receipt=receipt,
+                    capture=capture,
+                    python=staged_python,
+                    package_root=package_root,
+                    package_tree_manifest=verified_package_tree.entries,
+                    python_runtime_root=python_runtime_root,
+                    python_runtime_manifest=verified_python_runtime.entries,
+                    runtime_input_root=runtime_input_root,
+                    runtime_input_manifest=runtime_input_manifest,
+                    staged_root=staged_root,
+                    staged_manifest=staged_manifest,
+                    tokenizer_dir=staged_tokenizer_dir,
+                    nltk_data=staged_nltk_data,
+                    raw_root=args.raw_dir,
+                    output_dir=args.output_dir,
+                    tokenizer=tokenizer,
+                    static_entries=static_entries,
+                    runtime_manifest=runtime_manifest,
+                    timeout_seconds=args.timeout_seconds,
+                )
+        manifest = finalize_generation_manifest_if_complete(
+            required=required,
+            output_dir=args.output_dir,
+            raw_root=args.raw_dir,
+            capture=capture,
+            python=staged_python,
+            package_root=package_root,
+            staged_root=staged_root,
+            tokenizer=tokenizer,
+            static_entries=static_entries,
+            source_manifest=checkout.source_manifest,
+            runtime_manifest=runtime_manifest,
+        )
+        verify_staged_python_runtime(python_runtime_root, expected=verified_python_runtime.entries)
+        verify_staged_runtime_package_tree(
+            package_runtime_root, expected=verified_package_tree.entries
+        )
+        verify_staged_runtime_inputs(runtime_input_root, expected=runtime_input_manifest)
+    if manifest is None:
+        present = sum((args.output_dir / str(item["filename"])).is_file() for item in required)
+        progress = {
+            "schema": "recurquant.experiment013.ruler-generation-progress.v1",
+            "complete": False,
+            "present_receipts": present,
+            "required_receipts": len(required),
+        }
+        print(json.dumps(progress, indent=2, sort_keys=True), flush=True)
+    else:
+        manifest_path = args.output_dir / "generation-manifest.json"
+        summary = {
+            "schema": "recurquant.experiment013.ruler-generation-success.v1",
+            "complete": True,
+            "manifest": str(manifest_path.resolve()),
+            "manifest_sha256": _sha256_bytes(manifest_path.read_bytes()),
+            "receipt_count": manifest["receipt_count"],
+        }
+        print(json.dumps(summary, sort_keys=True, separators=(",", ":")), flush=True)
     return 0
 
 

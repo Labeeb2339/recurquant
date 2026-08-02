@@ -29,11 +29,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Final
 
-INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v2"
-CANDIDATE_SCHEMA: Final = "recurquant.experiment013.identity-candidate.v2"
-FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v2"
+INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v4"
+CANDIDATE_SCHEMA: Final = "recurquant.experiment013.identity-candidate.v4"
+FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v4"
 ARTIFACT_KIND: Final = "recurquant_static_rht_q468_identity"
-RESOLVER_VERSION: Final = 2
+RESOLVER_VERSION: Final = 4
+PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256: Final = (
+    "ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c"
+)
 
 PRIMARY_MODEL_ID: Final = "Qwen/Qwen3.5-0.8B-Base"
 PRIMARY_MODEL_REVISION: Final = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
@@ -126,7 +129,8 @@ RULER_STAGE_A_SCHEDULE: Final = (
 )
 
 CLAIM_BOUNDARY: Final = (
-    "This artifact freezes Experiment 013 data and tokenizer identity only. "
+    "This artifact freezes Experiment 013 data, tokenizer, source, runtime, and "
+    "metadata-only model-file identity. "
     "It is not quality, latency, novelty, state-of-the-art, deployment, or "
     "breakthrough evidence."
 )
@@ -194,6 +198,14 @@ CALIBRATION_BINDING_FIELDS: Final = frozenset(
         "static_k29334_policy_file_sha256",
     }
 )
+EXECUTION_BINDING_FIELDS: Final = frozenset(
+    {
+        "repository_source_manifest_file_sha256",
+        "calibration_runtime_manifest_file_sha256",
+        "model_file_manifest_file_sha256",
+        "parquet_materialization_manifest_file_sha256",
+    }
+)
 FROZEN_EVIDENCE_FIELDS: Final = frozenset(
     {
         "schema_version",
@@ -205,6 +217,7 @@ FROZEN_EVIDENCE_FIELDS: Final = frozenset(
         "identity_only",
         "claim_boundary",
         "source_manifest_sha256",
+        "execution_bindings",
         "model_contracts",
         "datasets",
         "upstream_tool_contracts",
@@ -957,6 +970,19 @@ def _validate_calibration_binding(value: object) -> dict[str, str]:
     }
 
 
+def _validate_execution_bindings(value: object) -> dict[str, str]:
+    bindings = require_mapping(value, context="execution_bindings")
+    require_exact_fields(
+        bindings,
+        EXECUTION_BINDING_FIELDS,
+        context="execution_bindings",
+    )
+    return {
+        key: require_sha256(bindings[key], context=f"execution_bindings.{key}")
+        for key in sorted(EXECUTION_BINDING_FIELDS)
+    }
+
+
 def build_candidate(
     source: Mapping[str, Any],
     *,
@@ -972,6 +998,7 @@ def build_candidate(
         "datasets",
         "tokenizer",
         "records",
+        "execution_bindings",
         "model_weights_loaded",
     }
     if phase == "stage_a":
@@ -981,7 +1008,7 @@ def build_candidate(
         raise ValueError("identity input schema drifted")
     if phase not in ALLOWED_PHASES:
         if phase in PROTECTED_STAGES:
-            raise PermissionError(f"{phase} is protected and unavailable in resolver v2")
+            raise PermissionError(f"{phase} is protected and unavailable in resolver v4")
         raise ValueError(f"unsupported identity phase: {phase!r}")
     if source["model_weights_loaded"] is not False:
         raise ValueError("identity resolution must occur before model weights")
@@ -1004,6 +1031,15 @@ def build_candidate(
         raise ValueError("CLI dataset revisions do not match the frozen upstream commits")
     datasets = _validate_dataset_contracts(source["datasets"], expected_revisions=revisions)
     tokenizer = _validate_tokenizer(source["tokenizer"])
+    execution_bindings = _validate_execution_bindings(source["execution_bindings"])
+    parquet_materialization_manifest_file_sha256 = execution_bindings[
+        "parquet_materialization_manifest_file_sha256"
+    ]
+    if (
+        parquet_materialization_manifest_file_sha256
+        != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
+    ):
+        raise ValueError("Parquet materialization manifest file SHA-256 drifted")
     raw_records = require_sequence(source["records"], context="records")
     records = [
         _normalize_record(
@@ -1029,7 +1065,7 @@ def build_candidate(
     content_manifest_hash = sha256_bytes(canonical_json_bytes(records))
     source_hash = sha256_bytes(canonical_json_bytes(source))
     evidence: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 4,
         "artifact_kind": ARTIFACT_KIND,
         "identity_schema": CANDIDATE_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
@@ -1038,6 +1074,7 @@ def build_candidate(
         "identity_only": True,
         "claim_boundary": CLAIM_BOUNDARY,
         "source_manifest_sha256": source_hash,
+        "execution_bindings": execution_bindings,
         "model_contracts": {
             "primary": {"id": PRIMARY_MODEL_ID, "revision": PRIMARY_MODEL_REVISION},
             "conditional_scale_check": {
@@ -1099,7 +1136,7 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
         raise ValueError("candidate canonical evidence SHA-256 drifted")
     phase = evidence["phase"]
     exact_scalars = {
-        "schema_version": 2,
+        "schema_version": 4,
         "artifact_kind": ARTIFACT_KIND,
         "identity_schema": CANDIDATE_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
@@ -1109,7 +1146,10 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
         "promotion_required": True,
     }
     for name, expected in exact_scalars.items():
-        if evidence[name] != expected:
+        if (
+            isinstance(expected, (bool, int))
+            and type(evidence[name]) is not type(expected)
+        ) or evidence[name] != expected:
             raise ValueError(f"candidate {name} drifted")
     if phase not in ALLOWED_PHASES:
         raise ValueError("candidate phase drifted")
@@ -1117,6 +1157,14 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
         evidence["source_manifest_sha256"],
         context="candidate source manifest SHA-256",
     )
+    execution_bindings = _validate_execution_bindings(evidence["execution_bindings"])
+    if dict(evidence["execution_bindings"]) != execution_bindings:
+        raise ValueError("candidate execution bindings are not canonical")
+    if (
+        execution_bindings["parquet_materialization_manifest_file_sha256"]
+        != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
+    ):
+        raise ValueError("candidate Parquet materialization manifest file SHA-256 drifted")
 
     models = require_mapping(evidence["model_contracts"], context="model contracts")
     require_exact_fields(
@@ -1229,11 +1277,15 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
             raise ValueError("candidate calibration binding is not canonical")
 
     protected = require_mapping(evidence["protected_identity"], context="protected identity")
-    if protected != {
-        "stage_b_read": False,
-        "stage_c_read": False,
-        "ordinary_tests_may_read_protected_content": False,
-    }:
+    protected_fields = frozenset(
+        {
+            "stage_b_read",
+            "stage_c_read",
+            "ordinary_tests_may_read_protected_content",
+        }
+    )
+    require_exact_fields(protected, protected_fields, context="protected identity")
+    if any(protected[field] is not False for field in protected_fields):
         raise ValueError("protected identity boundary drifted")
 
 
@@ -1288,6 +1340,8 @@ class FrozenCalibrationIdentityArtifact:
         "assignment",
         "assignment_sha256",
         "tokenizer_manifest_sha256",
+        "parquet_materialization_manifest_file_sha256",
+        "execution_bindings",
     )
 
     def __init__(
@@ -1299,6 +1353,8 @@ class FrozenCalibrationIdentityArtifact:
         assignment: tuple[dict[str, Any], ...],
         assignment_sha256: str,
         tokenizer_manifest_sha256: str,
+        parquet_materialization_manifest_file_sha256: str,
+        execution_bindings: dict[str, str],
     ) -> None:
         self.file_sha256 = file_sha256
         self.canonical_evidence_sha256 = canonical_evidence_sha256
@@ -1306,6 +1362,10 @@ class FrozenCalibrationIdentityArtifact:
         self.assignment = assignment
         self.assignment_sha256 = assignment_sha256
         self.tokenizer_manifest_sha256 = tokenizer_manifest_sha256
+        self.parquet_materialization_manifest_file_sha256 = (
+            parquet_materialization_manifest_file_sha256
+        )
+        self.execution_bindings = execution_bindings
 
 
 class FrozenStageAIdentityArtifact:
@@ -1317,6 +1377,8 @@ class FrozenStageAIdentityArtifact:
         "records",
         "tokenizer_manifest_sha256",
         "calibration_binding",
+        "parquet_materialization_manifest_file_sha256",
+        "execution_bindings",
     )
 
     def __init__(
@@ -1327,12 +1389,18 @@ class FrozenStageAIdentityArtifact:
         records: tuple[dict[str, Any], ...],
         tokenizer_manifest_sha256: str,
         calibration_binding: dict[str, str],
+        parquet_materialization_manifest_file_sha256: str,
+        execution_bindings: dict[str, str],
     ) -> None:
         self.file_sha256 = file_sha256
         self.canonical_evidence_sha256 = canonical_evidence_sha256
         self.records = records
         self.tokenizer_manifest_sha256 = tokenizer_manifest_sha256
         self.calibration_binding = calibration_binding
+        self.parquet_materialization_manifest_file_sha256 = (
+            parquet_materialization_manifest_file_sha256
+        )
+        self.execution_bindings = execution_bindings
 
 
 class StageACalibrationBindingArtifact:
@@ -1397,7 +1465,7 @@ def deserialize_frozen_calibration_identity_artifact(
     if canonical_evidence_sha256 != sha256_bytes(canonical_json_bytes(evidence)):
         raise ValueError("frozen identity canonical evidence SHA-256 drifted")
     exact_scalars = {
-        "schema_version": 2,
+        "schema_version": 4,
         "artifact_kind": ARTIFACT_KIND,
         "identity_schema": FROZEN_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
@@ -1409,12 +1477,23 @@ def deserialize_frozen_calibration_identity_artifact(
         "promotion_required": False,
     }
     for name, expected in exact_scalars.items():
-        if evidence[name] != expected:
+        if (
+            isinstance(expected, (bool, int))
+            and type(evidence[name]) is not type(expected)
+        ) or evidence[name] != expected:
             raise ValueError(f"frozen identity {name} drifted")
     require_sha256(
         evidence["source_manifest_sha256"],
         context="frozen identity source manifest SHA-256",
     )
+    execution_bindings = _validate_execution_bindings(evidence["execution_bindings"])
+    if dict(evidence["execution_bindings"]) != execution_bindings:
+        raise ValueError("frozen execution bindings are not canonical")
+    parquet_manifest_sha256 = execution_bindings[
+        "parquet_materialization_manifest_file_sha256"
+    ]
+    if parquet_manifest_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
+        raise ValueError("frozen Parquet materialization manifest file SHA-256 drifted")
 
     models = require_mapping(evidence["model_contracts"], context="model contracts")
     require_exact_fields(
@@ -1515,12 +1594,23 @@ def deserialize_frozen_calibration_identity_artifact(
     }
     if evidence["upstream_tool_contracts"] != expected_upstream:
         raise ValueError("frozen upstream tool contracts drifted")
-    expected_protected = {
-        "stage_b_read": False,
-        "stage_c_read": False,
-        "ordinary_tests_may_read_protected_content": False,
-    }
-    if evidence["protected_identity"] != expected_protected:
+    protected = require_mapping(
+        evidence["protected_identity"],
+        context="frozen protected identity",
+    )
+    protected_fields = frozenset(
+        {
+            "stage_b_read",
+            "stage_c_read",
+            "ordinary_tests_may_read_protected_content",
+        }
+    )
+    require_exact_fields(
+        protected,
+        protected_fields,
+        context="frozen protected identity",
+    )
+    if any(protected[field] is not False for field in protected_fields):
         raise ValueError("frozen protected identity boundary drifted")
 
     split = require_mapping(
@@ -1587,6 +1677,8 @@ def deserialize_frozen_calibration_identity_artifact(
         assignment=assignments,
         assignment_sha256=str(expected_split["assignment_sha256"]),
         tokenizer_manifest_sha256=str(tokenizer_manifest_sha256),
+        parquet_materialization_manifest_file_sha256=parquet_manifest_sha256,
+        execution_bindings=execution_bindings,
     )
 
 
@@ -1691,12 +1783,20 @@ def deserialize_frozen_stage_a_identity_artifact(
         candidate_evidence["tokenizer"]["file_manifest_sha256"],
         context="frozen Stage-A tokenizer manifest SHA-256",
     )
+    execution_bindings = _validate_execution_bindings(candidate_evidence["execution_bindings"])
+    parquet_manifest_sha256 = execution_bindings[
+        "parquet_materialization_manifest_file_sha256"
+    ]
+    if parquet_manifest_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
+        raise ValueError("frozen Stage-A Parquet materialization manifest file SHA-256 drifted")
     return FrozenStageAIdentityArtifact(
         file_sha256=file_sha256,
         canonical_evidence_sha256=canonical_evidence_sha256,
         records=records,
         tokenizer_manifest_sha256=tokenizer_manifest_sha256,
         calibration_binding=dict(verified_binding),
+        parquet_materialization_manifest_file_sha256=parquet_manifest_sha256,
+        execution_bindings=execution_bindings,
     )
 
 
@@ -2094,7 +2194,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def _reject_protected_before_input(phase: str) -> None:
     if phase in PROTECTED_STAGES:
         raise PermissionError(
-            f"{phase} is protected; resolver v2 refuses it before reading --input"
+            f"{phase} is protected; resolver v3 refuses it before reading --input"
         )
 
 

@@ -18,6 +18,7 @@ from recurquant.static_q468 import (
     STATIC_Q468_ABLATION_METHOD,
     STATIC_Q468_PRIMARY_METHOD,
     StaticPackedRhtQ48State,
+    StaticPackedRhtQ468State,
     StaticRhtQ468Geometry,
     allocate_exact_q48_mask,
     build_static_rht_q48_policy,
@@ -750,6 +751,68 @@ def test_real_geometry_primary_policy_has_exact_k_counts_and_uint16_offsets() ->
         replace(policy, marginal_steps=0)
     with pytest.raises(ValueError, match="frozen model identity"):
         replace(policy, model_id="Qwen/other-model")
+
+
+def test_real_q468_policy_has_a_physical_exact_3454664_byte_state() -> None:
+    """Construct every real Q4/Q6/Q8 pool without allocating dense model state."""
+
+    geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    row = torch.arange(geometry.total_rows, dtype=torch.float64)
+    distortions = (
+        (((17 * row + 13) % 1009) / 1009).reshape(geometry.layers, -1),
+        (((29 * row + 7) % 1013) / 1013).reshape(geometry.layers, -1),
+        (((43 * row + 3) % 1019) / 1019).reshape(geometry.layers, -1),
+    )
+    policy = build_static_rht_q468_policy(
+        *distortions,
+        geometry=geometry,
+        marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+        method_id=STATIC_Q468_PRIMARY_METHOD,
+        calibration_manifest_sha256=MANIFEST_SHA256,
+        **BINDINGS,
+    )
+    q4_count, q6_count, q8_count = policy.pool_counts
+    packed = StaticPackedRhtQ468State(
+        policy=policy,
+        int4_payload=torch.zeros(
+            (q4_count, geometry.value_width * 4 // 8), dtype=torch.uint8
+        ),
+        int6_payload=torch.zeros(
+            (q6_count, geometry.value_width * 6 // 8), dtype=torch.uint8
+        ),
+        int8_payload=torch.zeros((q8_count, geometry.value_width), dtype=torch.int8),
+        scales=torch.ones(geometry.total_rows, dtype=torch.float16),
+        padding=torch.zeros(8, dtype=torch.uint8),
+    )
+
+    evidence = verify_static_packed_rht_q468(packed)
+    assert q4_count + q6_count + q8_count == 36_864
+    assert (
+        packed.int4_payload.numel()
+        + packed.int6_payload.numel()
+        + packed.int8_payload.numel()
+        == 3_297_984
+    )
+    assert policy.packed_precision_codes.numel() == 9_216
+    assert policy.pool_offsets.numel() * policy.pool_offsets.element_size() == 73_728
+    assert packed.scales.numel() * packed.scales.element_size() == 73_728
+    assert packed.data_bytes == 3_454_656
+    assert packed.resident_bytes == 3_454_664
+    assert evidence["physical_resident_bytes"] == 3_454_664
+
+    source_states = {
+        layer_index: torch.zeros(
+            (1, geometry.heads, geometry.key_rows, geometry.value_width),
+            dtype=torch.float32,
+        )
+        for layer_index in geometry.layer_indices
+    }
+    with torch.no_grad():
+        physically_packed = pack_static_rht_q468(source_states, policy)
+    physical_evidence = verify_static_packed_rht_q468(physically_packed)
+    assert physically_packed.policy.pool_counts == packed.policy.pool_counts
+    assert physically_packed.resident_bytes == 3_454_664
+    assert physical_evidence["physical_resident_bytes"] == 3_454_664
 
 
 def test_real_q48_policy_has_a_physical_exact_3454664_byte_state() -> None:
