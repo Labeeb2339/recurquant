@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -123,7 +124,7 @@ assert 'datasets' not in sys.modules
 assert module.AuthenticatedSequence.__module__ == 'external_experiment013_api'
 """
     subprocess.run(
-        [str(ROOT / ".venv" / "Scripts" / "python.exe"), "-I", "-c", code],
+        [sys.executable, "-I", "-c", code],
         cwd=ROOT,
         check=True,
         capture_output=True,

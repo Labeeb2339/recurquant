@@ -1773,7 +1773,7 @@ assert 'recurquant.static_q468' not in sys.modules
 assert 'recurquant.static_q468_calibration' not in sys.modules
 """
     subprocess.run(
-        [str(SCRIPT.parents[1] / ".venv" / "Scripts" / "python.exe"), "-c", code],
+        [sys.executable, "-c", code],
         cwd=SCRIPT.parents[1],
         check=True,
         capture_output=True,
