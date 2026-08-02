@@ -173,6 +173,15 @@ from .statelease_evaluation import (
     reference_aligned_trajectory_nmse,
 )
 from .statelease_observer import Qwen35StateLeaseObserver
+from .static_q468_cache import (
+    DYNAMIC_Q468_ORACLE_METHOD,
+    FROZEN_STATIC_RUNTIME_METHODS,
+    StaticRhtCacheUpdateEvidence,
+    StaticRhtQwen35Cache,
+    StaticRhtRuntimeCheckpoint,
+    create_qwen35_dynamic_q468_oracle_cache,
+    create_qwen35_static_rht_cache,
+)
 from .transition_observer import Qwen35TransitionObserver
 
 __all__ = [
@@ -220,6 +229,8 @@ __all__ = [
     "EqualByteLinearAttentionLayer",
     "EqualByteNoReplayCache",
     "EqualByteQwen35Cache",
+    "DYNAMIC_Q468_ORACLE_METHOD",
+    "FROZEN_STATIC_RUNTIME_METHODS",
     "QueryEmaMixedPackedLinearAttentionLayer",
     "QueryEmaMixedPackedRecurrentStateCache",
     "Qwen35QueryEnergyObserver",
@@ -244,6 +255,9 @@ __all__ = [
     "StateLeaseLinearAttentionLayer",
     "StateLeaseRecurrentStateCache",
     "StateLeaseUpdateEvidence",
+    "StaticRhtCacheUpdateEvidence",
+    "StaticRhtQwen35Cache",
+    "StaticRhtRuntimeCheckpoint",
     "PhysicalMetricRun",
     "PhysicalRowPromotionOracleResult",
     "QuantizationResult",
@@ -268,6 +282,7 @@ __all__ = [
     "create_qwen35_cora_exact_budget_cache",
     "create_qwen35_exact_budget_cache",
     "create_qwen35_equal_byte_cache",
+    "create_qwen35_dynamic_q468_oracle_cache",
     "create_qwen35_experiment010_fixed_replay_cache",
     "create_qwen35_experiment010_statelease_cache",
     "create_qwen35_packed_cache",
@@ -275,6 +290,7 @@ __all__ = [
     "create_qwen35_rank_fused_exact_budget_cache",
     "create_qwen35_right_rht_query_ema_exact_budget_cache",
     "create_qwen35_statelease_cache",
+    "create_qwen35_static_rht_cache",
     "create_qwen35_v02_mixed_cache",
     "experiment010_statelease_effective_plan_sha256",
     "create_fixed_replay_cache",

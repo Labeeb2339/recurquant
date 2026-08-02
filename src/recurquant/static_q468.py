@@ -523,6 +523,8 @@ class StaticRhtQ468Policy:
         steps = _validate_integer(self.marginal_steps, name="marginal_steps")
         if steps > 2 * self.geometry.total_rows:
             raise ValueError("marginal_steps exceeds two steps per state row")
+        if self.method_id == STATIC_Q48_COMPARATOR_METHOD:
+            raise ValueError("reserved static Q48 method cannot identify a Q468 policy")
         frozen_steps = {
             STATIC_Q468_PRIMARY_METHOD: FROZEN_STATIC_Q468_PRIMARY_STEPS,
             STATIC_Q468_ABLATION_METHOD: FROZEN_STATIC_Q468_ABLATION_STEPS,
@@ -1167,6 +1169,11 @@ class StaticRhtQ48Policy:
         promotions = _validate_integer(self.promoted_rows, name="promoted_rows")
         if promotions > self.geometry.total_rows:
             raise ValueError("promoted_rows exceeds the number of state rows")
+        if self.method_id in {
+            STATIC_Q468_PRIMARY_METHOD,
+            STATIC_Q468_ABLATION_METHOD,
+        }:
+            raise ValueError("reserved static Q468 method cannot identify a Q48 policy")
         if self.method_id == STATIC_Q48_COMPARATOR_METHOD:
             if self.geometry != FROZEN_QWEN35_STATIC_Q468_GEOMETRY:
                 raise ValueError("reserved static Q48 method requires the frozen geometry")

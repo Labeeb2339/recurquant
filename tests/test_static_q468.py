@@ -414,6 +414,9 @@ def test_q48_policy_rejects_unsupported_runtime_contracts(
     with pytest.raises(ValueError, match="frozen geometry"):
         replace(_tiny_q48_policy(), method_id=STATIC_Q48_COMPARATOR_METHOD)
 
+    with pytest.raises(ValueError, match="Q468 method cannot identify a Q48 policy"):
+        replace(_tiny_q48_policy(), method_id=STATIC_Q468_PRIMARY_METHOD)
+
 
 @pytest.mark.parametrize(
     ("field", "value", "message"),
@@ -455,6 +458,9 @@ def test_q468_policy_rejects_unsupported_runtime_contracts(
 
     with pytest.raises(ValueError, match="frozen geometry"):
         replace(_tiny_policy(), method_id=STATIC_Q468_PRIMARY_METHOD)
+
+    with pytest.raises(ValueError, match="Q48 method cannot identify a Q468 policy"):
+        replace(_tiny_policy(), method_id=STATIC_Q48_COMPARATOR_METHOD)
 
 
 def test_pool_offsets_are_canonical_prefix_indices_within_each_pool() -> None:
