@@ -278,9 +278,18 @@ held-out, general-advantage, or breakthrough result.
 The [full Stage-A record](evidence/experiment012-statelease-stage-a-666.json)
 is committed with file SHA-256
 `1e92b0bea176154496c7d5e45013bf051ef3f388352c1267d86910f81844fd22`.
-After installing the current source tree, run
-`recurquant verify-statelease-stage-a evidence/experiment012-statelease-stage-a-666.json`
-to recompute its metrics, storage contracts, and eight gate decisions offline.
+The verifier was added after `v0.2.0a1` and is not included in that release
+tag. Install the current `main` branch in a separate checkout, then run it:
+
+```bash
+git clone --branch main --depth 1 https://github.com/Labeeb2339/recurquant.git recurquant-statelease
+cd recurquant-statelease
+python -m pip install .
+recurquant verify-statelease-stage-a evidence/experiment012-statelease-stage-a-666.json
+```
+
+This recomputes the metrics, storage contracts, and eight gate decisions
+offline.
 See the [result note](research/EXPERIMENT_012_STAGE_A_RESULT.md) for the complete
 method table, storage breakdown, gate outcomes, and claim boundary.
 
