@@ -1,6 +1,6 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: frozen before Experiment 013 identity resolution, policy fitting,
+> **Status: amended and frozen before Experiment 013 identity resolution, policy fitting,
 > protected-set access, model-weight loading, or quality measurement.**
 >
 > Upstream revisions are frozen below. Canonical row identities, token spans,
@@ -9,6 +9,12 @@
 > identity candidate is not authorization to load model weights.
 
 Protocol frozen: 2026-08-02
+
+Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
+cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
+artifact-file hashes, and replaces an invalid first-output-only RULER target
+with the complete task-aware serialization below. No model weights or quality
+results had been opened.
 
 ## Question
 
@@ -163,11 +169,11 @@ segment_stop = segment_start + 2304
 
 No tokenizer special tokens are added. The same URL identity and eligibility
 rule applies to validation, except eligibility requires at least 4,224 tokens
-for the frozen 4,096-token prefill and 128 scored tokens. For an accepted
+for the frozen 4,096-token prefill and 128 continuation tokens. For an accepted
 validation book, replace `2304` by `4224` in the equation above and use the
 independent namespace
 `recurquant.experiment013.pg19.validation-segment.v1\0`; the first 4,096
-tokens of that slice are prefill and the last 128 are scored. HumanEval+ uses
+tokens of that slice are prefill and the last 128 are the continuation. HumanEval+ uses
 the exact `task_id` field. RULER uses the complete domain-separated
 configuration identity that the later generator amendment must freeze.
 
@@ -207,6 +213,19 @@ official generators reserve answer tokens and may emit a shorter tokenized
 sequence. Identity records therefore bind `configured_length`, actual
 `sequence_length`, prompt/scored half-open spans, and the generator's own
 length receipt separately. Anchors use the actual processed token count only.
+
+The pinned upstream `prepare.py` constructs its child command as a multiline
+shell string. On Windows, an initial compatibility smoke test returned exit
+zero but emitted only a truncated 155-token row with no generated context or
+question. That row is rejected and is not evidence. Experiment 013 launcher v2
+invokes the pinned task generator directly with a no-shell argument vector.
+Every receipt must authenticate the RULER commit and source blobs, the exact
+launcher source,
+the isolated Python/package manifest, all tokenizer assets, all auxiliary
+corpora, NLTK Punkt, and all Wonderwords noun, adjective, and verb lists. It
+must also contain exactly one generated row, the frozen task markers, the
+configuration's required output cardinality, and every required NIAH answer in
+the prompt. A partial generation batch is not promotable.
 
 Within each broad calibration family, and separately within each of RULER's
 four official categories, SHA-rank canonical sequence IDs and alternate even
@@ -286,17 +305,52 @@ creates the identity that must be committed before model weights are loaded.
 Stage-B and Stage-C content is protected and requires separate authorization;
 ordinary resolver tests and dry runs must not read it.
 
+Stage-A resolution additionally consumes one strictly decoded
+`experiment-013-stage-a-calibration-binding-v2` artifact. The resolved Stage-A
+identity binds these five dependency files directly, not merely semantic IDs
+copied from a caller:
+
+```text
+calibration_identity_file_sha256
+calibration_score_artifact_file_sha256
+split_half_stability_artifact_file_sha256
+static_k27030_policy_file_sha256
+static_k29334_policy_file_sha256
+```
+
+Changing any byte in any dependency requires a new binding artifact and a new
+Stage-A identity candidate.
+
 ### Stage A: multi-workload falsification
 
 Stage A contains exactly 12 examples:
 
 - the first four SHA-ranked eligible PG19 validation books, each using 4,096
-  prefill tokens followed by 128 scored tokens;
+  prefill tokens followed by 128 continuation tokens, of which 127 predictions
+  are exposed to the committed quantized cache;
 - four RULER category representatives at configured length 4,096 and seed
-  2,339: `niah_multiquery`, `vt`, `fwe`, and `qa_1`, scoring only each
-  identity-bound official answer span; and
-- the first four SHA-ranked HumanEval+ canonical IDs, scoring at most the first
+  2,339: `niah_multiquery`, `vt`, `fwe`, and `qa_1`, using each
+  identity-bound teacher-forced target derived from the official references;
+  and
+- the first four SHA-ranked HumanEval+ canonical IDs, using at most the first
   128 canonical-solution tokens after the identity-bound prompt.
+
+Every continuation is evaluated through one-token forwards. The prefill's last
+logit predicts continuation token zero before the candidate checkpoint is
+committed, so that unaffected prompt-to-first-token prediction is excluded.
+For a continuation of `m` tokens, the metric covers exactly the `m - 1`
+cache-exposed transitions from continuation token `i` to token `i + 1`.
+Identities bind the complete continuation span and this narrower half-open
+cache-exposed metric span separately; `m < 2` fails closed.
+
+RULER's `outputs` field has two different meanings. Retrieval, variable
+tracing, and aggregation list multiple required answer atoms; their Stage-A
+target is every atom in source order joined by the exact separator `", "`.
+Question-answering rows list alternative acceptable references; their target
+is the first pinned alternative in source order. The receipt binds the complete
+official output array in both cases. This is a deterministic teacher-forced NLL
+target for this adoption study, not a claim that comma-space joining is
+RULER's official generation metric.
 
 The exact canonical IDs, configurations, source revisions, formatter hashes,
 content hashes, prompt-token hashes, target-token hashes, and half-open token
@@ -348,8 +402,9 @@ through a pre-result identity amendment with its exact implementation and byte
 accounting; an incompatible or unavailable comparator is documented rather
 than imitated under its name.
 
-Primary quality is task-macro aligned excess next-token NLL relative to the
-matched FP32 trajectory. Report task-macro and token-micro excess NLL, mean and
+Primary quality is task-macro aligned excess next-token NLL over only the
+identity-bound cache-exposed transitions relative to the matched FP32
+trajectory. Report task-macro and token-micro excess NLL, mean and
 tail KL, top-1 agreement, local codec SSE, trajectory error, result by workload
 family, resident bytes, transient bytes, peak HBM, and latency. Statistical
 intervals are paired task bootstraps with 10,000 resamples and seed 2,339.

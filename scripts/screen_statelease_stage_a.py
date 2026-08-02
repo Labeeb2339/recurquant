@@ -402,6 +402,8 @@ SOURCE_FILES = (
     "src/recurquant/row_policy.py",
     "src/recurquant/signals.py",
     "src/recurquant/static_q468.py",
+    "src/recurquant/static_q468_cache.py",
+    "src/recurquant/static_q468_calibration.py",
     "src/recurquant/statelease.py",
     "src/recurquant/statelease_artifact.py",
     "src/recurquant/statelease_baselines.py",
