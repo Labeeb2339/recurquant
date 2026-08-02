@@ -116,7 +116,7 @@ Policy fitting uses only these calibration sources:
 
 1. the existing frozen public-evaluation v0.2 MBPP calibration population of
    128 tasks;
-2. 16 SHA-ranked eligible PG19 training books, with one non-overlapping
+2. 16 SHA-ranked eligible PG19 training books, with one deterministic
    2,304-token segment from each book; and
 3. the four official NVIDIA RULER task families at lengths 2,048 and 4,096,
    with generator seeds 12,339 and 12,340.
@@ -140,6 +140,26 @@ recurquant.experiment013.pg19.test.v1\0
 recurquant.experiment013.humaneval-plus.stage-a-b.v1\0
 recurquant.experiment013.humaneval-plus.stage-c.v1\0
 ```
+
+The canonical PG19 ID is the exact UTF-8 `url` field; the pinned PG19 schema
+does not contain a `book_id` field. A training book is eligible when the pinned
+tokenizer produces at least 2,304 tokens. Rank all 13,684 training URLs before
+opening text, then inspect them in that fixed order only until 16 eligible
+books have been accepted. For an accepted book with `N` tokens, define
+
+```text
+M = N - 2304
+u = unsigned big-endian integer from the first 8 bytes of
+    SHA256("recurquant.experiment013.pg19.segment.v1\0" || UTF8(url))
+segment_start = u mod (M + 1)
+segment_stop = segment_start + 2304
+```
+
+No tokenizer special tokens are added. The same URL identity and eligibility
+rule applies to validation, except eligibility requires at least 4,224 tokens
+for the frozen 4,096-token prefill and 128 scored tokens. HumanEval+ uses the
+exact `task_id` field. RULER uses the complete domain-separated configuration
+identity that the later generator amendment must freeze.
 
 Within each broad calibration family, and separately within each of RULER's
 four official subfamilies, SHA-rank canonical sequence IDs and alternate even
@@ -201,9 +221,12 @@ changed under Experiment 013.
 Before any Stage-A quality result is opened, independently fit K29334 maps on
 split halves A and B. All three gates are conjunctive:
 
-1. split-half Spearman rank correlation is at least `0.70`;
+1. Spearman rank correlation between the two flattened K29334 precision-code
+   vectors is at least `0.70`, using average ranks for tied codes; a constant
+   vector is undefined and fails closed;
 2. Q8-set Jaccard similarity is at least `0.50`; and
-3. every recurrent layer's absolute mean-code shift is at most `0.25` bits.
+3. every recurrent layer's absolute mean assigned-bitwidth shift is at most
+   `0.25` bits, where codes zero, one, and two map to 4, 6, and 8 bits.
 
 Failure stops the static candidate. The map may not be stabilized by changing
 the data, metric, seed, threshold, or aggregation after the failure is known.

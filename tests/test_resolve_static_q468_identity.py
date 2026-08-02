@@ -46,7 +46,7 @@ def _datasets() -> list[dict[str, Any]]:
             "config": "default",
             "revision": REVISIONS["pg19"],
             "split": "validation",
-            "canonical_id_field": "book_id",
+            "canonical_id_field": "url",
             "canonical_id_manifest_sha256": _hash("pg19-id-manifest"),
             "formatter_id": "recurquant.pg19.contiguous.v1",
             "formatter_sha256": _hash("pg19-formatter"),
@@ -258,6 +258,12 @@ def test_raw_content_and_unknown_fields_fail_closed() -> None:
         (
             lambda source: source["records"][0].update({"selection_sha256": "0" * 64}),
             "selection SHA-256",
+        ),
+        (
+            lambda source: source["datasets"][1].update(
+                {"canonical_id_field": "book_id"}
+            ),
+            "pg19 canonical ID field",
         ),
         (
             lambda source: source.update({"model_weights_loaded": True}),

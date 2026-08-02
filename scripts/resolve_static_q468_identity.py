@@ -59,6 +59,12 @@ FROZEN_DATASET_REVISIONS: Final = {
     "ruler": RULER_REVISION,
     "humaneval_plus": HUMANEVAL_PLUS_REVISION,
 }
+FROZEN_CANONICAL_ID_FIELDS: Final = {
+    "mbpp": "task_id",
+    "pg19": "url",
+    "ruler": "configuration_id",
+    "humaneval_plus": "task_id",
+}
 
 PG19_TRAIN_NAMESPACE: Final = "recurquant.experiment013.pg19.train.v1\0"
 PG19_VALIDATION_NAMESPACE: Final = (
@@ -337,6 +343,11 @@ def _validate_dataset_contracts(
                 context=f"datasets[{index}].formatter_sha256",
             ),
         }
+        if contract["canonical_id_field"] != FROZEN_CANONICAL_ID_FIELDS[key]:
+            raise ValueError(
+                f"{key} canonical ID field must be "
+                f"{FROZEN_CANONICAL_ID_FIELDS[key]!r}"
+            )
         if key == "mbpp" and (
             contract["dataset_id"] != MBPP_DATASET_ID
             or contract["config"] != MBPP_CONFIG
