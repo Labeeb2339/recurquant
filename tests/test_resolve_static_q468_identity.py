@@ -3,8 +3,11 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -13,6 +16,7 @@ SCRIPT_PATH = REPOSITORY_ROOT / "scripts" / "resolve_static_q468_identity.py"
 SPEC = importlib.util.spec_from_file_location("resolve_static_q468_identity", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
 resolver = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = resolver
 SPEC.loader.exec_module(resolver)
 
 REVISIONS = {
@@ -20,6 +24,14 @@ REVISIONS = {
     "pg19": resolver.PG19_REVISION,
     "ruler": resolver.RULER_REVISION,
     "humaneval_plus": resolver.HUMANEVAL_PLUS_REVISION,
+}
+FIXTURE_BINDING_ARTIFACT = b"verified-stage-a-binding-fixture"
+FIXTURE_BINDING = {
+    "calibration_identity_file_sha256": resolver.sha256_bytes(b"calibration-file"),
+    "calibration_score_artifact_file_sha256": resolver.sha256_bytes(b"calibration-scores"),
+    "split_half_stability_artifact_file_sha256": resolver.sha256_bytes(b"split-half"),
+    "static_k27030_policy_file_sha256": resolver.sha256_bytes(b"k27030-policy"),
+    "static_k29334_policy_file_sha256": resolver.sha256_bytes(b"k29334-policy"),
 }
 
 
@@ -117,7 +129,16 @@ def _record(
         "humaneval_plus": resolver.HUMANEVAL_AB_NAMESPACE,
     }[family]
     label = f"{family}-{canonical_id}-{config}-{seed}-{sequence_length}"
-    return {
+    sequence_hash = _hash(f"sequence-tokens-{label}")
+    token_span = {
+        "prefill_start": 0,
+        "prefill_stop": prefill_stop,
+        "scored_start": prefill_stop,
+        "scored_stop": scored_stop,
+        "cache_exposed_start": prefill_stop + 1,
+        "cache_exposed_stop": scored_stop,
+    }
+    record = {
         "family": family,
         "canonical_id": canonical_id,
         "config": config,
@@ -134,15 +155,28 @@ def _record(
         "formatted_content_sha256": _hash(f"formatted-{label}"),
         "prompt_token_ids_sha256": _hash(f"prompt-tokens-{label}"),
         "target_token_ids_sha256": _hash(f"target-tokens-{label}"),
+        "sequence_token_ids_sha256": sequence_hash,
         "tokenizer_manifest_sha256": _tokenizer_manifest_hash(),
-        "token_span": {
-            "prefill_start": 0,
-            "prefill_stop": prefill_stop,
-            "scored_start": prefill_stop,
-            "scored_stop": scored_stop,
-        },
-        "anchor_manifest_sha256": _hash(f"anchors-{label}"),
+        "token_span": token_span,
+        "anchor_manifest_sha256": resolver.identity_anchor_manifest_sha256(
+            canonical_id=canonical_id,
+            sequence_length=sequence_length,
+            sequence_token_ids_sha256_value=sequence_hash,
+            token_span=token_span,
+        ),
     }
+    record["identity_record_sha256"] = resolver.identity_record_sha256(record)
+    return record
+
+
+def _refresh_record_lineage(record: dict[str, Any]) -> None:
+    record["anchor_manifest_sha256"] = resolver.identity_anchor_manifest_sha256(
+        canonical_id=record["canonical_id"],
+        sequence_length=record["sequence_length"],
+        sequence_token_ids_sha256_value=record["sequence_token_ids_sha256"],
+        token_span=record["token_span"],
+    )
+    record["identity_record_sha256"] = resolver.identity_record_sha256(record)
 
 
 def _stage_a_source() -> dict[str, Any]:
@@ -201,6 +235,7 @@ def _stage_a_source() -> dict[str, Any]:
         )
         for rank, row in enumerate(ranked):
             row["selection_rank"] = rank
+            _refresh_record_lineage(row)
     return {
         "schema": resolver.INPUT_SCHEMA,
         "phase": "stage_a",
@@ -208,14 +243,24 @@ def _stage_a_source() -> dict[str, Any]:
         "tokenizer": _tokenizer(),
         "records": list(reversed(records)),
         "model_weights_loaded": False,
-        "calibration_binding": {
-            "identity_file_sha256": _hash("calibration-file"),
-            "canonical_identity_sha256": _hash("calibration-identity"),
-            "static_k29334_code_map_sha256": _hash("k29334"),
-            "static_k27030_code_map_sha256": _hash("k27030"),
-            "split_half_policy_manifest_sha256": _hash("split-half-policies"),
-        },
+        "calibration_binding": dict(FIXTURE_BINDING),
     }
+
+
+def _build_candidate(source: dict[str, Any]) -> dict[str, Any]:
+    if source.get("phase") != "stage_a":
+        return resolver.build_candidate(source, expected_revisions=REVISIONS)
+    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    with patch.object(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        return_value=verified,
+    ):
+        return resolver.build_candidate(
+            source,
+            expected_revisions=REVISIONS,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -225,8 +270,8 @@ def _write_json(path: Path, value: object) -> None:
 
 def test_stage_a_candidate_is_deterministic_and_complete() -> None:
     source = _stage_a_source()
-    first = resolver.build_candidate(source, expected_revisions=REVISIONS)
-    second = resolver.build_candidate(copy.deepcopy(source), expected_revisions=REVISIONS)
+    first = _build_candidate(source)
+    second = _build_candidate(copy.deepcopy(source))
 
     assert first == second
     resolver.validate_candidate_artifact(first)
@@ -249,12 +294,22 @@ def test_stage_a_candidate_is_deterministic_and_complete() -> None:
     )
 
 
+def test_stage_a_candidate_requires_and_matches_a_verified_binding_artifact() -> None:
+    source = _stage_a_source()
+    with pytest.raises(ValueError, match="requires a verified calibration binding"):
+        resolver.build_candidate(source, expected_revisions=REVISIONS)
+
+    source["calibration_binding"]["static_k29334_policy_file_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="differs from the verified artifact"):
+        _build_candidate(source)
+
+
 def test_raw_content_and_unknown_fields_fail_closed() -> None:
     source = _stage_a_source()
     source["records"][0]["prompt"] = "raw protected text"
 
     with pytest.raises(ValueError, match="fields drifted"):
-        resolver.build_candidate(source, expected_revisions=REVISIONS)
+        _build_candidate(source)
 
 
 @pytest.mark.parametrize(
@@ -265,9 +320,7 @@ def test_raw_content_and_unknown_fields_fail_closed() -> None:
             "tokenizer revision",
         ),
         (
-            lambda source: source["records"][0].update(
-                {"tokenizer_manifest_sha256": "0" * 64}
-            ),
+            lambda source: source["records"][0].update({"tokenizer_manifest_sha256": "0" * 64}),
             "tokenizer manifest binding",
         ),
         (
@@ -275,9 +328,7 @@ def test_raw_content_and_unknown_fields_fail_closed() -> None:
             "selection SHA-256",
         ),
         (
-            lambda source: source["datasets"][1].update(
-                {"canonical_id_field": "book_id"}
-            ),
+            lambda source: source["datasets"][1].update({"canonical_id_field": "book_id"}),
             "pg19 canonical ID field",
         ),
         (
@@ -285,10 +336,14 @@ def test_raw_content_and_unknown_fields_fail_closed() -> None:
             "before model weights",
         ),
         (
-            lambda source: source["records"][0]["token_span"].update(
-                {"scored_start": 4_095}
-            ),
+            lambda source: source["records"][0]["token_span"].update({"scored_start": 4_095}),
             "contiguous",
+        ),
+        (
+            lambda source: source["records"][0]["token_span"].update(
+                {"cache_exposed_start": source["records"][0]["token_span"]["scored_start"]}
+            ),
+            "exclude the first continuation token",
         ),
     ],
 )
@@ -297,7 +352,7 @@ def test_identity_contract_drift_fails_closed(mutation: Any, message: str) -> No
     mutation(source)
 
     with pytest.raises(ValueError, match=message):
-        resolver.build_candidate(source, expected_revisions=REVISIONS)
+        _build_candidate(source)
 
 
 def test_dataset_revision_must_match_explicit_cli_contract() -> None:
@@ -305,7 +360,7 @@ def test_dataset_revision_must_match_explicit_cli_contract() -> None:
     source["datasets"][1]["revision"] = "9" * 40
 
     with pytest.raises(ValueError, match="does not match the CLI contract"):
-        resolver.build_candidate(source, expected_revisions=REVISIONS)
+        _build_candidate(source)
 
 
 def test_ruler_category_config_and_actual_length_are_independently_bound() -> None:
@@ -313,57 +368,117 @@ def test_ruler_category_config_and_actual_length_are_independently_bound() -> No
     ruler = next(row for row in source["records"] if row["family"] == "ruler")
     ruler["ruler_category"] = "aggregation"
     with pytest.raises(ValueError, match="config/category binding"):
-        resolver.build_candidate(source, expected_revisions=REVISIONS)
+        _build_candidate(source)
 
     source = _stage_a_source()
     ruler = next(row for row in source["records"] if row["family"] == "ruler")
     ruler["configured_length"] = 4_095
     with pytest.raises(ValueError, match="exceeds the RULER configured length"):
-        resolver.build_candidate(source, expected_revisions=REVISIONS)
+        _build_candidate(source)
 
     source = _stage_a_source()
     pg19 = next(row for row in source["records"] if row["family"] == "pg19")
     pg19["ruler_category"] = "retrieval"
     with pytest.raises(ValueError, match="non-RULER rows"):
-        resolver.build_candidate(source, expected_revisions=REVISIONS)
+        _build_candidate(source)
+
+
+def test_stage_a_requires_two_continuation_tokens_for_one_cache_prediction() -> None:
+    source = _stage_a_source()
+    row = source["records"][0]
+    stop = row["token_span"]["scored_stop"]
+    row["token_span"].update(
+        {
+            "prefill_stop": stop - 1,
+            "scored_start": stop - 1,
+            "cache_exposed_start": stop,
+            "cache_exposed_stop": stop,
+        }
+    )
+
+    with pytest.raises(ValueError, match="continuation must contain at least two"):
+        _build_candidate(source)
+
+
+def test_calibration_cache_exposure_is_empty_at_continuation_stop() -> None:
+    source = _stage_a_source()
+    row = copy.deepcopy(next(item for item in source["records"] if item["family"] == "pg19"))
+    row["selection_sha256"] = resolver.selection_sha256(
+        resolver.PG19_TRAIN_NAMESPACE, row["canonical_id"]
+    )
+    stop = row["token_span"]["scored_stop"]
+    row["token_span"].update({"cache_exposed_start": stop, "cache_exposed_stop": stop})
+    _refresh_record_lineage(row)
+
+    normalized = resolver._normalize_record(
+        row,
+        index=0,
+        phase="calibration",
+        tokenizer_hash=_tokenizer_manifest_hash(),
+    )
+    assert normalized["token_span"]["cache_exposed_start"] == stop
+    assert normalized["token_span"]["cache_exposed_stop"] == stop
+
+    row["token_span"]["cache_exposed_start"] = stop - 1
+    with pytest.raises(ValueError, match="calibration cache-exposed prediction span"):
+        resolver._normalize_record(
+            row,
+            index=0,
+            phase="calibration",
+            tokenizer_hash=_tokenizer_manifest_hash(),
+        )
 
 
 def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     source_path = tmp_path / "source.json"
     _write_json(source_path, _stage_a_source())
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
 
-    result = resolver.main(
-        [
-            "--phase",
-            "stage_a",
-            "--input",
-            str(source_path),
-            "--dry-run",
-            "--mbpp-revision",
-            REVISIONS["mbpp"],
-            "--pg19-revision",
-            REVISIONS["pg19"],
-            "--ruler-revision",
-            REVISIONS["ruler"],
-            "--humaneval-plus-revision",
-            REVISIONS["humaneval_plus"],
-        ]
-    )
+    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    with patch.object(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        return_value=verified,
+    ):
+        result = resolver.main(
+            [
+                "--phase",
+                "stage_a",
+                "--input",
+                str(source_path),
+                "--calibration-binding",
+                str(binding_path),
+                "--dry-run",
+                "--mbpp-revision",
+                REVISIONS["mbpp"],
+                "--pg19-revision",
+                REVISIONS["pg19"],
+                "--ruler-revision",
+                REVISIONS["ruler"],
+                "--humaneval-plus-revision",
+                REVISIONS["humaneval_plus"],
+            ]
+        )
 
     assert result == 0
     assert len(capsys.readouterr().out.strip()) == 64
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["source.json"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["binding.json", "source.json"]
 
 
 def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path) -> None:
     source_path = tmp_path / "source.json"
     _write_json(source_path, _stage_a_source())
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
     candidate_path = tmp_path / ".quarantine" / "stage-a-candidate.json"
     base_args = [
         "--phase",
         "stage_a",
         "--input",
         str(source_path),
+        "--calibration-binding",
+        str(binding_path),
         "--mbpp-revision",
         REVISIONS["mbpp"],
         "--pg19-revision",
@@ -374,10 +489,177 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
         REVISIONS["humaneval_plus"],
     ]
 
-    assert resolver.main([*base_args, "--output", str(candidate_path)]) == 0
-    candidate_hash = resolver.sha256_bytes(candidate_path.read_bytes())
-    frozen_path = tmp_path / "frozen" / "stage-a-identity.json"
-    assert (
+    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    with patch.object(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        return_value=verified,
+    ):
+        assert resolver.main([*base_args, "--output", str(candidate_path)]) == 0
+        candidate_hash = resolver.sha256_bytes(candidate_path.read_bytes())
+        frozen_path = tmp_path / "frozen" / "stage-a-identity.json"
+        assert (
+            resolver.main(
+                [
+                    "--phase",
+                    "stage_a",
+                    "--input",
+                    str(candidate_path),
+                    "--output",
+                    str(frozen_path),
+                    "--promote",
+                    "--calibration-binding",
+                    str(binding_path),
+                    "--expected-candidate-sha256",
+                    candidate_hash,
+                ]
+            )
+            == 0
+        )
+    frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+    assert frozen["evidence"]["status"] == "frozen"
+    assert frozen["evidence"]["promotion"]["candidate_file_sha256"] == candidate_hash
+    assert frozen["evidence"]["model_contracts"]["weights_loaded"] is False
+
+
+def test_stage_a_promotion_requires_the_verified_binding_artifact() -> None:
+    candidate = _build_candidate(_stage_a_source())
+    candidate_hash = resolver.sha256_bytes(resolver.canonical_json_bytes(candidate))
+
+    with pytest.raises(ValueError, match="promotion requires a verified calibration binding"):
+        resolver.promote_candidate(candidate, candidate_file_sha256=candidate_hash)
+
+    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    with patch.object(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        return_value=verified,
+    ):
+        frozen = resolver.promote_candidate(
+            candidate,
+            candidate_file_sha256=candidate_hash,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+    assert frozen["evidence"]["status"] == "frozen"
+
+
+def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() -> None:
+    candidate = _build_candidate(_stage_a_source())
+    candidate_hash = resolver.sha256_bytes(resolver.canonical_json_bytes(candidate))
+    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    with patch.object(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        return_value=verified,
+    ):
+        frozen = resolver.promote_candidate(
+            candidate,
+            candidate_file_sha256=candidate_hash,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+        frozen_bytes = resolver.canonical_json_bytes(frozen)
+        decoded = resolver.deserialize_frozen_stage_a_identity_artifact(
+            frozen_bytes,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+    assert decoded.file_sha256 == resolver.sha256_bytes(frozen_bytes)
+    assert len(decoded.records) == 12
+    assert decoded.calibration_binding == FIXTURE_BINDING
+
+    tampered = copy.deepcopy(frozen)
+    tampered["evidence"]["records"][0]["source_content_sha256"] = "0" * 64
+    tampered["canonical_evidence_sha256"] = resolver.sha256_bytes(
+        resolver.canonical_json_bytes(tampered["evidence"])
+    )
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        pytest.raises(ValueError, match="identity record SHA-256 drifted"),
+    ):
+        resolver.deserialize_frozen_stage_a_identity_artifact(
+            resolver.canonical_json_bytes(tampered),
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+    wrong_binding = dict(FIXTURE_BINDING)
+    wrong_binding["static_k29334_policy_file_sha256"] = "0" * 64
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=SimpleNamespace(binding=wrong_binding),
+        ),
+        pytest.raises(ValueError, match="differs from the verified calibration binding"),
+    ):
+        resolver.deserialize_frozen_stage_a_identity_artifact(
+            frozen_bytes,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+    tampered = copy.deepcopy(frozen)
+    tampered["evidence"]["promotion"]["candidate_file_sha256"] = "0" * 64
+    tampered["canonical_evidence_sha256"] = resolver.sha256_bytes(
+        resolver.canonical_json_bytes(tampered["evidence"])
+    )
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        pytest.raises(ValueError, match="candidate file SHA-256 drifted"),
+    ):
+        resolver.deserialize_frozen_stage_a_identity_artifact(
+            resolver.canonical_json_bytes(tampered),
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+
+def test_handcrafted_incomplete_candidate_cannot_be_promoted() -> None:
+    evidence = {
+        "identity_schema": resolver.CANDIDATE_SCHEMA,
+        "status": "candidate",
+        "phase": "stage_a",
+        "identity_only": True,
+        "claim_boundary": resolver.CLAIM_BOUNDARY,
+        "promotion_required": True,
+        "model_contracts": {"weights_loaded": False},
+        "records": [],
+        "record_count": 0,
+        "content_manifest_sha256": resolver.sha256_bytes(resolver.canonical_json_bytes([])),
+        "protected_identity": {
+            "stage_b_read": False,
+            "stage_c_read": False,
+            "ordinary_tests_may_read_protected_content": False,
+        },
+    }
+    candidate = {
+        "canonical_evidence_sha256": resolver.sha256_bytes(resolver.canonical_json_bytes(evidence)),
+        "evidence": evidence,
+    }
+
+    with pytest.raises(ValueError, match="candidate evidence fields drifted"):
+        resolver.promote_candidate(
+            candidate,
+            candidate_file_sha256=resolver.sha256_bytes(resolver.canonical_json_bytes(candidate)),
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+
+def test_noncanonical_candidate_bytes_cannot_be_promoted(tmp_path: Path) -> None:
+    candidate = _build_candidate(_stage_a_source())
+    candidate_path = tmp_path / ".quarantine" / "candidate.json"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_text(json.dumps(candidate, indent=2), encoding="utf-8")
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
+
+    with pytest.raises(ValueError, match="not canonical resolver JSON"):
         resolver.main(
             [
                 "--phase",
@@ -385,24 +667,49 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
                 "--input",
                 str(candidate_path),
                 "--output",
-                str(frozen_path),
+                str(tmp_path / "frozen" / "identity.json"),
                 "--promote",
+                "--calibration-binding",
+                str(binding_path),
                 "--expected-candidate-sha256",
-                candidate_hash,
+                resolver.sha256_bytes(candidate_path.read_bytes()),
             ]
         )
-        == 0
-    )
-    frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
-    assert frozen["evidence"]["status"] == "frozen"
-    assert frozen["evidence"]["promotion"]["candidate_file_sha256"] == candidate_hash
-    assert frozen["evidence"]["model_contracts"]["weights_loaded"] is False
+
+
+def test_atomic_identity_publish_cannot_overwrite_an_existing_or_racing_file(
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / "existing.json"
+    existing.write_bytes(b"existing")
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        resolver.atomic_write(existing, b"replacement")
+    assert existing.read_bytes() == b"existing"
+
+    racing = tmp_path / "racing.json"
+
+    def create_racing_destination(_source: object, destination: object) -> None:
+        Path(destination).write_bytes(b"racer")
+        raise FileExistsError
+
+    with (
+        patch.object(resolver.os, "link", side_effect=create_racing_destination),
+        pytest.raises(
+            FileExistsError,
+            match="refusing to overwrite",
+        ),
+    ):
+        resolver.atomic_write(racing, b"candidate")
+    assert racing.read_bytes() == b"racer"
+    assert list(tmp_path.glob(".*.tmp")) == []
 
 
 def test_candidate_wrong_hash_cannot_be_promoted(tmp_path: Path) -> None:
-    candidate = resolver.build_candidate(_stage_a_source(), expected_revisions=REVISIONS)
+    candidate = _build_candidate(_stage_a_source())
     candidate_path = tmp_path / ".quarantine" / "candidate.json"
     _write_json(candidate_path, candidate)
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
 
     with pytest.raises(ValueError, match="does not match explicit promotion hash"):
         resolver.main(
@@ -414,6 +721,8 @@ def test_candidate_wrong_hash_cannot_be_promoted(tmp_path: Path) -> None:
                 "--output",
                 str(tmp_path / "frozen" / "identity.json"),
                 "--promote",
+                "--calibration-binding",
+                str(binding_path),
                 "--expected-candidate-sha256",
                 "0" * 64,
             ]
@@ -429,7 +738,7 @@ def test_protected_phase_is_rejected_before_input_read(tmp_path: Path, phase: st
 
 
 def test_candidate_tampering_is_detected() -> None:
-    candidate = resolver.build_candidate(_stage_a_source(), expected_revisions=REVISIONS)
+    candidate = _build_candidate(_stage_a_source())
     candidate["evidence"]["records"][0]["source_content_sha256"] = "0" * 64
 
     with pytest.raises(ValueError, match="canonical evidence SHA-256"):
