@@ -108,10 +108,12 @@ def _record(
     sequence_length: int,
     prefill_stop: int,
     scored_stop: int,
+    configured_length: int | None = None,
+    ruler_category: str | None = None,
 ) -> dict[str, Any]:
     namespace = {
         "pg19": resolver.PG19_VALIDATION_NAMESPACE,
-        "ruler": resolver.CALIBRATION_SPLIT_NAMESPACE,
+        "ruler": resolver.RULER_STAGE_A_SELECTION_NAMESPACE,
         "humaneval_plus": resolver.HUMANEVAL_AB_NAMESPACE,
     }[family]
     label = f"{family}-{canonical_id}-{config}-{seed}-{sequence_length}"
@@ -122,7 +124,12 @@ def _record(
         "selection_rank": rank,
         "selection_sha256": resolver.selection_sha256(namespace, canonical_id),
         "seed": seed,
+        "configured_length": configured_length,
         "sequence_length": sequence_length,
+        "ruler_category": ruler_category,
+        "generator_receipt_sha256": (
+            _hash(f"generator-receipt-{label}") if family == "ruler" else None
+        ),
         "source_content_sha256": _hash(f"source-{label}"),
         "formatted_content_sha256": _hash(f"formatted-{label}"),
         "prompt_token_ids_sha256": _hash(f"prompt-tokens-{label}"),
@@ -153,17 +160,25 @@ def _stage_a_source() -> dict[str, Any]:
                 scored_stop=4_224,
             )
         )
-    for rank, family in enumerate(("niah_single_1", "niah_multikey_1", "vt", "cwe")):
+    ruler_rows = (
+        ("retrieval", "niah_multiquery"),
+        ("multi_hop_tracing", "vt"),
+        ("aggregation", "fwe"),
+        ("question_answering", "qa_1"),
+    )
+    for rank, (category, config) in enumerate(ruler_rows):
         records.append(
             _record(
                 family="ruler",
-                canonical_id=f"{family}-4096-2339",
-                config=family,
+                canonical_id=f"{config}-4096-2339",
+                config=config,
                 rank=rank,
                 seed=2_339,
                 sequence_length=4_096,
-                prefill_stop=4_096,
-                scored_stop=4_100,
+                prefill_stop=4_092,
+                scored_stop=4_096,
+                configured_length=4_096,
+                ruler_category=category,
             )
         )
     for rank in range(4):
@@ -179,7 +194,7 @@ def _stage_a_source() -> dict[str, Any]:
                 scored_stop=160 + rank,
             )
         )
-    for selected_family in ("pg19", "humaneval_plus"):
+    for selected_family in ("pg19", "ruler", "humaneval_plus"):
         ranked = sorted(
             (row for row in records if row["family"] == selected_family),
             key=lambda row: (row["selection_sha256"], row["canonical_id"]),
@@ -290,6 +305,26 @@ def test_dataset_revision_must_match_explicit_cli_contract() -> None:
     source["datasets"][1]["revision"] = "9" * 40
 
     with pytest.raises(ValueError, match="does not match the CLI contract"):
+        resolver.build_candidate(source, expected_revisions=REVISIONS)
+
+
+def test_ruler_category_config_and_actual_length_are_independently_bound() -> None:
+    source = _stage_a_source()
+    ruler = next(row for row in source["records"] if row["family"] == "ruler")
+    ruler["ruler_category"] = "aggregation"
+    with pytest.raises(ValueError, match="config/category binding"):
+        resolver.build_candidate(source, expected_revisions=REVISIONS)
+
+    source = _stage_a_source()
+    ruler = next(row for row in source["records"] if row["family"] == "ruler")
+    ruler["configured_length"] = 4_095
+    with pytest.raises(ValueError, match="exceeds the RULER configured length"):
+        resolver.build_candidate(source, expected_revisions=REVISIONS)
+
+    source = _stage_a_source()
+    pg19 = next(row for row in source["records"] if row["family"] == "pg19")
+    pg19["ruler_category"] = "retrieval"
+    with pytest.raises(ValueError, match="non-RULER rows"):
         resolver.build_candidate(source, expected_revisions=REVISIONS)
 
 

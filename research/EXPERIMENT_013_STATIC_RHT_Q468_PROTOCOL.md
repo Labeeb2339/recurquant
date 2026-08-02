@@ -118,8 +118,9 @@ Policy fitting uses only these calibration sources:
    128 tasks;
 2. 16 SHA-ranked eligible PG19 training books, with one deterministic
    2,304-token segment from each book; and
-3. the four official NVIDIA RULER task families at lengths 2,048 and 4,096,
-   with generator seeds 12,339 and 12,340.
+3. four sequences from each of NVIDIA RULER's four official task categories,
+   using configured lengths 2,048 and 4,096 and generator seeds 12,339 and
+   12,340 as frozen below.
 
 Each workload family receives equal weight regardless of its number of tokens
 or examples. Within a family, examples receive equal weight. The exact
@@ -157,12 +158,53 @@ segment_stop = segment_start + 2304
 
 No tokenizer special tokens are added. The same URL identity and eligibility
 rule applies to validation, except eligibility requires at least 4,224 tokens
-for the frozen 4,096-token prefill and 128 scored tokens. HumanEval+ uses the
-exact `task_id` field. RULER uses the complete domain-separated configuration
-identity that the later generator amendment must freeze.
+for the frozen 4,096-token prefill and 128 scored tokens. For an accepted
+validation book, replace `2304` by `4224` in the equation above and use the
+independent namespace
+`recurquant.experiment013.pg19.validation-segment.v1\0`; the first 4,096
+tokens of that slice are prefill and the last 128 are scored. HumanEval+ uses
+the exact `task_id` field. RULER uses the complete domain-separated
+configuration identity that the later generator amendment must freeze.
+
+RULER category and exact configuration are separate identity fields. The
+pinned `scripts/synthetic.yaml` contains these 13 configurations:
+
+| Category | Exact configuration IDs |
+| --- | --- |
+| retrieval | `niah_single_1`, `niah_single_2`, `niah_single_3`, `niah_multikey_1`, `niah_multikey_2`, `niah_multikey_3`, `niah_multivalue`, `niah_multiquery` |
+| multi-hop tracing | `vt` |
+| aggregation | `cwe`, `fwe` |
+| question answering | `qa_1`, `qa_2` |
+
+For calibration, order `(configured_length, seed)` as `(2048,12339)`,
+`(2048,12340)`, `(4096,12339)`, `(4096,12340)`. Within each category, rank
+its exact config IDs by lowercase SHA-256 of
+
+```text
+"recurquant.experiment013.ruler.calibration-config.v1\0" || UTF8(config_id)
+```
+
+and cycle through that ranked list across the four ordered pairs. The resolved
+schedule is:
+
+| Category | Exact configs in pair order |
+| --- | --- |
+| retrieval | `niah_multiquery`, `niah_multikey_2`, `niah_single_1`, `niah_multivalue` |
+| multi-hop tracing | `vt`, `vt`, `vt`, `vt` |
+| aggregation | `fwe`, `cwe`, `fwe`, `cwe` |
+| question answering | `qa_1`, `qa_2`, `qa_1`, `qa_2` |
+
+This is exactly 16 RULER calibration sequences. It is a compute-bounded,
+category-balanced calibration sample, not the RULER evaluation grid.
+
+RULER's configured length is not assumed to equal the actual token count: its
+official generators reserve answer tokens and may emit a shorter tokenized
+sequence. Identity records therefore bind `configured_length`, actual
+`sequence_length`, prompt/scored half-open spans, and the generator's own
+length receipt separately. Anchors use the actual processed token count only.
 
 Within each broad calibration family, and separately within each of RULER's
-four official subfamilies, SHA-rank canonical sequence IDs and alternate even
+four official categories, SHA-rank canonical sequence IDs and alternate even
 and odd ranks into split halves A and B. Recompute the complete equation and
 both exact-K allocations independently on each half. This produces
 deterministic halves without observing a quality result.
@@ -192,8 +234,8 @@ x[e,p,r,b] = EMA_query_energy[e,p,r]
 ```
 
 Mean anchors within each sequence. Mean sequences within MBPP and PG19. For
-RULER, mean sequences within each of its four official families, then mean the
-four family means. The final score is
+RULER, mean sequences within each of its four official categories, then mean
+the four category means. The final score is
 
 ```text
 D_b(r) = (D_MBPP,b(r) + D_PG19,b(r) + D_RULER,b(r)) / 3.
@@ -245,9 +287,9 @@ Stage A contains exactly 12 examples:
 
 - the first four SHA-ranked eligible PG19 validation books, each using 4,096
   prefill tokens followed by 128 scored tokens;
-- one official RULER configuration from each of the four families at length
-  4,096 and seed 2,339, scoring only the identity-bound official answer span;
-  and
+- four RULER category representatives at configured length 4,096 and seed
+  2,339: `niah_multiquery`, `vt`, `fwe`, and `qa_1`, scoring only each
+  identity-bound official answer span; and
 - the first four SHA-ranked HumanEval+ canonical IDs, scoring at most the first
   128 canonical-solution tokens after the identity-bound prompt.
 
@@ -268,7 +310,9 @@ does not reproduce, stop; do not proceed by reframing the oracle as optional.
 Stage B remains closed until Stage A and every identity gate pass. It contains:
 
 - the remaining 28 eligible PG19 validation books after Stage A;
-- the remaining 44 frozen RULER configurations; and
+- the remaining 48 configurations in the complete development grid of all 13
+  exact RULER configs at configured length 4,096 and seeds 2,339 through
+  2,342; and
 - the remaining 28 HumanEval+ tasks under the Stage-A/B ranking domain.
 
 Stage-B identities and token spans are unresolved protected placeholders in
@@ -281,13 +325,14 @@ Stage C remains closed until the complete Stage-B decision is committed. It
 contains:
 
 - 32 SHA-ranked eligible PG19 test books;
-- 48 frozen RULER configurations using seeds 3,339 through 3,342; and
+- all 52 combinations of the 13 exact RULER configs at configured length 4,096
+  and seeds 3,339 through 3,342; and
 - the next 32 HumanEval+ canonical IDs under the separate Stage-C confirmation
   hash domain.
 
-The exact RULER configuration grid, IDs, and token spans remain unresolved
-until a separate protected identity amendment is frozen. Stage C may not be
-partially previewed.
+The generated RULER IDs, auxiliary-source hashes, formatter hashes, actual
+lengths, and token spans remain unresolved until a separate protected identity
+amendment is frozen. Stage C may not be partially previewed.
 
 ## Methods and measurements
 

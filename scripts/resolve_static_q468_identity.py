@@ -80,6 +80,57 @@ HUMANEVAL_C_NAMESPACE: Final = (
 CALIBRATION_SPLIT_NAMESPACE: Final = (
     "recurquant.experiment013.calibration-split.v1\0"
 )
+RULER_CALIBRATION_SELECTION_NAMESPACE: Final = (
+    "recurquant.experiment013.ruler.calibration-sequence.v1\0"
+)
+RULER_STAGE_A_SELECTION_NAMESPACE: Final = (
+    "recurquant.experiment013.ruler.stage-a-sequence.v1\0"
+)
+RULER_CATEGORIES: Final = (
+    "retrieval",
+    "multi_hop_tracing",
+    "aggregation",
+    "question_answering",
+)
+RULER_CONFIG_CATEGORY: Final = {
+    "niah_single_1": "retrieval",
+    "niah_single_2": "retrieval",
+    "niah_single_3": "retrieval",
+    "niah_multikey_1": "retrieval",
+    "niah_multikey_2": "retrieval",
+    "niah_multikey_3": "retrieval",
+    "niah_multivalue": "retrieval",
+    "niah_multiquery": "retrieval",
+    "vt": "multi_hop_tracing",
+    "cwe": "aggregation",
+    "fwe": "aggregation",
+    "qa_1": "question_answering",
+    "qa_2": "question_answering",
+}
+RULER_CALIBRATION_SCHEDULE: Final = (
+    ("retrieval", "niah_multiquery", 2_048, 12_339),
+    ("retrieval", "niah_multikey_2", 2_048, 12_340),
+    ("retrieval", "niah_single_1", 4_096, 12_339),
+    ("retrieval", "niah_multivalue", 4_096, 12_340),
+    ("multi_hop_tracing", "vt", 2_048, 12_339),
+    ("multi_hop_tracing", "vt", 2_048, 12_340),
+    ("multi_hop_tracing", "vt", 4_096, 12_339),
+    ("multi_hop_tracing", "vt", 4_096, 12_340),
+    ("aggregation", "fwe", 2_048, 12_339),
+    ("aggregation", "cwe", 2_048, 12_340),
+    ("aggregation", "fwe", 4_096, 12_339),
+    ("aggregation", "cwe", 4_096, 12_340),
+    ("question_answering", "qa_1", 2_048, 12_339),
+    ("question_answering", "qa_2", 2_048, 12_340),
+    ("question_answering", "qa_1", 4_096, 12_339),
+    ("question_answering", "qa_2", 4_096, 12_340),
+)
+RULER_STAGE_A_SCHEDULE: Final = (
+    ("retrieval", "niah_multiquery", 4_096, 2_339),
+    ("multi_hop_tracing", "vt", 4_096, 2_339),
+    ("aggregation", "fwe", 4_096, 2_339),
+    ("question_answering", "qa_1", 4_096, 2_339),
+)
 
 CLAIM_BOUNDARY: Final = (
     "This artifact freezes Experiment 013 data and tokenizer identity only. "
@@ -115,7 +166,10 @@ RECORD_FIELDS: Final = frozenset(
         "selection_rank",
         "selection_sha256",
         "seed",
+        "configured_length",
         "sequence_length",
+        "ruler_category",
+        "generator_receipt_sha256",
         "source_content_sha256",
         "formatted_content_sha256",
         "prompt_token_ids_sha256",
@@ -234,9 +288,11 @@ def calibration_split_key(record: Mapping[str, Any]) -> str:
     identity = "\0".join(
         (
             str(record["family"]),
+            str(record["ruler_category"]),
             str(record["config"]),
             str(record["canonical_id"]),
             str(record["seed"]),
+            str(record["configured_length"]),
             str(record["sequence_length"]),
         )
     )
@@ -424,12 +480,16 @@ def _selection_namespace(phase: str, family: str) -> str | None:
             return None
         if family == "pg19":
             return PG19_TRAIN_NAMESPACE
+        if family == "ruler":
+            return RULER_CALIBRATION_SELECTION_NAMESPACE
         return CALIBRATION_SPLIT_NAMESPACE
     if phase == "stage_a":
         if family == "pg19":
             return PG19_VALIDATION_NAMESPACE
         if family == "humaneval_plus":
             return HUMANEVAL_AB_NAMESPACE
+        if family == "ruler":
+            return RULER_STAGE_A_SELECTION_NAMESPACE
         return CALIBRATION_SPLIT_NAMESPACE
     raise ValueError(f"unsupported phase: {phase}")
 
@@ -453,6 +513,51 @@ def _normalize_record(
     seed = None if seed_value is None else require_int(
         seed_value, context=f"records[{index}].seed"
     )
+    configured_value = item["configured_length"]
+    configured_length = (
+        None
+        if configured_value is None
+        else require_int(
+            configured_value,
+            context=f"records[{index}].configured_length",
+            minimum=1,
+        )
+    )
+    category_value = item["ruler_category"]
+    ruler_category = (
+        None
+        if category_value is None
+        else require_string(
+            category_value,
+            context=f"records[{index}].ruler_category",
+        )
+    )
+    generator_receipt_value = item["generator_receipt_sha256"]
+    generator_receipt_sha256 = (
+        None
+        if generator_receipt_value is None
+        else require_sha256(
+            generator_receipt_value,
+            context=f"records[{index}].generator_receipt_sha256",
+        )
+    )
+    if family == "ruler":
+        expected_category = RULER_CONFIG_CATEGORY.get(config)
+        if expected_category is None or ruler_category != expected_category:
+            raise ValueError(
+                f"records[{index}] RULER config/category binding drifted"
+            )
+        if configured_length is None or generator_receipt_sha256 is None:
+            raise ValueError(
+                f"records[{index}] RULER configured length and generator receipt are required"
+            )
+    elif any(
+        value is not None
+        for value in (configured_length, ruler_category, generator_receipt_sha256)
+    ):
+        raise ValueError(
+            f"records[{index}] non-RULER rows cannot carry RULER-only fields"
+        )
     sequence_length = require_int(
         item["sequence_length"],
         context=f"records[{index}].sequence_length",
@@ -479,8 +584,13 @@ def _normalize_record(
         or normalized_span["prefill_stop"] != normalized_span["scored_start"]
         or normalized_span["prefill_stop"] < 1
         or normalized_span["scored_stop"] < normalized_span["scored_start"]
+        or normalized_span["scored_stop"] != sequence_length
     ):
         raise ValueError(f"records[{index}] token span is not contiguous and canonical")
+    if configured_length is not None and sequence_length > configured_length:
+        raise ValueError(
+            f"records[{index}] actual sequence exceeds the RULER configured length"
+        )
     positions = anchor_positions(sequence_length)
     return {
         "family": family,
@@ -489,7 +599,10 @@ def _normalize_record(
         "selection_rank": rank,
         "selection_sha256": expected_selection,
         "seed": seed,
+        "configured_length": configured_length,
         "sequence_length": sequence_length,
+        "ruler_category": ruler_category,
+        "generator_receipt_sha256": generator_receipt_sha256,
         "source_content_sha256": require_sha256(
             item["source_content_sha256"],
             context=f"records[{index}].source_content_sha256",
@@ -523,8 +636,12 @@ def _record_sort_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
         int(record["selection_rank"]),
         str(record["selection_sha256"]),
         str(record["canonical_id"]),
+        "" if record["ruler_category"] is None else str(record["ruler_category"]),
         str(record["config"]),
         -1 if record["seed"] is None else int(record["seed"]),
+        -1
+        if record["configured_length"] is None
+        else int(record["configured_length"]),
         int(record["sequence_length"]),
     )
 
@@ -557,25 +674,50 @@ def _validate_calibration_records(records: Sequence[Mapping[str, Any]]) -> None:
             "scored_stop": 2_304,
         }:
             raise ValueError("calibration PG19 span must cover exactly 2,304 tokens")
-    ruler_tuples = {
-        (str(row["config"]), int(row["sequence_length"]), int(row["seed"]))
+    if sorted(int(row["selection_rank"]) for row in grouped["ruler"]) != list(
+        range(16)
+    ):
+        raise ValueError("calibration RULER ranks must be exactly 0..15")
+    _validate_sha_rank_order(grouped["ruler"], context="calibration RULER")
+    actual_ruler_schedule = {
+        (
+            str(row["ruler_category"]),
+            str(row["config"]),
+            int(row["configured_length"]),
+            int(row["seed"]),
+        )
         for row in grouped["ruler"]
     }
-    if len({row["config"] for row in grouped["ruler"]}) != 4 or len(ruler_tuples) != 16:
-        raise ValueError("calibration RULER must contain four unique official families")
-    expected_pairs = {(length, seed) for length in (2_048, 4_096) for seed in (12_339, 12_340)}
-    for config in {str(row["config"]) for row in grouped["ruler"]}:
-        actual_pairs = {
-            (int(row["sequence_length"]), int(row["seed"]))
-            for row in grouped["ruler"]
-            if row["config"] == config
-        }
-        if actual_pairs != expected_pairs:
-            raise ValueError(f"RULER family {config!r} does not have the frozen grid")
+    if actual_ruler_schedule != set(RULER_CALIBRATION_SCHEDULE):
+        raise ValueError("calibration RULER rows differ from the frozen 16-sequence schedule")
+    if {
+        category: sum(row["ruler_category"] == category for row in grouped["ruler"])
+        for category in RULER_CATEGORIES
+    } != {category: 4 for category in RULER_CATEGORIES}:
+        raise ValueError("calibration RULER must contain four sequences per category")
+    for row in grouped["ruler"]:
+        span = row["token_span"]
+        if span != {
+            "prefill_start": 0,
+            "prefill_stop": row["sequence_length"],
+            "scored_start": row["sequence_length"],
+            "scored_stop": row["sequence_length"],
+        }:
+            raise ValueError("calibration RULER must anchor the actual prompt tokens only")
     for row in grouped["mbpp"]:
         if row["seed"] is not None:
             raise ValueError("MBPP calibration records cannot have a generator seed")
-    identities = [(row["family"], row["canonical_id"], row["config"]) for row in records]
+    identities = [
+        (
+            row["family"],
+            row["canonical_id"],
+            row["ruler_category"],
+            row["config"],
+            row["configured_length"],
+            row["seed"],
+        )
+        for row in records
+    ]
     if len(identities) != len(set(identities)):
         raise ValueError("calibration canonical identities are not unique")
 
@@ -603,12 +745,24 @@ def _validate_stage_a_records(records: Sequence[Mapping[str, Any]]) -> None:
             "scored_stop": 4_224,
         }:
             raise ValueError("Stage-A PG19 token span drifted")
-    if len({row["config"] for row in grouped["ruler"]}) != 4:
-        raise ValueError("Stage-A RULER must contain four distinct official families")
+    if sorted(int(row["selection_rank"]) for row in grouped["ruler"]) != list(
+        range(4)
+    ):
+        raise ValueError("Stage-A RULER ranks must be exactly 0..3")
+    _validate_sha_rank_order(grouped["ruler"], context="Stage-A RULER")
+    actual_ruler_schedule = {
+        (
+            str(row["ruler_category"]),
+            str(row["config"]),
+            int(row["configured_length"]),
+            int(row["seed"]),
+        )
+        for row in grouped["ruler"]
+    }
+    if actual_ruler_schedule != set(RULER_STAGE_A_SCHEDULE):
+        raise ValueError("Stage-A RULER rows differ from the frozen category representatives")
     for row in grouped["ruler"]:
         span = row["token_span"]
-        if row["seed"] != 2_339 or row["sequence_length"] != 4_096:
-            raise ValueError("Stage-A RULER must use length 4,096 and seed 2,339")
         if span["scored_stop"] <= span["scored_start"]:
             raise ValueError("Stage-A RULER answer span cannot be empty")
     for row in grouped["humaneval_plus"]:
@@ -618,7 +772,15 @@ def _validate_stage_a_records(records: Sequence[Mapping[str, Any]]) -> None:
             raise ValueError("Stage-A HumanEval+ must score 1..128 solution tokens")
         if row["sequence_length"] != span["scored_stop"]:
             raise ValueError("Stage-A HumanEval+ sequence length must equal span stop")
-    identities = [(row["family"], row["canonical_id"], row["config"]) for row in records]
+    identities = [
+        (
+            row["family"],
+            row["canonical_id"],
+            row["ruler_category"],
+            row["config"],
+        )
+        for row in records
+    ]
     if len(identities) != len(set(identities)):
         raise ValueError("Stage-A canonical identities are not unique")
 
@@ -629,8 +791,13 @@ def _split_half_manifest(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
     groups.append(("mbpp", [row for row in records if row["family"] == "mbpp"]))
     groups.append(("pg19", [row for row in records if row["family"] == "pg19"]))
     ruler_rows = [row for row in records if row["family"] == "ruler"]
-    for config in sorted({str(row["config"]) for row in ruler_rows}):
-        groups.append((f"ruler:{config}", [row for row in ruler_rows if row["config"] == config]))
+    for category in RULER_CATEGORIES:
+        groups.append(
+            (
+                f"ruler:{category}",
+                [row for row in ruler_rows if row["ruler_category"] == category],
+            )
+        )
     for group, rows in groups:
         ranked = sorted(rows, key=lambda row: (calibration_split_key(row), _record_sort_key(row)))
         for rank, row in enumerate(ranked):
@@ -638,7 +805,11 @@ def _split_half_manifest(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
                 {
                     "group": group,
                     "canonical_id": row["canonical_id"],
+                    "ruler_category": row["ruler_category"],
                     "config": row["config"],
+                    "configured_length": row["configured_length"],
+                    "sequence_length": row["sequence_length"],
+                    "seed": row["seed"],
                     "rank": rank,
                     "half": "a" if rank % 2 == 0 else "b",
                     "rank_sha256": calibration_split_key(row),
