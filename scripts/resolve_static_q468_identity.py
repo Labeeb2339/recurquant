@@ -36,7 +36,8 @@ INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
 CANDIDATE_SCHEMA: Final = "recurquant.experiment013.identity-candidate.v5"
 FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v5"
 ARTIFACT_KIND: Final = "recurquant_static_rht_q468_identity"
-RESOLVER_VERSION: Final = 5
+# Procedure version.  The identity field sets remain the published v5 contract.
+RESOLVER_VERSION: Final = 6
 PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256: Final = (
     "ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c"
 )
@@ -171,10 +172,10 @@ RULER_CALIBRATION_SCHEDULE: Final = (
     ("question_answering", "qa_2", 4_096, 12_340),
 )
 RULER_STAGE_A_SCHEDULE: Final = (
-    ("retrieval", "niah_multiquery", 4_096, 2_339),
-    ("multi_hop_tracing", "vt", 4_096, 2_339),
-    ("aggregation", "fwe", 4_096, 2_339),
-    ("question_answering", "qa_1", 4_096, 2_339),
+    ("retrieval", "niah_multiquery", 4_096, 2_343),
+    ("multi_hop_tracing", "vt", 4_096, 2_343),
+    ("aggregation", "fwe", 4_096, 2_343),
+    ("question_answering", "qa_1", 4_096, 2_343),
 )
 
 CLAIM_BOUNDARY: Final = (
@@ -1319,7 +1320,9 @@ def build_candidate(
         raise ValueError("identity input schema drifted")
     if phase not in ALLOWED_PHASES:
         if phase in PROTECTED_STAGES:
-            raise PermissionError(f"{phase} is protected and unavailable in resolver v5")
+            raise PermissionError(
+                f"{phase} is protected and unavailable in resolver procedure v{RESOLVER_VERSION}"
+            )
         raise ValueError(f"unsupported identity phase: {phase!r}")
     if source["model_weights_loaded"] is not False:
         raise ValueError("identity resolution must occur before model weights")

@@ -790,7 +790,7 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
         first, expected_revisions=resolver.FROZEN_DATASET_REVISIONS
     )
     assert candidate["evidence"]["record_count"] == 160
-    assert capture.CAPTURE_VERSION == resolver.RESOLVER_VERSION == 5
+    assert capture.CAPTURE_VERSION == resolver.RESOLVER_VERSION == 6
     assert first["schema"] == "recurquant.experiment013.identity-input.v5"
     assert candidate["evidence"]["identity_schema"] == (
         "recurquant.experiment013.identity-candidate.v5"
@@ -814,6 +814,144 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
         == row["token_span"]["cache_exposed_stop"]
         for row in first["records"]
     )
+
+
+@pytest.mark.parametrize(
+    ("protected_field", "protected_value", "stage_a_error"),
+    [
+        (
+            "command_manifest",
+            {"protected_stage_a": "must-remain-uninterpreted"},
+            "RULER command manifest fields drifted",
+        ),
+        (
+            "raw_validation_base64",
+            "protected-stage-a-must-not-be-decoded",
+            "RULER raw validation is not canonical base64",
+        ),
+    ],
+)
+def test_calibration_leaves_stage_a_ruler_embedded_values_uninterpreted(
+    protected_field: str,
+    protected_value: object,
+    stage_a_error: str,
+) -> None:
+    fixture = FakeSource()
+    manifest = json.loads(fixture.ruler_generation_manifest_bytes())
+    stage_a_filenames = {
+        item["filename"] for item in capture.required_ruler_receipts() if item["phase"] == "stage_a"
+    }
+    calibration_filenames = {
+        item["filename"]
+        for item in capture.required_ruler_receipts()
+        if item["phase"] == "calibration"
+    }
+    for result in manifest["receipts"]:
+        if result["phase"] == "stage_a":
+            result[protected_field] = protected_value
+    manifest_bytes = capture.canonical_json_bytes(manifest)
+
+    class ManifestSource(FakeSource):
+        def __init__(self) -> None:
+            super().__init__()
+            self.receipt_reads: set[str] = set()
+
+        def ruler_generation_manifest_bytes(self) -> bytes:
+            return manifest_bytes
+
+        def ruler_receipt_bytes(
+            self, *, category: str, config: str, configured_length: int, seed: int
+        ) -> bytes:
+            filename = capture.ruler_receipt_filename(
+                category=category,
+                config=config,
+                configured_length=configured_length,
+                seed=seed,
+            )
+            self.receipt_reads.add(filename)
+            return super().ruler_receipt_bytes(
+                category=category,
+                config=config,
+                configured_length=configured_length,
+                seed=seed,
+            )
+
+    class OpaqueStageASource(ManifestSource):
+        def ruler_receipt_bytes(
+            self, *, category: str, config: str, configured_length: int, seed: int
+        ) -> bytes:
+            filename = capture.ruler_receipt_filename(
+                category=category,
+                config=config,
+                configured_length=configured_length,
+                seed=seed,
+            )
+            if filename in stage_a_filenames:
+                raise AssertionError("calibration attempted to read a protected Stage-A receipt")
+            return super().ruler_receipt_bytes(
+                category=category,
+                config=config,
+                configured_length=configured_length,
+                seed=seed,
+            )
+
+    source = OpaqueStageASource()
+    captured = capture.capture_identity_input(phase="calibration", source=source)
+
+    assert captured["phase"] == "calibration"
+    assert source.receipt_reads == calibration_filenames
+
+    stage_a_source = ManifestSource()
+    with pytest.raises(ValueError, match=stage_a_error):
+        capture.capture_identity_input(
+            phase="stage_a",
+            source=stage_a_source,
+            calibration_binding=_binding(),
+        )
+    assert stage_a_source.receipt_reads
+    assert stage_a_source.receipt_reads <= stage_a_filenames
+
+
+def test_stage_a_capture_reads_only_stage_a_ruler_receipts() -> None:
+    manifest_bytes = FakeSource().ruler_generation_manifest_bytes()
+
+    class CountingSource(FakeSource):
+        def __init__(self) -> None:
+            super().__init__()
+            self.receipt_reads: set[str] = set()
+
+        def ruler_generation_manifest_bytes(self) -> bytes:
+            return manifest_bytes
+
+        def ruler_receipt_bytes(
+            self, *, category: str, config: str, configured_length: int, seed: int
+        ) -> bytes:
+            filename = capture.ruler_receipt_filename(
+                category=category,
+                config=config,
+                configured_length=configured_length,
+                seed=seed,
+            )
+            self.receipt_reads.add(filename)
+            return super().ruler_receipt_bytes(
+                category=category,
+                config=config,
+                configured_length=configured_length,
+                seed=seed,
+            )
+
+    expected = {
+        item["filename"] for item in capture.required_ruler_receipts() if item["phase"] == "stage_a"
+    }
+    source = CountingSource()
+    captured = capture.capture_identity_input(
+        phase="stage_a",
+        source=source,
+        calibration_binding=_binding(),
+    )
+
+    assert captured["phase"] == "stage_a"
+    assert source.receipt_reads == expected
 
 
 def test_execution_artifacts_are_authenticated_before_and_after_all_data_access(
@@ -1405,7 +1543,7 @@ def test_stage_a_materialization_accepts_exact_two_token_target() -> None:
     source = FakeSource()
     source.receipt_mutator = lambda receipt: (
         receipt.update({"outputs": ["xy"]})
-        if receipt["config"] == "qa_1" and receipt["seed"] == 2_339
+        if receipt["config"] == "qa_1" and receipt["seed"] == 2_343
         else None
     )
     frozen_bytes = _frozen_stage_a_identity(source)
@@ -1570,7 +1708,7 @@ def test_ruler_receipt_required_output_cardinality_and_uniqueness_fail_closed() 
         category="retrieval",
         config="niah_multiquery",
         configured_length=4_096,
-        seed=2_339,
+        seed=2_343,
     )
     receipt["outputs"] = ["only-one"]
     with pytest.raises(ValueError, match="exactly 4 required outputs"):
@@ -1579,7 +1717,7 @@ def test_ruler_receipt_required_output_cardinality_and_uniqueness_fail_closed() 
             category="retrieval",
             config="niah_multiquery",
             configured_length=4_096,
-            seed=2_339,
+            seed=2_343,
         )
 
     receipt["outputs"] = ["same"] * 4
@@ -1589,7 +1727,7 @@ def test_ruler_receipt_required_output_cardinality_and_uniqueness_fail_closed() 
             category="retrieval",
             config="niah_multiquery",
             configured_length=4_096,
-            seed=2_339,
+            seed=2_343,
         )
 
 
@@ -1639,7 +1777,7 @@ def test_ruler_receipt_replays_frozen_task_semantics(
         category=category,
         config=config,
         configured_length=4_096,
-        seed=2_339,
+        seed=2_343,
     )
     mutate(receipt)
 
@@ -1649,7 +1787,7 @@ def test_ruler_receipt_replays_frozen_task_semantics(
             category=category,
             config=config,
             configured_length=4_096,
-            seed=2_339,
+            seed=2_343,
         )
 
 
@@ -1658,7 +1796,7 @@ def test_ruler_receipt_rejects_boolean_sample_index() -> None:
         category="retrieval",
         config="niah_multiquery",
         configured_length=4_096,
-        seed=2_339,
+        seed=2_343,
     )
     receipt["sample_index"] = False
 
@@ -1668,7 +1806,7 @@ def test_ruler_receipt_rejects_boolean_sample_index() -> None:
             category="retrieval",
             config="niah_multiquery",
             configured_length=4_096,
-            seed=2_339,
+            seed=2_343,
         )
 
 
@@ -1679,7 +1817,7 @@ def test_ruler_raw_row_rejects_boolean_numeric_fields(field: str) -> None:
         category="retrieval",
         config="niah_multiquery",
         configured_length=4_096,
-        seed=2_339,
+        seed=2_343,
     )
     row = json.loads(source._raw_row(receipt))
     row[field] = False
@@ -1934,6 +2072,23 @@ def test_incomplete_ruler_generation_manifest_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="all 20 receipt results"):
         capture.capture_identity_input(phase="calibration", source=source)
+
+
+def test_live_source_rejects_retired_stage_a_receipt_directory_extra(tmp_path: Path) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    (receipt_dir / "generation-manifest.json").write_bytes(b"fixture")
+    for item in capture.required_ruler_receipts():
+        (receipt_dir / item["filename"]).write_bytes(b"fixture")
+    retired = "retrieval__niah_multiquery__l4096__s2339.json"
+    (receipt_dir / retired).write_bytes(b"retired")
+    source = capture.LiveCaptureSource(
+        cache_dir=tmp_path / "cache",
+        ruler_receipt_dir=receipt_dir,
+    )
+
+    with pytest.raises(ValueError, match=r"inventory drifted: .*unexpected=.*s2339"):
+        source.ruler_generation_manifest_bytes()
 
 
 def test_ruler_command_manifest_argv_tamper_is_rejected() -> None:
@@ -2400,13 +2555,16 @@ def test_capture_output_contains_no_raw_model_or_weight_claim() -> None:
 
 def test_required_ruler_receipt_inventory_is_exact_and_unique() -> None:
     receipts = capture.required_ruler_receipts()
+    stage_a_receipts = [item for item in receipts if item["phase"] == "stage_a"]
 
     assert len(receipts) == 20
     assert len({item["filename"] for item in receipts}) == 20
     assert sum(item["phase"] == "calibration" for item in receipts) == 16
-    assert sum(item["phase"] == "stage_a" for item in receipts) == 4
+    assert len(stage_a_receipts) == 4
+    assert {item["seed"] for item in stage_a_receipts} == {2343}
+    assert all("__s2339.json" not in item["filename"] for item in stage_a_receipts)
     assert receipts[0]["filename"] == ("retrieval__niah_multiquery__l2048__s12339.json")
-    assert receipts[-1]["filename"] == ("question_answering__qa_1__l4096__s2339.json")
+    assert receipts[-1]["filename"] == ("question_answering__qa_1__l4096__s2343.json")
 
 
 def _parquet_bytes(columns: dict[str, list[str]]) -> bytes:

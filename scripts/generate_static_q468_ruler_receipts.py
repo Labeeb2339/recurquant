@@ -32,7 +32,7 @@ from typing import Any, Final
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CAPTURE_PATH = REPOSITORY_ROOT / "scripts" / "capture_static_q468_identity_input.py"
 
-LAUNCHER_REVISION: Final = "experiment-013-ruler-argv-launcher-v6"
+LAUNCHER_REVISION: Final = "experiment-013-ruler-argv-launcher-v7"
 GENERATION_MANIFEST_SCHEMA: Final = "recurquant.experiment013.ruler-generation-manifest.v2"
 RUNTIME_MANIFEST_SCHEMA: Final = "recurquant.experiment013.ruler-runtime-manifest.v3"
 RUNTIME_PYTHON_VERSION: Final = "3.11.15"
@@ -1969,6 +1969,114 @@ def _verify_owned_orphan_tree(
         raise ValueError("published RULER diagnostic orphan is incomplete")
 
 
+def _verify_receipt_batch_inventory(
+    *,
+    required: Sequence[Mapping[str, object]],
+    output_dir: Path,
+    raw_root: Path,
+    require_complete: bool,
+) -> None:
+    """Authenticate the exact resumable receipt/diagnostic top-level inventory."""
+
+    output_root = Path(os.path.abspath(output_dir))
+    diagnostic_root = Path(os.path.abspath(raw_root))
+    output_root.mkdir(parents=True, exist_ok=True)
+    diagnostic_root.mkdir(parents=True, exist_ok=True)
+    if (
+        _is_reparse_point(output_root)
+        or _is_reparse_point(diagnostic_root)
+        or output_root.resolve() == diagnostic_root.resolve()
+    ):
+        raise ValueError("RULER output and raw roots must be distinct non-redirected directories")
+
+    required_by_filename: dict[str, Mapping[str, object]] = {}
+    required_by_stem: dict[str, Mapping[str, object]] = {}
+    required_by_receipt_key: dict[str, Mapping[str, object]] = {}
+    for item in required:
+        filename = str(item["filename"])
+        if Path(filename).name != filename or not filename.endswith(".json"):
+            raise ValueError("required RULER receipt filename is not a canonical JSON basename")
+        stem = filename.removesuffix(".json")
+        if filename in required_by_filename or stem in required_by_stem:
+            raise ValueError("required RULER receipt inventory is not unique")
+        receipt_key = _sha256_bytes(filename.encode("utf-8"))[:12]
+        if receipt_key in required_by_receipt_key:
+            raise ValueError("required RULER receipt staging keys collide")
+        required_by_filename[filename] = item
+        required_by_stem[stem] = item
+        required_by_receipt_key[receipt_key] = item
+
+    def scan(root: Path, *, context: str) -> dict[str, Path]:
+        entries = sorted(root.iterdir(), key=lambda path: path.name)
+        names = [path.name for path in entries]
+        if len({name.casefold() for name in names}) != len(names):
+            raise ValueError(f"{context} contains case-colliding names")
+        return {path.name: path for path in entries}
+
+    output_entries = scan(output_root, context="RULER output directory")
+    allowed_output = set(required_by_filename) | {"generation-manifest.json"}
+    unexpected_output = sorted(set(output_entries) - allowed_output)
+    if unexpected_output:
+        raise ValueError(f"RULER output directory contains unexpected entries: {unexpected_output}")
+    for name, path in output_entries.items():
+        if _is_reparse_point(path) or not path.is_file():
+            raise ValueError(f"RULER output entry must be a regular non-redirected file: {name}")
+
+    raw_entries = scan(diagnostic_root, context="RULER raw directory")
+    staging_pattern = re.compile(r"^\.rq-([0-9a-f]{12})\.[A-Za-z0-9_-]+\.staging$")
+    published_raw: dict[str, Path] = {}
+    staging_raw: dict[str, tuple[Path, Mapping[str, object]]] = {}
+    unexpected_raw: list[str] = []
+    for name, path in raw_entries.items():
+        if name in required_by_stem:
+            published_raw[name] = path
+            continue
+        match = staging_pattern.fullmatch(name)
+        item = None if match is None else required_by_receipt_key.get(match.group(1))
+        if item is None:
+            unexpected_raw.append(name)
+        else:
+            staging_raw[name] = (path, item)
+    unexpected_raw.sort()
+    if unexpected_raw:
+        raise ValueError(f"RULER raw directory contains unexpected entries: {unexpected_raw}")
+    for stem, path in published_raw.items():
+        if _is_reparse_point(path) or not path.is_dir():
+            raise ValueError(f"RULER raw entry must be a regular non-redirected directory: {stem}")
+        _verify_owned_orphan_tree(
+            path,
+            raw_root=diagnostic_root,
+            config=str(required_by_stem[stem]["config"]),
+            require_complete=True,
+        )
+    for name, (path, item) in staging_raw.items():
+        if _is_reparse_point(path) or not path.is_dir():
+            raise ValueError(
+                f"RULER staging entry must be a regular non-redirected directory: {name}"
+            )
+        filename = str(item["filename"])
+        if filename in output_entries:
+            raise ValueError("RULER staging orphan exists beside its published receipt")
+        _verify_owned_orphan_tree(
+            path,
+            raw_root=diagnostic_root,
+            config=str(item["config"]),
+            require_complete=False,
+        )
+
+    receipt_names = set(output_entries) - {"generation-manifest.json"}
+    diagnostic_receipts = {f"{stem}.json" for stem in published_raw}
+    if not receipt_names <= diagnostic_receipts:
+        raise ValueError("a RULER receipt exists without its raw diagnostic inventory")
+    complete = receipt_names == set(required_by_filename)
+    if "generation-manifest.json" in output_entries and not complete:
+        raise ValueError("complete RULER generation manifest exists beside an incomplete set")
+    if require_complete and (
+        not complete or diagnostic_receipts != set(required_by_filename) or staging_raw
+    ):
+        raise ValueError("RULER receipt or raw diagnostic batch is incomplete")
+
+
 def recover_owned_receipt_orphans(
     *,
     filename: str,
@@ -2204,6 +2312,12 @@ def finalize_generation_manifest_if_complete(
 ) -> dict[str, object] | None:
     """Publish the sole manifest only after re-verifying the full 20-file set."""
 
+    _verify_receipt_batch_inventory(
+        required=required,
+        output_dir=output_dir,
+        raw_root=raw_root,
+        require_complete=False,
+    )
     manifest_path = output_dir / "generation-manifest.json"
     missing = [
         str(item["filename"])
@@ -2249,6 +2363,12 @@ def finalize_generation_manifest_if_complete(
     if len(results) != 20:
         raise ValueError("complete RULER generation manifest must contain exactly 20 receipts")
     _atomic_publish_same(manifest_path, _canonical_json_bytes(manifest))
+    _verify_receipt_batch_inventory(
+        required=required,
+        output_dir=output_dir,
+        raw_root=raw_root,
+        require_complete=True,
+    )
     return manifest
 
 
@@ -2304,6 +2424,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     if len(identities) != len(required):
         raise ValueError("required RULER receipt identities must be unique")
+    _verify_receipt_batch_inventory(
+        required=required,
+        output_dir=args.output_dir,
+        raw_root=args.raw_dir,
+        require_complete=False,
+    )
     if args.receipt:
         if len(set(args.receipt)) != len(args.receipt):
             raise ValueError("--receipt values must be unique")

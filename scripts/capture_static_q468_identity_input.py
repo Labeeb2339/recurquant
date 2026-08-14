@@ -60,7 +60,8 @@ else:
         sys.modules.pop(_RESOLVER_MODULE_NAME, None)
         raise
 
-CAPTURE_VERSION: Final = 5
+# Procedure version.  The resolver-compatible identity field sets remain v5.
+CAPTURE_VERSION: Final = 6
 RUNTIME_AUTHENTICATION_CONTEXT_FIELDS: Final = frozenset(
     {
         "base_runtime_root",
@@ -74,7 +75,7 @@ _RUNTIME_ROOT_NAME_RE: Final = re.compile(r"[a-z][a-z0-9-]{0,63}")
 RULER_RECEIPT_SCHEMA: Final = "recurquant.experiment013.ruler-receipt.v1"
 RULER_GENERATION_MANIFEST_SCHEMA: Final = "recurquant.experiment013.ruler-generation-manifest.v2"
 RULER_RUNTIME_MANIFEST_SCHEMA: Final = "recurquant.experiment013.ruler-runtime-manifest.v3"
-RULER_LAUNCHER_REVISION: Final = "experiment-013-ruler-argv-launcher-v6"
+RULER_LAUNCHER_REVISION: Final = "experiment-013-ruler-argv-launcher-v7"
 RULER_RUNTIME_PYTHON_VERSION: Final = "3.11.15"
 RULER_SEALED_STARTUP_POLICY: Final = {
     "dont_write_bytecode": 1,
@@ -363,64 +364,64 @@ RULER_EXPECTED_TOKENIZER_ASSETS: Final = {
 # and task-specific flags, without trusting claims embedded in the receipt set.
 RULER_COMMAND_MANIFEST_SHA256_BY_FILENAME: Final = {
     "aggregation__cwe__l2048__s12340.json": (
-        "2b0bf4952b9fd1f4447947ff0e6257da3a32552ec28bf850b7d992761a90c76c"
+        "2e51bae29377e1cc5d4f92d0b8479951e788e7fb27fd2f8fcc177c9e3cc2811a"
     ),
     "aggregation__cwe__l4096__s12340.json": (
-        "47e06031fdeea0041e007526e18b0f68902b8e248fb6a4325ac0ca1f3e179071"
+        "a63f87abadca40d66a682584ee831122d3c837ecc44a1ddb57a9e0b676744aa7"
     ),
     "aggregation__fwe__l2048__s12339.json": (
-        "39f939a6cd7041a7922f2a3f87c5c1af047e948040ae39969468934993dfca54"
+        "ec652c7d26916a1e988c02a88c9d856ff05ce926583e1a2fce953b919b3c7ad2"
     ),
     "aggregation__fwe__l4096__s12339.json": (
-        "d4e47efd8b709a6e27d5969128d2869bea3a99e1093606e89f31720ccb650448"
+        "49f19c6045484e1c584657fb57412f1fbd1945d6cfcca6504a666b344765a0d0"
     ),
-    "aggregation__fwe__l4096__s2339.json": (
-        "b889115e728fe5eb1e59c3a6f276d464969ae696011d8bfb99a1330bf5ced6f4"
+    "aggregation__fwe__l4096__s2343.json": (
+        "613477e4edc91064f120c728683858bd79c4f7c3c7c359f0010215b5adb01f48"
     ),
     "multi_hop_tracing__vt__l2048__s12339.json": (
-        "c362d4c629dd96a94ac01eb24d3eb92b8cae0adaffec49dc8de931a881a68335"
+        "9d253ced1f09e593fc1cffff0f035604685f54acb0f4dc0080d5f920f9a65993"
     ),
     "multi_hop_tracing__vt__l2048__s12340.json": (
-        "82bd4e0157a8ac52ad1f7ab1c001bce38a73a584e7a557aeffb4d8672f75556a"
+        "25e0258140d82c80ae6d466c8ba3c22dc98aae29c6b8b87bbbf1817c1c4aa561"
     ),
     "multi_hop_tracing__vt__l4096__s12339.json": (
-        "0b039028f6888c790979c521d679b334ea512b41fc0bbf021a7037afefddf0f4"
+        "570153e676619042f72a71c2ed2eb27829fcef292cebce7734d3523b10581271"
     ),
     "multi_hop_tracing__vt__l4096__s12340.json": (
-        "d2a5b85b5bd563374a492f45f4578e6f6e04c6addf7c8c62d7f34fd5ab2e0035"
+        "93ee5ec2be6fe5ac4bde20d82f32a1e9f46ec4008aab2b4d9c035b813255dae5"
     ),
-    "multi_hop_tracing__vt__l4096__s2339.json": (
-        "ed61a589b8c288a7499d8a26ff1dc91af4418b3ac5f61eef7e4f77c7c3c2741a"
+    "multi_hop_tracing__vt__l4096__s2343.json": (
+        "9d2038bbc19723b27af364b870a14ed4f516272db83df13dc0e8b524b9a44bff"
     ),
     "question_answering__qa_1__l2048__s12339.json": (
-        "c5d7533b7aa53ff7a6e0efc67af88947cfc5c1c76672024dd7daf0e6ad4a4018"
+        "12cc42446211811efe8e525e3fa8f68306338b7cb15901e4bc6c037563505bea"
     ),
     "question_answering__qa_1__l4096__s12339.json": (
-        "e57351321e38e98129a7784915333ac08079dcc01a80724e1dc78d068f8101ff"
+        "ff9623b65bd1fa8285c9078bcc861a7ceefe9ca6b6bfe470dae6c2cc08a6de83"
     ),
-    "question_answering__qa_1__l4096__s2339.json": (
-        "77b57f21537d318c7100055f1198823f68ebfc4c0deccbe528e881f952e08239"
+    "question_answering__qa_1__l4096__s2343.json": (
+        "c0b5591282d51a94280aedafecf3c31400e9fc3423011bc4cedd6ce26e719663"
     ),
     "question_answering__qa_2__l2048__s12340.json": (
-        "c210afae817638883b1b07da358fc726c7d12575a55772078ddb9091443b595c"
+        "402b92a2c76288d37b819683a1e5e83e8a5bd95c60143d958e0b027e74975997"
     ),
     "question_answering__qa_2__l4096__s12340.json": (
-        "a25b93adc8b8f0e4bb6f9faeaa319f58942349ec9c7c8c163f376883353982d3"
+        "e841f60a9858d16da1490cee99c64db20435c8d992f27a71d196a1601b478e2a"
     ),
     "retrieval__niah_multikey_2__l2048__s12340.json": (
-        "bc71b720edfa491e5fe0cad882cd0e361829f3c10ed4781b66a71c28b9075731"
+        "58a474ae63c52c5bf897de988ef952e85a87326096a5db2374a577e44c53aeed"
     ),
     "retrieval__niah_multiquery__l2048__s12339.json": (
-        "2d57d83f619d8e462beb67ac629badde65b661bbbc771ff39e5cfdb9c9eaa97f"
+        "61b77e3475cdf72fed65e7d28d97151dcbb0a9b728cf40756e634371be99009d"
     ),
-    "retrieval__niah_multiquery__l4096__s2339.json": (
-        "481c41baed008fc121049ca0b43308c79f3e85839c0e941ea8eb8d7294a0037c"
+    "retrieval__niah_multiquery__l4096__s2343.json": (
+        "4f33fdcdf1902c17988ecce5cc344d5feffa3e99d6a948a98e4a4a0ccce51252"
     ),
     "retrieval__niah_multivalue__l4096__s12340.json": (
-        "252be364c6fbc93f21e004f71b38468da195f9acd0aeaf2d0357e85ddfe6c1c8"
+        "d791dcf45a923a7d8aafc5cf2d9dda3b039878288556307bf75023a338c0b6f8"
     ),
     "retrieval__niah_single_1__l4096__s12339.json": (
-        "aa7d34fb3a5176fccaa58a925635c667fcfb0fea92dbf6ba3d900316faa68e60"
+        "d08571d33bde611a4e8b7394ce0b6ec92742f6b4d15a6a3f044974ea99d42949"
     ),
 }
 
@@ -1976,8 +1977,11 @@ def _verify_ruler_raw_row(
 def _verify_complete_ruler_bundle(
     source: CaptureSource,
     *,
+    phase: str,
     tokenizer_material: TokenizerMaterial,
 ) -> VerifiedRulerBundle:
+    if phase not in resolver.ALLOWED_PHASES:
+        raise ValueError(f"unsupported RULER verification phase: {phase!r}")
     raw_manifest = source.ruler_generation_manifest_bytes()
     manifest = _strict_json(raw_manifest, context="RULER generation manifest")
     if canonical_json_bytes(manifest) != raw_manifest:
@@ -2078,7 +2082,6 @@ def _verify_complete_ruler_bundle(
         for field, minimum in (
             ("configured_length", 1),
             ("seed", 0),
-            ("generator_reported_length", 1),
             ("size_bytes", 1),
         ):
             _require_int(
@@ -2097,6 +2100,19 @@ def _verify_complete_ruler_bundle(
             if result[field] != expected[field]:
                 raise ValueError(f"RULER receipt result {field} drifted")
         filename = str(expected["filename"])
+        _require_sha256(result["sha256"], context=f"RULER receipt result {filename} SHA-256")
+        if expected["phase"] != phase:
+            # The complete generation-manifest hash commits to all 20 results, but a
+            # phase process must not open or semantically validate the other phase's
+            # receipt bodies. Matching bytes are authenticated and decoded in their
+            # own identity-capture phase; the offline evaluator reauthenticates them
+            # again after its one-run reservation.
+            continue
+        _require_int(
+            result["generator_reported_length"],
+            context="RULER receipt result generator_reported_length",
+            minimum=1,
+        )
         receipt_bytes = source.ruler_receipt_bytes(
             category=str(expected["category"]),
             config=str(expected["config"]),
@@ -2886,7 +2902,7 @@ def _capture_identity_input_with_tokens(
     """Run the sole capture flow, optionally retaining formatter token IDs."""
 
     if phase in resolver.PROTECTED_STAGES:
-        raise PermissionError(f"{phase} is protected; capture v5 refuses it before source access")
+        raise PermissionError(f"{phase} is protected; capture v6 refuses it before source access")
     if phase not in resolver.ALLOWED_PHASES:
         raise ValueError(f"unsupported identity phase: {phase!r}")
     if phase == "stage_a" and calibration_binding is None:
@@ -2923,7 +2939,11 @@ def _capture_identity_input_with_tokens(
         before = _validate_heads(source.source_heads(), context="pre-capture")
         material = source.tokenizer_material()
         tokenizer_contract, tokenizer_manifest_hash = _tokenizer_contract(material)
-        ruler_bundle = _verify_complete_ruler_bundle(source, tokenizer_material=material)
+        ruler_bundle = _verify_complete_ruler_bundle(
+            source,
+            phase=phase,
+            tokenizer_material=material,
+        )
         token_sink: TokenCaptureSink | None = {} if collect_tokens else None
         mbpp_records, mbpp_manifest_hash = _capture_mbpp(
             source,
@@ -3089,8 +3109,8 @@ def materialize_stage_a_identity_sequences(
     if not isinstance(calibration_binding_artifact, bytes):
         raise TypeError("Stage-A calibration binding artifact must be bytes")
     if (
-        CAPTURE_VERSION != 5
-        or resolver.RESOLVER_VERSION != 5
+        CAPTURE_VERSION != 6
+        or resolver.RESOLVER_VERSION != 6
         or resolver.INPUT_SCHEMA != "recurquant.experiment013.identity-input.v5"
         or resolver.FROZEN_SCHEMA != "recurquant.experiment013.identity-frozen.v5"
     ):
@@ -3195,12 +3215,50 @@ def atomic_write_no_overwrite(path: Path, payload: bytes) -> None:
             temporary.unlink()
 
 
+def _verify_live_ruler_receipt_inventory(root: Path) -> Mapping[str, Path]:
+    """Return the exact complete non-redirected live receipt-file inventory."""
+
+    unresolved = Path(os.path.abspath(root))
+
+    def is_redirected(path: Path) -> bool:
+        try:
+            status = path.lstat()
+        except OSError as error:
+            raise ValueError(f"cannot authenticate RULER receipt path: {path}") from error
+        return path.is_symlink() or bool(getattr(status, "st_file_attributes", 0) & 0x400)
+
+    if is_redirected(unresolved) or not unresolved.is_dir():
+        raise ValueError("RULER receipt root must be a regular non-redirected directory")
+    entries = sorted(unresolved.iterdir(), key=lambda path: path.name)
+    names = [path.name for path in entries]
+    if len({name.casefold() for name in names}) != len(names):
+        raise ValueError("RULER receipt directory contains case-colliding names")
+    observed = set(names)
+    expected = {"generation-manifest.json"} | {
+        str(item["filename"]) for item in required_ruler_receipts()
+    }
+    if observed != expected:
+        missing = sorted(expected - observed)
+        unexpected = sorted(observed - expected)
+        raise ValueError(
+            f"RULER receipt directory inventory drifted: missing={missing}, unexpected={unexpected}"
+        )
+    result: dict[str, Path] = {}
+    for path in entries:
+        if is_redirected(path) or not path.is_file():
+            raise ValueError(
+                f"RULER receipt entry must be a regular non-redirected file: {path.name}"
+            )
+        result[path.name] = path
+    return MappingProxyType(result)
+
+
 class LiveCaptureSource:
     """Pinned, read-only network source; RULER generated rows come from receipts."""
 
     def __init__(self, *, cache_dir: Path, ruler_receipt_dir: Path) -> None:
         self.cache_dir = cache_dir.resolve()
-        self.ruler_receipt_dir = ruler_receipt_dir.resolve()
+        self.ruler_receipt_dir = Path(os.path.abspath(ruler_receipt_dir))
 
     @staticmethod
     def _github_revision(repo_id: str, revision: str) -> str:
@@ -3401,24 +3459,25 @@ class LiveCaptureSource:
         )
 
     def ruler_generation_manifest_bytes(self) -> bytes:
-        path = self.ruler_receipt_dir / "generation-manifest.json"
-        if not path.is_file():
-            raise FileNotFoundError(f"missing complete RULER generation manifest: {path}")
-        return path.read_bytes()
+        inventory = _verify_live_ruler_receipt_inventory(self.ruler_receipt_dir)
+        return inventory["generation-manifest.json"].read_bytes()
 
     def ruler_receipt_bytes(
         self, *, category: str, config: str, configured_length: int, seed: int
     ) -> bytes:
-        path = self.ruler_receipt_dir / self._receipt_filename(
+        filename = self._receipt_filename(
             category=category,
             config=config,
             configured_length=configured_length,
             seed=seed,
         )
-        if not path.is_file():
+        inventory = _verify_live_ruler_receipt_inventory(self.ruler_receipt_dir)
+        try:
+            path = inventory[filename]
+        except KeyError as error:
             raise FileNotFoundError(
-                f"missing audited RULER receipt; generation is intentionally separate: {path}"
-            )
+                f"requested RULER receipt is outside the exact frozen inventory: {filename}"
+            ) from error
         return path.read_bytes()
 
     def ruler_receipt(
@@ -4826,7 +4885,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.phase in resolver.PROTECTED_STAGES:
         raise PermissionError(
-            f"{args.phase} is protected; capture v5 refuses it before file or source access"
+            f"{args.phase} is protected; capture v6 refuses it before file or source access"
         )
     if args.ruler_receipt_dir is None:
         raise ValueError("--ruler-receipt-dir is required")

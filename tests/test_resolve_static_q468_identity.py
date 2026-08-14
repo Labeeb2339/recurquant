@@ -525,29 +525,25 @@ def _stage_a_source() -> dict[str, Any]:
                 scored_stop=4_224,
             )
         )
-    ruler_rows = (
-        ("retrieval", "niah_multiquery"),
-        ("multi_hop_tracing", "vt"),
-        ("aggregation", "fwe"),
-        ("question_answering", "qa_1"),
-    )
-    for rank, (category, config) in enumerate(ruler_rows):
+    for rank, (category, config, configured_length, seed) in enumerate(
+        resolver.RULER_STAGE_A_SCHEDULE
+    ):
         records.append(
             _record(
                 family="ruler",
                 canonical_id=resolver.ruler_canonical_id(
                     category=category,
                     config=config,
-                    configured_length=4_096,
-                    seed=2_339,
+                    configured_length=configured_length,
+                    seed=seed,
                 ),
                 config=config,
                 rank=rank,
-                seed=2_339,
+                seed=seed,
                 sequence_length=4_096,
                 prefill_stop=4_092,
                 scored_stop=4_096,
-                configured_length=4_096,
+                configured_length=configured_length,
                 ruler_category=category,
             )
         )

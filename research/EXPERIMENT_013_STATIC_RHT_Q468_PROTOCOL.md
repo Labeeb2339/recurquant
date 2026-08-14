@@ -193,6 +193,80 @@ quality result was opened, and no evaluator was run for this amendment. This
 working copy remains unpreregistered until its exact bytes are committed and
 bound as H0 before protected materialization.
 
+Twelfth pre-H0 execution-boundary amendment candidate: 2026-08-14. A final
+pre-execution audit found that the calibration capture's complete-RULER verifier
+iterated, parsed, base64-decoded, and semantically replayed all 20 receipt
+records before selecting the 16 calibration records. That path therefore could
+open the four held-out Stage-A RULER receipt bodies before the one-run seal. The
+then-current calibration capture was started and manually terminated after
+approximately seven minutes. It published no identity input, candidate, or
+frozen identity, and it loaded no model weights or quality results. The CLI has
+no progress receipt, so the exact last call cannot be proven; because complete
+RULER verification precedes every phase-specific dataset capture, the four
+Stage-A RULER bodies are conservatively treated as possibly decoded by the
+automated process. No receipt body or derived content was printed or inspected
+by a person. Source commit `19ef835a8ec2341c36657b7e010ad1ae6135de9a`
+and tag `experiment013-h0-19ef835` are preserved as the first bound H0 attempt,
+but that H0 is now retired and superseded. It authorizes no further identity
+capture or execution and produced no identity, H1, model, or quality artifact.
+
+Calibration verification is now phase-scoped. It authenticates the canonical
+complete generation-manifest bytes and the public identity, size, and SHA-256
+commitments for every result, but it reads, base64-decodes, and semantically
+replays only the 16 calibration receipt files. Parsing the complete manifest as
+JSON necessarily parses the four Stage-A result envelopes, their embedded
+command objects, and their raw-validation strings as JSON values. During
+calibration those embedded protected values are deliberately uninterpreted: the
+command objects are not traversed or authenticated semantically, the payload
+strings are not base64-decoded, the separate Stage-A receipt files are not read,
+and no Stage-A row is replayed. They are next decoded and semantically verified
+only by the authenticated Stage-A identity-capture/materialization phase, which
+necessarily precedes the evaluator's one-run seal; the offline evaluator then
+reauthenticates and rematerializes them after reserving that one run. Thus the
+repair restores cross-phase isolation from calibration, not absolute preseal
+semantic blindness. Paired regressions supply deliberately invalid protected
+embedded values: calibration must accept them as uninterpreted while reading
+exactly its 16 receipt files, whereas Stage-A identity capture must reject them
+and must never read the 16 calibration receipt files.
+
+The conservative recovery is fixed before replacement generation and is not
+result-adaptive. The original Stage-A seed 2,339 is incremented past the
+already-frozen Stage-B seed grid 2,339 through 2,342; therefore 2,343, the first
+seed outside that grid, is the sole replacement seed. The four old Stage-A
+seed-2,339 cells are retired and are neither Stage-A nor Stage-B evidence. The
+replacement inventory is exactly:
+
+| Category/config | Replacement receipt | Canonical command-manifest SHA-256 |
+| --- | --- | --- |
+| retrieval / `niah_multiquery` | `retrieval__niah_multiquery__l4096__s2343.json` | `4f33fdcdf1902c17988ecce5cc344d5feffa3e99d6a948a98e4a4a0ccce51252` |
+| multi-hop tracing / `vt` | `multi_hop_tracing__vt__l4096__s2343.json` | `9d2038bbc19723b27af364b870a14ed4f516272db83df13dc0e8b524b9a44bff` |
+| aggregation / `fwe` | `aggregation__fwe__l4096__s2343.json` | `613477e4edc91064f120c728683858bd79c4f7c3c7c359f0010215b5adb01f48` |
+| question answering / `qa_1` | `question_answering__qa_1__l4096__s2343.json` | `c0b5591282d51a94280aedafecf3c31400e9fc3423011bc4cedd6ce26e719663` |
+
+A fresh complete 20-receipt batch and generation manifest must contain the 16
+unchanged calibration identities plus exactly these four replacements. A batch
+or manifest containing any retired Stage-A seed-2,339 receipt is rejected. The
+capture and resolver procedure versions advance together from 5 to 6, while the
+identity input, candidate, and frozen schema strings remain v5 because their
+field sets did not change and no v5 identity was published. The RULER launcher
+advances from v6 to v7, so all 20 canonical command-manifest hashes are
+recomputed from the authenticated v7 launcher source. Generation-manifest
+schema v2 remains unchanged because its structure did not change.
+
+The next clean H0 must bind the seed-2,343 rule, exact replacement inventory,
+complete v7 command-hash table, procedure versions, formatter, and regressions.
+It must be committed and tagged before any seed-2,343 receipt is generated or
+its raw body is accessed. Generated receipt-byte hashes do not exist at H0;
+after generation they are bound by the canonical complete generation manifest
+and then by the promoted identity chain. Seed 2,343 was chosen solely as the
+first integer after the reserved 2,339-through-2,342 Stage-B grid, before
+generation or content access. If a seed-2,343 receipt fails generation, length,
+or semantic gates, stop: there is no alternate seed, config, or fallback. A
+same-identity retry is allowed only after a documented infrastructure
+interruption. This incident does not require new PG19 or HumanEval+ Stage-A
+identities: the complete-RULER verifier ran before the phase-specific PG19 and
+HumanEval+ reads.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -638,8 +712,8 @@ Stage A contains exactly 12 examples:
 - the first four SHA-ranked eligible PG19 validation books, each using 4,096
   prefill tokens followed by 128 continuation tokens, of which 127 predictions
   are exposed to the committed quantized cache;
-- four RULER category representatives at configured length 4,096 and seed
-  2,339: `niah_multiquery`, `vt`, `fwe`, and `qa_1`, using each
+- four RULER category representatives at configured length 4,096 and recovery
+  seed 2,343: `niah_multiquery`, `vt`, `fwe`, and `qa_1`, using each
   identity-bound teacher-forced target derived from the official references;
   and
 - the first four SHA-ranked HumanEval+ canonical IDs, using at most the first
@@ -706,9 +780,10 @@ new experiment but may not replace the candidate post hoc.
 Stage B remains closed until Stage A and every identity gate pass. It contains:
 
 - the remaining 28 eligible PG19 validation books after Stage A;
-- the remaining 48 configurations in the complete development grid of all 13
-  exact RULER configs at configured length 4,096 and seeds 2,339 through
-  2,342; and
+- the original 48-cell RULER development grid at configured length 4,096: all
+  52 combinations of the 13 exact configs and seeds 2,339 through 2,342 except
+  the four retired seed-2,339 cells for `niah_multiquery`, `vt`, `fwe`, and
+  `qa_1`; and
 - the remaining 28 HumanEval+ tasks under the Stage-A/B ranking domain.
 
 Stage-B identities and token spans are unresolved protected placeholders in
@@ -1007,6 +1082,24 @@ training code but no tagged release or pretrained checkpoint for the reported
 Gated DeltaNet path plus end-to-end adoption benefit could be differentiated;
 this protocol makes no novelty claim.
 
+[MixKVQ](https://arxiv.org/abs/2512.19206) already combines query relevance
+with intrinsic quantization difficulty for mixed-precision KV-cache allocation,
+and [Block-GTQ](https://arxiv.org/abs/2606.24033) already uses label-free query/key
+energy, marginal-gain bit allocation, and a packed serving path. Experiment
+013's query-energy times measured row-MSE selector is therefore a prespecified
+diagonal read-error approximation to test, not a new general allocation
+principle. [LightMamba](https://arxiv.org/abs/2502.15260v2) already combines
+Hadamard-assisted low-bit Mamba inference with hardware co-design and reports
+that its elementwise Mamba hidden-state recurrence is not rotation-equivariant.
+The potentially differentiating RecurQuant hypothesis is narrower: prove that
+a Gated DeltaNet matrix state admits an exact right/value-axis orthogonal
+basis, keep the persistent state in that basis, and consume its physical-row
+Q4/Q6/Q8 representation directly in the recurrent update without a persistent
+FP copy.
+[Nemotron 3 Super](https://arxiv.org/abs/2604.12374) further makes recurrent
+rounding drift and stochastic rounding mandatory baselines rather than optional
+ablations.
+
 Even a complete pass would establish only that the frozen static packed layout
 was useful on the pinned 0.8B checkpoint, workloads, budgets, and hardware. It
 would not establish that RHT, mixed precision, loss sensitivity, Q4/Q6/Q8,
@@ -1015,6 +1108,17 @@ new base model, prove generated-code correctness, eliminate contamination, or
 justify "breakthrough," "state of the art," "lossless," or universal language.
 It also would not prove a closed-loop StateLease controller; Experiment 013's
 map is immutable after calibration.
+
+A later breakthrough-level claim requires evidence beyond Experiment 013:
+exact unquantized basis-equivalence tests; no-RHT and multi-seed RHT ablations;
+round-to-nearest versus stochastic-rounding comparisons; uniform Q6 and static
+INT8 baselines; long-horizon 4K, 32K, and 128K recurrence including free
+generation; at least one larger and one independent Gated-DeltaNet-family
+checkpoint; a packed-native kernel with no persistent FP mirror compared
+against an optimized architecture-native baseline; fair batch-N byte and
+throughput accounting; and independent reproduction on another GPU/software
+stack. Until those pass, the public claim remains the exact frozen quality,
+storage, and implementation result actually measured here.
 
 Failure is a publishable result. Any change after a gate is observed creates a
 new experiment number with new protected data.

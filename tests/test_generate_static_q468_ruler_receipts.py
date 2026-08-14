@@ -388,6 +388,90 @@ def test_retry_never_cleans_diagnostics_beside_a_published_receipt(tmp_path) -> 
     assert published.is_dir()
 
 
+def test_batch_inventory_allows_recoverable_required_raw_only_orphan(tmp_path) -> None:
+    filename = "retrieval__niah_single_1__l4096__s12339.json"
+    config = "niah_single_1"
+    required = [{"filename": filename, "config": config}]
+    raw_root = tmp_path / "raw"
+    output_dir = tmp_path / "output"
+    published = raw_root / filename.removesuffix(".json")
+    (published / config).mkdir(parents=True)
+    output_dir.mkdir()
+    for relative in (
+        "command-manifest.json",
+        "runtime-manifest.json",
+        "stdout.log",
+        "stderr.log",
+        f"{config}/validation.jsonl",
+    ):
+        (published / relative).write_bytes(b"fixture")
+
+    ruler._verify_receipt_batch_inventory(
+        required=required,
+        output_dir=output_dir,
+        raw_root=raw_root,
+        require_complete=False,
+    )
+    recovered = ruler.recover_owned_receipt_orphans(
+        filename=filename,
+        config=config,
+        raw_root=raw_root,
+        output_dir=output_dir,
+    )
+
+    assert recovered == (published.name,)
+    assert not published.exists()
+
+
+def test_batch_inventory_allows_recoverable_owned_staging_orphan(tmp_path) -> None:
+    filename = "retrieval__niah_single_1__l4096__s12339.json"
+    config = "niah_single_1"
+    required = [{"filename": filename, "config": config}]
+    raw_root = tmp_path / "raw"
+    output_dir = tmp_path / "output"
+    raw_root.mkdir()
+    output_dir.mkdir()
+    receipt_key = ruler._sha256_bytes(filename.encode("utf-8"))[:12]
+    staging = raw_root / f".rq-{receipt_key}.fixture.staging"
+    staging.mkdir()
+    (staging / "command-manifest.json").write_bytes(b"fixture")
+
+    ruler._verify_receipt_batch_inventory(
+        required=required,
+        output_dir=output_dir,
+        raw_root=raw_root,
+        require_complete=False,
+    )
+    recovered = ruler.recover_owned_receipt_orphans(
+        filename=filename,
+        config=config,
+        raw_root=raw_root,
+        output_dir=output_dir,
+    )
+
+    assert recovered == (staging.name,)
+    assert not staging.exists()
+
+
+def test_batch_inventory_rejects_retired_stage_a_receipt(tmp_path) -> None:
+    capture = ruler._load_capture_module()
+    required = capture.required_ruler_receipts()
+    output_dir = tmp_path / "output"
+    raw_root = tmp_path / "raw"
+    output_dir.mkdir()
+    raw_root.mkdir()
+    retired = "retrieval__niah_multiquery__l4096__s2339.json"
+    (output_dir / retired).write_bytes(b"retired")
+
+    with pytest.raises(ValueError, match="unexpected entries"):
+        ruler._verify_receipt_batch_inventory(
+            required=required,
+            output_dir=output_dir,
+            raw_root=raw_root,
+            require_complete=False,
+        )
+
+
 def test_two_partial_invocations_then_full_set_publish_one_complete_manifest(
     monkeypatch, tmp_path
 ) -> None:
@@ -404,7 +488,24 @@ def test_two_partial_invocations_then_full_set_publish_one_complete_manifest(
     ]
     output_dir = tmp_path / "receipts"
     output_dir.mkdir()
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
     verified: list[str] = []
+
+    def publish_fixture(item: dict[str, object], payload: bytes) -> None:
+        filename = str(item["filename"])
+        config = str(item["config"])
+        (output_dir / filename).write_bytes(payload)
+        diagnostic = raw_dir / filename.removesuffix(".json")
+        (diagnostic / config).mkdir(parents=True)
+        for relative in (
+            "command-manifest.json",
+            "runtime-manifest.json",
+            "stdout.log",
+            "stderr.log",
+            f"{config}/validation.jsonl",
+        ):
+            (diagnostic / relative).write_bytes(b"fixture")
 
     def fake_verify(*, path: Path, receipt, **_kwargs):
         verified.append(path.name)
@@ -441,7 +542,7 @@ def test_two_partial_invocations_then_full_set_publish_one_complete_manifest(
     kwargs = {
         "required": required,
         "output_dir": output_dir,
-        "raw_root": tmp_path / "raw",
+        "raw_root": raw_dir,
         "capture": capture,
         "python": tmp_path / "python.exe",
         "package_root": tmp_path / "site-packages",
@@ -459,15 +560,15 @@ def test_two_partial_invocations_then_full_set_publish_one_complete_manifest(
     }
 
     for item in required[:7]:
-        (output_dir / item["filename"]).write_bytes(b"partial-one")
+        publish_fixture(item, b"partial-one")
     assert ruler.finalize_generation_manifest_if_complete(**kwargs) is None
     assert not (output_dir / "generation-manifest.json").exists()
     for item in required[7:13]:
-        (output_dir / item["filename"]).write_bytes(b"partial-two")
+        publish_fixture(item, b"partial-two")
     assert ruler.finalize_generation_manifest_if_complete(**kwargs) is None
     assert not (output_dir / "generation-manifest.json").exists()
     for item in required[13:]:
-        (output_dir / item["filename"]).write_bytes(b"complete")
+        publish_fixture(item, b"complete")
 
     manifest = ruler.finalize_generation_manifest_if_complete(**kwargs)
 
