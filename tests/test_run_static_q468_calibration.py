@@ -66,6 +66,20 @@ def authenticated_git_path() -> Path:
     return runner._authenticate_git_executable(None).path
 
 
+def model_staging_path_contract_sha256(
+    repository_root: Path,
+    hub_cache_root: Path,
+    output_root: Path,
+) -> str:
+    return runner._model_staging_path_contract_sha256(
+        runner._validate_model_staging_roots(
+            repository_root=repository_root,
+            hub_cache_root=hub_cache_root,
+            output_root=output_root,
+        )
+    )
+
+
 def fisher_boundary_contract(
     token_ids: tuple[int, ...] = (1, 2, 3),
 ) -> dict[str, object]:
@@ -1794,7 +1808,7 @@ def test_model_authentication_rejects_extra_files(tmp_path: Path) -> None:
         runner.authenticate_local_model_files(root, manifest, calibration_api=api)
 
 
-def test_stage_model_authenticates_before_touching_downloader_cache_or_output(
+def test_stage_model_auth_failure_does_not_import_download_or_write(
     tmp_path: Path,
 ) -> None:
     candidate = runner.canonical_json_bytes(
@@ -1812,6 +1826,9 @@ def test_stage_model_authenticates_before_touching_downloader_cache_or_output(
     identity_path = tmp_path / "candidate.json"
     identity_path.write_bytes(candidate)
     cache = tmp_path / "cache"
+    cache.mkdir()
+    cache_marker = cache / "preexisting.txt"
+    cache_marker.write_text("untouched", encoding="utf-8")
     output = tmp_path / "model"
     calls: list[dict[str, object]] = []
 
@@ -1825,13 +1842,17 @@ def test_stage_model_authenticates_before_touching_downloader_cache_or_output(
             source_commit="1" * 40,
             model_file_manifest_path=tmp_path / "missing-model.json",
             expected_model_file_manifest_sha256="2" * 64,
+            expected_model_staging_path_contract_sha256=(
+                model_staging_path_contract_sha256(SCRIPT.parents[1], cache, output)
+            ),
             hub_cache_root=cache,
             output_root=output,
             downloader=lambda **kwargs: calls.append(kwargs),
         )
 
     assert calls == []
-    assert not cache.exists()
+    assert cache_marker.read_text(encoding="utf-8") == "untouched"
+    assert list(cache.iterdir()) == [cache_marker]
     assert not output.exists()
 
 
@@ -2476,6 +2497,497 @@ def test_committed_frozen_identity_requires_exact_head_index_and_worktree_blob(
         )
 
 
+def test_model_staging_path_preflight_is_bound_deterministic_and_read_only(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "hub-cache"
+    repository.mkdir()
+    cache.mkdir()
+    marker = cache / "preexisting.txt"
+    marker.write_text("untouched", encoding="utf-8")
+    output = tmp_path / "published-model"
+
+    first = runner.verify_model_staging_paths(
+        repository_root=repository,
+        hub_cache_root=cache,
+        output_root=output,
+    )
+    second = runner.verify_model_staging_paths(
+        repository_root=repository,
+        hub_cache_root=cache,
+        output_root=output,
+    )
+    paths = runner._validate_model_staging_roots(
+        repository_root=repository,
+        hub_cache_root=cache,
+        output_root=output,
+    )
+
+    assert set(first) == {
+        "artifact_kind",
+        "hub_cache_component_identities_sha256",
+        "hub_cache_root_absolute_path_sha256",
+        "hub_cache_root_state",
+        "output_parent_absolute_path_sha256",
+        "output_parent_component_identities_sha256",
+        "output_parent_state",
+        "output_root_absolute_path_sha256",
+        "output_root_state",
+        "path_contract_sha256",
+        "repository_component_identities_sha256",
+        "repository_root_absolute_path_sha256",
+        "repository_root_state",
+        "runner_revision",
+        "schema_version",
+        "status",
+    }
+    assert first == {
+        "artifact_kind": runner.MODEL_STAGING_PATHS_KIND,
+        "hub_cache_component_identities_sha256": (
+            runner._directory_component_identities_sha256(paths.hub_cache_component_identities)
+        ),
+        "hub_cache_root_absolute_path_sha256": runner._normalized_absolute_path_sha256(
+            cache.resolve()
+        ),
+        "hub_cache_root_state": "existing_regular_non_link_directory",
+        "output_parent_absolute_path_sha256": runner._normalized_absolute_path_sha256(
+            output.parent.resolve()
+        ),
+        "output_parent_component_identities_sha256": (
+            runner._directory_component_identities_sha256(paths.output_parent_component_identities)
+        ),
+        "output_parent_state": "existing_regular_non_link_directory",
+        "output_root_absolute_path_sha256": runner._normalized_absolute_path_sha256(
+            output.parent.resolve() / output.name
+        ),
+        "output_root_state": "absent",
+        "path_contract_sha256": runner._model_staging_path_contract_sha256(paths),
+        "repository_component_identities_sha256": (
+            runner._directory_component_identities_sha256(paths.repository_component_identities)
+        ),
+        "repository_root_absolute_path_sha256": runner._normalized_absolute_path_sha256(
+            repository.resolve()
+        ),
+        "repository_root_state": "existing_regular_non_link_directory",
+        "runner_revision": runner.RUNNER_REVISION,
+        "schema_version": runner.MODEL_STAGING_PATHS_SCHEMA,
+        "status": "verified_model_staging_paths",
+    }
+    assert runner.canonical_json_bytes(first) == runner.canonical_json_bytes(second)
+    assert str(tmp_path).encode("utf-8") not in runner.canonical_json_bytes(first)
+    assert marker.read_text(encoding="utf-8") == "untouched"
+    assert list(cache.iterdir()) == [marker]
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing-cache", "Hub cache root must already exist"),
+        ("cache-file", "Hub cache root traverses a link or non-directory"),
+        ("missing-output-parent", "model output parent must already exist"),
+        ("existing-output-file", "refusing to overwrite"),
+        ("existing-output-directory", "refusing to overwrite"),
+        ("repo-local-cache", "Hub cache root must not overlap the repository"),
+        ("cache-contains-repository", "Hub cache root must not overlap the repository"),
+        ("repo-local-output", "model output root must be outside the repository"),
+        ("output-inside-cache", "must not be nested"),
+        ("lexical-output-inside-cache", "must not be nested"),
+    ],
+)
+def test_model_staging_path_preflight_rejects_invalid_roots_without_writes(
+    case: str,
+    message: str,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    outside = tmp_path / "outside"
+    output_parent = outside / "output-parent"
+    repository.mkdir()
+    output_parent.mkdir(parents=True)
+    cache = outside / "hub-cache"
+    cache.mkdir()
+    output = output_parent / "model"
+
+    if case == "missing-cache":
+        cache = outside / "missing-cache"
+    elif case == "cache-file":
+        cache = outside / "cache-file"
+        cache.write_text("not a directory", encoding="utf-8")
+    elif case == "missing-output-parent":
+        output = outside / "missing-parent" / "model"
+    elif case == "existing-output-file":
+        output.write_text("occupied", encoding="utf-8")
+    elif case == "existing-output-directory":
+        output.mkdir()
+    elif case == "repo-local-cache":
+        cache = repository / "cache"
+        cache.mkdir()
+    elif case == "cache-contains-repository":
+        cache = tmp_path
+    elif case == "repo-local-output":
+        output = repository / "model"
+    elif case == "output-inside-cache":
+        output = cache / "model"
+    elif case == "lexical-output-inside-cache":
+        output = cache / "unused" / ".." / "model"
+    else:  # pragma: no cover - guards the table itself
+        raise AssertionError(case)
+
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+    with pytest.raises((FileExistsError, runner.CalibrationRunError), match=message):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=cache,
+            output_root=output,
+        )
+    after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+
+    assert after == before
+
+
+def test_model_staging_path_preflight_rejects_filesystem_roots(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    repository.mkdir()
+    cache.mkdir()
+    root = Path(tmp_path.anchor)
+
+    with pytest.raises(runner.CalibrationRunError, match="output parent.*filesystem root"):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=cache,
+            output_root=root / f"recurquant-output-{tmp_path.name}",
+        )
+    with pytest.raises(runner.CalibrationRunError, match="cache root.*filesystem root"):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=root,
+            output_root=tmp_path / "model",
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("model:stream", "CON", "aux.json", "model.", "model ", "bad name", "\x01model"),
+)
+def test_model_staging_path_preflight_requires_windows_safe_output_basename(
+    name: str,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    repository.mkdir()
+    cache.mkdir()
+
+    with pytest.raises(runner.CalibrationRunError, match="Windows-safe basename"):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=cache,
+            output_root=tmp_path / name,
+        )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows case aliases only")
+def test_model_staging_path_preflight_rejects_case_alias_repository_cache(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    case_alias = Path(str(repository).swapcase())
+
+    with pytest.raises(runner.CalibrationRunError, match="must not overlap"):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=case_alias,
+            output_root=tmp_path / "model",
+        )
+
+
+def test_model_staging_path_preflight_rejects_links_and_dangling_output(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    real_cache = tmp_path / "real-cache"
+    repository.mkdir()
+    real_cache.mkdir()
+    cache_link = tmp_path / "cache-link"
+    dangling_output = tmp_path / "dangling-output"
+    try:
+        cache_link.symlink_to(real_cache, target_is_directory=True)
+        dangling_output.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+
+    with pytest.raises(runner.CalibrationRunError, match="link or non-directory"):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=cache_link,
+            output_root=tmp_path / "model",
+        )
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=real_cache,
+            output_root=dangling_output,
+        )
+
+
+def test_model_staging_path_snapshot_rejects_in_validation_component_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    displaced = tmp_path / "displaced-cache"
+    repository.mkdir()
+    cache.mkdir()
+    original_resolve = Path.resolve
+    replaced = False
+
+    def replace_after_resolve(path: Path, strict: bool = False) -> Path:
+        nonlocal replaced
+        resolved = original_resolve(path, strict=strict)
+        if path == cache and not replaced:
+            replaced = True
+            cache.rename(displaced)
+            cache.mkdir()
+        return resolved
+
+    monkeypatch.setattr(Path, "resolve", replace_after_resolve)
+    with pytest.raises(runner.CalibrationRunError, match="changed while it was validated"):
+        runner.verify_model_staging_paths(
+            repository_root=repository,
+            hub_cache_root=cache,
+            output_root=tmp_path / "model",
+        )
+
+
+def test_repo_local_cache_fails_before_git_h1_import_or_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    cache = repository / "cache"
+    output_parent = tmp_path / "outside"
+    cache.mkdir(parents=True)
+    output_parent.mkdir()
+    output = output_parent / "model"
+    authentication_calls: list[str] = []
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            pytest.fail("invalid staging roots imported a Hugging Face client")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_git_executable",
+        lambda _path: authentication_calls.append("git"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_model_staging_authorization",
+        lambda **_kwargs: authentication_calls.append("h1"),
+    )
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+
+    with pytest.raises(runner.CalibrationRunError, match="must not overlap"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "missing-identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=repository,
+            repository_source_manifest_path=tmp_path / "missing-source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "missing-model.json",
+            expected_model_file_manifest_sha256="2" * 64,
+            expected_model_staging_path_contract_sha256="0" * 64,
+            hub_cache_root=cache,
+            output_root=output,
+        )
+
+    assert authentication_calls == []
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+    assert not output.exists()
+
+
+def test_stage_model_path_contract_mismatch_fails_before_git_h1_hub_or_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    repository.mkdir()
+    cache.mkdir()
+    marker = cache / "preexisting.txt"
+    marker.write_text("untouched", encoding="utf-8")
+    output = tmp_path / "model"
+    authentication_calls: list[str] = []
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            pytest.fail("path-contract mismatch imported a Hugging Face client")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_git_executable",
+        lambda _path: authentication_calls.append("git"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_model_staging_authorization",
+        lambda **_kwargs: authentication_calls.append("h1"),
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="differs from the CLI binding"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "missing-identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=repository,
+            repository_source_manifest_path=tmp_path / "missing-source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "missing-model.json",
+            expected_model_file_manifest_sha256="2" * 64,
+            expected_model_staging_path_contract_sha256="0" * 64,
+            hub_cache_root=cache,
+            output_root=output,
+        )
+
+    assert authentication_calls == []
+    assert marker.read_text(encoding="utf-8") == "untouched"
+    assert list(cache.iterdir()) == [marker]
+    assert not output.exists()
+    assert not list(tmp_path.glob(".model.staging-*"))
+
+
+@pytest.mark.parametrize(
+    "invalid_sha256",
+    ("A" * 64, "0" * 63, "g" * 64),
+    ids=("uppercase", "short", "non-hex"),
+)
+def test_stage_model_requires_exact_lowercase_path_contract_sha256_before_auth(
+    invalid_sha256: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    repository.mkdir()
+    cache.mkdir()
+    output = tmp_path / "model"
+    authentication_calls: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_git_executable",
+        lambda _path: authentication_calls.append("git"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_model_staging_authorization",
+        lambda **_kwargs: authentication_calls.append("h1"),
+    )
+
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=repository,
+            repository_source_manifest_path=tmp_path / "source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "model.json",
+            expected_model_file_manifest_sha256="2" * 64,
+            expected_model_staging_path_contract_sha256=invalid_sha256,
+            hub_cache_root=cache,
+            output_root=output,
+        )
+
+    assert authentication_calls == []
+    assert not output.exists()
+
+
+def test_stage_model_rejects_path_snapshot_mismatch_before_hub_or_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    other_cache = tmp_path / "other-cache"
+    repository.mkdir()
+    cache.mkdir()
+    other_cache.mkdir()
+    output = tmp_path / "model"
+    original_validate = runner._validate_model_staging_roots
+    expected_path_contract_sha256 = model_staging_path_contract_sha256(
+        repository,
+        cache,
+        output,
+    )
+    validations = 0
+    authorizations = 0
+    original_import = builtins.__import__
+
+    def validate(**kwargs: object) -> runner.ModelStagingPaths:
+        nonlocal validations
+        validations += 1
+        result = original_validate(**kwargs)
+        if validations == 2:
+            return replace(result, hub_cache_root=other_cache.resolve())
+        return result
+
+    def authenticate(**_kwargs: object) -> runner.ModelStagingAuthorization:
+        nonlocal authorizations
+        authorizations += 1
+        return model_staging_authorization()
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            pytest.fail("path mismatch imported a Hugging Face client")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "_validate_model_staging_roots", validate)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_git_executable",
+        lambda _path: runner.AuthenticatedGitExecutable(
+            path=tmp_path / "git.exe",
+            absolute_path_sha256="a" * 64,
+            sha256="b" * 64,
+            size_bytes=1,
+        ),
+    )
+    monkeypatch.setattr(runner, "_authenticate_model_staging_authorization", authenticate)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    with pytest.raises(runner.CalibrationRunError, match="changed during authorization"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=repository,
+            repository_source_manifest_path=tmp_path / "source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "model.json",
+            expected_model_file_manifest_sha256="2" * 64,
+            expected_model_staging_path_contract_sha256=expected_path_contract_sha256,
+            hub_cache_root=cache,
+            output_root=output,
+        )
+
+    assert validations == 2
+    assert authorizations == 1
+    assert not output.exists()
+    assert not list(tmp_path.glob(".model.staging-*"))
+
+
 def test_stage_model_downloads_only_exact_bound_files_and_publishes_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2502,7 +3014,15 @@ def test_stage_model_downloads_only_exact_bound_files_and_publishes_atomically(
 
     monkeypatch.setattr(runner, "_authenticate_model_staging_authorization", authenticate)
     cache = tmp_path / "hub-cache"
+    cache.mkdir()
     output = tmp_path / "published-model"
+    expected_path_contract_sha256 = runner._model_staging_path_contract_sha256(
+        runner._validate_model_staging_roots(
+            repository_root=SCRIPT.parents[1],
+            hub_cache_root=cache,
+            output_root=output,
+        )
+    )
     result = runner.stage_identity_bound_model(
         frozen_identity_path=tmp_path / "identity.json",
         expected_frozen_identity_sha256="d" * 64,
@@ -2512,6 +3032,7 @@ def test_stage_model_downloads_only_exact_bound_files_and_publishes_atomically(
         source_commit="1" * 40,
         model_file_manifest_path=tmp_path / "model-manifest.json",
         expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
+        expected_model_staging_path_contract_sha256=expected_path_contract_sha256,
         hub_cache_root=cache,
         output_root=output,
         local_files_only=True,
@@ -2539,6 +3060,65 @@ def test_stage_model_downloads_only_exact_bound_files_and_publishes_atomically(
     assert not list(tmp_path.glob(".published-model.staging-*"))
     assert result["status"] == "staged_authenticated_model"
     assert result["source_commit"] == "1" * 40
+    assert result["model_staging_path_contract_sha256"] == expected_path_contract_sha256
+
+
+def test_stage_model_revalidates_root_identities_immediately_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = staged_model_files()
+    authorization = model_staging_authorization(files)
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    displaced_cache = tmp_path / "displaced-cache"
+    repository.mkdir()
+    cache.mkdir()
+    output = tmp_path / "published-model"
+    expected_path_contract_sha256 = model_staging_path_contract_sha256(
+        repository,
+        cache,
+        output,
+    )
+    authorization_calls = 0
+
+    def authenticate(**_kwargs: object) -> runner.ModelStagingAuthorization:
+        nonlocal authorization_calls
+        authorization_calls += 1
+        if authorization_calls == 2:
+            cache.rename(displaced_cache)
+            cache.mkdir()
+        return authorization
+
+    def download(**kwargs: object) -> str:
+        name = str(kwargs["filename"])
+        target = Path(kwargs["cache_dir"]) / "snapshot" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(files[name])
+        return str(target)
+
+    monkeypatch.setattr(runner, "_authenticate_model_staging_authorization", authenticate)
+
+    with pytest.raises(runner.CalibrationRunError, match="changed before publication"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=repository,
+            repository_source_manifest_path=tmp_path / "source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "manifest.json",
+            expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
+            expected_model_staging_path_contract_sha256=expected_path_contract_sha256,
+            hub_cache_root=cache,
+            output_root=output,
+            downloader=download,
+        )
+
+    assert authorization_calls == 2
+    assert not output.exists()
+    assert not list(tmp_path.glob(".published-model.staging-*"))
+    assert displaced_cache.is_dir()
 
 
 def test_stage_model_failure_cleans_owned_staging_and_never_exposes_final_root(
@@ -2565,6 +3145,8 @@ def test_stage_model_failure_cleans_owned_staging_and_never_exposes_final_root(
         "_authenticate_model_staging_authorization",
         lambda **_kwargs: authorization,
     )
+    cache = tmp_path / "cache"
+    cache.mkdir()
     output = tmp_path / "published-model"
     with pytest.raises(OSError, match="injected"):
         runner.stage_identity_bound_model(
@@ -2576,13 +3158,68 @@ def test_stage_model_failure_cleans_owned_staging_and_never_exposes_final_root(
             source_commit="1" * 40,
             model_file_manifest_path=tmp_path / "manifest.json",
             expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
-            hub_cache_root=tmp_path / "cache",
+            expected_model_staging_path_contract_sha256=(
+                model_staging_path_contract_sha256(SCRIPT.parents[1], cache, output)
+            ),
+            hub_cache_root=cache,
             output_root=output,
             downloader=download,
         )
 
     assert not output.exists()
     assert not list(tmp_path.glob(".published-model.staging-*"))
+
+
+def test_stage_model_refuses_to_clean_replaced_owned_staging_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorization = model_staging_authorization()
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache"
+    repository.mkdir()
+    cache.mkdir()
+    output = tmp_path / "published-model"
+    displaced = tmp_path / "displaced-owned-staging"
+    replacement: Path | None = None
+
+    def download(**_kwargs: object) -> str:
+        nonlocal replacement
+        [owned] = list(tmp_path.glob(".published-model.staging-*"))
+        owned.rename(displaced)
+        owned.mkdir()
+        (owned / "replacement-owner.txt").write_text("preserve", encoding="utf-8")
+        replacement = owned
+        raise OSError("injected after staging replacement")
+
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_model_staging_authorization",
+        lambda **_kwargs: authorization,
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to clean a replaced"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=repository,
+            repository_source_manifest_path=tmp_path / "source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "manifest.json",
+            expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
+            expected_model_staging_path_contract_sha256=(
+                model_staging_path_contract_sha256(repository, cache, output)
+            ),
+            hub_cache_root=cache,
+            output_root=output,
+            downloader=download,
+        )
+
+    assert replacement is not None
+    assert (replacement / "replacement-owner.txt").read_text(encoding="utf-8") == "preserve"
+    assert displaced.is_dir()
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("outside_kind", ("outside", "wrong-content"))
@@ -2598,6 +3235,8 @@ def test_stage_model_rejects_untrusted_cache_payload_without_publication(
         "_authenticate_model_staging_authorization",
         lambda **_kwargs: authorization,
     )
+    cache = tmp_path / "cache"
+    cache.mkdir()
 
     def download(**kwargs: object) -> str:
         name = str(kwargs["filename"])
@@ -2623,7 +3262,10 @@ def test_stage_model_rejects_untrusted_cache_payload_without_publication(
             source_commit="1" * 40,
             model_file_manifest_path=tmp_path / "manifest.json",
             expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
-            hub_cache_root=tmp_path / "cache",
+            expected_model_staging_path_contract_sha256=(
+                model_staging_path_contract_sha256(SCRIPT.parents[1], cache, output)
+            ),
+            hub_cache_root=cache,
             output_root=output,
             downloader=download,
         )
@@ -3167,6 +3809,8 @@ def test_stage_model_cli_forwards_only_explicit_authorization_and_roots(
         str(tmp_path / "cache"),
         "--output-root",
         str(tmp_path / "output"),
+        "--expected-model-staging-path-contract-sha256",
+        "5" * 64,
         "--local-files-only",
     ]
 
@@ -3175,6 +3819,7 @@ def test_stage_model_cli_forwards_only_explicit_authorization_and_roots(
         {
             "expected_frozen_identity_sha256": "1" * 64,
             "expected_model_file_manifest_sha256": "4" * 64,
+            "expected_model_staging_path_contract_sha256": "5" * 64,
             "frozen_identity_path": tmp_path / "identity.json",
             "git_executable_path": authenticated_git_path(),
             "hub_cache_root": tmp_path / "cache",
@@ -3187,6 +3832,110 @@ def test_stage_model_cli_forwards_only_explicit_authorization_and_roots(
             "source_commit": "3" * 40,
         }
     ]
+
+    missing_contract_arguments = arguments[:-3] + arguments[-1:]
+    with pytest.raises(SystemExit):
+        runner.main(missing_contract_arguments)
+    assert len(calls) == 1
+
+
+def test_verify_model_staging_paths_cli_is_canonical_and_exactly_forwarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+    receipt = {
+        "artifact_kind": runner.MODEL_STAGING_PATHS_KIND,
+        "schema_version": runner.MODEL_STAGING_PATHS_SCHEMA,
+        "status": "verified_model_staging_paths",
+    }
+
+    def verify(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return receipt
+
+    monkeypatch.setattr(runner, "verify_model_staging_paths", verify)
+    arguments = [
+        "verify-model-staging-paths",
+        "--repository-root",
+        str(tmp_path / "repository"),
+        "--hub-cache-root",
+        str(tmp_path / "cache"),
+        "--output-root",
+        str(tmp_path / "output"),
+    ]
+
+    assert runner.main(arguments) == 0
+    assert capsys.readouterr().out == runner.canonical_json_bytes(receipt).decode("utf-8")
+    assert calls == [
+        {
+            "hub_cache_root": tmp_path / "cache",
+            "output_root": tmp_path / "output",
+            "repository_root": tmp_path / "repository",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        ("--git-executable", "git"),
+        ("--frozen-identity", "identity.json"),
+        ("--expected-frozen-identity-sha256", "1" * 64),
+        ("--identity-commit", "2" * 40),
+        ("--repository-source-manifest", "source.json"),
+        ("--source-commit", "3" * 40),
+        ("--model-file-manifest", "model.json"),
+        ("--expected-model-file-manifest-sha256", "4" * 64),
+        ("--expected-model-staging-path-contract-sha256", "5" * 64),
+        ("--local-files-only",),
+        ("--model-root", "model"),
+        ("--cache-root", "cache"),
+        ("--output", "receipt.json"),
+        ("--output-dir", "output"),
+    ],
+    ids=(
+        "git",
+        "identity",
+        "identity-hash",
+        "h1",
+        "source-manifest",
+        "h0",
+        "model-manifest",
+        "model-manifest-hash",
+        "staging-path-contract-hash",
+        "local-hub-mode",
+        "model-root",
+        "generic-cache",
+        "persisted-output",
+        "calibration-output",
+    ),
+)
+def test_verify_model_staging_paths_cli_rejects_every_non_path_surface(
+    forbidden: tuple[str, ...],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner,
+        "verify_model_staging_paths",
+        lambda **kwargs: calls.append(dict(kwargs)),
+    )
+    arguments = [
+        "verify-model-staging-paths",
+        "--repository-root",
+        str(tmp_path / "repository"),
+        "--hub-cache-root",
+        str(tmp_path / "cache"),
+        "--output-root",
+        str(tmp_path / "output"),
+    ]
+
+    with pytest.raises(SystemExit):
+        runner.main([*arguments, *forbidden])
+    assert calls == []
 
 
 def test_verify_frozen_identity_contract_cli_is_canonical_and_exactly_forwarded(
@@ -3242,6 +3991,7 @@ def test_verify_frozen_identity_contract_cli_is_canonical_and_exactly_forwarded(
         ("--identity-commit", "2" * 40),
         ("--model-file-manifest", "model.json"),
         ("--expected-model-file-manifest-sha256", "4" * 64),
+        ("--expected-model-staging-path-contract-sha256", "5" * 64),
         ("--hub-cache-root", "cache"),
         ("--output-root", "output"),
         ("--output", "output.json"),
@@ -3252,6 +4002,7 @@ def test_verify_frozen_identity_contract_cli_is_canonical_and_exactly_forwarded(
         "h1",
         "model-manifest",
         "model-manifest-hash",
+        "staging-path-contract-hash",
         "hub-cache",
         "output-root",
         "output",
@@ -3348,6 +4099,7 @@ def test_verify_model_staging_authorization_cli_has_no_cache_or_output_surface(
     for forbidden in (
         ("--hub-cache-root", str(tmp_path / "forbidden-cache")),
         ("--output-root", str(tmp_path / "forbidden-output")),
+        ("--expected-model-staging-path-contract-sha256", "5" * 64),
         ("--local-files-only",),
     ):
         with pytest.raises(SystemExit):

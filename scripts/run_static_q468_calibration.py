@@ -56,7 +56,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v4"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v5"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -81,6 +81,8 @@ FROZEN_IDENTITY_CONTRACT_KIND: Final = (
 FROZEN_IDENTITY_CONTRACT_SCHEMA: Final = 1
 MODEL_STAGING_AUTHORIZATION_KIND: Final = "recurquant_experiment013_model_staging_authorization"
 MODEL_STAGING_AUTHORIZATION_SCHEMA: Final = 1
+MODEL_STAGING_PATHS_KIND: Final = "recurquant_experiment013_model_staging_paths_verification"
+MODEL_STAGING_PATHS_SCHEMA: Final = 1
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
 RUNTIME_MANIFEST_SCHEMA: Final = 4
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
@@ -93,6 +95,19 @@ RHT_SEED: Final = 2_339
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _GIT_REVISION_RE: Final = re.compile(r"[0-9a-f]{40}")
 _SAFE_MODEL_FILE_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+_MODEL_STAGING_OUTPUT_ROOT_NAME_RE: Final = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?"
+)
+_WINDOWS_RESERVED_BASENAMES: Final = frozenset(
+    {
+        "aux",
+        "con",
+        "nul",
+        "prn",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }
+)
 _WEIGHT_FILE_RE: Final = re.compile(
     r"(?:^|/)(?:model(?:-[0-9]+-of-[0-9]+)?|"
     r"model\.safetensors-[0-9]+-of-[0-9]+)\.safetensors$"
@@ -763,6 +778,23 @@ class ModelStagingAuthorization:
     frozen_identity_file_sha256: str
     identity_commit: str
     source_commit: str
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryComponentIdentity:
+    device: int
+    inode: int
+    mode: int
+
+
+@dataclass(frozen=True, slots=True)
+class ModelStagingPaths:
+    repository_root: Path
+    repository_component_identities: tuple[DirectoryComponentIdentity, ...]
+    hub_cache_root: Path
+    hub_cache_component_identities: tuple[DirectoryComponentIdentity, ...]
+    output_root: Path
+    output_parent_component_identities: tuple[DirectoryComponentIdentity, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1844,19 +1876,121 @@ def _path_is_within(path: Path, root: Path) -> bool:
     return True
 
 
-def _ensure_regular_directory(path: Path, *, context: str) -> Path:
-    absolute = Path(os.path.abspath(path))
-    if os.path.lexists(absolute):
-        if _is_link_or_reparse(absolute) or not absolute.is_dir():
-            raise CalibrationRunError(f"{context} must be a regular non-link directory")
-    else:
-        absolute.mkdir(parents=True, exist_ok=False)
-    candidate = Path(absolute.anchor)
+def _require_existing_regular_directory(
+    path: Path,
+    *,
+    context: str,
+) -> tuple[Path, tuple[DirectoryComponentIdentity, ...]]:
+    """Normalize one existing directory without creating or following links."""
+
+    try:
+        absolute = Path(os.path.abspath(path))
+    except (OSError, TypeError, ValueError) as exc:
+        raise CalibrationRunError(f"{context} is unavailable") from exc
+    if not absolute.anchor:
+        raise CalibrationRunError(f"{context} is not absolute after normalization")
+    component = Path(absolute.anchor)
+    components = [component]
     for part in absolute.parts[1:]:
-        candidate /= part
-        if _is_link_or_reparse(candidate) or not candidate.is_dir():
-            raise CalibrationRunError(f"{context} traverses a link or non-directory")
-    return absolute.resolve(strict=True)
+        component /= part
+        components.append(component)
+
+    def snapshot() -> tuple[DirectoryComponentIdentity, ...]:
+        identities: list[DirectoryComponentIdentity] = []
+        for candidate in components:
+            if not os.path.lexists(candidate):
+                raise CalibrationRunError(f"{context} must already exist")
+            try:
+                status = candidate.lstat()
+            except OSError as exc:
+                raise CalibrationRunError(f"{context} is unavailable") from exc
+            if stat.S_ISLNK(status.st_mode) or bool(
+                getattr(status, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
+            ):
+                raise CalibrationRunError(f"{context} traverses a link or non-directory")
+            if not stat.S_ISDIR(status.st_mode):
+                raise CalibrationRunError(f"{context} traverses a link or non-directory")
+            identities.append(
+                DirectoryComponentIdentity(
+                    device=status.st_dev,
+                    inode=status.st_ino,
+                    mode=status.st_mode,
+                )
+            )
+        return tuple(identities)
+
+    before = snapshot()
+    try:
+        resolved = absolute.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise CalibrationRunError(f"{context} is unavailable") from exc
+    after = snapshot()
+    if after != before:
+        raise CalibrationRunError(f"{context} changed while it was validated")
+    return resolved, after
+
+
+def _normalized_absolute_path_sha256(path: Path) -> str:
+    if not path.is_absolute():
+        raise ValueError("path digest input must be absolute")
+    normalized = os.path.normcase(os.path.normpath(str(path)))
+    return sha256_bytes(normalized.encode("utf-8"))
+
+
+def _directory_component_identities_sha256(
+    identities: tuple[DirectoryComponentIdentity, ...],
+) -> str:
+    return sha256_bytes(
+        canonical_json_bytes(
+            [
+                {
+                    "device": item.device,
+                    "inode": item.inode,
+                    "mode": item.mode,
+                }
+                for item in identities
+            ]
+        )
+    )
+
+
+def _model_staging_path_contract(paths: ModelStagingPaths) -> dict[str, object]:
+    return {
+        "hub_cache_component_identities_sha256": _directory_component_identities_sha256(
+            paths.hub_cache_component_identities
+        ),
+        "hub_cache_root_absolute_path_sha256": _normalized_absolute_path_sha256(
+            paths.hub_cache_root
+        ),
+        "hub_cache_root_state": "existing_regular_non_link_directory",
+        "output_parent_absolute_path_sha256": _normalized_absolute_path_sha256(
+            paths.output_root.parent
+        ),
+        "output_parent_component_identities_sha256": _directory_component_identities_sha256(
+            paths.output_parent_component_identities
+        ),
+        "output_parent_state": "existing_regular_non_link_directory",
+        "output_root_absolute_path_sha256": _normalized_absolute_path_sha256(paths.output_root),
+        "output_root_state": "absent",
+        "repository_component_identities_sha256": _directory_component_identities_sha256(
+            paths.repository_component_identities
+        ),
+        "repository_root_absolute_path_sha256": _normalized_absolute_path_sha256(
+            paths.repository_root
+        ),
+        "repository_root_state": "existing_regular_non_link_directory",
+    }
+
+
+def _model_staging_path_contract_sha256(paths: ModelStagingPaths) -> str:
+    return sha256_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": MODEL_STAGING_PATHS_SCHEMA,
+                **_model_staging_path_contract(paths),
+            }
+        )
+    )
 
 
 def _validate_model_staging_roots(
@@ -1864,23 +1998,97 @@ def _validate_model_staging_roots(
     repository_root: Path,
     hub_cache_root: Path,
     output_root: Path,
-) -> tuple[Path, Path]:
-    repository = Path(os.path.abspath(repository_root)).resolve(strict=True)
-    destination = Path(os.path.abspath(output_root))
-    if not destination.name:
+) -> ModelStagingPaths:
+    """Validate and snapshot the model-staging path boundary without writes."""
+
+    repository, repository_identities = _require_existing_regular_directory(
+        repository_root,
+        context="repository root",
+    )
+    try:
+        lexical_destination = Path(output_root)
+        lexical_name = lexical_destination.name
+        destination = Path(os.path.abspath(lexical_destination))
+    except (OSError, TypeError, ValueError) as exc:
+        raise CalibrationRunError("model output root is unavailable") from exc
+    if not lexical_name or not destination.name:
         raise CalibrationRunError("model output root cannot be a filesystem root")
-    if os.path.lexists(destination):
-        raise FileExistsError(f"refusing to overwrite staged model root: {destination}")
-    parent = _ensure_regular_directory(destination.parent, context="model output parent")
-    cache = _ensure_regular_directory(hub_cache_root, context="Hub cache root")
+    if (
+        _MODEL_STAGING_OUTPUT_ROOT_NAME_RE.fullmatch(lexical_name) is None
+        or lexical_name.endswith((".", " "))
+        or lexical_name.casefold().partition(".")[0] in _WINDOWS_RESERVED_BASENAMES
+        or destination.name != lexical_name
+    ):
+        raise CalibrationRunError(
+            "model output root name must be a canonical Windows-safe basename"
+        )
+    parent, output_parent_identities = _require_existing_regular_directory(
+        destination.parent,
+        context="model output parent",
+    )
+    cache, cache_identities = _require_existing_regular_directory(
+        hub_cache_root,
+        context="Hub cache root",
+    )
+    if not parent.name:
+        raise CalibrationRunError("model output parent cannot be a filesystem root")
+    if not cache.name:
+        raise CalibrationRunError("Hub cache root cannot be a filesystem root")
     resolved_destination = parent / destination.name
-    roots = (("model output root", resolved_destination), ("Hub cache root", cache))
-    for context, candidate in roots:
-        if _path_is_within(candidate, repository):
-            raise CalibrationRunError(f"{context} must be outside the repository")
-    if _path_is_within(resolved_destination, cache) or _path_is_within(cache, resolved_destination):
+    if os.path.lexists(resolved_destination):
+        raise FileExistsError(f"refusing to overwrite staged model root: {resolved_destination}")
+    repository_identity = repository_identities[-1]
+    cache_identity = cache_identities[-1]
+    if (
+        _path_is_within(resolved_destination, repository)
+        or repository_identity in output_parent_identities
+    ):
+        raise CalibrationRunError("model output root must be outside the repository")
+    if (
+        _path_is_within(cache, repository)
+        or _path_is_within(repository, cache)
+        or repository_identity in cache_identities
+        or cache_identity in repository_identities
+    ):
+        raise CalibrationRunError("Hub cache root must not overlap the repository")
+    if (
+        _path_is_within(resolved_destination, cache)
+        or _path_is_within(cache, resolved_destination)
+        or cache_identity in output_parent_identities
+    ):
         raise CalibrationRunError("Hub cache and staged model roots must not be nested")
-    return cache, resolved_destination
+    return ModelStagingPaths(
+        repository_root=repository,
+        repository_component_identities=repository_identities,
+        hub_cache_root=cache,
+        hub_cache_component_identities=cache_identities,
+        output_root=resolved_destination,
+        output_parent_component_identities=output_parent_identities,
+    )
+
+
+def verify_model_staging_paths(
+    *,
+    repository_root: Path,
+    hub_cache_root: Path,
+    output_root: Path,
+) -> dict[str, object]:
+    """Verify model-staging roots without authorization, imports, or writes."""
+
+    paths = _validate_model_staging_roots(
+        repository_root=repository_root,
+        hub_cache_root=hub_cache_root,
+        output_root=output_root,
+    )
+    contract = _model_staging_path_contract(paths)
+    return {
+        "artifact_kind": MODEL_STAGING_PATHS_KIND,
+        **contract,
+        "path_contract_sha256": _model_staging_path_contract_sha256(paths),
+        "runner_revision": RUNNER_REVISION,
+        "schema_version": MODEL_STAGING_PATHS_SCHEMA,
+        "status": "verified_model_staging_paths",
+    }
 
 
 def _assert_regular_cache_payload(cache_root: Path, returned_path: object) -> Path:
@@ -2029,6 +2237,7 @@ def stage_identity_bound_model(
     source_commit: str,
     model_file_manifest_path: Path,
     expected_model_file_manifest_sha256: str,
+    expected_model_staging_path_contract_sha256: str,
     hub_cache_root: Path,
     output_root: Path,
     local_files_only: bool = False,
@@ -2038,23 +2247,39 @@ def stage_identity_bound_model(
 
     if type(local_files_only) is not bool:
         raise TypeError("local_files_only must be bool")
+    initial_paths = _validate_model_staging_roots(
+        repository_root=repository_root,
+        hub_cache_root=hub_cache_root,
+        output_root=output_root,
+    )
+    expected_path_contract_sha256 = _sha256(
+        expected_model_staging_path_contract_sha256,
+        context="expected model-staging path contract SHA-256",
+    )
+    actual_path_contract_sha256 = _model_staging_path_contract_sha256(initial_paths)
+    if actual_path_contract_sha256 != expected_path_contract_sha256:
+        raise CalibrationRunError("model-staging path contract differs from the CLI binding")
     git_executable = _authenticate_git_executable(git_executable_path)
     authorization = _authenticate_model_staging_authorization(
         git_executable=git_executable,
         frozen_identity_path=frozen_identity_path,
         expected_frozen_identity_sha256=expected_frozen_identity_sha256,
         identity_commit=identity_commit,
-        repository_root=repository_root,
+        repository_root=initial_paths.repository_root,
         repository_source_manifest_path=repository_source_manifest_path,
         source_commit=source_commit,
         model_file_manifest_path=model_file_manifest_path,
         expected_model_file_manifest_sha256=expected_model_file_manifest_sha256,
     )
-    cache, destination = _validate_model_staging_roots(
+    confirmed_paths = _validate_model_staging_roots(
         repository_root=repository_root,
         hub_cache_root=hub_cache_root,
         output_root=output_root,
     )
+    if confirmed_paths != initial_paths:
+        raise CalibrationRunError("model-staging roots changed during authorization")
+    cache = confirmed_paths.hub_cache_root
+    destination = confirmed_paths.output_root
     if downloader is None:
         from huggingface_hub import hf_hub_download
 
@@ -2063,7 +2288,12 @@ def stage_identity_bound_model(
     prefix = f".{destination.name}.staging-"
     staging = Path(tempfile.mkdtemp(prefix=prefix, dir=destination.parent))
     owned_staging = True
+    staging_component_identities: tuple[DirectoryComponentIdentity, ...] | None = None
     try:
+        staging, staging_component_identities = _require_existing_regular_directory(
+            staging,
+            context="owned model staging directory",
+        )
         for record in authorization.model_manifest.files:
             returned = downloader(
                 repo_id=authorization.model_manifest.model_id,
@@ -2084,7 +2314,7 @@ def stage_identity_bound_model(
             frozen_identity_path=frozen_identity_path,
             expected_frozen_identity_sha256=expected_frozen_identity_sha256,
             identity_commit=identity_commit,
-            repository_root=repository_root,
+            repository_root=initial_paths.repository_root,
             repository_source_manifest_path=repository_source_manifest_path,
             source_commit=source_commit,
             model_file_manifest_path=model_file_manifest_path,
@@ -2093,6 +2323,13 @@ def stage_identity_bound_model(
         if repeated != authorization:
             raise CalibrationRunError("model-staging authorization changed before publication")
         _verify_exact_local_model_tree(staging, repeated.model_manifest)
+        publication_paths = _validate_model_staging_roots(
+            repository_root=repository_root,
+            hub_cache_root=hub_cache_root,
+            output_root=output_root,
+        )
+        if publication_paths != initial_paths:
+            raise CalibrationRunError("model-staging roots changed before publication")
         _atomic_rename_directory_no_overwrite(staging, destination)
         owned_staging = False
     finally:
@@ -2103,6 +2340,19 @@ def stage_identity_bound_model(
                 raise RuntimeError("owned model staging directory escaped its parent") from exc
             if not staging.name.startswith(prefix):
                 raise RuntimeError("owned model staging directory name drifted")
+            if staging_component_identities is None:
+                raise RuntimeError("owned model staging directory identity was not captured")
+            try:
+                current_staging, current_identities = _require_existing_regular_directory(
+                    staging,
+                    context="owned model staging directory",
+                )
+            except CalibrationRunError as exc:
+                raise RuntimeError(
+                    "refusing to clean an unauthenticated model staging directory"
+                ) from exc
+            if current_staging != staging or current_identities != staging_component_identities:
+                raise RuntimeError("refusing to clean a replaced model staging directory")
             shutil.rmtree(staging, ignore_errors=False)
     _verify_exact_local_model_tree(destination, authorization.model_manifest)
     return {
@@ -2112,6 +2362,7 @@ def stage_identity_bound_model(
         "model_id": authorization.model_manifest.model_id,
         "model_manifest_file_sha256": authorization.model_manifest.file_sha256,
         "model_root": str(destination),
+        "model_staging_path_contract_sha256": expected_path_contract_sha256,
         "revision": authorization.model_manifest.revision,
         "source_commit": authorization.source_commit,
         "status": "staged_authenticated_model",
@@ -5618,10 +5869,14 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         "stage-model",
         "verify-frozen-identity-contract",
         "verify-model-staging-authorization",
+        "verify-model-staging-paths",
     }:
         return None
     command = arguments[0]
-    parser = argparse.ArgumentParser(prog=f"{Path(__file__).name} {command}")
+    parser = argparse.ArgumentParser(
+        prog=f"{Path(__file__).name} {command}",
+        allow_abbrev=False,
+    )
     if command == "prepare-runtime":
         parser.add_argument("--git-executable", required=True, type=Path)
         parser.add_argument("--source-python", required=True, type=Path)
@@ -5638,6 +5893,10 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         parser.add_argument("--repository-root", required=True, type=Path)
         parser.add_argument("--repository-source-manifest", required=True, type=Path)
         parser.add_argument("--source-commit", required=True)
+    elif command == "verify-model-staging-paths":
+        parser.add_argument("--repository-root", required=True, type=Path)
+        parser.add_argument("--hub-cache-root", required=True, type=Path)
+        parser.add_argument("--output-root", required=True, type=Path)
     elif command in {"stage-model", "verify-model-staging-authorization"}:
         parser.add_argument("--git-executable", required=True, type=Path)
         parser.add_argument("--frozen-identity", required=True, type=Path)
@@ -5651,6 +5910,10 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         if command == "stage-model":
             parser.add_argument("--hub-cache-root", required=True, type=Path)
             parser.add_argument("--output-root", required=True, type=Path)
+            parser.add_argument(
+                "--expected-model-staging-path-contract-sha256",
+                required=True,
+            )
             parser.add_argument("--local-files-only", action="store_true")
     else:
         parser.add_argument("--output", required=True, type=Path)
@@ -5689,11 +5952,22 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             source_commit=args.source_commit,
             model_file_manifest_path=args.model_file_manifest,
             expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
+            expected_model_staging_path_contract_sha256=(
+                args.expected_model_staging_path_contract_sha256
+            ),
             hub_cache_root=args.hub_cache_root,
             output_root=args.output_root,
             local_files_only=args.local_files_only,
         )
         print(json.dumps(details, sort_keys=True))
+        return 0
+    if command == "verify-model-staging-paths":
+        details = verify_model_staging_paths(
+            repository_root=args.repository_root,
+            hub_cache_root=args.hub_cache_root,
+            output_root=args.output_root,
+        )
+        print(canonical_json_bytes(details).decode("utf-8"), end="")
         return 0
     if command == "verify-frozen-identity-contract":
         details = verify_frozen_identity_contract(

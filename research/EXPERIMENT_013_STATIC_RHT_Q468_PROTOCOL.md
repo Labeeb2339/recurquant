@@ -1,7 +1,7 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: second replacement-H0 candidate after a preserved pre-model
-> sealed-smoke contract failure; not yet re-preregistered.**
+> **Status: third replacement-H0 candidate after a preserved post-authorization,
+> pre-payload model-staging path failure; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -19,7 +19,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current second replacement-H0 candidate amended: 2026-08-15
+Current third replacement-H0 candidate amended: 2026-08-15
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -378,6 +378,108 @@ may be reused only after their existing byte, inventory, and semantic checks
 pass unchanged. The old H1 model root may be treated only as preserved incident
 evidence, not as the official model root for the next H1; a fresh no-overwrite
 root must be published by a newly authorized `stage-model` execution.
+
+Fifteenth pre-resolution model-staging-path amendment: 2026-08-15. Under
+source commit `0f3ea5e86e5d2ec13d5c5836540ce105e41ad02b`, tag
+`experiment013-h0-0f3ea5e`, and identity-only descendant
+`dae5587adc8f9a2b16335dfdc501e7f0a3f5e6ab`, the required read-only
+model-staging authorization succeeded. Its frozen identity file SHA-256 was
+`65cd1ccd932db1aa4c8f2f06e4b7a88b67532734f611dc33bbba39fbfea1cdb7`.
+The subsequent first `stage-model` invocation supplied repository-local Hub
+cache root `.cache/exp013-identity`. Calibration-runner v4 fully
+reauthenticated H1, H0 source, the frozen identity, and the public model-
+metadata manifest, then deterministically rejected the normalized cache root
+because an official Hub cache must be outside the repository.
+
+The attempted output root
+`C:\tmp\recurquant-exp013-model-h1-dae5587a` remained absent. The failed
+command inspected only staging-path metadata after authorization. It did not
+import a Hub client, invoke a downloader, traverse or read cached payload
+files, create a staging directory, publish an output root, construct an
+adapter, load model configuration or weights, materialize calibration data,
+execute CUDA or Fisher computation, or produce a score, policy, smoke marker,
+calibration binding, stability value, or quality result. The Git worktree
+remained clean.
+
+The immediate cause was an invalid command argument. The execution-control
+defect was the absence of a non-consuming staging-path preflight and runner
+v4's ordering of path validation after H1 authentication. This was neither an
+experimental result nor an infrastructure interruption, so the existing
+same-command infrastructure-retry exception does not apply and no retroactive
+exception is introduced. The H0, tag, H1, identity, and failed command remain
+unchanged as superseded incident evidence and authorize no further official
+execution.
+
+Calibration-runner v5 introduces one pure staging-path validator shared by
+`verify-model-staging-paths` and `stage-model`. The read-only verifier accepts
+only repository root, Hub cache root, and prospective model output root. It
+performs no Git operation or identity, source-manifest, model-manifest, Hub,
+cache-payload, adapter, model, or dataset access; imports no Hub downloader;
+creates no directory or artifact; and writes only deterministic canonical JSON
+to stdout. It requires an existing regular non-link repository root, an
+existing regular non-link external Hub cache, an existing regular non-link
+output parent, an absent non-root output destination, and pairwise disjoint
+repository, cache, and output roots in both nesting directions. Every existing
+path component must be free of links and reparse points. The Hub-cache root and
+output parent may not themselves be filesystem roots. The output leaf is 1
+through 128 characters, begins with an ASCII alphanumeric, contains only ASCII
+alphanumerics, dot, underscore, or hyphen, and ends with an ASCII alphanumeric,
+underscore, or hyphen. Reserved DOS names are also rejected.
+
+`stage-model` invokes the same pure validator before Git-executable
+authentication or any H1 authentication and requires
+`--expected-model-staging-path-contract-sha256` to equal the digest produced by
+the prior verifier. A missing, malformed, or unequal digest fails at that pure
+boundary and does not consume H1. After successful authentication, it repeats
+the validator and requires the same normalized roots and directory-component
+identities before Hub import, payload access, or staging creation. Immediately
+before atomic publication it repeats both staging-path and identity
+authorization and rejects any root, component-identity, destination-existence,
+or authorization drift. A semantic or authentication mismatch still retires
+H1; a documented infrastructure interruption after authentication begins but
+before payload access permits only the existing exact same-command retry.
+
+Runner revision advances from v4 to v5. The new canonical stdout document uses
+artifact kind `recurquant_experiment013_model_staging_paths_verification` and
+schema version one. It publishes no raw local path. It contains SHA-256 digests
+of the normalized absolute repository, Hub-cache, output-parent, and output-
+root paths; SHA-256 digests of the ordered device/inode/mode identity chains for
+the repository, cache, and output-parent components; explicit states
+`existing_regular_non_link_directory` for those three existing roots and
+`absent` for the output root; and `path_contract_sha256`. That contract digest
+authenticates canonical newline-terminated JSON containing schema version one
+plus exactly those path, component-identity, and state fields. A successful
+`stage-model` result repeats the same digest as
+`model_staging_path_contract_sha256`, coupling the standalone preflight to the
+internally revalidated staging call. Identity schema v5; capture and resolver
+procedure v6; adapter revision v2; RULER launcher v7, generation-manifest v2,
+and runtime-manifest v3; calibration runtime-manifest v4; source-manifest
+schema/profile v2; model-manifest v1; existing verification stdout schemas v1;
+run-report v2; and Fisher-boundary and smoke-marker contracts v1 remain
+unchanged. No record selection, dataset revision, calibration span, Fisher
+boundary, quantization policy, metric, gate, model contract, or protected-stage
+rule changes.
+
+A fresh clean H0 and source manifest, newly promoted calibration identity,
+identity-only H1, successful staging-path preflight, model-staging
+authorization, and fresh no-overwrite identity-bound model publication are
+required. The exact RULER v7 batch, sealed runtime, public model metadata
+manifest, Parquet manifest, and external shared Hub cache remain reusable only
+after their existing point-of-use checks pass unchanged. The replacement
+identity must retain all 160 records and content manifest
+`ee72483a8f8b4370c9e667e4287747e5bc358aeb0265a58167140f4e780a7b29`;
+relative to the retired
+`65cd1ccd932db1aa4c8f2f06e4b7a88b67532734f611dc33bbba39fbfea1cdb7`
+identity, only these five repository-source and promotion-hash cascade JSON
+pointers may differ:
+
+```text
+/canonical_evidence_sha256
+/evidence/execution_bindings/repository_source_manifest_file_sha256
+/evidence/promotion/candidate_canonical_evidence_sha256
+/evidence/promotion/candidate_file_sha256
+/evidence/source_manifest_sha256
+```
 
 ## Question
 
@@ -774,44 +876,74 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v4's identity view. It accepts no H1, model manifest, Hub, cache, or
+runner v5's identity view. It accepts no H1, model manifest, Hub, cache, or
 output argument. Its non-persisted canonical JSON stdout document uses artifact
 kind `recurquant_experiment013_frozen_identity_contract_verification`, schema
 version one, and binds the H0/source contract, portable Git identity, all four
 execution bindings, complete identity/canonical/assignment hashes, public model
 and tokenizer contracts, and record count. The bytes that passed are then copied
 without modification as the sole H1 tree change; regeneration or hand editing
-after that preflight is forbidden. After H1, the read-only command
-`verify-model-staging-authorization` must invoke the same authorization path
-used by `stage-model` and reauthenticate the H1, index, and
-worktree identity bytes; H0 ancestry and unchanged source tree; the complete
-frozen identity and execution bindings; and the exact public model-metadata
-manifest. The command accepts no cache or output root, imports no Hub downloader,
+after that preflight is forbidden.
+
+After H1 and before model-staging authorization, run the read-only
+`verify-model-staging-paths` command twice against the exact intended
+repository, external Hub cache, and absent output root. It accepts only those
+three path arguments, uses the same pure validator as `stage-model`, performs no
+Git or artifact authentication and no Hub, payload, adapter, model, or dataset
+access, and creates no filesystem entry. Its non-persisted canonical JSON
+stdout document uses artifact kind
+`recurquant_experiment013_model_staging_paths_verification`, schema version one,
+and binds status, runner revision, normalized absolute-path digests for the
+repository, cache, output parent, and output root; component-identity-chain
+digests for the three existing roots; their exact regular/non-link states; the
+absent-output state; and the aggregate `path_contract_sha256`. The two stdout
+byte strings must be identical. The exact digest must then be supplied to
+`stage-model` as `--expected-model-staging-path-contract-sha256`; a missing,
+malformed, or unequal value fails before Git or H1 authentication. A successful
+`stage-model` result must echo that required digest as
+`model_staging_path_contract_sha256`. A failure at this pre-authentication
+boundary does not consume H1.
+
+Only then may `verify-model-staging-authorization` invoke the same authorization
+path used by `stage-model` and reauthenticate the H1, index, and worktree
+identity bytes; H0 ancestry and unchanged source tree; the complete frozen
+identity and execution bindings; and the exact public model-metadata manifest.
+The command accepts no cache or output root, imports no Hub downloader,
 downloads no file, and creates no directory or artifact. Its canonical JSON
 stdout document, which the command does not persist, uses artifact kind
 `recurquant_experiment013_model_staging_authorization`, schema version one, and
 binds status, runner revision, frozen-identity hash, H1, H0, repository-source-
 manifest hash, model-manifest hash, public model ID/revision, Hub-tree-manifest
-hash, file count, and total bytes. Only a successful stdout document permits
-`stage-model` to be attempted. A semantic or authentication mismatch retires
-that H1; it may not be hand-edited or weakened. An argument-parse failure does
-not consume H1 because authentication did not begin. A documented infrastructure
-interruption before any model-payload access permits only an exact same-command
-retry under that H1.
+hash, file count, and total bytes. Only successful path and authorization
+documents permit `stage-model` to be attempted with those same roots. A
+semantic or authentication mismatch retires that H1; it may not be hand-edited
+or weakened. An argument-parse or initial pure path-precondition failure does
+not consume H1 because authentication did not begin. A documented
+infrastructure interruption after authentication begins but before model-
+payload access permits only an exact same-command retry under that H1.
 
 Model payload staging begins only after the frozen identity is tracked with
 identical H1, index, and worktree bytes. The identity-bound stager downloads
 only the exact sorted root files in the frozen model manifest at the exact
-40-hex public Hub revision, using an external cache and no token. Returned cache
-paths are untrusted: every source must resolve inside that cache, then be
-stream-copied into a fresh sibling staging directory. Ordinary files are checked
-by Git blob OID and size; LFS payloads are checked by payload SHA-256 and size.
-The staged tree must have exact case-insensitive-unique inventory and contain no
-links, reparse points, cache metadata, marker, or extra file. Reauthenticate the
-identity, source, and manifest immediately before an atomic no-replace directory
-rename, then independently authenticate the published model root. Failure may
-clean only the owned staging directory; it never overwrites the output or
-deletes the shared Hub cache.
+40-hex public Hub revision, using an external cache and no token. Before Git or
+H1 authentication, immediately after authorization, and immediately before
+publication, the stager repeats the pure path validator and requires identical
+normalized roots and existing-component identities. The cache and output
+parent may not be filesystem roots, and the absent output leaf must be the same
+canonical 1-through-128-character basename accepted by the preflight: an ASCII
+alphanumeric first character, only ASCII alphanumeric/dot/underscore/hyphen
+interior characters, an ASCII alphanumeric/underscore/hyphen final character,
+and no reserved DOS name. Returned cache paths are untrusted: every source must
+resolve inside that cache, then be stream-copied into a fresh sibling staging
+directory.
+Ordinary files are checked by Git blob OID and size; LFS payloads are checked by
+payload SHA-256 and size. The staged tree must have exact case-insensitive-
+unique inventory and contain no links, reparse points, cache metadata, marker,
+or extra file. Reauthenticate the identity, source, and manifest immediately
+before an atomic no-replace directory rename, then independently authenticate
+the published model root. Failure may clean only the exact owned staging-
+directory identity; it never overwrites the output or deletes the shared Hub
+cache.
 
 Stage-A resolution additionally consumes one strictly decoded
 `experiment-013-stage-a-calibration-binding-v3` artifact. The resolved Stage-A
@@ -1192,6 +1324,18 @@ GitHub, certificate, and TLS availability are also external, although every
 accepted revision, manifest, and downloaded object is checked against its
 frozen identity before protected execution. Reports must not describe this as
 cryptographic attestation of the complete OS or toolchain.
+
+The model-staging directory-component snapshots are honest-process race
+hardening, not complete filesystem attestation. The runner snapshots every
+component before and after resolution and repeats the complete path contract
+before authentication, after authentication, and immediately before no-replace
+publication; observed replacement or identity drift fails closed. It does not
+retain kernel directory handles or perform every operation handle-relatively,
+so a hostile local process or administrator could still race path-based I/O
+between checks. The local OS, filesystem, and concurrently privileged processes
+therefore remain in the trusted computing base. Stronger protection would
+require held Windows directory handles and file IDs, or POSIX `openat`-style
+no-follow operations.
 
 A person with filesystem control can deliberately delete the lock and reflog,
 rewrite or remove refs, or start from a fresh clone. The pre-run seal also
