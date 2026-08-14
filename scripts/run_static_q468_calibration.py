@@ -56,7 +56,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v5"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v6"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -127,6 +127,29 @@ COMPLETE_FILENAME: Final = "CALIBRATION_COMPLETE"
 FISHER_SMOKE_REPORT_FILENAME: Final = "fisher-h1-smoke-report.json"
 FISHER_SMOKE_COMPLETE_FILENAME: Final = "FISHER_H1_SMOKE_COMPLETE"
 FISHER_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
+RULER_RECEIPT_DIRECTORY_FILENAMES: Final = (
+    "aggregation__cwe__l2048__s12340.json",
+    "aggregation__cwe__l4096__s12340.json",
+    "aggregation__fwe__l2048__s12339.json",
+    "aggregation__fwe__l4096__s12339.json",
+    "aggregation__fwe__l4096__s2343.json",
+    "generation-manifest.json",
+    "multi_hop_tracing__vt__l2048__s12339.json",
+    "multi_hop_tracing__vt__l2048__s12340.json",
+    "multi_hop_tracing__vt__l4096__s12339.json",
+    "multi_hop_tracing__vt__l4096__s12340.json",
+    "multi_hop_tracing__vt__l4096__s2343.json",
+    "question_answering__qa_1__l2048__s12339.json",
+    "question_answering__qa_1__l4096__s12339.json",
+    "question_answering__qa_1__l4096__s2343.json",
+    "question_answering__qa_2__l2048__s12340.json",
+    "question_answering__qa_2__l4096__s12340.json",
+    "retrieval__niah_multikey_2__l2048__s12340.json",
+    "retrieval__niah_multiquery__l2048__s12339.json",
+    "retrieval__niah_multiquery__l4096__s2343.json",
+    "retrieval__niah_multivalue__l4096__s12340.json",
+    "retrieval__niah_single_1__l4096__s12339.json",
+)
 PREPARED_RUNTIME_MANIFEST_FILENAME: Final = "calibration-runtime-manifest.json"
 PREPARED_RUNTIME_COMPLETE_FILENAME: Final = "RUNTIME_PREPARED"
 DEFAULT_PACKAGE_RUNTIME_ROOT_NAME: Final = "calibration-packages"
@@ -1928,6 +1951,67 @@ def _require_existing_regular_directory(
     if after != before:
         raise CalibrationRunError(f"{context} changed while it was validated")
     return resolved, after
+
+
+def _verify_ruler_receipt_directory_precondition(path: Path) -> Path:
+    """Validate only the frozen receipt-directory shape without reading file bytes."""
+
+    raw = Path(path)
+    if not raw.is_absolute():
+        raise CalibrationRunError("RULER receipt directory must be absolute")
+    root, component_identities = _require_existing_regular_directory(
+        raw,
+        context="RULER receipt directory",
+    )
+
+    def snapshot() -> tuple[tuple[str, int, int, int, int], ...]:
+        try:
+            with os.scandir(root) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name)
+        except OSError as exc:
+            raise CalibrationRunError("RULER receipt directory is unavailable") from exc
+        names = [entry.name for entry in entries]
+        if len({name.casefold() for name in names}) != len(names):
+            raise CalibrationRunError("RULER receipt directory has case-colliding names")
+        expected = set(RULER_RECEIPT_DIRECTORY_FILENAMES)
+        observed = set(names)
+        if observed != expected:
+            missing = sorted(expected - observed)
+            unexpected = sorted(observed - expected)
+            raise CalibrationRunError(
+                "RULER receipt directory inventory drifted: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        identities: list[tuple[str, int, int, int, int]] = []
+        for entry in entries:
+            try:
+                status = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise CalibrationRunError(
+                    f"RULER receipt entry is unavailable: {entry.name}"
+                ) from exc
+            if (
+                entry.is_symlink()
+                or bool(getattr(status, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT)
+                or not stat.S_ISREG(status.st_mode)
+            ):
+                raise CalibrationRunError(
+                    f"RULER receipt entry must be a regular non-link file: {entry.name}"
+                )
+            identities.append(
+                (entry.name, status.st_dev, status.st_ino, status.st_mode, status.st_size)
+            )
+        return tuple(identities)
+
+    before = snapshot()
+    repeated_root, repeated_components = _require_existing_regular_directory(
+        raw,
+        context="RULER receipt directory",
+    )
+    after = snapshot()
+    if repeated_root != root or repeated_components != component_identities or after != before:
+        raise CalibrationRunError("RULER receipt directory changed while it was validated")
+    return root
 
 
 def _normalized_absolute_path_sha256(path: Path) -> str:
@@ -5809,7 +5893,7 @@ def _load_adapter(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--frozen-identity", required=True, type=Path)
     parser.add_argument("--repository-source-manifest", required=True, type=Path)
     parser.add_argument("--model-file-manifest", required=True, type=Path)
@@ -5823,7 +5907,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-runtime-manifest-sha256", required=True)
     parser.add_argument("--model-root", required=True, type=Path)
     parser.add_argument("--cache-root", required=True, type=Path)
-    parser.add_argument("--ruler-root", required=True, type=Path)
+    parser.add_argument(
+        "--ruler-receipt-dir",
+        required=True,
+        type=Path,
+        help=(
+            "Absolute directory containing exactly the frozen RULER generation manifest "
+            "and 20 receipt JSON files; this is not the NVIDIA/RULER source checkout."
+        ),
+    )
     parser.add_argument("--repository-root", default=REPOSITORY_ROOT, type=Path)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -6096,6 +6188,7 @@ def _official_main(
     ):
         raise CalibrationRunError("authenticated runner modules were already loaded")
     args = _parser().parse_args(arguments)
+    ruler_receipt_dir = _verify_ruler_receipt_directory_precondition(args.ruler_receipt_dir)
     identity_bytes = args.frozen_identity.read_bytes()
     bindings = _bootstrap_identity_bindings(identity_bytes)
     source_manifest_bytes = args.repository_source_manifest.read_bytes()
@@ -6239,7 +6332,7 @@ def _official_main(
         repository_root=args.repository_root,
         model_root=args.model_root,
         cache_root=args.cache_root,
-        ruler_root=args.ruler_root,
+        ruler_root=ruler_receipt_dir,
         repository_source_manifest_bytes=source_manifest_bytes,
         calibration_runtime_manifest_bytes=runtime_manifest_bytes,
         model_file_manifest_bytes=model_manifest_bytes,
@@ -6297,6 +6390,7 @@ def sealed_main(
 
     arguments = list(argv)
     args = _parser().parse_args(arguments)
+    _verify_ruler_receipt_directory_precondition(args.ruler_receipt_dir)
     runtime_manifest_bytes = args.runtime_manifest.read_bytes()
     manifest, runtime_context, _authenticated = _authenticate_sealed_runtime_context(
         runtime_manifest_bytes,

@@ -9,6 +9,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -78,6 +79,47 @@ def model_staging_path_contract_sha256(
             output_root=output_root,
         )
     )
+
+
+def ruler_receipt_directory(path: Path) -> Path:
+    path.mkdir(parents=True)
+    for filename in runner.RULER_RECEIPT_DIRECTORY_FILENAMES:
+        (path / filename).write_bytes(b"fixture\n")
+    return path
+
+
+def official_cli_arguments(tmp_path: Path, *, ruler_receipts: Path) -> list[str]:
+    return [
+        "--frozen-identity",
+        str(tmp_path / "identity.json"),
+        "--repository-source-manifest",
+        str(tmp_path / "source.json"),
+        "--model-file-manifest",
+        str(tmp_path / "model.json"),
+        "--expected-model-file-manifest-sha256",
+        "1" * 64,
+        "--parquet-materialization-manifest",
+        str(tmp_path / "parquet.json"),
+        "--expected-parquet-materialization-manifest-sha256",
+        "2" * 64,
+        "--runtime-manifest",
+        str(tmp_path / "runtime.json"),
+        "--expected-runtime-manifest-sha256",
+        "3" * 64,
+        "--model-root",
+        str(tmp_path / "model-root"),
+        "--cache-root",
+        str(tmp_path / "cache-root"),
+        "--ruler-receipt-dir",
+        str(ruler_receipts),
+        "--repository-root",
+        str(tmp_path / "repository"),
+        "--source-commit",
+        "4" * 40,
+        "--output-dir",
+        str(tmp_path / "output"),
+        "--fisher-h1-smoke",
+    ]
 
 
 def fisher_boundary_contract(
@@ -4145,6 +4187,205 @@ def test_source_manifest_output_location_allows_only_external_or_ignored_paths(
         )
 
 
+def test_official_cli_uses_only_unambiguous_ruler_receipt_directory_option(
+    tmp_path: Path,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    arguments = official_cli_arguments(tmp_path, ruler_receipts=receipt_dir)
+
+    parsed = runner._parser().parse_args(arguments)
+
+    assert parsed.ruler_receipt_dir == receipt_dir
+    assert "--ruler-receipt-dir" in runner._parser().format_help()
+    assert "--ruler-root" not in runner._parser().format_help()
+    legacy = list(arguments)
+    legacy[legacy.index("--ruler-receipt-dir")] = "--ruler-root"
+    with pytest.raises(SystemExit):
+        runner._parser().parse_args(legacy)
+
+
+def test_ruler_receipt_directory_precondition_reads_no_file_bodies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: pytest.fail("receipt precondition must not read file bytes"),
+    )
+
+    assert runner._verify_ruler_receipt_directory_precondition(receipt_dir) == (
+        receipt_dir.resolve(strict=True)
+    )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_ruler_receipt_directory_precondition_rejects_inventory_drift(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    if mutation == "missing":
+        (receipt_dir / runner.RULER_RECEIPT_DIRECTORY_FILENAMES[-1]).unlink()
+    else:
+        (receipt_dir / "unexpected.json").write_bytes(b"unexpected\n")
+
+    with pytest.raises(runner.CalibrationRunError, match="inventory drifted"):
+        runner._verify_ruler_receipt_directory_precondition(receipt_dir)
+
+
+def test_ruler_receipt_directory_precondition_rejects_case_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    names = [*runner.RULER_RECEIPT_DIRECTORY_FILENAMES, "GENERATION-MANIFEST.JSON"]
+
+    class FakeScandir:
+        def __enter__(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(name=name) for name in names]
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(runner.os, "scandir", lambda _root: FakeScandir())
+
+    with pytest.raises(runner.CalibrationRunError, match="case-colliding"):
+        runner._verify_ruler_receipt_directory_precondition(receipt_dir)
+
+
+def test_ruler_receipt_directory_precondition_rejects_nonregular_entry(
+    tmp_path: Path,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    entry = receipt_dir / runner.RULER_RECEIPT_DIRECTORY_FILENAMES[-1]
+    entry.unlink()
+    entry.mkdir()
+
+    with pytest.raises(runner.CalibrationRunError, match="regular non-link file"):
+        runner._verify_ruler_receipt_directory_precondition(receipt_dir)
+
+
+def test_ruler_receipt_directory_precondition_rejects_symlink_entry(
+    tmp_path: Path,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    entry = receipt_dir / runner.RULER_RECEIPT_DIRECTORY_FILENAMES[-1]
+    target = tmp_path / "outside.json"
+    target.write_bytes(b"outside\n")
+    entry.unlink()
+    try:
+        entry.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+
+    with pytest.raises(runner.CalibrationRunError, match="regular non-link file"):
+        runner._verify_ruler_receipt_directory_precondition(receipt_dir)
+
+
+def test_ruler_receipt_directory_precondition_rejects_reparse_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    target = runner.RULER_RECEIPT_DIRECTORY_FILENAMES[-1]
+
+    class FakeEntry:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        @staticmethod
+        def is_symlink() -> bool:
+            return False
+
+        def stat(self, *, follow_symlinks: bool) -> SimpleNamespace:
+            assert follow_symlinks is False
+            return SimpleNamespace(
+                st_dev=1,
+                st_file_attributes=(runner._WINDOWS_REPARSE_POINT if self.name == target else 0),
+                st_ino=runner.RULER_RECEIPT_DIRECTORY_FILENAMES.index(self.name) + 1,
+                st_mode=runner.stat.S_IFREG | 0o644,
+                st_size=8,
+            )
+
+    class FakeScandir:
+        def __enter__(self) -> list[FakeEntry]:
+            return [FakeEntry(name) for name in runner.RULER_RECEIPT_DIRECTORY_FILENAMES]
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(runner.os, "scandir", lambda _root: FakeScandir())
+
+    with pytest.raises(runner.CalibrationRunError, match="regular non-link file"):
+        runner._verify_ruler_receipt_directory_precondition(receipt_dir)
+
+
+def test_ruler_receipt_directory_precondition_rejects_linked_ancestor(
+    tmp_path: Path,
+) -> None:
+    real_parent = tmp_path / "real-parent"
+    receipt_dir = ruler_receipt_directory(real_parent / "ruler-receipts")
+    linked_parent = tmp_path / "linked-parent"
+    try:
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+
+    with pytest.raises(runner.CalibrationRunError, match="link or non-directory"):
+        runner._verify_ruler_receipt_directory_precondition(linked_parent / receipt_dir.name)
+
+
+@pytest.mark.parametrize("kind", ["relative", "missing"])
+def test_ruler_receipt_directory_precondition_rejects_invalid_path_before_access(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    path = Path("relative-ruler-receipts") if kind == "relative" else tmp_path / "missing"
+    message = "must be absolute" if kind == "relative" else "must already exist"
+
+    with pytest.raises(runner.CalibrationRunError, match=message):
+        runner._verify_ruler_receipt_directory_precondition(path)
+
+
+def test_sealed_main_rejects_ruler_source_checkout_before_authentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_checkout = tmp_path / "ruler-source-checkout"
+    (source_checkout / ".git").mkdir(parents=True)
+    (source_checkout / "scripts").mkdir()
+    (source_checkout / "README.md").write_bytes(b"RULER source checkout\n")
+    arguments = official_cli_arguments(tmp_path, ruler_receipts=source_checkout)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_sealed_runtime_context",
+        lambda *_args, **_kwargs: pytest.fail("runtime authentication must not begin"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_official_main",
+        lambda *_args, **_kwargs: pytest.fail("materialization boundary must not be entered"),
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="receipt directory inventory drifted"):
+        runner.sealed_main(
+            arguments,
+            base_runtime_root=tmp_path / "unopened-base-runtime",
+            package_roots={"packages": tmp_path / "unopened-packages"},
+            package_import_paths={"packages": "Lib/site-packages"},
+            interpreter_path=tmp_path / "unopened-base-runtime" / "python.exe",
+            git_executable_path=tmp_path / "unopened-git.exe",
+            pycache_prefix=tmp_path / "unopened-pycache",
+        )
+
+    assert not (tmp_path / "runtime.json").exists()
+    assert not (tmp_path / "identity.json").exists()
+    assert not (tmp_path / "model-root").exists()
+    assert not (tmp_path / "output").exists()
+
+
 def test_public_main_binds_manifest_bytes_before_adapter_import(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4171,6 +4412,7 @@ def test_public_main_binds_manifest_bytes_before_adapter_import(
     paths["runtime"].write_bytes(runtime_bytes)
     paths["model"].write_bytes(model_bytes)
     paths["parquet"].write_bytes(parquet_bytes)
+    receipt_dir = ruler_receipt_directory(tmp_path / "unopened-ruler-receipts")
     imported: list[bool] = []
     monkeypatch.setattr(runner, "_load_adapter", lambda *args, **kwargs: imported.append(True))
 
@@ -4197,8 +4439,8 @@ def test_public_main_binds_manifest_bytes_before_adapter_import(
                 str(tmp_path / "unopened-model"),
                 "--cache-root",
                 str(tmp_path / "unopened-cache"),
-                "--ruler-root",
-                str(tmp_path / "unopened-ruler"),
+                "--ruler-receipt-dir",
+                str(receipt_dir),
                 "--repository-root",
                 str(tmp_path / "unopened-repository"),
                 "--source-commit",

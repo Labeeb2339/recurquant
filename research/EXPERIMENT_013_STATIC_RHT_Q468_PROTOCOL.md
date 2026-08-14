@@ -1,7 +1,8 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: third replacement-H0 candidate after a preserved post-authorization,
-> pre-payload model-staging path failure; not yet re-preregistered.**
+> **Status: fifth replacement-H0 candidate after a preserved pre-model,
+> pre-dataset-row Fisher-smoke failure caused by an ambiguous RULER directory
+> argument; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -19,7 +20,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current third replacement-H0 candidate amended: 2026-08-15
+Current fifth replacement-H0 candidate amended: 2026-08-15
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -481,6 +482,130 @@ pointers may differ:
 /evidence/source_manifest_sha256
 ```
 
+Sixteenth pre-resolution RULER-receipt-directory amendment: 2026-08-15. Under
+source commit `475659ac8a0a98aaf38814e89f0f95d31392ec8b`, tag
+`experiment013-h0-475659a`, and identity-only descendant
+`fd67384944dc92abac0422960ea53fc973b64736`, the runner-v5 staging-path
+preflight, model-staging authorization, and identity-bound model publication
+completed. The frozen identity file SHA-256 was
+`40c434d038879608093fc8f74b66893062e4f52a0e1db9d33b40ac9fa411be90`,
+and the published model root was
+`C:\tmp\recurquant-exp013-model-h1-fd673849`.
+
+The first sealed `--fisher-h1-smoke` invocation then supplied the external
+RULER source checkout to runner v5's generically named `--ruler-root` option.
+The reviewed adapter interprets that value only as the directory containing the
+sealed RULER result receipts. The command therefore reached calibration
+sequence materialization, authenticated source-head metadata and public
+tokenizer material, and then rejected the shallow directory inventory: all 20
+frozen receipt filenames plus `generation-manifest.json` were missing, while
+the source checkout's Git, environment, documentation, source, auxiliary, and
+raw-receipt entries were unexpected. The immediate cause was a wrong command
+argument; the execution-control defect was an ambiguous CLI name with no pure
+early receipt-directory precondition.
+
+The inventory rejection occurred before any generation-manifest or RULER
+receipt body was opened. It also preceded MBPP row access, PG19 projection or
+row access, RULER record decoding or semantic replay, and HumanEval+ projection
+or row access. Because complete sequence materialization precedes local model
+authentication, the failed smoke did not traverse or hash the published model
+root, read model configuration or weight bytes, deserialize parameters, enter
+CUDA, execute a causal forward or Fisher step, or compute any calibration or
+quality value. The declared smoke output directory remained absent; no report,
+completion marker, score, policy, calibration binding, stability value, or
+quality artifact was published. This is a pre-model and pre-dataset-row
+execution-contract incident, not a Fisher result and not an infrastructure
+interruption.
+
+The child additionally reported that its sealed scratch directory was nonempty
+while unwinding the primary inventory exception, and the host repeated that
+postcondition failure before deleting the owned scratch tree. No scratch path
+survived, but its transient inventory was not preserved and therefore must not
+be guessed. This secondary diagnostic does not replace or weaken the proven
+primary cause. The repaired launcher preserves a child exception as primary and
+adds aggregated child-postcondition failures as notes; when `sealed_main` or
+the sealed child returns nonzero, it preserves that return code and reports
+secondary postcondition or cleanup failures separately. Only an otherwise
+successful child promotes a postcondition failure to the primary error. The
+host records each temporary root's device/inode/type identity at creation,
+refuses cleanup if that identity changed or the owned tree contains a link,
+reparse point, or entry other than a regular file or directory, removes only
+the authenticated owned tree,
+and detects survival. Regressions must cover primary-exception and nonzero-
+return preservation, aggregation of multiple secondary failures, successful-
+child postcondition failure, identity replacement, reparse refusal, partial
+temporary-root creation, and cleanup of an ordinary nonempty owned tree.
+
+Calibration-runner v6 removes `--ruler-root` from the official smoke and full-
+calibration CLI without a compatibility alias. The sole public option is
+`--ruler-receipt-dir`; its help and protocol meaning are exactly the sealed v7
+receipt directory, never the RULER source checkout or raw-output directory. At
+sealed-runner entry, before that runner reads or authenticates the runtime
+manifest, a standard-library-only precondition requires an absolute existing
+directory whose
+ancestors and root contain no link or reparse point; an exact shallow,
+case-insensitively unique inventory of `generation-manifest.json` plus the 20
+frozen receipt filenames; and a regular non-link, non-reparse file for every
+entry. It opens no file body or JSON value, performs no Git or artifact
+authentication, imports no capture, tokenizer, dataset, adapter, Hub, model, or
+CUDA code, and creates no artifact. `_official_main` repeats the same
+precondition before reading the frozen identity or runtime, model, Parquet, or
+source-manifest bytes. The existing phase-scoped semantic verifier remains
+authoritative at point of use and still authenticates the permitted receipt
+bodies and their complete manifest commitments.
+
+Runner revision advances from v5 to v6. The external CLI rename does not rename
+the reviewed adapter's internal `AdapterConstructionContext.ruler_root` field;
+that field remains an implementation detail populated only from the normalized
+`--ruler-receipt-dir` result. A regression must prove that the retired
+`--ruler-root` spelling is unrecognized, the RULER source checkout fails at the
+pure precondition, the exact 21-file receipt directory passes, and every
+missing, extra, case-colliding, non-regular, link, reparse, relative, or
+ancestor-link variant fails before manifest authentication, materialization,
+model access, or scratch population. No record selection, dataset revision,
+calibration span, Fisher boundary, quantization policy, metric, gate, model
+contract, or protected-stage rule changes.
+
+The incident H0, tag, H1, frozen identity, published model root, failed command,
+and absent output remain unchanged as superseded evidence. They authorize no
+same-command retry and no further official execution. In particular, the old
+published model root may not be adopted, renamed, copied, or rebound as the
+official model root of a replacement H1.
+
+The exact RULER v7 batch may be reused only if its complete 21-file receipt
+inventory and the 100 raw producer files replay-authenticate unchanged and its
+generation-manifest file SHA-256 remains
+`979f91848b6c0692160419c3e5e9ee555aa94d9e7add3092067f003ea0543e80`.
+The intended CLI value is the absolute resolution of repository-relative
+`artifacts/experiment013/ruler-receipts-v7-h0-447295e`; the separate pinned
+RULER source checkout is used only for replay authentication and must never be
+passed as `--ruler-receipt-dir`.
+The sealed calibration runtime, public model-metadata manifest, immutable-
+Parquet materialization manifest, and external shared Hub cache may likewise be
+reused only after all existing byte, inventory, path, version, and semantic
+checks pass at every required point of use. Their currently expected manifest
+file SHA-256 values are, respectively,
+`80ca233a29af4facbb334fd4fb51a4f6e9a3d6815465cb79b9f3db63ef668d6a`,
+`586d9c7e520f3bbd99ecef30663bf07d283eb14622475c58891becd8e033b05c`,
+and `ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c`.
+Any mismatch stops reuse; it is not an authorization to regenerate, substitute,
+or weaken a frozen dependency.
+
+Before another smoke, the exact runner-v6, launcher cleanup repair, tests, and
+this protocol must be committed in a fresh clean H0 and bound by a fresh
+repository-source manifest. The exact promoted calibration identity must be
+recaptured and reverified against that source binding, committed alone in a
+fresh H1, and reauthorized. Model-staging paths and authorization must be
+reverified, and the same authenticated three-file payload must be published by
+a new no-overwrite `stage-model` execution under that H1 into a fresh model
+root. Only then may the sealed Fisher H=1 smoke be attempted with the exact
+receipt directory supplied through `--ruler-receipt-dir`. The replacement
+identity must retain all 160 records and content manifest
+`ee72483a8f8b4370c9e667e4287747e5bc358aeb0265a58167140f4e780a7b29`;
+relative to the retired identity, only the five repository-source and
+promotion-hash cascade pointers listed above may differ. Any other identity
+difference stops the chain.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -876,7 +1001,7 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v5's identity view. It accepts no H1, model manifest, Hub, cache, or
+runner v6's identity view. It accepts no H1, model manifest, Hub, cache, or
 output argument. Its non-persisted canonical JSON stdout document uses artifact
 kind `recurquant_experiment013_frozen_identity_contract_verification`, schema
 version one, and binds the H0/source contract, portable Git identity, all four
@@ -944,6 +1069,17 @@ before an atomic no-replace directory rename, then independently authenticate
 the published model root. Failure may clean only the exact owned staging-
 directory identity; it never overwrites the output or deletes the shared Hub
 cache.
+
+Every official Fisher smoke and full calibration invocation uses the public
+option `--ruler-receipt-dir` for the normalized exact 21-file v7 receipt
+directory. The retired `--ruler-root` spelling is invalid and has no legacy
+alias. After the outer sealed launcher has authenticated the source and runtime
+needed to establish the child, but before the sealed runner reads its runtime
+manifest or any frozen-identity, source-manifest, model-manifest, or Parquet-
+manifest byte, runner v6 performs the shallow pure directory precondition
+defined by the Sixteenth amendment and repeats it inside `_official_main`.
+Passing that precondition does not authenticate any receipt body; phase-scoped
+point-of-use verification remains mandatory.
 
 Stage-A resolution additionally consumes one strictly decoded
 `experiment-013-stage-a-calibration-binding-v3` artifact. The resolved Stage-A

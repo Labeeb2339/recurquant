@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -133,6 +134,8 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     )
     model_path = _write(artifacts / "model.json", b'{"model":"fixture"}\n')
     parquet_path = _write(artifacts / "parquet.json", b'{"parquet":"fixture"}\n')
+    ruler_receipt_dir = tmp_path / "ruler-receipts"
+    ruler_receipt_dir.mkdir()
     bindings = {
         "calibration_runtime_manifest_file_sha256": _sha256(runtime_path.read_bytes()),
         "model_file_manifest_file_sha256": _sha256(model_path.read_bytes()),
@@ -175,6 +178,8 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         bindings["calibration_runtime_manifest_file_sha256"],
         "--repository-root",
         str(repository),
+        "--ruler-receipt-dir",
+        str(ruler_receipt_dir),
     ]
     host_arguments = [
         "--base-runtime-root",
@@ -197,6 +202,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         "packages": packages,
         "parquet_path": parquet_path,
         "repository": repository,
+        "ruler_receipt_dir": ruler_receipt_dir,
         "runner_arguments": runner_arguments,
         "runtime_path": runtime_path,
     }
@@ -301,7 +307,6 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
         "pycache",
         "bound",
         "runtime",
-        "pycache",
     ]
     assert len(commands) == 1
     command, cwd, environment, stdin_payload = commands[0]
@@ -325,6 +330,250 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
     assert "PATH" not in environment
     assert environment["TEMP"] == environment["TMP"] == command[15]
     assert stdin_payload == launcher.SEALED_BOOTSTRAP_BYTES
+
+
+def test_failed_child_return_code_survives_residue_and_owned_roots_are_cleaned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    temporary_roots: list[Path] = []
+
+    def run_wrapper(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        pycache = Path(command[13])
+        scratch = Path(command[15])
+        temporary_roots.extend((pycache, scratch))
+        _write(pycache / "late.pyc", b"residue")
+        _write(scratch / "tokenizer" / "temporary.json", b"residue")
+        return subprocess.CompletedProcess(command, 37)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+
+    assert launcher.launch(fixture["host_arguments"]) == 37
+
+    assert temporary_roots and all(not path.exists() for path in temporary_roots)
+    diagnostic = capsys.readouterr().err
+    assert "sealed launcher secondary failure" in diagnostic
+    assert "pycache postcondition" in diagnostic
+    assert "scratch postcondition" in diagnostic
+    assert "preserving child return code 37" in diagnostic
+
+
+def test_successful_child_residue_fails_closed_after_owned_roots_are_cleaned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    temporary_roots: list[Path] = []
+
+    def run_wrapper(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        pycache = Path(command[13])
+        scratch = Path(command[15])
+        temporary_roots.extend((pycache, scratch))
+        _write(pycache / "late.pyc", b"residue")
+        _write(scratch / "temporary.txt", b"residue")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+
+    with pytest.raises(
+        launcher.SealedLaunchError, match="sealed child postcondition failed"
+    ) as caught:
+        launcher.launch(fixture["host_arguments"])
+
+    assert "pycache postcondition" in str(caught.value)
+    assert "scratch postcondition" in str(caught.value)
+    assert temporary_roots and all(not path.exists() for path in temporary_roots)
+
+
+def test_subprocess_exception_remains_primary_while_owned_roots_are_cleaned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    temporary_roots: list[Path] = []
+
+    def run_wrapper(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        pycache = Path(command[13])
+        scratch = Path(command[15])
+        temporary_roots.extend((pycache, scratch))
+        _write(scratch / "temporary.txt", b"residue")
+        raise OSError("primary subprocess failure")
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+
+    with pytest.raises(OSError, match="primary subprocess failure"):
+        launcher.launch(fixture["host_arguments"])
+
+    assert temporary_roots and all(not path.exists() for path in temporary_roots)
+
+
+def test_cleanup_failure_is_secondary_note_on_primary_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    created: list[Path] = []
+    original_cleanup = launcher._cleanup_owned_temporary_directory
+
+    def mkdtemp(*, prefix: str) -> str:
+        path = tmp_path / f"{prefix}{len(created)}"
+        path.mkdir()
+        created.append(path)
+        return str(path)
+
+    def cleanup_wrapper(path: Path, **kwargs: Any) -> None:
+        if kwargs["context"] == "sealed scratch directory":
+            raise launcher.SealedLaunchError("simulated scratch cleanup failure")
+        original_cleanup(path, **kwargs)
+
+    def run_wrapper(_command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        raise OSError("primary subprocess failure")
+
+    monkeypatch.setattr(launcher.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(launcher, "_cleanup_owned_temporary_directory", cleanup_wrapper)
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+
+    with pytest.raises(OSError, match="primary subprocess failure") as caught:
+        launcher.launch(fixture["host_arguments"])
+
+    assert any("simulated scratch cleanup failure" in note for note in caught.value.__notes__)
+    scratch = next(path for path in created if "scratch" in path.name)
+    assert scratch.exists()
+    assert all(not path.exists() for path in created if path != scratch)
+    original_cleanup(
+        scratch,
+        expected_identity=launcher._temporary_directory_identity(
+            scratch,
+            context="sealed scratch directory",
+        ),
+        context="sealed scratch directory",
+    )
+
+
+def test_cleanup_refuses_replaced_temporary_root_identity(tmp_path: Path) -> None:
+    root = tmp_path / "owned-temporary-root"
+    root.mkdir()
+    (root / "replacement-sentinel.txt").write_bytes(b"replacement must survive\n")
+    observed = launcher._temporary_directory_identity(root, context="temporary root")
+    replaced_identity = (observed[0], observed[1] + 1, observed[2])
+
+    with pytest.raises(launcher.SealedLaunchError, match="identity changed before cleanup"):
+        launcher._cleanup_owned_temporary_directory(
+            root,
+            expected_identity=replaced_identity,
+            context="temporary root",
+        )
+
+    assert (root / "replacement-sentinel.txt").read_bytes() == b"replacement must survive\n"
+
+
+def test_cleanup_refuses_link_entry_and_preserves_external_target(tmp_path: Path) -> None:
+    root = tmp_path / "owned-temporary-root"
+    root.mkdir()
+    outside = tmp_path / "outside-sentinel.txt"
+    outside.write_bytes(b"outside must survive\n")
+    link = root / "redirect"
+    try:
+        link.symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+    identity = launcher._temporary_directory_identity(root, context="temporary root")
+
+    with pytest.raises(launcher.SealedLaunchError, match="link or reparse point"):
+        launcher._cleanup_owned_temporary_directory(
+            root,
+            expected_identity=identity,
+            context="temporary root",
+        )
+
+    assert link.is_symlink()
+    assert outside.read_bytes() == b"outside must survive\n"
+
+
+def test_partial_temporary_root_creation_preserves_error_and_cleans_first_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    created: list[Path] = []
+
+    def mkdtemp(*, prefix: str) -> str:
+        if created:
+            raise OSError("second temporary-root creation failed")
+        path = tmp_path / f"{prefix}first"
+        path.mkdir()
+        created.append(path)
+        return str(path)
+
+    monkeypatch.setattr(launcher.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+
+    with pytest.raises(OSError, match="second temporary-root creation failed"):
+        launcher.launch(fixture["host_arguments"])
+
+    assert len(created) == 1
+    assert not created[0].exists()
+
+
+def test_launcher_requires_receipt_directory_and_rejects_legacy_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+    missing = list(fixture["host_arguments"])
+    option_index = missing.index("--ruler-receipt-dir")
+    del missing[option_index : option_index + 2]
+
+    with pytest.raises(launcher.SealedLaunchError, match="--ruler-receipt-dir"):
+        launcher.launch(missing)
+
+    legacy = list(fixture["host_arguments"])
+    legacy[legacy.index("--ruler-receipt-dir")] = "--ruler-root"
+    with pytest.raises(launcher.SealedLaunchError, match="legacy runner option is forbidden"):
+        launcher.launch(legacy)
+
+
+def test_embedded_bootstrap_keeps_cleanup_failure_secondary_to_child_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parsed = ast.parse(launcher.SEALED_BOOTSTRAP)
+    handler_node = next(
+        node
+        for node in parsed.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_surface_postcondition_failures"
+    )
+    handler_module = ast.fix_missing_locations(ast.Module(body=[handler_node], type_ignores=[]))
+
+    def fail(message: str) -> None:
+        raise RuntimeError(message)
+
+    namespace: dict[str, Any] = {"_fail": fail, "_s": sys}
+    exec(compile(handler_module, "<bootstrap-postcondition-handler>", "exec"), namespace)
+    handler = namespace["_surface_postcondition_failures"]
+    failures = [("scratch", RuntimeError("scratch residue"))]
+
+    primary = ValueError("primary child failure")
+    handler(primary, None, failures)
+    assert any("scratch residue" in note for note in primary.__notes__)
+
+    handler(None, 37, failures)
+    diagnostic = capsys.readouterr().err
+    assert "scratch residue" in diagnostic
+    assert "preserving sealed_main return code 37" in diagnostic
+
+    with pytest.raises(RuntimeError, match="scratch residue"):
+        handler(None, 0, failures)
 
 
 def test_sealed_environment_omits_auth_network_and_compute_modifiers(

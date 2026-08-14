@@ -84,10 +84,12 @@ _REQUIRED_RUNNER_OPTIONS: Final = frozenset(
     {
         "--frozen-identity",
         "--repository-root",
+        "--ruler-receipt-dir",
         *_BOUND_ARTIFACT_OPTIONS.values(),
         *_EXPECTED_BOUND_DIGEST_OPTIONS.values(),
     }
 )
+_FORBIDDEN_RUNNER_OPTIONS: Final = frozenset({"--ruler-root"})
 _SMOKE_PREREQUISITE_OPTIONS: Final = frozenset(
     {
         "--prior-fisher-h1-smoke-report",
@@ -839,6 +841,10 @@ def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
     index = 0
     while index < len(arguments):
         option = arguments[index]
+        if option in _FORBIDDEN_RUNNER_OPTIONS or any(
+            option.startswith(f"{forbidden}=") for forbidden in _FORBIDDEN_RUNNER_OPTIONS
+        ):
+            raise SealedLaunchError(f"legacy runner option is forbidden: {option}")
         if option in value_options:
             if option in result or index + 1 >= len(arguments):
                 raise SealedLaunchError(f"runner option is duplicated or incomplete: {option}")
@@ -1083,20 +1089,99 @@ def _verify_empty_scratch(path: Path) -> Path:
     return root
 
 
-def _assert_scratch_tree_has_no_reparse(path: Path) -> None:
+def _temporary_directory_identity(path: Path, *, context: str) -> tuple[int, int, int]:
+    root = _absolute_directory(path, context=context)
+    try:
+        status = root.lstat()
+    except OSError as exc:
+        raise SealedLaunchError(f"cannot identify {context}") from exc
+    return (int(status.st_dev), int(status.st_ino), stat.S_IFMT(status.st_mode))
+
+
+def _assert_owned_temporary_tree_has_no_reparse(path: Path, *, context: str) -> None:
     stack = [path]
     while stack:
         directory = stack.pop()
-        for entry in os.scandir(directory):
-            status = entry.stat(follow_symlinks=False)
+        try:
+            entries = tuple(os.scandir(directory))
+        except OSError as exc:
+            raise SealedLaunchError(f"cannot enumerate {context} during cleanup") from exc
+        for entry in entries:
+            try:
+                status = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise SealedLaunchError(f"cannot inspect {context} during cleanup") from exc
             if entry.is_symlink() or bool(
                 getattr(status, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
             ):
-                raise SealedLaunchError("sealed scratch contains a link or reparse point")
+                raise SealedLaunchError(f"{context} contains a link or reparse point")
             if stat.S_ISDIR(status.st_mode):
                 stack.append(Path(entry.path))
             elif not stat.S_ISREG(status.st_mode):
-                raise SealedLaunchError("sealed scratch contains a non-regular path")
+                raise SealedLaunchError(f"{context} contains a non-regular path")
+
+
+def _cleanup_owned_temporary_directory(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int, int],
+    context: str,
+) -> None:
+    """Remove one launcher-owned tree without following redirected content."""
+
+    root = Path(os.path.abspath(path))
+    if not os.path.lexists(root):
+        return
+    observed_identity = _temporary_directory_identity(root, context=context)
+    if observed_identity != expected_identity:
+        raise SealedLaunchError(f"{context} identity changed before cleanup")
+    _assert_owned_temporary_tree_has_no_reparse(root, context=context)
+    try:
+        shutil.rmtree(root, ignore_errors=False)
+    except OSError as exc:
+        raise SealedLaunchError(f"cannot remove {context}") from exc
+    if os.path.lexists(root):
+        raise SealedLaunchError(f"{context} survived cleanup")
+
+
+def _failure_summary(failures: Sequence[tuple[str, BaseException]]) -> str:
+    return "; ".join(
+        f"{context}: {error.__class__.__name__}: {error}" for context, error in failures
+    )
+
+
+def _postcondition_error(failures: Sequence[tuple[str, BaseException]]) -> SealedLaunchError:
+    if not failures:
+        raise ValueError("postcondition failure inventory cannot be empty")
+    error = SealedLaunchError(f"sealed child postcondition failed: {_failure_summary(failures)}")
+    error.__cause__ = failures[0][1]
+    return error
+
+
+def _surface_secondary_failures(
+    failures: Sequence[tuple[str, BaseException]],
+    *,
+    primary_error: BaseException | None,
+    child_returncode: int | None,
+) -> None:
+    if not failures:
+        return
+    message = f"sealed launcher secondary failure: {_failure_summary(failures)}"
+    if primary_error is not None:
+        add_note = getattr(primary_error, "add_note", None)
+        if callable(add_note):
+            add_note(message)
+        else:  # pragma: no cover - supported Python versions expose add_note
+            print(message, file=sys.stderr, flush=True)
+        return
+    if child_returncode is not None and child_returncode != 0:
+        print(
+            f"{message}; preserving child return code {child_returncode}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    raise _postcondition_error(failures)
 
 
 def _sealed_environment(*, scratch_directory: Path) -> dict[str, str]:
@@ -1261,10 +1346,29 @@ _smoke_options = {
     "--prior-fisher-h1-smoke-report",
     "--prior-fisher-h1-smoke-complete-marker",
 }
+_forbidden_runner_options = {"--ruler-root"}
 _smoke_marker = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
 
 def _fail(message):
     raise RuntimeError(message)
+
+def _surface_postcondition_failures(primary, result, failures):
+    if not failures:
+        return
+    details = "; ".join(
+        label + ": " + error.__class__.__name__ + ": " + str(error)
+        for label, error in failures
+    )
+    message = "sealed bootstrap secondary postcondition failure: " + details
+    if primary is not None:
+        primary.add_note(message)
+    elif type(result) is int and result != 0:
+        _s.stderr.write(
+            message + "; preserving sealed_main return code " + str(result) + "\n"
+        )
+        _s.stderr.flush()
+    else:
+        _fail(message)
 
 def _canonical(value):
     return (_j.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True,
@@ -1461,12 +1565,15 @@ def _name(value):
 
 def _options(arguments):
     required = {"--frozen-identity", "--repository-root", *_binding_options.values(),
-                *_expected_digest_options.values()}
+                *_expected_digest_options.values(), "--ruler-receipt-dir"}
     value_options = required | _smoke_options
     result = {}
     index = 0
     while index < len(arguments):
         item = arguments[index]
+        if (item in _forbidden_runner_options
+                or any(item.startswith(value + "=") for value in _forbidden_runner_options)):
+            _fail("legacy runner option is forbidden: " + item)
         if item in value_options:
             if (
                 item in result
@@ -1903,6 +2010,7 @@ _module = _types.ModuleType("_recurquant_experiment013_sealed_runner")
 _module.__file__ = str(_runner_path)
 _module.__package__ = ""
 _s.modules[_module.__name__] = _module
+_result = None
 try:
     try:
         _code = compile(_payload, str(_runner_path), "exec", dont_inherit=True)
@@ -1925,19 +2033,34 @@ try:
             git_executable_path=_git_executable,
             pycache_prefix=_pycache,
         )
+        if not isinstance(_result, int) or isinstance(_result, bool):
+            _fail("sealed_main returned a non-integer status")
     finally:
-        if any(_pycache.iterdir()):
-            _fail("sealed pycache prefix changed during calibration")
-        if any(_scratch.iterdir()):
-            _fail("sealed scratch directory was not cleaned by the runner")
-        _verify_source(_source_manifest, _repository_root)
-        _verify_runtime(
-            _runtime, _base, _packages, _git_executable, packages_appended=True
-        )
+        _primary = _s.exception()
+        _postcondition_failures = []
+        try:
+            if any(_pycache.iterdir()):
+                raise RuntimeError("sealed pycache prefix changed during calibration")
+        except Exception as error:
+            _postcondition_failures.append(("pycache", error))
+        try:
+            if any(_scratch.iterdir()):
+                raise RuntimeError("sealed scratch directory was not cleaned by the runner")
+        except Exception as error:
+            _postcondition_failures.append(("scratch", error))
+        try:
+            _verify_source(_source_manifest, _repository_root)
+        except Exception as error:
+            _postcondition_failures.append(("repository source reauthentication", error))
+        try:
+            _verify_runtime(
+                _runtime, _base, _packages, _git_executable, packages_appended=True
+            )
+        except Exception as error:
+            _postcondition_failures.append(("runtime reauthentication", error))
+        _surface_postcondition_failures(_primary, _result, _postcondition_failures)
 finally:
     _s.modules.pop("_recurquant_experiment013_sealed_runner", None)
-if not isinstance(_result, int) or isinstance(_result, bool):
-    _fail("sealed_main returned a non-integer status")
 raise SystemExit(_result)
 """.strip()
 
@@ -2002,11 +2125,23 @@ def launch(argv: Sequence[str]) -> int:
         require_current_process=False,
     )
 
-    pycache_parent = Path(tempfile.mkdtemp(prefix="recurquant-exp013-sealed-pycache-"))
-    pycache = _verify_empty_pycache(pycache_parent)
-    scratch_parent = Path(tempfile.mkdtemp(prefix="recurquant-exp013-sealed-scratch-"))
-    scratch = _verify_empty_scratch(scratch_parent)
+    pycache: Path | None = None
+    scratch: Path | None = None
+    pycache_identity: tuple[int, int, int] | None = None
+    scratch_identity: tuple[int, int, int] | None = None
+    completed: subprocess.CompletedProcess[bytes] | None = None
+    primary_error: BaseException | None = None
+    secondary_failures: list[tuple[str, BaseException]] = []
     try:
+        pycache = Path(tempfile.mkdtemp(prefix="recurquant-exp013-sealed-pycache-"))
+        pycache_identity = _temporary_directory_identity(pycache, context="pycache prefix")
+        pycache = _verify_empty_pycache(pycache)
+        scratch = Path(tempfile.mkdtemp(prefix="recurquant-exp013-sealed-scratch-"))
+        scratch_identity = _temporary_directory_identity(
+            scratch,
+            context="sealed scratch directory",
+        )
+        scratch = _verify_empty_scratch(scratch)
         command = _sealed_argv(
             interpreter=interpreter,
             runtime_manifest=args.runtime_manifest.resolve(strict=True),
@@ -2024,29 +2159,61 @@ def launch(argv: Sequence[str]) -> int:
             env=_sealed_environment(scratch_directory=scratch),
             input=SEALED_BOOTSTRAP_BYTES,
         )
-        _verify_empty_pycache(pycache)
-        _verify_empty_scratch(scratch)
-        _bindings, repeated_source, _runner_path = _verify_bound_artifacts(
-            runner_options,
-            runtime_manifest_path=args.runtime_manifest,
-        )
-        if repeated_source["git_executable"] != source_manifest["git_executable"]:
-            raise SealedLaunchError("source Git executable binding changed during execution")
-        _verify_runtime(
-            runtime_manifest,
-            base_runtime_root=base,
-            package_roots=packages,
-            git_executable_path=git_executable,
-            require_current_process=False,
-        )
+        try:
+            _verify_empty_pycache(pycache)
+        except Exception as exc:
+            secondary_failures.append(("pycache postcondition", exc))
+        try:
+            _verify_empty_scratch(scratch)
+        except Exception as exc:
+            secondary_failures.append(("scratch postcondition", exc))
+        try:
+            _bindings, repeated_source, _runner_path = _verify_bound_artifacts(
+                runner_options,
+                runtime_manifest_path=args.runtime_manifest,
+            )
+            if repeated_source["git_executable"] != source_manifest["git_executable"]:
+                raise SealedLaunchError("source Git executable binding changed during execution")
+        except Exception as exc:
+            secondary_failures.append(("bound-artifact reauthentication", exc))
+        try:
+            _verify_runtime(
+                runtime_manifest,
+                base_runtime_root=base,
+                package_roots=packages,
+                git_executable_path=git_executable,
+                require_current_process=False,
+            )
+        except Exception as exc:
+            secondary_failures.append(("runtime reauthentication", exc))
+        if completed.returncode == 0 and secondary_failures:
+            failures = tuple(secondary_failures)
+            secondary_failures.clear()
+            raise _postcondition_error(failures)
         return int(completed.returncode)
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        _verify_empty_pycache(pycache)
-        shutil.rmtree(pycache, ignore_errors=False)
-        _assert_scratch_tree_has_no_reparse(scratch)
-        shutil.rmtree(scratch, ignore_errors=False)
-        if os.path.lexists(scratch):
-            raise SealedLaunchError("sealed scratch directory survived cleanup")
+        for path, expected_identity, context in (
+            (scratch, scratch_identity, "sealed scratch directory"),
+            (pycache, pycache_identity, "pycache prefix"),
+        ):
+            if path is None or expected_identity is None:
+                continue
+            try:
+                _cleanup_owned_temporary_directory(
+                    path,
+                    expected_identity=expected_identity,
+                    context=context,
+                )
+            except Exception as exc:
+                secondary_failures.append((f"{context} cleanup", exc))
+        _surface_secondary_failures(
+            secondary_failures,
+            primary_error=primary_error,
+            child_returncode=None if completed is None else int(completed.returncode),
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
