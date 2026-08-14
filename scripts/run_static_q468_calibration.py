@@ -56,7 +56,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v2"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v3"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -75,6 +75,12 @@ MODEL_FILE_MANIFEST_KIND: Final = "recurquant_experiment013_model_file_manifest"
 MODEL_FILE_MANIFEST_SCHEMA: Final = 1
 MODEL_FILE_MANIFEST_DERIVATION: Final = "huggingface-hub-pinned-tree-lfs-v1"
 MODEL_FILE_SELECTION_PROFILE: Final = "qwen35-config-index-safetensors-v1"
+FROZEN_IDENTITY_CONTRACT_KIND: Final = (
+    "recurquant_experiment013_frozen_identity_contract_verification"
+)
+FROZEN_IDENTITY_CONTRACT_SCHEMA: Final = 1
+MODEL_STAGING_AUTHORIZATION_KIND: Final = "recurquant_experiment013_model_staging_authorization"
+MODEL_STAGING_AUTHORIZATION_SCHEMA: Final = 1
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
 RUNTIME_MANIFEST_SCHEMA: Final = 4
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
@@ -756,6 +762,15 @@ class ModelStagingAuthorization:
     model_manifest: ModelFileManifest
     frozen_identity_file_sha256: str
     identity_commit: str
+    source_commit: str
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenIdentitySourceAuthorization:
+    identity: FrozenCalibrationIdentity
+    bindings: BootstrapIdentityBindings
+    identity_bytes: bytes
+    frozen_identity_file_sha256: str
     source_commit: str
 
 
@@ -1573,19 +1588,16 @@ def _verify_committed_frozen_identity(
     return actual_head
 
 
-def _authenticate_model_staging_authorization(
+def _authenticate_frozen_identity_source_contract(
     *,
     git_executable: AuthenticatedGitExecutable,
     frozen_identity_path: Path,
     expected_frozen_identity_sha256: str,
-    identity_commit: str,
     repository_root: Path,
     repository_source_manifest_path: Path,
     source_commit: str,
-    model_file_manifest_path: Path,
-    expected_model_file_manifest_sha256: str,
-) -> ModelStagingAuthorization:
-    """Authenticate promotion, committed provenance, source, and model metadata."""
+) -> FrozenIdentitySourceAuthorization:
+    """Authenticate one promoted identity against its exact H0 source contract."""
 
     expected_identity_sha256 = _sha256(
         expected_frozen_identity_sha256,
@@ -1628,7 +1640,7 @@ def _authenticate_model_staging_authorization(
             git_executable=git_executable.path,
         )
         if verified_source != bootstrap_source.manifest:
-            raise CalibrationRunError("source verifier returned different model-staging evidence")
+            raise CalibrationRunError("source verifier returned different frozen-identity evidence")
         if verified_source.get("source_commit") != requested_source_commit:
             raise CalibrationRunError(
                 "verified source-manifest commit differs from requested frozen source commit"
@@ -1658,11 +1670,97 @@ def _authenticate_model_staging_authorization(
     ):
         raise CalibrationRunError("full frozen identity differs from its bootstrap bindings")
 
+    return FrozenIdentitySourceAuthorization(
+        identity=identity,
+        bindings=bindings,
+        identity_bytes=identity_bytes,
+        frozen_identity_file_sha256=expected_identity_sha256,
+        source_commit=requested_source_commit,
+    )
+
+
+def verify_frozen_identity_contract(
+    *,
+    git_executable_path: Path | None = None,
+    frozen_identity_path: Path,
+    expected_frozen_identity_sha256: str,
+    repository_root: Path,
+    repository_source_manifest_path: Path,
+    source_commit: str,
+) -> dict[str, object]:
+    """Verify a promoted identity against H0 without writes or model access."""
+
+    git_executable = _authenticate_git_executable(git_executable_path)
+    authorization = _authenticate_frozen_identity_source_contract(
+        git_executable=git_executable,
+        frozen_identity_path=frozen_identity_path,
+        expected_frozen_identity_sha256=expected_frozen_identity_sha256,
+        repository_root=repository_root,
+        repository_source_manifest_path=repository_source_manifest_path,
+        source_commit=source_commit,
+    )
+    identity = authorization.identity
+    bindings = authorization.bindings
+    return {
+        "artifact_kind": FROZEN_IDENTITY_CONTRACT_KIND,
+        "assignment_sha256": identity.assignment_sha256,
+        "canonical_evidence_sha256": identity.canonical_evidence_sha256,
+        "execution_bindings": {
+            "calibration_runtime_manifest_file_sha256": bindings.runtime_manifest_file_sha256,
+            "model_file_manifest_file_sha256": bindings.model_file_manifest_file_sha256,
+            "parquet_materialization_manifest_file_sha256": (
+                bindings.parquet_materialization_manifest_file_sha256
+            ),
+            "repository_source_manifest_file_sha256": (
+                bindings.repository_source_manifest_file_sha256
+            ),
+        },
+        "frozen_identity_file_sha256": authorization.frozen_identity_file_sha256,
+        "git_executable": {
+            "sha256": git_executable.sha256,
+            "size_bytes": git_executable.size_bytes,
+        },
+        "identity_input_manifest_sha256": identity.identity_input_manifest_sha256,
+        "model_id": identity.model_id,
+        "model_revision": identity.model_revision,
+        "record_count": len(identity.records),
+        "runner_revision": RUNNER_REVISION,
+        "schema_version": FROZEN_IDENTITY_CONTRACT_SCHEMA,
+        "source_commit": authorization.source_commit,
+        "status": "verified_frozen_identity_contract",
+        "tokenizer_manifest_sha256": identity.tokenizer_manifest_sha256,
+        "transformers_version": identity.transformers_version,
+    }
+
+
+def _authenticate_model_staging_authorization(
+    *,
+    git_executable: AuthenticatedGitExecutable,
+    frozen_identity_path: Path,
+    expected_frozen_identity_sha256: str,
+    identity_commit: str,
+    repository_root: Path,
+    repository_source_manifest_path: Path,
+    source_commit: str,
+    model_file_manifest_path: Path,
+    expected_model_file_manifest_sha256: str,
+) -> ModelStagingAuthorization:
+    """Authenticate promotion, committed provenance, source, and model metadata."""
+
+    source_authorization = _authenticate_frozen_identity_source_contract(
+        git_executable=git_executable,
+        frozen_identity_path=frozen_identity_path,
+        expected_frozen_identity_sha256=expected_frozen_identity_sha256,
+        repository_root=repository_root,
+        repository_source_manifest_path=repository_source_manifest_path,
+        source_commit=source_commit,
+    )
+
     committed_at = _verify_committed_frozen_identity(
         git_executable,
         repository_root,
         frozen_identity_path,
-        identity_bytes,
+        source_authorization.identity_bytes,
         identity_commit=identity_commit,
     )
     model_manifest_bytes = _read_stable_regular_bytes(
@@ -1676,20 +1774,66 @@ def _authenticate_model_staging_authorization(
     actual_model_sha256 = sha256_bytes(model_manifest_bytes)
     if (
         actual_model_sha256 != expected_model_sha256
-        or actual_model_sha256 != bindings.model_file_manifest_file_sha256
+        or actual_model_sha256 != source_authorization.bindings.model_file_manifest_file_sha256
     ):
         raise CalibrationRunError(
             "model file manifest differs from the frozen identity/CLI binding"
         )
     model_manifest = parse_model_file_manifest(model_manifest_bytes)
-    _model_contract_matches(identity, model_manifest)
+    _model_contract_matches(source_authorization.identity, model_manifest)
     return ModelStagingAuthorization(
-        identity=identity,
+        identity=source_authorization.identity,
         model_manifest=model_manifest,
-        frozen_identity_file_sha256=expected_identity_sha256,
+        frozen_identity_file_sha256=source_authorization.frozen_identity_file_sha256,
         identity_commit=committed_at,
-        source_commit=requested_source_commit,
+        source_commit=source_authorization.source_commit,
     )
+
+
+def verify_identity_bound_model_staging_authorization(
+    *,
+    git_executable_path: Path | None = None,
+    frozen_identity_path: Path,
+    expected_frozen_identity_sha256: str,
+    identity_commit: str,
+    repository_root: Path,
+    repository_source_manifest_path: Path,
+    source_commit: str,
+    model_file_manifest_path: Path,
+    expected_model_file_manifest_sha256: str,
+) -> dict[str, object]:
+    """Verify model-staging authorization without accessing model payloads."""
+
+    git_executable = _authenticate_git_executable(git_executable_path)
+    authorization = _authenticate_model_staging_authorization(
+        git_executable=git_executable,
+        frozen_identity_path=frozen_identity_path,
+        expected_frozen_identity_sha256=expected_frozen_identity_sha256,
+        identity_commit=identity_commit,
+        repository_root=repository_root,
+        repository_source_manifest_path=repository_source_manifest_path,
+        source_commit=source_commit,
+        model_file_manifest_path=model_file_manifest_path,
+        expected_model_file_manifest_sha256=expected_model_file_manifest_sha256,
+    )
+    return {
+        "artifact_kind": MODEL_STAGING_AUTHORIZATION_KIND,
+        "file_count": len(authorization.model_manifest.files),
+        "frozen_identity_file_sha256": authorization.frozen_identity_file_sha256,
+        "hub_tree_manifest_sha256": authorization.model_manifest.hub_tree_manifest_sha256,
+        "identity_commit": authorization.identity_commit,
+        "model_id": authorization.model_manifest.model_id,
+        "model_manifest_file_sha256": authorization.model_manifest.file_sha256,
+        "revision": authorization.model_manifest.revision,
+        "repository_source_manifest_file_sha256": (
+            authorization.identity.repository_source_manifest_file_sha256
+        ),
+        "runner_revision": RUNNER_REVISION,
+        "schema_version": MODEL_STAGING_AUTHORIZATION_SCHEMA,
+        "source_commit": authorization.source_commit,
+        "status": "verified_identity_bound_model_staging_authorization",
+        "total_size_bytes": sum(item.size_bytes for item in authorization.model_manifest.files),
+    }
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -3635,7 +3779,8 @@ def _identity_records_with_fisher_boundary(
         for name in ("boundary_positions", "input_positions", "target_positions"):
             values = decoded_boundary[name]
             if (
-                not isinstance(values, list)
+                isinstance(values, (str, bytes, bytearray))
+                or not isinstance(values, Sequence)
                 or not values
                 or any(type(value) is not int or value < 0 for value in values)
             ):
@@ -3643,6 +3788,8 @@ def _identity_records_with_fisher_boundary(
                     f"schema-v5 records[{index}].fisher_boundary {name} is invalid"
                 )
             positions[name] = list(values)
+        normalized_boundary = dict(decoded_boundary)
+        normalized_boundary.update(positions)
         if not (
             len(positions["boundary_positions"])
             == len(positions["input_positions"])
@@ -3681,18 +3828,16 @@ def _identity_records_with_fisher_boundary(
                 f"schema-v5 records[{index}].fisher_boundary hash is invalid"
             ) from exc
         boundary_payload = {
-            name: decoded_boundary[name]
+            name: normalized_boundary[name]
             for name in FISHER_BOUNDARY_FIELDS - {"fisher_boundary_sha256"}
         }
-        if decoded_boundary["fisher_boundary_sha256"] != sha256_bytes(
+        if normalized_boundary["fisher_boundary_sha256"] != sha256_bytes(
             FISHER_BOUNDARY_NAMESPACE + canonical_json_bytes(boundary_payload)
         ):
             raise CalibrationRunError(
                 f"schema-v5 records[{index}].fisher_boundary self-hash drifted"
             )
 
-        normalized_boundary = dict(decoded_boundary)
-        normalized_boundary.update(positions)
         normalized_record = dict(decoded_record)
         normalized_record["fisher_boundary"] = normalized_boundary
         normalized_records.append(normalized_record)
@@ -5434,6 +5579,8 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         "capture-model-manifest",
         "prepare-runtime",
         "stage-model",
+        "verify-frozen-identity-contract",
+        "verify-model-staging-authorization",
     }:
         return None
     command = arguments[0]
@@ -5447,7 +5594,14 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             "--package-root-name",
             default=DEFAULT_PACKAGE_RUNTIME_ROOT_NAME,
         )
-    elif command == "stage-model":
+    elif command == "verify-frozen-identity-contract":
+        parser.add_argument("--git-executable", required=True, type=Path)
+        parser.add_argument("--frozen-identity", required=True, type=Path)
+        parser.add_argument("--expected-frozen-identity-sha256", required=True)
+        parser.add_argument("--repository-root", required=True, type=Path)
+        parser.add_argument("--repository-source-manifest", required=True, type=Path)
+        parser.add_argument("--source-commit", required=True)
+    elif command in {"stage-model", "verify-model-staging-authorization"}:
         parser.add_argument("--git-executable", required=True, type=Path)
         parser.add_argument("--frozen-identity", required=True, type=Path)
         parser.add_argument("--expected-frozen-identity-sha256", required=True)
@@ -5457,9 +5611,10 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         parser.add_argument("--source-commit", required=True)
         parser.add_argument("--model-file-manifest", required=True, type=Path)
         parser.add_argument("--expected-model-file-manifest-sha256", required=True)
-        parser.add_argument("--hub-cache-root", required=True, type=Path)
-        parser.add_argument("--output-root", required=True, type=Path)
-        parser.add_argument("--local-files-only", action="store_true")
+        if command == "stage-model":
+            parser.add_argument("--hub-cache-root", required=True, type=Path)
+            parser.add_argument("--output-root", required=True, type=Path)
+            parser.add_argument("--local-files-only", action="store_true")
     else:
         parser.add_argument("--output", required=True, type=Path)
     if command == "capture-source-manifest":
@@ -5502,6 +5657,31 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             local_files_only=args.local_files_only,
         )
         print(json.dumps(details, sort_keys=True))
+        return 0
+    if command == "verify-frozen-identity-contract":
+        details = verify_frozen_identity_contract(
+            git_executable_path=args.git_executable,
+            frozen_identity_path=args.frozen_identity,
+            expected_frozen_identity_sha256=args.expected_frozen_identity_sha256,
+            repository_root=args.repository_root,
+            repository_source_manifest_path=args.repository_source_manifest,
+            source_commit=args.source_commit,
+        )
+        print(canonical_json_bytes(details).decode("utf-8"), end="")
+        return 0
+    if command == "verify-model-staging-authorization":
+        details = verify_identity_bound_model_staging_authorization(
+            git_executable_path=args.git_executable,
+            frozen_identity_path=args.frozen_identity,
+            expected_frozen_identity_sha256=args.expected_frozen_identity_sha256,
+            identity_commit=args.identity_commit,
+            repository_root=args.repository_root,
+            repository_source_manifest_path=args.repository_source_manifest,
+            source_commit=args.source_commit,
+            model_file_manifest_path=args.model_file_manifest,
+            expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
+        )
+        print(canonical_json_bytes(details).decode("utf-8"), end="")
         return 0
     status = "captured_metadata_only"
     details: dict[str, object] = {}

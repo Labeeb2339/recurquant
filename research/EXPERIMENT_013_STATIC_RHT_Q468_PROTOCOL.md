@@ -1,22 +1,24 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: pre-freeze H0 candidate; not yet preregistered.**
+> **Status: replacement-H0 candidate after a preserved pre-model authorization
+> failure; not yet re-preregistered.**
 >
-> This working copy becomes the frozen Experiment 013 preregistration only when
-> its exact bytes and dependencies are committed in a clean source commit H0 and
-> that H0 is bound by the pre-access seal before identity resolution, policy
-> fitting, any protected materialization, model-weight loading, or quality
-> measurement. A dirty or unbound working copy is not a frozen protocol.
+> This replacement working copy becomes the next frozen Experiment 013
+> preregistration only when its exact bytes and dependencies are committed in a
+> clean source commit H0 and that H0 is bound before any further identity
+> resolution, policy fitting, protected materialization, model-weight loading,
+> or quality measurement. A dirty or unbound working copy is not a frozen
+> protocol.
 >
 > The amendment history is retained below, but its rules remain candidate rules
-> until that H0 binding. Canonical row identities, token spans, tokenizer-file
-> hashes, and content hashes remain unresolved placeholders until a separate
-> identity candidate is resolved and explicitly promoted. An identity candidate
-> is not authorization to load model weights.
+> until that H0 binding. Prior identities, token spans, tokenizer-file hashes,
+> and content hashes remain preserved as superseded evidence under the disclosed
+> reuse rule; the replacement identity has not yet been resolved or promoted.
+> An identity candidate is not authorization to load model weights.
 
 Protocol draft initiated: 2026-08-02
 
-Current pre-H0 candidate amended: 2026-08-14
+Current replacement-H0 candidate amended: 2026-08-15
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -266,6 +268,59 @@ same-identity retry is allowed only after a documented infrastructure
 interruption. This incident does not require new PG19 or HumanEval+ Stage-A
 identities: the complete-RULER verifier ran before the phase-specific PG19 and
 HumanEval+ reads.
+
+Thirteenth pre-resolution execution-contract amendment: 2026-08-15. Under
+source commit `447295e5f705a74a85ad74a74b68985914096357` and tag
+`experiment013-h0-447295e`, the authenticated v7 RULER batch was produced and a
+calibration identity was promoted at the identity-only descendant
+`de4b8d8b514a331bcc8f4ab5b039f4c2b12473ef`. The first `stage-model`
+authorization stopped before cache or output creation, model-metadata manifest
+read, Hub import or download, model-payload access, adapter construction, model
+loading, calibration, or quality measurement. The resolver correctly returned
+recursively immutable sequence views, but calibration-runner v2 incorrectly
+required mutable `list` values for the three Fisher-boundary position arrays.
+This was a producer-to-consumer execution-contract defect, not an experimental
+result. Both commits and frozen identity file SHA-256
+`9ad6afe4a8513b8cc0cd467e75cb23bea72ee3be85c8aeebb8ed3b6e7772f260`
+remain unchanged as superseded evidence and authorize no further model staging
+or experiment execution.
+
+Calibration-runner v3 accepts an authenticated non-text sequence for each
+position array, still requires a nonempty sequence of exact nonnegative
+integers, and immediately normalizes it to an ordinary list before the existing
+evidence-equality, length, `H=1`, exact `B(T)`, and self-hash checks. The repair
+does not change resolver immutability, frozen JSON, record selection, token
+span, Fisher boundary, quantization policy, metric, or gate. A producer-to-
+consumer regression uses the resolver's recursively frozen DTO, while text,
+bytes, empty, Boolean, and negative-position variants fail closed. Runner
+revision advances from v2 to v3. Identity schema v5, capture and resolver
+procedure v6, RULER launcher v7, RULER generation-manifest v2, RULER runtime-
+manifest v3, and source-manifest schema/profile v2 remain unchanged. The new
+frozen-identity-contract and model-staging-authorization canonical stdout
+documents both use schema version one. A new clean H0 and source manifest plus a
+newly promoted H1 are required; the old commits must not be amended, moved, or
+relabelled.
+
+The replacement identity chain may reuse only the already fixed v7 RULER batch
+whose generation-manifest file SHA-256 is exactly
+`979f91848b6c0692160419c3e5e9ee555aa94d9e7add3092067f003ea0543e80`.
+Regeneration is not required for this runner-only defect and would not restore
+blindness after deterministic calibration materialization; exact replay
+authentication is the relevant integrity check. Before reuse, exactly 20
+receipt files plus one generation manifest and 20 raw sibling roots containing
+100 raw files must be replay-authenticated without modification. The generator,
+capture, resolver, RULER requirements, launcher revision, and their relevant
+source blobs must be byte-identical to the batch-producing H0, including Git
+blob OIDs `b981f693a248dbe870d27bb1d5d22a8fb09042c2` for the generator,
+`43e64f3f4f72256de8eb58f3f4cd9068ef3fe305` for capture,
+`dd579415f694d5900e1abdc0f46af358b2a8628b` for the resolver, and
+`680c107636cc27be06652b2cfea18e0c0b82df0b` for the RULER requirements. The
+replacement identity must match the superseded identity's content-manifest
+commitment, records, datasets, selection, calibration split halves, tokenizer and model
+contracts, and upstream revisions; only the H0/source-binding and consequent
+promotion-hash cascade may differ. Any inventory, byte, hash, version, or
+semantic-identity mismatch stops reuse and requires a separately preregistered
+fresh complete batch after the replacement H0.
 
 ## Question
 
@@ -657,6 +712,35 @@ authenticated source verifier proves every frozen source path has identical H0
 tree, H1/index, and worktree bytes, and the worktree is otherwise clean. Reports
 and policy artifacts continue to record H0 as implementation provenance; H1 is
 the identity authorization commit and may not be relabelled as source commit.
+
+Before committing H1, the exact promoted identity bytes in their ignored,
+no-overwrite precommit location must pass `verify-frozen-identity-contract`.
+That read-only command authenticates H0 and its source manifest, loads the exact
+H0 resolver, and consumes the complete record inventory through calibration-
+runner v3's identity view. It accepts no H1, model manifest, Hub, cache, or
+output argument. Its non-persisted canonical JSON stdout document uses artifact
+kind `recurquant_experiment013_frozen_identity_contract_verification`, schema
+version one, and binds the H0/source contract, portable Git identity, all four
+execution bindings, complete identity/canonical/assignment hashes, public model
+and tokenizer contracts, and record count. The bytes that passed are then copied
+without modification as the sole H1 tree change; regeneration or hand editing
+after that preflight is forbidden. After H1, the read-only command
+`verify-model-staging-authorization` must invoke the same authorization path
+used by `stage-model` and reauthenticate the H1, index, and
+worktree identity bytes; H0 ancestry and unchanged source tree; the complete
+frozen identity and execution bindings; and the exact public model-metadata
+manifest. The command accepts no cache or output root, imports no Hub downloader,
+downloads no file, and creates no directory or artifact. Its canonical JSON
+stdout document, which the command does not persist, uses artifact kind
+`recurquant_experiment013_model_staging_authorization`, schema version one, and
+binds status, runner revision, frozen-identity hash, H1, H0, repository-source-
+manifest hash, model-manifest hash, public model ID/revision, Hub-tree-manifest
+hash, file count, and total bytes. Only a successful stdout document permits
+`stage-model` to be attempted. A semantic or authentication mismatch retires
+that H1; it may not be hand-edited or weakened. An argument-parse failure does
+not consume H1 because authentication did not begin. A documented infrastructure
+interruption before any model-payload access permits only an exact same-command
+retry under that H1.
 
 Model payload staging begins only after the frozen identity is tracked with
 identical H1, index, and worktree bytes. The identity-bound stager downloads

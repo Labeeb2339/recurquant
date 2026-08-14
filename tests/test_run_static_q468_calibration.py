@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import importlib.util
 import json
@@ -225,6 +226,24 @@ def model_staging_authorization(
         model_manifest=manifest,
         frozen_identity_file_sha256="d" * 64,
         identity_commit="3" * 40,
+        source_commit="1" * 40,
+    )
+
+
+def frozen_identity_source_authorization() -> Any:
+    frozen = identity(())
+    return runner.FrozenIdentitySourceAuthorization(
+        identity=frozen,
+        bindings=runner.BootstrapIdentityBindings(
+            repository_source_manifest_file_sha256=(frozen.repository_source_manifest_file_sha256),
+            runtime_manifest_file_sha256=frozen.runtime_manifest_file_sha256,
+            model_file_manifest_file_sha256=frozen.model_file_manifest_file_sha256,
+            parquet_materialization_manifest_file_sha256=(
+                frozen.parquet_materialization_manifest_file_sha256
+            ),
+        ),
+        identity_bytes=b"frozen-identity",
+        frozen_identity_file_sha256="d" * 64,
         source_commit="1" * 40,
     )
 
@@ -947,7 +966,7 @@ def test_identity_view_consumes_schema_v5_bindings_and_preserves_fisher_boundary
         "repository_source_manifest_file_sha256": "3" * 64,
     }
     boundary = fisher_boundary_contract()
-    decoded_record = {
+    evidence_record = {
         "canonical_id": "item-1",
         "fisher_boundary": boundary,
         "sequence_length": 3,
@@ -955,27 +974,33 @@ def test_identity_view_consumes_schema_v5_bindings_and_preserves_fisher_boundary
     evidence = {
         "execution_bindings": bindings,
         "model_contracts": {"primary": {"id": "example/model", "revision": "4" * 40}},
-        "records": [decoded_record],
+        "records": [evidence_record],
         "schema_version": runner.FROZEN_IDENTITY_SCHEMA_VERSION,
         "source_manifest_sha256": "5" * 64,
         "tokenizer": {"transformers_version": "5.14.1"},
     }
     payload = runner.canonical_json_bytes({"evidence": evidence})
-
-    class Decoded:
-        file_sha256 = digest(payload)
-        canonical_evidence_sha256 = "6" * 64
-        records = (decoded_record,)
-        assignment = ()
-        assignment_sha256 = "7" * 64
-        tokenizer_manifest_sha256 = "8" * 64
-        execution_bindings = bindings
+    decoded_artifact = identity_resolver.FrozenCalibrationIdentityArtifact(
+        file_sha256=digest(payload),
+        canonical_evidence_sha256="6" * 64,
+        records=(evidence_record,),
+        assignment=(),
+        assignment_sha256="7" * 64,
+        tokenizer_manifest_sha256="8" * 64,
+        parquet_materialization_manifest_file_sha256="9" * 64,
+        execution_bindings=bindings,
+    )
+    frozen_boundary = decoded_artifact.records[0]["fisher_boundary"]
+    assert isinstance(frozen_boundary, Mapping)
+    assert not isinstance(frozen_boundary["boundary_positions"], list)
 
     class Resolver:
         @staticmethod
-        def deserialize_frozen_calibration_identity_artifact(data: bytes) -> Decoded:
+        def deserialize_frozen_calibration_identity_artifact(
+            data: bytes,
+        ) -> identity_resolver.FrozenCalibrationIdentityArtifact:
             assert data == payload
-            return Decoded()
+            return decoded_artifact
 
     monkeypatch.setattr(runner, "_load_identity_resolver", lambda _root: Resolver())
     decoded = runner._identity_view(payload, tmp_path)
@@ -986,6 +1011,33 @@ def test_identity_view_consumes_schema_v5_bindings_and_preserves_fisher_boundary
     assert decoded.parquet_materialization_manifest_file_sha256 == "9" * 64
     assert decoded.records[0]["fisher_boundary"] == boundary
     assert decoded.records[0]["fisher_boundary"] is not boundary
+    for name in ("boundary_positions", "input_positions", "target_positions"):
+        assert isinstance(decoded.records[0]["fisher_boundary"][name], list)
+
+
+@pytest.mark.parametrize(
+    "invalid_positions",
+    ["0", b"0", [], [True], [-1]],
+    ids=("text", "bytes", "empty", "boolean", "negative"),
+)
+def test_identity_view_rejects_invalid_fisher_boundary_position_sequences(
+    invalid_positions: object,
+) -> None:
+    item = {
+        "canonical_id": "item-1",
+        "fisher_boundary": fisher_boundary_contract(),
+        "sequence_length": 3,
+    }
+    item["fisher_boundary"]["boundary_positions"] = invalid_positions
+
+    class Decoded:
+        records = (item,)
+
+    with pytest.raises(
+        runner.CalibrationRunError,
+        match=r"fisher_boundary boundary_positions is invalid",
+    ):
+        runner._identity_records_with_fisher_boundary(Decoded(), {"records": [item]})
 
 
 def test_identity_view_rejects_resolver_record_that_drops_fisher_boundary() -> None:
@@ -1783,6 +1835,596 @@ def test_stage_model_authenticates_before_touching_downloader_cache_or_output(
     assert not output.exists()
 
 
+def test_verify_frozen_identity_contract_is_deterministic_read_only_and_exactly_forwarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorization = frozen_identity_source_authorization()
+    git_executable = runner.AuthenticatedGitExecutable(
+        path=tmp_path / "git.exe",
+        absolute_path_sha256="a" * 64,
+        sha256="b" * 64,
+        size_bytes=1,
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "_authenticate_git_executable", lambda _path: git_executable)
+
+    def authenticate(**kwargs: object) -> runner.FrozenIdentitySourceAuthorization:
+        calls.append(dict(kwargs))
+        return authorization
+
+    monkeypatch.setattr(runner, "_authenticate_frozen_identity_source_contract", authenticate)
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            pytest.fail("frozen-identity preflight imported a Hugging Face client")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    untouched = tmp_path / "untouched"
+    arguments = {
+        "git_executable_path": tmp_path / "requested-git.exe",
+        "frozen_identity_path": untouched / "identity.json",
+        "expected_frozen_identity_sha256": "d" * 64,
+        "repository_root": untouched / "repository",
+        "repository_source_manifest_path": untouched / "source.json",
+        "source_commit": "1" * 40,
+    }
+
+    first = runner.verify_frozen_identity_contract(**arguments)
+    second = runner.verify_frozen_identity_contract(**arguments)
+
+    expected = {
+        "artifact_kind": runner.FROZEN_IDENTITY_CONTRACT_KIND,
+        "assignment_sha256": "f" * 64,
+        "canonical_evidence_sha256": "e" * 64,
+        "execution_bindings": {
+            "calibration_runtime_manifest_file_sha256": "8" * 64,
+            "model_file_manifest_file_sha256": "9" * 64,
+            "parquet_materialization_manifest_file_sha256": "a" * 64,
+            "repository_source_manifest_file_sha256": "7" * 64,
+        },
+        "frozen_identity_file_sha256": "d" * 64,
+        "git_executable": {
+            "sha256": "b" * 64,
+            "size_bytes": 1,
+        },
+        "identity_input_manifest_sha256": "1" * 64,
+        "model_id": "example/model",
+        "model_revision": "2" * 40,
+        "record_count": 0,
+        "runner_revision": runner.RUNNER_REVISION,
+        "schema_version": runner.FROZEN_IDENTITY_CONTRACT_SCHEMA,
+        "source_commit": "1" * 40,
+        "status": "verified_frozen_identity_contract",
+        "tokenizer_manifest_sha256": "c" * 64,
+        "transformers_version": "5.14.1",
+    }
+    assert first == expected
+    assert runner.canonical_json_bytes(first) == runner.canonical_json_bytes(second)
+    assert str(tmp_path).encode("utf-8") not in runner.canonical_json_bytes(first)
+    expected_call = {
+        "expected_frozen_identity_sha256": "d" * 64,
+        "frozen_identity_path": untouched / "identity.json",
+        "git_executable": git_executable,
+        "repository_root": untouched / "repository",
+        "repository_source_manifest_path": untouched / "source.json",
+        "source_commit": "1" * 40,
+    }
+    assert calls == [expected_call, expected_call]
+    assert not untouched.exists()
+
+
+def test_verify_frozen_identity_contract_failure_creates_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    untouched = tmp_path / "untouched"
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            pytest.fail("failed frozen-identity preflight imported a Hugging Face client")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_git_executable",
+        lambda _path: runner.AuthenticatedGitExecutable(
+            path=tmp_path / "git.exe",
+            absolute_path_sha256="a" * 64,
+            sha256="b" * 64,
+            size_bytes=1,
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_frozen_identity_source_contract",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            runner.CalibrationRunError("injected frozen-identity authorization failure")
+        ),
+    )
+
+    with pytest.raises(
+        runner.CalibrationRunError,
+        match="injected frozen-identity authorization failure",
+    ):
+        runner.verify_frozen_identity_contract(
+            git_executable_path=tmp_path / "git.exe",
+            frozen_identity_path=untouched / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            repository_root=untouched / "repository",
+            repository_source_manifest_path=untouched / "source.json",
+            source_commit="1" * 40,
+        )
+
+    assert not untouched.exists()
+
+
+def test_frozen_identity_source_contract_consumes_real_resolver_frozen_sequences(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_manifest_bytes = b"authenticated-source-manifest"
+    source_manifest_sha256 = digest(source_manifest_bytes)
+    bindings = {
+        "calibration_runtime_manifest_file_sha256": "1" * 64,
+        "model_file_manifest_file_sha256": "2" * 64,
+        "parquet_materialization_manifest_file_sha256": "9" * 64,
+        "repository_source_manifest_file_sha256": source_manifest_sha256,
+    }
+    first_boundary = fisher_boundary_contract()
+    second_boundary = fisher_boundary_contract((1, 2, 3, 4))
+    evidence_records = [
+        {
+            "canonical_id": "item-1",
+            "fisher_boundary": first_boundary,
+            "sequence_length": 3,
+        },
+        {
+            "canonical_id": "item-2",
+            "fisher_boundary": second_boundary,
+            "sequence_length": 4,
+        },
+    ]
+    evidence = {
+        "execution_bindings": bindings,
+        "identity_only": True,
+        "model_contracts": {"primary": {"id": "example/model", "revision": "4" * 40}},
+        "phase": "calibration",
+        "promotion_required": False,
+        "records": evidence_records,
+        "schema_version": runner.FROZEN_IDENTITY_SCHEMA_VERSION,
+        "source_manifest_sha256": "5" * 64,
+        "status": "frozen",
+        "tokenizer": {"transformers_version": "5.14.1"},
+    }
+    identity_bytes = runner.canonical_json_bytes(
+        {
+            "canonical_evidence_sha256": digest(runner.canonical_json_bytes(evidence)),
+            "evidence": evidence,
+        }
+    )
+    identity_sha256 = digest(identity_bytes)
+    decoded_artifact = identity_resolver.FrozenCalibrationIdentityArtifact(
+        file_sha256=identity_sha256,
+        canonical_evidence_sha256=digest(runner.canonical_json_bytes(evidence)),
+        records=tuple(evidence_records),
+        assignment=(),
+        assignment_sha256="7" * 64,
+        tokenizer_manifest_sha256="8" * 64,
+        parquet_materialization_manifest_file_sha256="9" * 64,
+        execution_bindings=bindings,
+    )
+    for item in decoded_artifact.records:
+        frozen_boundary = item["fisher_boundary"]
+        assert isinstance(frozen_boundary, Mapping)
+        assert not isinstance(frozen_boundary["boundary_positions"], list)
+
+    class Resolver:
+        @staticmethod
+        def deserialize_frozen_calibration_identity_artifact(
+            data: bytes,
+            *,
+            expected_file_sha256: str | None = None,
+        ) -> identity_resolver.FrozenCalibrationIdentityArtifact:
+            assert data == identity_bytes
+            assert expected_file_sha256 == identity_sha256
+            return decoded_artifact
+
+    source_commit = "a" * 40
+    source_manifest = {"source_commit": source_commit}
+
+    class SourceVerifier:
+        @staticmethod
+        def verify_experiment013_source_manifest(
+            manifest: Mapping[str, object],
+            *,
+            repo_root: Path,
+            git_executable: Path,
+        ) -> Mapping[str, object]:
+            assert manifest == source_manifest
+            assert repo_root == tmp_path / "repository"
+            assert git_executable == tmp_path / "git.exe"
+            return manifest
+
+    identity_path = tmp_path / "identity.json"
+    source_path = tmp_path / "source.json"
+    identity_path.write_bytes(identity_bytes)
+    source_path.write_bytes(source_manifest_bytes)
+    bootstrap = runner.BootstrapSource(
+        manifest=source_manifest,
+        source_commit=source_commit,
+        entries={
+            runner.SOURCE_VERIFIER_PATH: {"raw_sha256": "a" * 64},
+            runner.IDENTITY_RESOLVER_SOURCE_PATH: {"raw_sha256": "b" * 64},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_bootstrap_source_manifest",
+        lambda data, *, repository_root, require_adapter: (
+            bootstrap
+            if data == source_manifest_bytes
+            and repository_root == tmp_path / "repository"
+            and require_adapter is False
+            else pytest.fail("source bootstrap inputs drifted")
+        ),
+    )
+
+    def load_module(
+        _module_name: str,
+        relative_path: str,
+        *,
+        repository_root: Path,
+        entry: Mapping[str, object],
+    ) -> object:
+        assert repository_root == tmp_path / "repository"
+        assert entry == bootstrap.entries[relative_path]
+        if relative_path == runner.SOURCE_VERIFIER_PATH:
+            return SourceVerifier()
+        if relative_path == runner.IDENTITY_RESOLVER_SOURCE_PATH:
+            return Resolver()
+        pytest.fail(f"unexpected authenticated source module: {relative_path}")
+
+    monkeypatch.setattr(runner, "_load_exact_source_module", load_module)
+    authorization = runner._authenticate_frozen_identity_source_contract(
+        git_executable=runner.AuthenticatedGitExecutable(
+            path=tmp_path / "git.exe",
+            absolute_path_sha256="a" * 64,
+            sha256="b" * 64,
+            size_bytes=1,
+        ),
+        frozen_identity_path=identity_path,
+        expected_frozen_identity_sha256=identity_sha256,
+        repository_root=tmp_path / "repository",
+        repository_source_manifest_path=source_path,
+        source_commit=source_commit,
+    )
+
+    assert len(authorization.identity.records) == 2
+    for index, expected_boundary in enumerate((first_boundary, second_boundary)):
+        assert authorization.identity.records[index]["fisher_boundary"] == expected_boundary
+        for name in ("boundary_positions", "input_positions", "target_positions"):
+            assert isinstance(
+                authorization.identity.records[index]["fisher_boundary"][name],
+                list,
+            )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "repository_source_manifest_file_sha256",
+        "runtime_manifest_file_sha256",
+        "model_file_manifest_file_sha256",
+        "parquet_materialization_manifest_file_sha256",
+    ],
+)
+def test_frozen_identity_source_contract_rejects_each_full_binding_mismatch(
+    field: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity_bytes = b"identity"
+    source_manifest_bytes = b"source"
+    bindings = runner.BootstrapIdentityBindings(
+        repository_source_manifest_file_sha256=digest(source_manifest_bytes),
+        runtime_manifest_file_sha256="1" * 64,
+        model_file_manifest_file_sha256="2" * 64,
+        parquet_materialization_manifest_file_sha256="3" * 64,
+    )
+    decoded_identity = identity(
+        (),
+        source_manifest_sha256=bindings.repository_source_manifest_file_sha256,
+        runtime_manifest_sha256=bindings.runtime_manifest_file_sha256,
+        model_manifest_sha256=bindings.model_file_manifest_file_sha256,
+        parquet_manifest_sha256=bindings.parquet_materialization_manifest_file_sha256,
+    )
+    decoded_identity = replace(decoded_identity, **{field: "f" * 64})
+    source_commit = "a" * 40
+    source_manifest = {"source_commit": source_commit}
+    bootstrap = runner.BootstrapSource(
+        manifest=source_manifest,
+        source_commit=source_commit,
+        entries={
+            runner.SOURCE_VERIFIER_PATH: {},
+            runner.IDENTITY_RESOLVER_SOURCE_PATH: {},
+        },
+    )
+
+    class SourceVerifier:
+        @staticmethod
+        def verify_experiment013_source_manifest(
+            manifest: Mapping[str, object],
+            *,
+            repo_root: Path,
+            git_executable: Path,
+        ) -> Mapping[str, object]:
+            del repo_root, git_executable
+            return manifest
+
+    monkeypatch.setattr(
+        runner,
+        "_read_stable_regular_bytes",
+        lambda path, *, context: (
+            identity_bytes if context == "frozen identity" else source_manifest_bytes
+        ),
+    )
+    monkeypatch.setattr(runner, "_bootstrap_identity_bindings", lambda _data: bindings)
+    monkeypatch.setattr(runner, "_bootstrap_source_manifest", lambda *_args, **_kwargs: bootstrap)
+    monkeypatch.setattr(
+        runner,
+        "_load_exact_source_module",
+        lambda _module_name, relative_path, **_kwargs: (
+            SourceVerifier() if relative_path == runner.SOURCE_VERIFIER_PATH else object()
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_identity_view_from_resolver",
+        lambda *_args, **_kwargs: decoded_identity,
+    )
+
+    with pytest.raises(
+        runner.CalibrationRunError,
+        match="full frozen identity differs from its bootstrap bindings",
+    ):
+        runner._authenticate_frozen_identity_source_contract(
+            git_executable=runner.AuthenticatedGitExecutable(
+                path=tmp_path / "git.exe",
+                absolute_path_sha256="a" * 64,
+                sha256="b" * 64,
+                size_bytes=1,
+            ),
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256=digest(identity_bytes),
+            repository_root=tmp_path / "repository",
+            repository_source_manifest_path=tmp_path / "source.json",
+            source_commit=source_commit,
+        )
+
+
+def test_model_staging_authorization_reuses_frozen_identity_source_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_bytes = model_manifest_bytes(staged_model_files())
+    source_authorization = frozen_identity_source_authorization()
+    source_authorization = replace(
+        source_authorization,
+        identity=identity((), model_manifest_sha256=digest(model_bytes)),
+        bindings=replace(
+            source_authorization.bindings,
+            model_file_manifest_file_sha256=digest(model_bytes),
+        ),
+    )
+    git_executable = runner.AuthenticatedGitExecutable(
+        path=tmp_path / "git.exe",
+        absolute_path_sha256="a" * 64,
+        sha256="b" * 64,
+        size_bytes=1,
+    )
+    common_calls: list[dict[str, object]] = []
+
+    def authenticate_common(**kwargs: object) -> runner.FrozenIdentitySourceAuthorization:
+        common_calls.append(dict(kwargs))
+        return source_authorization
+
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_frozen_identity_source_contract",
+        authenticate_common,
+    )
+
+    def verify_commit(
+        received_git: runner.AuthenticatedGitExecutable,
+        repository_root: Path,
+        frozen_identity_path: Path,
+        identity_bytes: bytes,
+        *,
+        identity_commit: str,
+    ) -> str:
+        assert received_git == git_executable
+        assert repository_root == tmp_path / "repository"
+        assert frozen_identity_path == tmp_path / "identity.json"
+        assert identity_bytes == b"frozen-identity"
+        assert identity_commit == "3" * 40
+        return identity_commit
+
+    monkeypatch.setattr(runner, "_verify_committed_frozen_identity", verify_commit)
+    monkeypatch.setattr(
+        runner,
+        "_read_stable_regular_bytes",
+        lambda path, *, context: (
+            model_bytes
+            if path == tmp_path / "model.json" and context == "model file manifest"
+            else pytest.fail("unexpected stable read outside common authorization")
+        ),
+    )
+    result = runner._authenticate_model_staging_authorization(
+        git_executable=git_executable,
+        frozen_identity_path=tmp_path / "identity.json",
+        expected_frozen_identity_sha256="d" * 64,
+        identity_commit="3" * 40,
+        repository_root=tmp_path / "repository",
+        repository_source_manifest_path=tmp_path / "source.json",
+        source_commit="1" * 40,
+        model_file_manifest_path=tmp_path / "model.json",
+        expected_model_file_manifest_sha256=digest(model_bytes),
+    )
+
+    assert result.identity == source_authorization.identity
+    assert result.identity_commit == "3" * 40
+    assert common_calls == [
+        {
+            "expected_frozen_identity_sha256": "d" * 64,
+            "frozen_identity_path": tmp_path / "identity.json",
+            "git_executable": git_executable,
+            "repository_root": tmp_path / "repository",
+            "repository_source_manifest_path": tmp_path / "source.json",
+            "source_commit": "1" * 40,
+        }
+    ]
+
+
+def test_verify_model_staging_authorization_is_deterministic_read_only_and_exactly_forwarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorization = model_staging_authorization()
+    git_executable = runner.AuthenticatedGitExecutable(
+        path=tmp_path / "git.exe",
+        absolute_path_sha256="a" * 64,
+        sha256="b" * 64,
+        size_bytes=1,
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(runner, "_authenticate_git_executable", lambda _path: git_executable)
+
+    def authenticate(**kwargs: object) -> runner.ModelStagingAuthorization:
+        calls.append(dict(kwargs))
+        return authorization
+
+    monkeypatch.setattr(runner, "_authenticate_model_staging_authorization", authenticate)
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            pytest.fail("authorization preflight imported a Hugging Face client")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    untouched = tmp_path / "untouched"
+    arguments = {
+        "git_executable_path": tmp_path / "requested-git.exe",
+        "frozen_identity_path": untouched / "identity.json",
+        "expected_frozen_identity_sha256": "d" * 64,
+        "identity_commit": "3" * 40,
+        "repository_root": untouched / "repository",
+        "repository_source_manifest_path": untouched / "source.json",
+        "source_commit": "1" * 40,
+        "model_file_manifest_path": untouched / "model.json",
+        "expected_model_file_manifest_sha256": authorization.model_manifest.file_sha256,
+    }
+
+    first = runner.verify_identity_bound_model_staging_authorization(**arguments)
+    second = runner.verify_identity_bound_model_staging_authorization(**arguments)
+
+    expected = {
+        "artifact_kind": runner.MODEL_STAGING_AUTHORIZATION_KIND,
+        "file_count": len(authorization.model_manifest.files),
+        "frozen_identity_file_sha256": "d" * 64,
+        "hub_tree_manifest_sha256": authorization.model_manifest.hub_tree_manifest_sha256,
+        "identity_commit": "3" * 40,
+        "model_id": "example/model",
+        "model_manifest_file_sha256": authorization.model_manifest.file_sha256,
+        "revision": "2" * 40,
+        "repository_source_manifest_file_sha256": "7" * 64,
+        "runner_revision": runner.RUNNER_REVISION,
+        "schema_version": runner.MODEL_STAGING_AUTHORIZATION_SCHEMA,
+        "source_commit": "1" * 40,
+        "status": "verified_identity_bound_model_staging_authorization",
+        "total_size_bytes": sum(item.size_bytes for item in authorization.model_manifest.files),
+    }
+    assert first == expected
+    assert runner.canonical_json_bytes(first) == runner.canonical_json_bytes(second)
+    assert calls == [
+        {
+            "expected_frozen_identity_sha256": "d" * 64,
+            "expected_model_file_manifest_sha256": authorization.model_manifest.file_sha256,
+            "frozen_identity_path": untouched / "identity.json",
+            "git_executable": git_executable,
+            "identity_commit": "3" * 40,
+            "model_file_manifest_path": untouched / "model.json",
+            "repository_root": untouched / "repository",
+            "repository_source_manifest_path": untouched / "source.json",
+            "source_commit": "1" * 40,
+        },
+        {
+            "expected_frozen_identity_sha256": "d" * 64,
+            "expected_model_file_manifest_sha256": authorization.model_manifest.file_sha256,
+            "frozen_identity_path": untouched / "identity.json",
+            "git_executable": git_executable,
+            "identity_commit": "3" * 40,
+            "model_file_manifest_path": untouched / "model.json",
+            "repository_root": untouched / "repository",
+            "repository_source_manifest_path": untouched / "source.json",
+            "source_commit": "1" * 40,
+        },
+    ]
+    assert not untouched.exists()
+
+
+def test_verify_model_staging_authorization_failure_creates_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    untouched = tmp_path / "untouched"
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "huggingface_hub" or name.startswith("huggingface_hub."):
+            pytest.fail("failed authorization preflight imported a Hugging Face client")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_git_executable",
+        lambda _path: runner.AuthenticatedGitExecutable(
+            path=tmp_path / "git.exe",
+            absolute_path_sha256="a" * 64,
+            sha256="b" * 64,
+            size_bytes=1,
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_model_staging_authorization",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            runner.CalibrationRunError("injected authorization failure")
+        ),
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="injected authorization failure"):
+        runner.verify_identity_bound_model_staging_authorization(
+            git_executable_path=tmp_path / "git.exe",
+            frozen_identity_path=untouched / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=untouched / "repository",
+            repository_source_manifest_path=untouched / "source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=untouched / "model.json",
+            expected_model_file_manifest_sha256="2" * 64,
+        )
+
+    assert not untouched.exists()
+
+
 def test_committed_frozen_identity_requires_exact_head_index_and_worktree_blob(
     tmp_path: Path,
 ) -> None:
@@ -2545,6 +3187,172 @@ def test_stage_model_cli_forwards_only_explicit_authorization_and_roots(
             "source_commit": "3" * 40,
         }
     ]
+
+
+def test_verify_frozen_identity_contract_cli_is_canonical_and_exactly_forwarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+    receipt = {
+        "artifact_kind": runner.FROZEN_IDENTITY_CONTRACT_KIND,
+        "schema_version": runner.FROZEN_IDENTITY_CONTRACT_SCHEMA,
+        "status": "verified_frozen_identity_contract",
+    }
+
+    def verify(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return receipt
+
+    monkeypatch.setattr(runner, "verify_frozen_identity_contract", verify)
+    arguments = [
+        "verify-frozen-identity-contract",
+        "--git-executable",
+        str(authenticated_git_path()),
+        "--frozen-identity",
+        str(tmp_path / "identity.json"),
+        "--expected-frozen-identity-sha256",
+        "1" * 64,
+        "--repository-root",
+        str(tmp_path / "repository"),
+        "--repository-source-manifest",
+        str(tmp_path / "source.json"),
+        "--source-commit",
+        "3" * 40,
+    ]
+
+    assert runner.main(arguments) == 0
+    assert capsys.readouterr().out == runner.canonical_json_bytes(receipt).decode("utf-8")
+    assert calls == [
+        {
+            "expected_frozen_identity_sha256": "1" * 64,
+            "frozen_identity_path": tmp_path / "identity.json",
+            "git_executable_path": authenticated_git_path(),
+            "repository_root": tmp_path / "repository",
+            "repository_source_manifest_path": tmp_path / "source.json",
+            "source_commit": "3" * 40,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        ("--identity-commit", "2" * 40),
+        ("--model-file-manifest", "model.json"),
+        ("--expected-model-file-manifest-sha256", "4" * 64),
+        ("--hub-cache-root", "cache"),
+        ("--output-root", "output"),
+        ("--output", "output.json"),
+        ("--cache-root", "cache"),
+        ("--local-files-only",),
+    ],
+    ids=(
+        "h1",
+        "model-manifest",
+        "model-manifest-hash",
+        "hub-cache",
+        "output-root",
+        "output",
+        "cache-root",
+        "local-hub-mode",
+    ),
+)
+def test_verify_frozen_identity_contract_cli_rejects_forbidden_surfaces(
+    forbidden: tuple[str, ...],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner,
+        "verify_frozen_identity_contract",
+        lambda **kwargs: calls.append(dict(kwargs)),
+    )
+    arguments = [
+        "verify-frozen-identity-contract",
+        "--git-executable",
+        str(authenticated_git_path()),
+        "--frozen-identity",
+        str(tmp_path / "identity.json"),
+        "--expected-frozen-identity-sha256",
+        "1" * 64,
+        "--repository-root",
+        str(tmp_path / "repository"),
+        "--repository-source-manifest",
+        str(tmp_path / "source.json"),
+        "--source-commit",
+        "3" * 40,
+    ]
+
+    with pytest.raises(SystemExit):
+        runner.main([*arguments, *forbidden])
+    assert calls == []
+
+
+def test_verify_model_staging_authorization_cli_has_no_cache_or_output_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[dict[str, object]] = []
+    receipt = {
+        "artifact_kind": runner.MODEL_STAGING_AUTHORIZATION_KIND,
+        "status": "verified_identity_bound_model_staging_authorization",
+    }
+
+    def verify(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return receipt
+
+    monkeypatch.setattr(runner, "verify_identity_bound_model_staging_authorization", verify)
+    arguments = [
+        "verify-model-staging-authorization",
+        "--git-executable",
+        str(authenticated_git_path()),
+        "--frozen-identity",
+        str(tmp_path / "identity.json"),
+        "--expected-frozen-identity-sha256",
+        "1" * 64,
+        "--identity-commit",
+        "2" * 40,
+        "--repository-root",
+        str(tmp_path / "repository"),
+        "--repository-source-manifest",
+        str(tmp_path / "source.json"),
+        "--source-commit",
+        "3" * 40,
+        "--model-file-manifest",
+        str(tmp_path / "model.json"),
+        "--expected-model-file-manifest-sha256",
+        "4" * 64,
+    ]
+
+    assert runner.main(arguments) == 0
+    assert capsys.readouterr().out == runner.canonical_json_bytes(receipt).decode("utf-8")
+    assert calls == [
+        {
+            "expected_frozen_identity_sha256": "1" * 64,
+            "expected_model_file_manifest_sha256": "4" * 64,
+            "frozen_identity_path": tmp_path / "identity.json",
+            "git_executable_path": authenticated_git_path(),
+            "identity_commit": "2" * 40,
+            "model_file_manifest_path": tmp_path / "model.json",
+            "repository_root": tmp_path / "repository",
+            "repository_source_manifest_path": tmp_path / "source.json",
+            "source_commit": "3" * 40,
+        }
+    ]
+
+    for forbidden in (
+        ("--hub-cache-root", str(tmp_path / "forbidden-cache")),
+        ("--output-root", str(tmp_path / "forbidden-output")),
+        ("--local-files-only",),
+    ):
+        with pytest.raises(SystemExit):
+            runner.main([*arguments, *forbidden])
+    assert len(calls) == 1
 
 
 def test_source_manifest_output_location_allows_only_external_or_ignored_paths(
