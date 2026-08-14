@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sys
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -169,9 +171,7 @@ def _parquet_backend(
     manifest = load_experiment013_parquet_manifest()
     dataset = manifest.dataset(dataset_key)
     schema_columns = (
-        ("url", "text")
-        if dataset_key == "pg19"
-        else ("prompt", "task_id", "canonical_solution")
+        ("url", "text") if dataset_key == "pg19" else ("prompt", "task_id", "canonical_solution")
     )
     layouts: dict[str, ParquetFileLayout] = {}
     for file in dataset.files:
@@ -392,6 +392,71 @@ def test_implementation_contains_no_dataset_viewer_or_mutable_parquet_endpoint()
 
     assert "/rows" not in source
     assert "@~parquet" not in source
+
+
+def test_hub_metadata_backend_forces_public_official_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = "a" * 40
+    path = "data/train-00000-of-00001.parquet"
+    calls: list[tuple[str, object]] = []
+
+    class FakeApi:
+        def __init__(self, *, token: bool, endpoint: str) -> None:
+            calls.append(("api", (token, endpoint)))
+            assert token is False
+            assert endpoint == "https://huggingface.co"
+
+        @staticmethod
+        def dataset_info(**kwargs: object) -> object:
+            calls.append(("dataset_info", dict(kwargs)))
+            assert kwargs["token"] is False
+            return SimpleNamespace(
+                sha=revision,
+                siblings=(
+                    SimpleNamespace(
+                        rfilename=path,
+                        blob_id="b" * 40,
+                        lfs={"sha256": "c" * 64, "size": 123},
+                    ),
+                ),
+            )
+
+    def fake_url(**kwargs: object) -> str:
+        calls.append(("url", dict(kwargs)))
+        assert kwargs["endpoint"] == "https://huggingface.co"
+        return "https://huggingface.co/public-object"
+
+    def fake_head(url: str, *, token: bool) -> object:
+        calls.append(("head", (url, token)))
+        assert token is False
+        return SimpleNamespace(
+            commit_hash=revision,
+            size=123,
+            etag="c" * 64,
+        )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            HfApi=FakeApi,
+            get_hf_file_metadata=fake_head,
+            hf_hub_url=fake_url,
+        ),
+    )
+    backend = parquet_module.HuggingFaceHubMetadataBackend(token=False)
+
+    assert backend.resolve_dataset_revision(repo_id="public/dataset", revision=revision) == revision
+    snapshot = backend.snapshot_parquet_files(
+        repo_id="public/dataset",
+        revision=revision,
+        paths=(path,),
+    )
+
+    assert snapshot.commit_hash == revision
+    assert snapshot.files[0].lfs_sha256 == "c" * 64
+    assert {name for name, _value in calls} >= {"api", "dataset_info", "url", "head"}
 
 
 def test_bulk_projection_is_ordered_counted_immutable_and_authenticated_once() -> None:

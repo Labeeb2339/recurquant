@@ -116,6 +116,7 @@ SOURCE_IDENTITY_PATHS = (
     "src/recurquant/experiment013_parquet.py",
     "src/recurquant/experiment013_qwen35_adapter.py",
     "src/recurquant/experiment013_source.py",
+    "src/recurquant/experiment013_stage_a.py",
     "src/recurquant/finite_difference.py",
     "src/recurquant/fisher_sensitivity.py",
     "src/recurquant/horizon.py",

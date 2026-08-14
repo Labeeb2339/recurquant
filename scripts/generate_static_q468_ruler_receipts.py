@@ -550,18 +550,57 @@ def _subprocess_env(**updates: str) -> dict[str, str]:
 def _git_env() -> dict[str, str]:
     """Return a Git environment without caller or machine configuration."""
 
-    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+    inherited = {key.upper(): (key, value) for key, value in os.environ.items()}
+    env = {
+        inherited[name][0]: inherited[name][1]
+        for name in ("SYSTEMROOT", "WINDIR", "COMSPEC")
+        if name in inherited
+    }
     env.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_SYSTEM": os.devnull,
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_AUTHOR_NAME": "RecurQuant Experiment 013",
+            "GIT_AUTHOR_EMAIL": "experiment013@invalid",
+            "GIT_COMMITTER_NAME": "RecurQuant Experiment 013",
+            "GIT_COMMITTER_EMAIL": "experiment013@invalid",
             "LC_ALL": "C",
             "LANG": "C",
         }
     )
     return env
+
+
+def _authenticated_git_executable(path: Path | None) -> Path:
+    selected: str | os.PathLike[str]
+    if path is None:
+        discovered = shutil.which("git")
+        if discovered is None:
+            raise ValueError("Git executable is unavailable")
+        selected = discovered
+    else:
+        selected = path
+    try:
+        resolved = Path(selected).resolve(strict=True)
+    except OSError as error:
+        raise ValueError("Git executable is unavailable") from error
+    if resolved.name.casefold() == "git.exe" and resolved.parent.name.casefold() == "cmd":
+        try:
+            resolved = (resolved.parent.parent / "mingw64" / "bin" / "git.exe").resolve(strict=True)
+        except OSError as error:
+            raise ValueError(
+                "Git-for-Windows cmd shim has no canonical mingw64 executable"
+            ) from error
+    current = Path(resolved.anchor)
+    for part in resolved.parts[1:]:
+        current /= part
+        if _is_reparse_point(current):
+            raise ValueError("Git executable traverses a link or reparse point")
+    if not resolved.is_file() or _is_reparse_point(resolved) or resolved.stat().st_size <= 0:
+        raise ValueError("Git executable must be a non-empty regular non-link file")
+    return resolved
 
 
 def _file_entry(name: str, data: bytes) -> dict[str, object]:
@@ -958,10 +997,16 @@ def _launcher_source_entry() -> dict[str, object]:
     )
 
 
-def verify_ruler_checkout(ruler_root: Path, capture: Any) -> VerifiedRulerCheckout:
+def verify_ruler_checkout(
+    ruler_root: Path,
+    capture: Any,
+    *,
+    git_executable_path: Path | None = None,
+) -> VerifiedRulerCheckout:
     ruler_root = ruler_root.resolve()
+    git_executable = _authenticated_git_executable(git_executable_path)
     result = subprocess.run(
-        ["git", "-C", str(ruler_root), "rev-parse", "HEAD"],
+        [str(git_executable), "-C", str(ruler_root), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
@@ -973,7 +1018,7 @@ def verify_ruler_checkout(ruler_root: Path, capture: Any) -> VerifiedRulerChecko
     files: dict[str, bytes] = {}
     for relative, expected_blob in capture.RULER_GENERATOR_GIT_BLOBS.items():
         data = subprocess.run(
-            ["git", "-C", str(ruler_root), "cat-file", "blob", expected_blob],
+            [str(git_executable), "-C", str(ruler_root), "cat-file", "blob", expected_blob],
             check=True,
             capture_output=True,
             env=_git_env(),
@@ -2210,6 +2255,7 @@ def finalize_generation_manifest_if_complete(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ruler-root", type=Path, required=True)
+    parser.add_argument("--git-executable", type=Path, required=True)
     parser.add_argument("--python", type=Path, required=True)
     parser.add_argument("--tokenizer-dir", type=Path, required=True)
     parser.add_argument("--nltk-data", type=Path, required=True)
@@ -2230,7 +2276,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.timeout_seconds < 1:
         raise ValueError("--timeout-seconds must be positive")
     capture = _load_capture_module()
-    checkout = verify_ruler_checkout(args.ruler_root, capture)
+    checkout = verify_ruler_checkout(
+        args.ruler_root,
+        capture,
+        git_executable_path=args.git_executable,
+    )
     verified_package_tree = verify_runtime_package_source(args.python)
     verified_python_runtime = verify_python_runtime_source(args.python)
     static_runtime_files = verify_static_runtime_input_source(

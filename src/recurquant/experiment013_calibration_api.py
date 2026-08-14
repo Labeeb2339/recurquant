@@ -163,6 +163,28 @@ class StepObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class FisherStepObservation:
+    """One causal H=1 loss-gradient observation from a warm recurrent cache.
+
+    ``boundary_position`` identifies the stored state after token ``x_b``.
+    The differentiable step consumes ``x_(b+1)`` at ``input_position`` and its
+    logits are scored against ``x_(b+2)`` at ``target_position``.  Tensor
+    values remain typed as ``object`` so this authenticated API stays stdlib
+    only.
+    """
+
+    boundary_position: int
+    input_position: int
+    target_position: int
+    input_token_id: int
+    target_token_id: int
+    step_observation: StepObservation
+    source_recurrent_state: object
+    source_state_gradient: object
+    target_nll: float
+
+
+@dataclass(frozen=True, slots=True)
 class ModelFileIdentity:
     """One immutable file in the authenticated local model snapshot."""
 
@@ -206,6 +228,16 @@ class CalibrationAdapter(Protocol):
         capture_state: bool,
     ) -> StepObservation: ...
 
+    def step_token_with_fisher(
+        self,
+        model: object,
+        *,
+        token_id: int,
+        position: int,
+        target_token_id: int,
+        capture_state: bool,
+    ) -> FisherStepObservation: ...
+
     def end_sequence(self, model: object, record: Mapping[str, object]) -> None: ...
 
     def close_model(self, model: object) -> None: ...
@@ -227,6 +259,7 @@ __all__ = [
     "CalibrationAdapter",
     "CalibrationAdapterFactory",
     "EXECUTION_BINDING_ARTIFACT_KEYS",
+    "FisherStepObservation",
     "ModelFileIdentity",
     "RUNTIME_AUTHENTICATION_CONTEXT_KEYS",
     "StepObservation",

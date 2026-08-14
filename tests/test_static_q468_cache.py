@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterator
+from dataclasses import replace
 
 import pytest
 import torch
 from transformers import Qwen3_5ForCausalLM
 
+from recurquant import (
+    DYNAMIC_Q468_BASELINE_METHOD,
+    DYNAMIC_Q468_ORACLE_METHOD,
+    STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    STATIC_Q468_MSE_METHOD,
+    STATIC_Q468_UNIFORM_Q4_METHOD,
+    STATIC_Q468_UNIFORM_Q8_METHOD,
+    create_qwen35_dynamic_q468_baseline_cache,
+    create_qwen35_dynamic_q468_oracle_cache,
+)
 from recurquant.statelease_equal_byte_baselines import (
     FROZEN_QWEN35_EQUAL_BYTE_LAYOUT,
     RHT_Q4_Q6_Q8,
@@ -21,6 +32,8 @@ from recurquant.static_q468 import (
     FROZEN_STATIC_Q48_PROMOTIONS,
     FROZEN_STATIC_Q468_ABLATION_STEPS,
     FROZEN_STATIC_Q468_PRIMARY_STEPS,
+    FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS,
+    FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS,
     STATIC_Q48_COMPARATOR_METHOD,
     STATIC_Q468_ABLATION_METHOD,
     STATIC_Q468_PRIMARY_METHOD,
@@ -31,9 +44,7 @@ from recurquant.static_q468 import (
     build_static_rht_q468_policy,
 )
 from recurquant.static_q468_cache import (
-    DYNAMIC_Q468_ORACLE_METHOD,
     StaticRhtQwen35Cache,
-    create_qwen35_dynamic_q468_oracle_cache,
     create_qwen35_static_rht_cache,
 )
 from tests.test_transformers_cache import tiny_config
@@ -454,7 +465,7 @@ def test_static_cache_rejects_policy_hash_geometry_and_public_method_drift() -> 
             layout=mismatched_layout,
         )
 
-    with pytest.raises(ValueError, match="three frozen methods"):
+    with pytest.raises(ValueError, match="seven frozen methods"):
         create_qwen35_static_rht_cache(
             tiny_config(),
             policy=policy,
@@ -479,7 +490,7 @@ def _frozen_config():
 
 
 @pytest.fixture(scope="module")
-def frozen_policies() -> tuple[StaticRhtQ468Policy, StaticRhtQ468Policy, StaticRhtQ48Policy]:
+def frozen_policies() -> tuple[StaticRhtQ468Policy | StaticRhtQ48Policy, ...]:
     rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
     order = torch.arange(rows, dtype=torch.float64).reshape(1, rows)
     d4 = 5.0 + order / (rows + 1)
@@ -503,6 +514,42 @@ def frozen_policies() -> tuple[StaticRhtQ468Policy, StaticRhtQ468Policy, StaticR
         method_id=STATIC_Q468_ABLATION_METHOD,
         **BINDINGS,
     )
+    mse = build_static_rht_q468_policy(
+        d4,
+        d6,
+        d8,
+        geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+        method_id=STATIC_Q468_MSE_METHOD,
+        **BINDINGS,
+    )
+    fisher = build_static_rht_q468_policy(
+        d4,
+        d6,
+        d8,
+        geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+        method_id=STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+        **BINDINGS,
+    )
+    uniform_q4 = build_static_rht_q468_policy(
+        d4,
+        d6,
+        d8,
+        geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        marginal_steps=FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS,
+        method_id=STATIC_Q468_UNIFORM_Q4_METHOD,
+        **BINDINGS,
+    )
+    uniform_q8 = build_static_rht_q468_policy(
+        d4,
+        d6,
+        d8,
+        geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        marginal_steps=FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS,
+        method_id=STATIC_Q468_UNIFORM_Q8_METHOD,
+        **BINDINGS,
+    )
     q48 = build_static_rht_q48_policy(
         d4,
         d8,
@@ -511,19 +558,23 @@ def frozen_policies() -> tuple[StaticRhtQ468Policy, StaticRhtQ468Policy, StaticR
         method_id=STATIC_Q48_COMPARATOR_METHOD,
         **BINDINGS,
     )
-    return primary, ablation, q48
+    return primary, ablation, mse, fisher, uniform_q4, uniform_q8, q48
 
 
 def test_public_factory_supports_all_reserved_methods_without_loading_weights(
     frozen_policies,
 ) -> None:
-    primary, ablation, q48 = frozen_policies
+    primary, ablation, mse, fisher, uniform_q4, uniform_q8, q48 = frozen_policies
     expected = {
         STATIC_Q468_PRIMARY_METHOD: (3_454_664, 0, True),
         STATIC_Q468_ABLATION_METHOD: (3_380_928, 73_736, False),
+        STATIC_Q468_MSE_METHOD: (3_454_664, 0, True),
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD: (3_454_664, 0, True),
+        STATIC_Q468_UNIFORM_Q4_METHOD: (2_515_968, 938_696, False),
+        STATIC_Q468_UNIFORM_Q8_METHOD: (4_875_264, -1_420_600, False),
         STATIC_Q48_COMPARATOR_METHOD: (3_454_664, 0, True),
     }
-    for policy in (primary, ablation, q48):
+    for policy in (primary, ablation, mse, fisher, uniform_q4, uniform_q8, q48):
         cache = create_qwen35_static_rht_cache(
             _frozen_config(),
             policy=policy,
@@ -544,14 +595,45 @@ def test_public_factory_supports_all_reserved_methods_without_loading_weights(
             if "policy" in name.lower()
         )
 
+    unregistered = replace(
+        primary,
+        method_id="rht_q468_static_unregistered_k29334",
+    )
+    with pytest.raises(ValueError, match="seven frozen methods"):
+        create_qwen35_static_rht_cache(
+            _frozen_config(),
+            policy=unregistered,
+            expected_policy_sha256=unregistered.policy_sha256,
+        )
 
-def test_named_dynamic_q468_oracle_is_existing_exact_k27030_path() -> None:
-    cache = create_qwen35_dynamic_q468_oracle_cache(_frozen_config(), record_evidence=True)
+
+def test_named_dynamic_q468_baseline_is_existing_exact_k27030_path() -> None:
+    cache = create_qwen35_dynamic_q468_baseline_cache(
+        _frozen_config(),
+        record_evidence=True,
+    )
     assert cache.codec == RHT_Q4_Q6_Q8
-    assert cache.method_id == DYNAMIC_Q468_ORACLE_METHOD
+    assert cache.method_id == DYNAMIC_Q468_BASELINE_METHOD
     assert cache.layout is FROZEN_QWEN35_EQUAL_BYTE_LAYOUT
     assert cache.layout.multibit_marginal_steps == 27_030
     assert cache.storage_summary()["expected_resident_bytes"] == 3_454_664
+
+
+def test_dynamic_q468_oracle_names_are_compatibility_aliases() -> None:
+    canonical = create_qwen35_dynamic_q468_baseline_cache(
+        _frozen_config(),
+        record_evidence=True,
+    )
+    compatibility = create_qwen35_dynamic_q468_oracle_cache(
+        _frozen_config(),
+        record_evidence=True,
+    )
+    assert DYNAMIC_Q468_ORACLE_METHOD == DYNAMIC_Q468_BASELINE_METHOD
+    assert compatibility.method_id == canonical.method_id
+    assert compatibility.codec == canonical.codec
+    assert compatibility.layout is canonical.layout
+    assert compatibility.record_evidence is canonical.record_evidence
+    assert compatibility.storage_summary() == canonical.storage_summary()
 
 
 def test_public_factories_validate_model_runtime_before_cache_construction(
@@ -569,7 +651,7 @@ def test_public_factories_validate_model_runtime_before_cache_construction(
             expected_policy_sha256=primary.policy_sha256,
         )
     with pytest.raises(ValueError, match="inference-only"):
-        create_qwen35_dynamic_q468_oracle_cache(training_model)
+        create_qwen35_dynamic_q468_baseline_cache(training_model)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")

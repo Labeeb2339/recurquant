@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
 import copy
+import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -13,6 +16,7 @@ import pytest
 from recurquant.experiment013_source import (
     EXPERIMENT013_SOURCE_PATHS,
     Experiment013SourceError,
+    authenticate_git_executable,
     canonical_experiment013_source_manifest_bytes,
     canonical_experiment013_source_manifest_sha256,
     capture_experiment013_source_manifest,
@@ -73,9 +77,12 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
         "scripts/capture_static_q468_identity_input.py",
         "scripts/generate_static_q468_ruler_receipts.py",
         "scripts/launch_static_q468_calibration.py",
+        "scripts/launch_static_q468_stage_a.py",
         "scripts/resolve_static_q468_identity.py",
         "scripts/run_static_q468_calibration.py",
+        "scripts/screen_static_q468_stage_a.py",
         "requirements/experiment013-ruler.txt",
+        "src/recurquant/cache.py",
         "src/recurquant/static_q468.py",
         "src/recurquant/static_q468_cache.py",
         "src/recurquant/static_q468_calibration.py",
@@ -83,11 +90,14 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
         "src/recurquant/experiment013_parquet.py",
         "src/recurquant/experiment013_qwen35_adapter.py",
         "src/recurquant/experiment013_source.py",
+        "src/recurquant/experiment013_stage_a.py",
         "tests/test_capture_static_q468_identity_input.py",
         "tests/test_generate_static_q468_ruler_receipts.py",
         "tests/test_launch_static_q468_calibration.py",
+        "tests/test_launch_static_q468_stage_a.py",
         "tests/test_resolve_static_q468_identity.py",
         "tests/test_run_static_q468_calibration.py",
+        "tests/test_screen_static_q468_stage_a.py",
         "tests/test_static_q468.py",
         "tests/test_static_q468_cache.py",
         "tests/test_static_q468_calibration.py",
@@ -95,6 +105,7 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
         "tests/test_experiment013_parquet.py",
         "tests/test_experiment013_qwen35_adapter.py",
         "tests/test_experiment013_source.py",
+        "tests/test_experiment013_stage_a.py",
     }
 
     assert required <= set(EXPERIMENT013_SOURCE_PATHS)
@@ -102,6 +113,50 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
     assert len(set(EXPERIMENT013_SOURCE_PATHS)) == len(EXPERIMENT013_SOURCE_PATHS)
     source = Path(__file__).resolve().parents[1] / "src" / "recurquant" / "experiment013_source.py"
     assert 'canonical_manifest_sha256 = "' not in source.read_text(encoding="utf-8")
+
+
+def test_frozen_inventory_is_an_explicit_string_literal_set() -> None:
+    source = Path(__file__).resolve().parents[1] / "src" / "recurquant" / "experiment013_source.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "EXPERIMENT013_SOURCE_PATHS"
+    )
+    assert isinstance(assignment.value, ast.Call)
+    outer = assignment.value
+    assert isinstance(outer.func, ast.Name) and outer.func.id == "tuple"
+    assert len(outer.args) == 1 and isinstance(outer.args[0], ast.Call)
+    ordered = outer.args[0]
+    assert isinstance(ordered.func, ast.Name) and ordered.func.id == "sorted"
+    assert len(ordered.args) == 1 and isinstance(ordered.args[0], ast.Set)
+    literals = ordered.args[0].elts
+    assert literals
+    assert all(isinstance(item, ast.Constant) and isinstance(item.value, str) for item in literals)
+    rendered = tuple(item.value for item in literals if isinstance(item, ast.Constant))
+    assert rendered == tuple(sorted(rendered))
+    assert len(rendered) == len(set(rendered))
+    assert rendered == EXPERIMENT013_SOURCE_PATHS
+
+
+def test_stage_a_runner_required_source_paths_are_frozen() -> None:
+    root = Path(__file__).resolve().parents[1]
+    module_name = "_recurquant_experiment013_stage_a_source_inventory_test"
+    path = root / "scripts" / "screen_static_q468_stage_a.py"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        stage_a_required = module.REQUIRED_SOURCE_PATHS
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert isinstance(stage_a_required, frozenset)
+    assert stage_a_required <= set(EXPERIMENT013_SOURCE_PATHS)
 
 
 def test_capture_is_portable_complete_and_allows_ignored_artifacts(tmp_path: Path) -> None:
@@ -166,6 +221,52 @@ def test_capture_scrubs_inherited_git_index_redirection(
     manifest = capture_experiment013_source_manifest(root)
 
     assert manifest["source_commit"] == _git(root, "rev-parse", "HEAD")
+
+
+def test_explicit_authenticated_git_ignores_a_fake_path_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _init_repository(tmp_path / "repository")
+    authenticated_git = authenticate_git_executable()
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "git.exe").write_bytes(b"not an executable\n")
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    manifest = capture_experiment013_source_manifest(
+        root,
+        git_executable=authenticated_git.path,
+    )
+
+    assert (
+        verify_experiment013_source_manifest(
+            manifest,
+            root,
+            git_executable=authenticated_git.path,
+        )
+        == manifest
+    )
+    assert manifest["git_executable"] == {
+        "sha256": authenticated_git.sha256,
+        "size_bytes": authenticated_git.size_bytes,
+    }
+    manifest_bytes = canonical_experiment013_source_manifest_bytes(manifest)
+    assert str(authenticated_git.path).encode() not in manifest_bytes
+
+
+def test_git_for_windows_cmd_shim_is_canonicalized_to_real_binary(tmp_path: Path) -> None:
+    cmd_git = tmp_path / "Git" / "cmd" / "git.exe"
+    real_git = tmp_path / "Git" / "mingw64" / "bin" / "git.exe"
+    cmd_git.parent.mkdir(parents=True)
+    real_git.parent.mkdir(parents=True)
+    cmd_git.write_bytes(b"shim\n")
+    real_git.write_bytes(b"actual Git implementation\n")
+
+    identity = authenticate_git_executable(cmd_git)
+
+    assert identity.path == real_git.resolve(strict=True)
+    assert identity.sha256 == hashlib.sha256(real_git.read_bytes()).hexdigest()
+    assert identity.size_bytes == real_git.stat().st_size
 
 
 def test_capture_rejects_unsafe_local_git_config(tmp_path: Path) -> None:

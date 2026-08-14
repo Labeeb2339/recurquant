@@ -7,13 +7,17 @@ import json
 import math
 import sys
 import unicodedata
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import torch
 
+import recurquant.static_q468_calibration as calibration
 from recurquant.evidence import canonical_json_bytes
 from recurquant.multibit_policy import allocate_exact_multibit_codes
+from recurquant.quantization import QuantizationSpec, quantize_dequantize
+from recurquant.rht import RHT_SEED, right_rht_encode
 from recurquant.static_q468 import (
     FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
     FROZEN_STATIC_Q468_ABLATION_STEPS,
@@ -25,32 +29,52 @@ from recurquant.static_q468_calibration import (
     CALIBRATION_SCORE_ARTIFACT_KIND,
     CALIBRATION_SCORE_ARTIFACT_PROFILE,
     CALIBRATION_SCORE_ARTIFACT_REVISION,
+    COMPARATOR_SCORE_ARTIFACT_KIND,
+    COMPARATOR_SCORE_ARTIFACT_PROFILE,
+    COMPARATOR_SCORE_ARTIFACT_REVISION,
+    FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
     FROZEN_SOURCE_TENSOR_CONTRACT,
+    FROZEN_UNWEIGHTED_MSE_PROFILE,
     GENERIC_CALIBRATION_SCORE_ARTIFACT_KIND,
     GENERIC_CALIBRATION_SCORE_ARTIFACT_PROFILE,
     GENERIC_CALIBRATION_SCORE_ARTIFACT_REVISION,
     AnchorDistortionBatch,
     CalibrationAggregate,
     CalibrationSequenceScores,
+    ComparatorAggregate,
+    ComparatorSequenceScores,
+    FrozenComparatorEndpointBatch,
+    UnweightedEndpointBatch,
     aggregate_calibration_scores,
+    aggregate_comparator_scores,
     allocate_frozen_static_q468_code_maps,
     allocate_static_q468_code_map,
+    allocate_unweighted_endpoint_policy,
     balanced_sha_rank_halves,
     build_calibration_score_artifact,
     build_frozen_calibration_score_artifact,
+    build_frozen_comparator_score_artifact,
     build_frozen_split_half_stability_artifact,
     calibration_sequence_rank_sha256,
+    compute_rht_diagonal_empirical_fisher_h1_endpoints,
+    compute_rht_unweighted_mse_endpoints,
     deserialize_calibration_score_artifact,
+    deserialize_comparator_score_artifact,
     deserialize_frozen_split_half_stability_artifact,
     evaluate_policy_stability,
+    fisher_h1_boundary_positions,
     fit_split_half_policy,
     frozen_anchor_positions,
+    identity_record_sha256,
     per_layer_mean_bitwidth_shifts,
     q8_set_jaccard,
     reduce_anchor_distortions,
     reduce_frozen_anchor_distortions,
+    reduce_frozen_comparator_endpoints,
+    reduce_unweighted_endpoint_anchors,
     static_q468_code_map_sha256,
     verify_calibration_score_artifact,
+    verify_comparator_score_artifact,
     verify_frozen_split_half_stability_artifact,
 )
 
@@ -238,6 +262,164 @@ def _relabel_generic_document_as_official(raw: bytes) -> dict[str, object]:
     return document
 
 
+def _comparator_sequence(
+    selector_profile: str,
+    family: str,
+    config: str,
+    canonical_id: str,
+    scalar: float,
+    *,
+    ruler_category: str | None = None,
+    seed: int | None = None,
+    configured_length: int | None = None,
+) -> ComparatorSequenceScores:
+    token_count = 3
+    endpoint_positions = (
+        frozen_anchor_positions(token_count)
+        if selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE
+        else fisher_h1_boundary_positions(token_count)
+    )
+    token_hash = calibration.sequence_token_ids_sha256((11, 12, 13))
+    token_span = (
+        ("prefill_start", 0),
+        ("prefill_stop", 1),
+        ("scored_start", 1),
+        ("scored_stop", 3),
+        ("cache_exposed_start", 3),
+        ("cache_exposed_stop", 3),
+    )
+    identity_anchor_hash = calibration.identity_anchor_manifest_sha256(
+        canonical_id=canonical_id,
+        sequence_length=token_count,
+        sequence_token_ids_sha256_value=token_hash,
+        token_span=token_span,
+    )
+    identity_record_hash = hashlib.sha256(f"record:{canonical_id}".encode()).hexdigest()
+    fisher_boundary_hash = hashlib.sha256(f"fisher:{canonical_id}".encode()).hexdigest()
+    position_payload = calibration._comparator_position_payload(
+        selector_profile=selector_profile,
+        token_count=token_count,
+        endpoint_positions=endpoint_positions,
+        sequence_token_ids_sha256_value=token_hash,
+        identity_anchor_manifest_sha256_value=identity_anchor_hash,
+        identity_record_sha256_value=identity_record_hash,
+        fisher_boundary_sha256=fisher_boundary_hash,
+    )
+    position_hash = calibration._domain_json_sha256(
+        calibration._COMPARATOR_POSITION_HASH_DOMAIN,
+        position_payload,
+    )
+    endpoint_hash = hashlib.sha256(
+        f"endpoint:{selector_profile}:{canonical_id}".encode()
+    ).hexdigest()
+    rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    d4 = torch.full((rows,), scalar, dtype=torch.float64)
+    d6 = torch.full((rows,), scalar / 2, dtype=torch.float64)
+    d8 = torch.full((rows,), scalar / 4, dtype=torch.float64)
+    sequence_hash = calibration._comparator_sequence_score_sha256(
+        selector_profile=selector_profile,
+        position_manifest_sha256=position_hash,
+        endpoint_inputs_sha256=endpoint_hash,
+        identity_record_sha256_value=identity_record_hash,
+        d4=d4,
+        d6=d6,
+        d8=d8,
+    )
+    return ComparatorSequenceScores(
+        selector_profile=selector_profile,
+        family=family,
+        config=config,
+        ruler_category=ruler_category,
+        canonical_id=canonical_id,
+        seed=seed,
+        configured_length=configured_length,
+        token_count=token_count,
+        endpoint_positions=endpoint_positions,
+        position_manifest_sha256=position_hash,
+        endpoint_inputs_sha256=endpoint_hash,
+        sequence_scores_sha256=sequence_hash,
+        d4=d4,
+        d6=d6,
+        d8=d8,
+        source_shape=(
+            len(endpoint_positions),
+            *FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape,
+        ),
+        sequence_token_ids_sha256=token_hash,
+        token_span=token_span,
+        identity_anchor_manifest_sha256=identity_anchor_hash,
+        identity_record_sha256=identity_record_hash,
+        fisher_boundary_sha256=fisher_boundary_hash,
+        target_nlls_sha256=(
+            None
+            if selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE
+            else hashlib.sha256(f"nll:{canonical_id}".encode()).hexdigest()
+        ),
+    )
+
+
+def _comparator_sequences(selector_profile: str) -> list[ComparatorSequenceScores]:
+    specifications = [
+        ("mbpp", None, "default", 3.0),
+        ("mbpp", None, "default", 9.0),
+        ("pg19", None, "default", 12.0),
+        ("pg19", None, "default", 18.0),
+        ("ruler", "retrieval", "niah", 3.0),
+        ("ruler", "retrieval", "niah", 9.0),
+        ("ruler", "multi_hop_tracing", "vt", 6.0),
+        ("ruler", "multi_hop_tracing", "vt", 12.0),
+        ("ruler", "aggregation", "cwe", 9.0),
+        ("ruler", "aggregation", "fwe", 15.0),
+        ("ruler", "question_answering", "qa", 12.0),
+        ("ruler", "question_answering", "qa", 18.0),
+    ]
+    return [
+        _comparator_sequence(
+            selector_profile,
+            family,
+            config,
+            f"{family}-{category}-{index}",
+            scalar,
+            ruler_category=category,
+            seed=index if family == "ruler" else None,
+            configured_length=2_048 if family == "ruler" else None,
+        )
+        for index, (family, category, config, scalar) in enumerate(specifications)
+    ]
+
+
+def _synthetic_comparator_aggregate(
+    selector_profile: str,
+    *,
+    identity_manifest_sha256: str = "e" * 64,
+) -> ComparatorAggregate:
+    rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    row_axis = torch.arange(rows, dtype=torch.float64) / rows
+    profile_offset = 0.0 if selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE else 0.125
+    provisional = ComparatorAggregate(
+        selector_profile=selector_profile,
+        d4=4.0 + profile_offset + row_axis,
+        d6=2.0 + profile_offset + row_axis / 2,
+        d8=1.0 + profile_offset + row_axis / 4,
+        family_sequence_counts=(("mbpp", 128), ("pg19", 16), ("ruler", 16)),
+        ruler_category_sequence_counts=tuple(
+            (category, 4) for category in calibration.RULER_CATEGORY_ORDER
+        ),
+        position_manifest_sha256=hashlib.sha256(
+            f"positions:{selector_profile}".encode()
+        ).hexdigest(),
+        sequence_score_manifest_sha256=hashlib.sha256(
+            f"sequences:{selector_profile}".encode()
+        ).hexdigest(),
+        identity_record_manifest_sha256=identity_manifest_sha256,
+        aggregate_scores_sha256="0" * 64,
+    )
+    return replace(
+        provisional,
+        aggregate_scores_sha256=calibration._comparator_aggregate_score_sha256(provisional),
+    )
+
+
 @pytest.mark.parametrize(
     ("token_count", "expected"),
     [
@@ -270,6 +452,376 @@ def _relabel_generic_document_as_official(raw: bytes) -> dict[str, object]:
 )
 def test_frozen_anchor_equation(token_count: int, expected: tuple[int, ...]) -> None:
     assert frozen_anchor_positions(token_count) == expected
+
+
+def test_fisher_h1_boundary_positions_reserve_causal_input_and_target() -> None:
+    assert fisher_h1_boundary_positions(3) == (0,)
+    assert fisher_h1_boundary_positions(7) == (0, 1, 2, 3, 4)
+    assert fisher_h1_boundary_positions(18) == tuple(range(16))
+    assert fisher_h1_boundary_positions(19) == frozen_anchor_positions(17)
+    with pytest.raises(ValueError, match="at least three tokens"):
+        fisher_h1_boundary_positions(2)
+
+
+def _tiny_endpoint_state() -> torch.Tensor:
+    return torch.tensor(
+        [
+            -1.17,
+            -0.83,
+            -0.21,
+            0.47,
+            0.18,
+            0.71,
+            1.09,
+            1.63,
+            -0.94,
+            -0.37,
+            0.26,
+            0.88,
+            0.33,
+            0.69,
+            1.31,
+            1.91,
+        ],
+        dtype=torch.float32,
+    ).reshape(2, 1, 2, 4)
+
+
+def _tiny_endpoint_specs() -> tuple[QuantizationSpec, ...]:
+    return tuple(
+        QuantizationSpec(
+            bits=bits,
+            group_size=TINY_GEOMETRY.value_width,
+            scale_bits=16,
+            flatten_last_dims=1,
+            rounding="nearest",
+            seed=RHT_SEED,
+        )
+        for bits in (4, 6, 8)
+    )
+
+
+def test_unweighted_mse_endpoint_math_matches_exact_rht_q468_codec() -> None:
+    state = _tiny_endpoint_state()
+    actual = compute_rht_unweighted_mse_endpoints(state, geometry=TINY_GEOMETRY)
+    expected: list[list[torch.Tensor]] = [[], [], []]
+    fp32_reductions: list[list[torch.Tensor]] = [[], [], []]
+    for local_index, layer_index in enumerate(TINY_GEOMETRY.layer_indices):
+        encoded = right_rht_encode(
+            state[local_index].unsqueeze(0),
+            layer_index=layer_index,
+            expected_heads=TINY_GEOMETRY.heads,
+        )
+        for destination, fp32_destination, specification in zip(
+            expected,
+            fp32_reductions,
+            _tiny_endpoint_specs(),
+            strict=True,
+        ):
+            restored = quantize_dequantize(encoded, specification).tensor
+            error = restored - encoded
+            destination.append(error.to(torch.float64).square().mean(dim=-1).squeeze(0))
+            fp32_destination.append(error.square().mean(dim=-1).squeeze(0).to(torch.float64))
+    for observed, rows in zip(actual, expected, strict=True):
+        reference = torch.stack(rows)
+        assert observed.device.type == "cpu"
+        assert observed.dtype == torch.float64
+        assert torch.all(observed >= 0).item()
+        torch.testing.assert_close(observed, reference, rtol=0.0, atol=0.0)
+    assert any(
+        not torch.equal(observed, torch.stack(legacy_rows))
+        for observed, legacy_rows in zip(actual, fp32_reductions, strict=True)
+    )
+
+
+def test_diagonal_empirical_fisher_h1_math_transforms_state_and_gradient() -> None:
+    state = _tiny_endpoint_state()
+    gradient = torch.tensor(
+        [
+            0.11,
+            -0.29,
+            0.53,
+            -0.71,
+            0.07,
+            0.19,
+            -0.41,
+            0.89,
+            -0.13,
+            0.31,
+            -0.61,
+            0.79,
+            0.17,
+            -0.23,
+            0.47,
+            -0.97,
+        ],
+        dtype=torch.float32,
+    ).reshape_as(state)
+    actual = compute_rht_diagonal_empirical_fisher_h1_endpoints(
+        state,
+        gradient,
+        geometry=TINY_GEOMETRY,
+    )
+    expected: list[list[torch.Tensor]] = [[], [], []]
+    fp32_reductions: list[list[torch.Tensor]] = [[], [], []]
+    for local_index, layer_index in enumerate(TINY_GEOMETRY.layer_indices):
+        encoded_state = right_rht_encode(
+            state[local_index].unsqueeze(0),
+            layer_index=layer_index,
+            expected_heads=TINY_GEOMETRY.heads,
+        )
+        encoded_gradient = right_rht_encode(
+            gradient[local_index].unsqueeze(0),
+            layer_index=layer_index,
+            expected_heads=TINY_GEOMETRY.heads,
+        )
+        for destination, fp32_destination, specification in zip(
+            expected,
+            fp32_reductions,
+            _tiny_endpoint_specs(),
+            strict=True,
+        ):
+            restored = quantize_dequantize(encoded_state, specification).tensor
+            error = restored - encoded_state
+            destination.append(
+                (
+                    0.5
+                    * (
+                        encoded_gradient.to(torch.float64).square()
+                        * error.to(torch.float64).square()
+                    ).sum(dim=-1)
+                ).squeeze(0)
+            )
+            fp32_destination.append(
+                (0.5 * (encoded_gradient.square() * error.square()).sum(dim=-1))
+                .squeeze(0)
+                .to(torch.float64)
+            )
+    for observed, rows in zip(actual, expected, strict=True):
+        reference = torch.stack(rows)
+        assert observed.device.type == "cpu"
+        assert observed.dtype == torch.float64
+        assert torch.all(observed >= 0).item()
+        torch.testing.assert_close(observed, reference, rtol=0.0, atol=0.0)
+    assert any(
+        not torch.equal(observed, torch.stack(legacy_rows))
+        for observed, legacy_rows in zip(actual, fp32_reductions, strict=True)
+    )
+
+
+def test_unweighted_endpoint_reduction_and_exact_policy_ignore_query_proxies() -> None:
+    positions = frozen_anchor_positions(3)
+    q4 = torch.tensor(
+        [
+            [[4.0, 3.0, 2.0, 1.0]],
+            [[8.0, 6.0, 4.0, 2.0]],
+            [[12.0, 9.0, 6.0, 3.0]],
+        ],
+        dtype=torch.float64,
+    )
+    batch = UnweightedEndpointBatch(
+        selector_profile=FROZEN_UNWEIGHTED_MSE_PROFILE,
+        token_count=3,
+        anchor_positions=positions,
+        q4_scores=q4,
+        q6_scores=q4 / 2,
+        q8_scores=q4 / 4,
+    )
+
+    reduced = reduce_unweighted_endpoint_anchors(batch)
+    torch.testing.assert_close(reduced[0], q4.mean(dim=0).reshape(-1))
+    torch.testing.assert_close(reduced[1], (q4 / 2).mean(dim=0).reshape(-1))
+    torch.testing.assert_close(reduced[2], (q4 / 4).mean(dim=0).reshape(-1))
+    first = allocate_unweighted_endpoint_policy(batch, marginal_steps=3)
+    second = allocate_unweighted_endpoint_policy(batch, marginal_steps=3)
+    assert torch.equal(first, second)
+    assert first.dtype == torch.uint8
+    assert int(first.to(torch.int64).sum().item()) == 3
+
+    fisher_batch = UnweightedEndpointBatch(
+        selector_profile=FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+        token_count=5,
+        anchor_positions=fisher_h1_boundary_positions(5),
+        q4_scores=q4,
+        q6_scores=q4 / 2,
+        q8_scores=q4 / 4,
+    )
+    assert reduce_unweighted_endpoint_anchors(fisher_batch)[0].shape == (4,)
+
+
+def _identity_v5_record(
+    *,
+    canonical_id: str,
+    sequence_token_ids: tuple[int, ...],
+) -> dict[str, object]:
+    tokenizer_manifest_sha256 = "a" * 64
+    captured_record = capture._base_record(
+        phase="calibration",
+        family="mbpp",
+        canonical_id=canonical_id,
+        config="full",
+        seed=None,
+        configured_length=None,
+        ruler_category=None,
+        generator_receipt_sha256=None,
+        source_payload={"task_id": canonical_id},
+        formatted_payload={"prompt": "fixture"},
+        prompt_ids=sequence_token_ids,
+        target_ids=(),
+        tokenizer_manifest_sha256=tokenizer_manifest_sha256,
+    )
+    captured_record = capture._assign_sha_ranks([captured_record])[0]
+    return capture.resolver._normalize_record(
+        captured_record,
+        index=0,
+        phase="calibration",
+        tokenizer_hash=tokenizer_manifest_sha256,
+    )
+
+
+def test_frozen_comparator_reduction_binds_v5_positions_inputs_scores_and_nll_hash() -> None:
+    token_ids = (17, 18, 19)
+    record = _identity_v5_record(canonical_id="comparator-1", sequence_token_ids=token_ids)
+    trailing = FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape
+    mse_positions = frozen_anchor_positions(len(token_ids))
+    mse_values = torch.arange(
+        1,
+        len(mse_positions) * math.prod(trailing) + 1,
+        dtype=torch.float64,
+    ).reshape(len(mse_positions), *trailing)
+    mse = reduce_frozen_comparator_endpoints(
+        FrozenComparatorEndpointBatch(
+            selector_profile=FROZEN_UNWEIGHTED_MSE_PROFILE,
+            family="mbpp",
+            config="full",
+            ruler_category=None,
+            canonical_id="comparator-1",
+            seed=None,
+            configured_length=None,
+            token_count=len(token_ids),
+            endpoint_positions=mse_positions,
+            q4_scores=mse_values,
+            q6_scores=mse_values / 2,
+            q8_scores=mse_values / 4,
+            sequence_token_ids=token_ids,
+            identity_record=record,
+        )
+    )
+    permuted_mse = reduce_frozen_comparator_endpoints(
+        FrozenComparatorEndpointBatch(
+            selector_profile=FROZEN_UNWEIGHTED_MSE_PROFILE,
+            family="mbpp",
+            config="full",
+            ruler_category=None,
+            canonical_id="comparator-1",
+            seed=None,
+            configured_length=None,
+            token_count=len(token_ids),
+            endpoint_positions=mse_positions,
+            q4_scores=mse_values.flip(0),
+            q6_scores=(mse_values / 2).flip(0),
+            q8_scores=(mse_values / 4).flip(0),
+            sequence_token_ids=token_ids,
+            identity_record=record,
+        )
+    )
+    fisher_positions = fisher_h1_boundary_positions(len(token_ids))
+    fisher_values = mse_values[:1] / 10
+    fisher = reduce_frozen_comparator_endpoints(
+        FrozenComparatorEndpointBatch(
+            selector_profile=FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+            family="mbpp",
+            config="full",
+            ruler_category=None,
+            canonical_id="comparator-1",
+            seed=None,
+            configured_length=None,
+            token_count=len(token_ids),
+            endpoint_positions=fisher_positions,
+            q4_scores=fisher_values,
+            q6_scores=fisher_values / 2,
+            q8_scores=fisher_values / 4,
+            sequence_token_ids=token_ids,
+            identity_record=record,
+            target_nlls=torch.tensor([1.25], dtype=torch.float64),
+        )
+    )
+
+    torch.testing.assert_close(mse.d4, mse_values.mean(dim=0).reshape(-1))
+    torch.testing.assert_close(mse.d4, permuted_mse.d4)
+    torch.testing.assert_close(fisher.d4, fisher_values.reshape(-1))
+    assert mse.endpoint_positions == (0, 1, 2)
+    assert fisher.endpoint_positions == (0,)
+    assert mse.position_manifest_sha256 != fisher.position_manifest_sha256
+    assert mse.endpoint_inputs_sha256 != fisher.endpoint_inputs_sha256
+    assert mse.sequence_scores_sha256 != fisher.sequence_scores_sha256
+    assert mse.position_manifest_sha256 == permuted_mse.position_manifest_sha256
+    assert mse.endpoint_inputs_sha256 != permuted_mse.endpoint_inputs_sha256
+    assert mse.sequence_scores_sha256 != permuted_mse.sequence_scores_sha256
+    assert mse.target_nlls_sha256 is None
+    assert (
+        fisher.target_nlls_sha256
+        == hashlib.sha256(
+            calibration._COMPARATOR_TARGET_NLL_HASH_DOMAIN
+            + calibration._tensor_bytes(torch.tensor([1.25], dtype=torch.float64))
+        ).hexdigest()
+    )
+    assert "target_nlls" not in fisher.manifest_record()
+    assert fisher.manifest_record()["target_nlls_sha256"] == fisher.target_nlls_sha256
+
+
+def test_frozen_comparator_reduction_rejects_v4_substitution_offbyone_and_nonfinite() -> None:
+    token_ids = (31, 32, 33)
+    record = _identity_v5_record(canonical_id="comparator-2", sequence_token_ids=token_ids)
+    positions = fisher_h1_boundary_positions(len(token_ids))
+    shape = (len(positions), *FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape)
+    values = torch.ones(shape, dtype=torch.float64)
+    baseline = FrozenComparatorEndpointBatch(
+        selector_profile=FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+        family="mbpp",
+        config="full",
+        ruler_category=None,
+        canonical_id="comparator-2",
+        seed=None,
+        configured_length=None,
+        token_count=len(token_ids),
+        endpoint_positions=positions,
+        q4_scores=values,
+        q6_scores=values / 2,
+        q8_scores=values / 4,
+        sequence_token_ids=token_ids,
+        identity_record=record,
+        target_nlls=torch.tensor([1.25], dtype=torch.float64),
+    )
+
+    with pytest.raises(ValueError, match="requires target_nlls"):
+        reduce_frozen_comparator_endpoints(replace(baseline, target_nlls=None))
+    with pytest.raises(ValueError, match=r"A\(T\)/B\(T\)"):
+        reduce_frozen_comparator_endpoints(replace(baseline, endpoint_positions=(1,)))
+    with pytest.raises(ValueError, match="token-ID SHA-256"):
+        reduce_frozen_comparator_endpoints(replace(baseline, sequence_token_ids=(31, 99, 33)))
+    legacy = dict(record)
+    legacy.pop("fisher_boundary")
+    with pytest.raises(ValueError, match="missing=.*fisher_boundary"):
+        reduce_frozen_comparator_endpoints(replace(baseline, identity_record=legacy))
+    for invalid in (math.nan, math.inf):
+        nonfinite = values.clone()
+        nonfinite[0, 0, 0, 0] = invalid
+        with pytest.raises(ValueError, match="finite"):
+            reduce_frozen_comparator_endpoints(replace(baseline, q4_scores=nonfinite))
+
+
+def test_fisher_sequence_artifact_requires_exact_target_nll_receipt() -> None:
+    fisher = _comparator_sequence(
+        FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+        "pg19",
+        "default",
+        "fisher-without-nll-receipt",
+        1.0,
+    )
+
+    with pytest.raises(ValueError, match="requires a target NLL receipt"):
+        calibration.aggregate_comparator_scores([replace(fisher, target_nlls_sha256=None)])
 
 
 @pytest.mark.parametrize("bad", [0, -1, True, 1.5])
@@ -477,9 +1029,9 @@ def test_source_shape_and_dtype_are_bound_into_sequence_hashes() -> None:
 
 
 def test_frozen_reduction_requires_exact_layer_head_key_row_cpu_fp64_shape() -> None:
-    shape = (1, *FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape)
+    shape = (3, *FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape)
     values = torch.ones(shape, dtype=torch.float64)
-    sequence_token_ids = (17,)
+    sequence_token_ids = (17, 18, 19)
     tokenizer_manifest_sha256 = "a" * 64
     captured_record = capture._base_record(
         phase="calibration",
@@ -510,8 +1062,8 @@ def test_frozen_reduction_requires_exact_layer_head_key_row_cpu_fp64_shape() -> 
         canonical_id="601",
         seed=None,
         configured_length=None,
-        token_count=1,
-        anchor_positions=(0,),
+        token_count=3,
+        anchor_positions=(0, 1, 2),
         query_energy=values,
         q4_mse=values,
         q6_mse=values / 2,
@@ -527,6 +1079,29 @@ def test_frozen_reduction_requires_exact_layer_head_key_row_cpu_fp64_shape() -> 
     assert result.sequence_token_ids_sha256 == captured_record["sequence_token_ids_sha256"]
     assert result.identity_anchor_manifest_sha256 == captured_record["anchor_manifest_sha256"]
     assert result.identity_record_sha256 == captured_record["identity_record_sha256"]
+
+    def with_identity_record(record: dict[str, object]) -> AnchorDistortionBatch:
+        fields = {name: getattr(batch, name) for name in AnchorDistortionBatch.__dataclass_fields__}
+        fields["identity_record"] = record
+        return AnchorDistortionBatch(**fields)
+
+    legacy_record = dict(identity_record)
+    legacy_record.pop("fisher_boundary")
+    with pytest.raises(ValueError, match="missing=.*fisher_boundary"):
+        reduce_frozen_anchor_distortions(with_identity_record(legacy_record))
+
+    tampered_record = json.loads(json.dumps(identity_record))
+    tampered_boundary = tampered_record["fisher_boundary"]
+    assert isinstance(tampered_boundary, dict)
+    tampered_boundary["input_token_ids_sha256"] = "0" * 64
+    tampered_boundary["fisher_boundary_sha256"] = capture.resolver.fisher_boundary_sha256(
+        tampered_boundary
+    )
+    original_record_hash = tampered_record["identity_record_sha256"]
+    tampered_record["identity_record_sha256"] = identity_record_sha256(tampered_record)
+    assert tampered_record["identity_record_sha256"] != original_record_hash
+    with pytest.raises(ValueError, match="input token-ID hash"):
+        reduce_frozen_anchor_distortions(with_identity_record(tampered_record))
 
     with pytest.raises(ValueError, match="frozen source shape"):
         reduce_frozen_anchor_distortions(
@@ -577,6 +1152,54 @@ def test_family_aggregation_uses_equal_broad_and_ruler_category_weights() -> Non
     assert {
         sequence.config for sequence in sequences if sequence.ruler_category == "retrieval"
     } == {"niah_single_1", "niah_multikey_1"}
+
+
+def test_comparator_aggregation_reuses_exact_family_macro_and_domain_hashes() -> None:
+    sequences = _comparator_sequences(FROZEN_UNWEIGHTED_MSE_PROFILE)
+    aggregate = aggregate_comparator_scores(sequences)
+    expected = torch.full(
+        (FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows,),
+        10.5,
+        dtype=torch.float64,
+    )
+
+    torch.testing.assert_close(aggregate.d4, expected)
+    torch.testing.assert_close(aggregate.d6, expected / 2)
+    torch.testing.assert_close(aggregate.d8, expected / 4)
+    assert aggregate.family_sequence_counts == (("mbpp", 2), ("pg19", 2), ("ruler", 8))
+    assert aggregate.ruler_category_sequence_counts == tuple(
+        (category, 2) for category in calibration.RULER_CATEGORY_ORDER
+    )
+    reverse = aggregate_comparator_scores(list(reversed(sequences)))
+    assert torch.equal(aggregate.d4, reverse.d4)
+    assert aggregate.position_manifest_sha256 == reverse.position_manifest_sha256
+    assert aggregate.sequence_score_manifest_sha256 == reverse.sequence_score_manifest_sha256
+    assert aggregate.aggregate_scores_sha256 == reverse.aggregate_scores_sha256
+
+    substituted = list(sequences)
+    original = substituted[0]
+    replacement = replace(original, endpoint_inputs_sha256="9" * 64)
+    replacement = replace(
+        replacement,
+        sequence_scores_sha256=calibration._comparator_sequence_score_sha256(
+            selector_profile=replacement.selector_profile,
+            position_manifest_sha256=replacement.position_manifest_sha256,
+            endpoint_inputs_sha256=replacement.endpoint_inputs_sha256,
+            identity_record_sha256_value=replacement.identity_record_sha256,
+            d4=replacement.d4,
+            d6=replacement.d6,
+            d8=replacement.d8,
+        ),
+    )
+    substituted[0] = replacement
+    changed = aggregate_comparator_scores(substituted)
+    assert changed.sequence_score_manifest_sha256 != aggregate.sequence_score_manifest_sha256
+    assert changed.aggregate_scores_sha256 != aggregate.aggregate_scores_sha256
+    assert changed.position_manifest_sha256 == aggregate.position_manifest_sha256
+
+    drifted_position = replace(original, endpoint_positions=(1, 2, 3))
+    with pytest.raises(ValueError, match="positions drifted"):
+        aggregate_comparator_scores([drifted_position, *sequences[1:]])
 
 
 def test_aggregation_and_split_are_invariant_to_input_order() -> None:
@@ -938,6 +1561,109 @@ def test_official_frozen_artifact_round_trips_only_with_exact_profile() -> None:
     ]
     assert document["artifact_kind"] == CALIBRATION_SCORE_ARTIFACT_KIND
     assert verify_calibration_score_artifact(raw)["valid"] is True
+
+
+def test_comparator_score_artifact_round_trips_both_exact_k29334_profiles() -> None:
+    identity_sha256 = "1" * 64
+    raw = build_frozen_comparator_score_artifact(
+        _synthetic_comparator_aggregate(FROZEN_UNWEIGHTED_MSE_PROFILE),
+        _synthetic_comparator_aggregate(FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE),
+        calibration_identity_sha256=identity_sha256,
+    )
+    decoded = deserialize_comparator_score_artifact(
+        raw,
+        expected_calibration_identity_sha256=identity_sha256,
+    )
+    document = json.loads(raw)
+
+    assert document["artifact_kind"] == COMPARATOR_SCORE_ARTIFACT_KIND
+    assert document["schema_version"] == 1
+    assert document["evidence"]["artifact_profile"] == COMPARATOR_SCORE_ARTIFACT_PROFILE
+    assert document["evidence"]["artifact_revision"] == COMPARATOR_SCORE_ARTIFACT_REVISION
+    assert "target_nll" not in raw.decode("utf-8")
+    assert "token_ids" not in raw.decode("utf-8")
+    assert list(decoded.selectors) == [
+        FROZEN_UNWEIGHTED_MSE_PROFILE,
+        FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+    ]
+    assert decoded.calibration_identity_sha256 == identity_sha256
+    assert decoded.file_sha256 == hashlib.sha256(raw).hexdigest()
+    for method, selector in decoded.selectors.items():
+        assert selector.method_id == method
+        assert selector.marginal_steps == FROZEN_STATIC_Q468_PRIMARY_STEPS
+        assert selector.precision_codes.dtype == torch.uint8
+        assert selector.precision_codes.device.type == "cpu"
+        assert int(selector.precision_codes.to(torch.int64).sum().item()) == (
+            FROZEN_STATIC_Q468_PRIMARY_STEPS
+        )
+        assert selector.calibration_scores_sha256 == (selector.aggregate.aggregate_scores_sha256)
+        assert selector.position_manifest_sha256 == (selector.aggregate.position_manifest_sha256)
+    assert (
+        verify_comparator_score_artifact(
+            raw,
+            expected_calibration_identity_sha256=identity_sha256,
+        )["valid"]
+        is True
+    )
+
+
+def test_comparator_score_artifact_rejects_profile_hash_array_and_allocation_tampering() -> None:
+    raw = build_frozen_comparator_score_artifact(
+        _synthetic_comparator_aggregate(FROZEN_UNWEIGHTED_MSE_PROFILE),
+        _synthetic_comparator_aggregate(FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE),
+        calibration_identity_sha256="1" * 64,
+    )
+
+    missing = json.loads(raw)
+    missing["evidence"]["selectors"].pop()
+    with pytest.raises(ValueError, match="exactly two selectors"):
+        deserialize_comparator_score_artifact(_rehashed_document(missing))
+
+    extra = json.loads(raw)
+    extra["evidence"]["selectors"].append(extra["evidence"]["selectors"][0])
+    with pytest.raises(ValueError, match="exactly two selectors"):
+        deserialize_comparator_score_artifact(_rehashed_document(extra))
+
+    reordered = json.loads(raw)
+    reordered["evidence"]["selectors"].reverse()
+    with pytest.raises(ValueError, match="exactly MSE then"):
+        deserialize_comparator_score_artifact(_rehashed_document(reordered))
+
+    score_tamper = json.loads(raw)
+    encoded = score_tamper["evidence"]["selectors"][0]["scores"]["data_base64"]
+    score_bytes = bytearray(base64.b64decode(encoded))
+    score_bytes[0] ^= 1
+    score_tamper["evidence"]["selectors"][0]["scores"]["data_base64"] = base64.b64encode(
+        score_bytes
+    ).decode("ascii")
+    with pytest.raises(ValueError, match="aggregate-score SHA-256 drifted"):
+        deserialize_comparator_score_artifact(_rehashed_document(score_tamper))
+
+    nonfinite = json.loads(raw)
+    encoded = nonfinite["evidence"]["selectors"][0]["scores"]["data_base64"]
+    score_bytes = bytearray(base64.b64decode(encoded))
+    score_bytes[:8] = torch.tensor(float("nan"), dtype=torch.float64).numpy().tobytes()
+    nonfinite["evidence"]["selectors"][0]["scores"]["data_base64"] = base64.b64encode(
+        score_bytes
+    ).decode("ascii")
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        deserialize_comparator_score_artifact(_rehashed_document(nonfinite))
+
+    position_tamper = json.loads(raw)
+    position_tamper["evidence"]["selectors"][0]["position_manifest_sha256"] = "9" * 64
+    with pytest.raises(ValueError, match="aggregate-score SHA-256 drifted"):
+        deserialize_comparator_score_artifact(_rehashed_document(position_tamper))
+
+    allocation_tamper = json.loads(raw)
+    allocation_tamper["evidence"]["selectors"][0]["allocation"]["code_map_sha256"] = "9" * 64
+    with pytest.raises(ValueError, match="code-map SHA-256 drifted"):
+        deserialize_comparator_score_artifact(_rehashed_document(allocation_tamper))
+
+    with pytest.raises(ValueError, match="differs from expected identity"):
+        deserialize_comparator_score_artifact(
+            raw,
+            expected_calibration_identity_sha256="2" * 64,
+        )
 
 
 def test_generic_artifact_cannot_be_relabelled_as_official_geometry_counts_or_budget() -> None:

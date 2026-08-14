@@ -173,12 +173,20 @@ from .statelease_evaluation import (
     reference_aligned_trajectory_nmse,
 )
 from .statelease_observer import Qwen35StateLeaseObserver
+from .static_q468 import (
+    STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    STATIC_Q468_MSE_METHOD,
+    STATIC_Q468_UNIFORM_Q4_METHOD,
+    STATIC_Q468_UNIFORM_Q8_METHOD,
+)
 from .static_q468_cache import (
+    DYNAMIC_Q468_BASELINE_METHOD,
     DYNAMIC_Q468_ORACLE_METHOD,
     FROZEN_STATIC_RUNTIME_METHODS,
     StaticRhtCacheUpdateEvidence,
     StaticRhtQwen35Cache,
     StaticRhtRuntimeCheckpoint,
+    create_qwen35_dynamic_q468_baseline_cache,
     create_qwen35_dynamic_q468_oracle_cache,
     create_qwen35_static_rht_cache,
 )
@@ -229,6 +237,7 @@ __all__ = [
     "EqualByteLinearAttentionLayer",
     "EqualByteNoReplayCache",
     "EqualByteQwen35Cache",
+    "DYNAMIC_Q468_BASELINE_METHOD",
     "DYNAMIC_Q468_ORACLE_METHOD",
     "FROZEN_STATIC_RUNTIME_METHODS",
     "QueryEmaMixedPackedLinearAttentionLayer",
@@ -251,6 +260,10 @@ __all__ = [
     "STATELEASE_REPLAY_CAPACITY",
     "STATELEASE_SELECTION_METHOD",
     "STATELEASE_METHOD",
+    "STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD",
+    "STATIC_Q468_MSE_METHOD",
+    "STATIC_Q468_UNIFORM_Q4_METHOD",
+    "STATIC_Q468_UNIFORM_Q8_METHOD",
     "StateLeaseBoundaryDecision",
     "StateLeaseLinearAttentionLayer",
     "StateLeaseRecurrentStateCache",
@@ -282,6 +295,7 @@ __all__ = [
     "create_qwen35_cora_exact_budget_cache",
     "create_qwen35_exact_budget_cache",
     "create_qwen35_equal_byte_cache",
+    "create_qwen35_dynamic_q468_baseline_cache",
     "create_qwen35_dynamic_q468_oracle_cache",
     "create_qwen35_experiment010_fixed_replay_cache",
     "create_qwen35_experiment010_statelease_cache",

@@ -19,17 +19,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-EXPERIMENT013_PARQUET_MANIFEST_SCHEMA = (
-    "recurquant.experiment013.parquet-materializations.v1"
-)
+EXPERIMENT013_PARQUET_MANIFEST_SCHEMA = "recurquant.experiment013.parquet-materializations.v1"
 EXPERIMENT013_PARQUET_MANIFEST_SHA256 = (
     "ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c"
 )
 EXPERIMENT013_PARQUET_MANIFEST_SIZE_BYTES = 3918
 EXPERIMENT013_PARQUET_MANIFEST_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "research"
-    / "experiment013-parquet-materializations.json"
+    Path(__file__).resolve().parents[2] / "research" / "experiment013-parquet-materializations.json"
 )
 
 _TOP_LEVEL_FIELDS = frozenset({"schema", "datasets"})
@@ -244,9 +240,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/test/0000.parquet",
                     size_bytes=2_902_210,
                     git_blob_oid="9877db06683d4245bc39aed18ee7cbad013ba5fa",
-                    lfs_sha256=(
-                        "4436f5c03d77c17e0cbc57543b90665b5c1266f55a43992a5ed7922cd34a7558"
-                    ),
+                    lfs_sha256=("4436f5c03d77c17e0cbc57543b90665b5c1266f55a43992a5ed7922cd34a7558"),
                     lfs_size_bytes=2_902_210,
                 ),
             ),
@@ -265,9 +259,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/partial-train/0000.parquet",
                     size_bytes=603_127_902,
                     git_blob_oid="00245b214ff9806a04f32debff0fd2e7b0737997",
-                    lfs_sha256=(
-                        "ea701af2e8a11bb8601150a47affff658452d687494dbed52a82d3b1fcf48811"
-                    ),
+                    lfs_sha256=("ea701af2e8a11bb8601150a47affff658452d687494dbed52a82d3b1fcf48811"),
                     lfs_size_bytes=603_127_902,
                 ),
                 Experiment013ParquetFile(
@@ -276,9 +268,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/partial-train/0001.parquet",
                     size_bytes=526_793_959,
                     git_blob_oid="1169b6deb8c1cd46a46f0ae752b68806c9b5cca9",
-                    lfs_sha256=(
-                        "5c1c025f46b4a6b52b56167efeb89a2b9378f9ea8a50cdf5ddcbca8c4e17db1f"
-                    ),
+                    lfs_sha256=("5c1c025f46b4a6b52b56167efeb89a2b9378f9ea8a50cdf5ddcbca8c4e17db1f"),
                     lfs_size_bytes=526_793_959,
                 ),
                 Experiment013ParquetFile(
@@ -287,9 +277,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/partial-train/0002.parquet",
                     size_bytes=576_668_259,
                     git_blob_oid="b9413777553240574488fa36b74f4bd286c06719",
-                    lfs_sha256=(
-                        "80cc198a2ef5239bf22a496eb10e6afd6fba075c4f6dd3d26dae7ed82c3bb1ad"
-                    ),
+                    lfs_sha256=("80cc198a2ef5239bf22a496eb10e6afd6fba075c4f6dd3d26dae7ed82c3bb1ad"),
                     lfs_size_bytes=576_668_259,
                 ),
                 Experiment013ParquetFile(
@@ -298,9 +286,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/partial-train/0003.parquet",
                     size_bytes=583_939_098,
                     git_blob_oid="08f92b1ad15eb9f90268fa7cf9823523f1fb056a",
-                    lfs_sha256=(
-                        "326718129b7d13a9f45ae8e6e68ae90d95c15bf40fa457a053716832e4d07c1c"
-                    ),
+                    lfs_sha256=("326718129b7d13a9f45ae8e6e68ae90d95c15bf40fa457a053716832e4d07c1c"),
                     lfs_size_bytes=583_939_098,
                 ),
                 Experiment013ParquetFile(
@@ -309,9 +295,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/partial-train/0004.parquet",
                     size_bytes=588_756_614,
                     git_blob_oid="9cb48d05cf6568879582eb5bd894a7d1b34aee7b",
-                    lfs_sha256=(
-                        "c4dff8b2cd993d1bb6bded41eb0eef56dff5449753ea13c79e730b7a9e1f6907"
-                    ),
+                    lfs_sha256=("c4dff8b2cd993d1bb6bded41eb0eef56dff5449753ea13c79e730b7a9e1f6907"),
                     lfs_size_bytes=588_756_614,
                 ),
                 Experiment013ParquetFile(
@@ -320,9 +304,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/partial-train/0005.parquet",
                     size_bytes=321_273_724,
                     git_blob_oid="6a1b9b38d31ca025cbf06192a3dfd66067eb7571",
-                    lfs_sha256=(
-                        "9ab4d07d379720a9b18e7e3a060a948e2338b7aa338e9534a12d52fbc4fd8e2e"
-                    ),
+                    lfs_sha256=("9ab4d07d379720a9b18e7e3a060a948e2338b7aa338e9534a12d52fbc4fd8e2e"),
                     lfs_size_bytes=321_273_724,
                 ),
                 Experiment013ParquetFile(
@@ -331,9 +313,7 @@ _EXPECTED_MANIFEST = Experiment013ParquetManifest(
                     immutable_path="default/partial-validation/0000.parquet",
                     size_bytes=10_803_864,
                     git_blob_oid="3e86263f595fae38387a938ec882417649c2bbd4",
-                    lfs_sha256=(
-                        "81680529564d4ead1c0e3859509a62d86c7126c32afc95dce6bd98e729e491ef"
-                    ),
+                    lfs_sha256=("81680529564d4ead1c0e3859509a62d86c7126c32afc95dce6bd98e729e491ef"),
                     lfs_size_bytes=10_803_864,
                 ),
             ),
@@ -358,9 +338,7 @@ def _exact_fields(value: Mapping[str, object], expected: frozenset[str], *, name
     if actual != expected:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
-        raise Experiment013ParquetError(
-            f"{name} fields drifted (missing={missing}, extra={extra})"
-        )
+        raise Experiment013ParquetError(f"{name} fields drifted (missing={missing}, extra={extra})")
 
 
 def _expect_string(value: object, expected: str, *, name: str) -> str:
@@ -449,9 +427,13 @@ def validate_experiment013_parquet_manifest(
             expected_dataset.conversion_revision,
             name=f"{name}.conversion_revision",
         )
-        if type(raw_dataset["selected_splits"]) is not list or tuple(
-            raw_dataset["selected_splits"]  # type: ignore[arg-type]
-        ) != expected_dataset.selected_splits:
+        if (
+            type(raw_dataset["selected_splits"]) is not list
+            or tuple(
+                raw_dataset["selected_splits"]  # type: ignore[arg-type]
+            )
+            != expected_dataset.selected_splits
+        ):
             raise Experiment013ParquetError(f"{name}.selected_splits or order drifted")
         if (
             type(raw_dataset["partial"]) is not bool
@@ -604,17 +586,22 @@ def _object_field(value: object, name: str) -> object:
 class HuggingFaceHubMetadataBackend:
     """Metadata-only implementation using official Hub APIs and exact revisions."""
 
-    def __init__(self, *, token: str | bool | None = None) -> None:
-        self._token = token
+    def __init__(self, *, token: bool = False) -> None:
+        if token is not False:
+            raise Experiment013ParquetError(
+                "Experiment 013 Hub metadata access must be unauthenticated"
+            )
+        self._token = False
 
     def resolve_dataset_revision(self, *, repo_id: str, revision: str) -> str:
         try:
             from huggingface_hub import HfApi
 
-            info = HfApi(token=self._token).dataset_info(
+            info = HfApi(token=False, endpoint="https://huggingface.co").dataset_info(
                 repo_id=repo_id,
                 revision=revision,
                 files_metadata=False,
+                token=False,
             )
             resolved = info.sha
         except Exception as error:
@@ -635,10 +622,11 @@ class HuggingFaceHubMetadataBackend:
         try:
             from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_url
 
-            info = HfApi(token=self._token).dataset_info(
+            info = HfApi(token=False, endpoint="https://huggingface.co").dataset_info(
                 repo_id=repo_id,
                 revision=revision,
                 files_metadata=True,
+                token=False,
             )
             siblings = {
                 sibling.rfilename: sibling
@@ -660,8 +648,9 @@ class HuggingFaceHubMetadataBackend:
                     filename=path,
                     repo_type="dataset",
                     revision=revision,
+                    endpoint="https://huggingface.co",
                 )
-                head = get_hf_file_metadata(url, token=self._token)
+                head = get_hf_file_metadata(url, token=False)
                 files.append(
                     HubFileMetadata(
                         path=path,
@@ -706,8 +695,7 @@ class PyArrowParquetBackend:
                 parquet_file = parquet.ParquetFile(stream)  # type: ignore[attr-defined]
                 metadata = parquet_file.metadata
                 row_group_rows = tuple(
-                    metadata.row_group(index).num_rows
-                    for index in range(metadata.num_row_groups)
+                    metadata.row_group(index).num_rows for index in range(metadata.num_row_groups)
                 )
                 columns = tuple(parquet_file.schema_arrow.names)
         except Exception as error:
@@ -768,10 +756,7 @@ def _immutable_uri(
     dataset: Experiment013ParquetDataset,
     file: Experiment013ParquetFile,
 ) -> str:
-    return (
-        f"hf://datasets/{dataset.dataset_id}@{dataset.conversion_revision}/"
-        f"{file.immutable_path}"
-    )
+    return f"hf://datasets/{dataset.dataset_id}@{dataset.conversion_revision}/{file.immutable_path}"
 
 
 def _selected_files(
@@ -897,9 +882,7 @@ def _locate_offset(
 ) -> Experiment013ParquetRowLocation:
     if type(global_offset) is not int or global_offset < 0:
         raise Experiment013ParquetOffsetError("global row offset must be a non-negative integer")
-    split_row_count = sum(
-        sum(layout.row_group_rows) for _, _, _, layout in inspected
-    )
+    split_row_count = sum(sum(layout.row_group_rows) for _, _, _, layout in inspected)
     if global_offset >= split_row_count:
         raise Experiment013ParquetOffsetError(
             f"global row offset {global_offset} is outside split row count {split_row_count}"
@@ -966,9 +949,7 @@ def _projection_sha256(
         "columns": list(columns),
         "dataset_key": dataset_key,
         "logical_split": logical_split,
-        "rows": [
-            {"global_offset": row.global_offset, "values": list(row.values)} for row in rows
-        ],
+        "rows": [{"global_offset": row.global_offset, "values": list(row.values)} for row in rows],
     }
     encoded = (
         json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
@@ -1006,9 +987,7 @@ def project_experiment013_parquet_columns(
         raise Experiment013ParquetError(
             "bulk Parquet projection is restricted to the frozen canonical-ID column"
         )
-    if expected_count is not None and (
-        type(expected_count) is not int or expected_count < 0
-    ):
+    if expected_count is not None and (type(expected_count) is not int or expected_count < 0):
         raise Experiment013ParquetError("expected projection count must be a non-negative integer")
     hub = hub_backend if hub_backend is not None else HuggingFaceHubMetadataBackend()
     parquet = parquet_backend if parquet_backend is not None else PyArrowParquetBackend()

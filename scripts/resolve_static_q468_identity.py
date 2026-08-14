@@ -20,20 +20,23 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import string
 import sys
 import tempfile
 import unicodedata
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
-INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v4"
-CANDIDATE_SCHEMA: Final = "recurquant.experiment013.identity-candidate.v4"
-FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v4"
+INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
+CANDIDATE_SCHEMA: Final = "recurquant.experiment013.identity-candidate.v5"
+FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v5"
 ARTIFACT_KIND: Final = "recurquant_static_rht_q468_identity"
-RESOLVER_VERSION: Final = 4
+RESOLVER_VERSION: Final = 5
 PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256: Final = (
     "ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c"
 )
@@ -70,6 +73,45 @@ FROZEN_CANONICAL_ID_FIELDS: Final = {
     "ruler": "configuration_id",
     "humaneval_plus": "task_id",
 }
+FROZEN_DATASET_CONFIGS: Final = {
+    "mbpp": MBPP_CONFIG,
+    "pg19": "default",
+    "ruler": "official-generator",
+    "humaneval_plus": "default",
+}
+FROZEN_DATASET_SPLITS: Final = {
+    "calibration": {
+        "mbpp": "train",
+        "pg19": "train",
+        "ruler": "generated",
+        "humaneval_plus": "test",
+    },
+    "stage_a": {
+        "mbpp": "train",
+        "pg19": "validation",
+        "ruler": "generated",
+        "humaneval_plus": "test",
+    },
+}
+FROZEN_FORMATTER_IDS: Final = {
+    "mbpp": "recurquant.mbpp-prompt-code.v1",
+    "pg19": "recurquant.pg19-token-slice.v1",
+    "ruler": "recurquant.ruler-official-generated-record.v1",
+    "humaneval_plus": "recurquant.humaneval-plus-prompt-solution.v1",
+}
+FROZEN_STATIC_FORMATTER_SHA256: Final = {
+    "mbpp": "882e20ec9f5cbcb7e6f1310cbf46d19153721beac41ecc7ee308c39be17532ff",
+    "pg19": "faea2480bf85adcd34339cae88a0e9b631b705eb547020572db74402bf525730",
+    "humaneval_plus": "12204389715ddc210e5a8b1b291f4fbcaf2b64fde94c22699873de80d682204c",
+}
+MAX_METADATA_STRING_LENGTH: Final = 512
+PG19_CANONICAL_URL_RE: Final = re.compile(
+    r"http://www\.gutenberg\.org/ebooks/(?P<ebook_id>[1-9][0-9]{0,7})\Z"
+)
+HUMANEVAL_PLUS_TASK_ID_RE: Final = re.compile(r"HumanEval/(?P<task_number>0|[1-9][0-9]{0,2})\Z")
+HUMANEVAL_PLUS_TASK_COUNT: Final = 164
+TOKENIZER_CLASS_RE: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,127}\Z")
+TOKENIZER_FILE_NAME_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 PG19_TRAIN_NAMESPACE: Final = "recurquant.experiment013.pg19.train.v1\0"
 PG19_VALIDATION_NAMESPACE: Final = "recurquant.experiment013.pg19.validation.v1\0"
@@ -78,10 +120,17 @@ HUMANEVAL_AB_NAMESPACE: Final = "recurquant.experiment013.humaneval-plus.stage-a
 HUMANEVAL_C_NAMESPACE: Final = "recurquant.experiment013.humaneval-plus.stage-c.v1\0"
 CALIBRATION_SPLIT_NAMESPACE: Final = "recurquant.experiment013.calibration-split.v1\0"
 IDENTITY_RECORD_NAMESPACE: Final = "recurquant.experiment013.identity-record.v1\0"
+FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
+FISHER_BOUNDARY_NAMESPACE: Final = "recurquant.experiment013.fisher-boundary.v1\0"
+FISHER_BOUNDARY_TOKEN_NAMESPACE: Final = (
+    "recurquant.experiment013.fisher-boundary-token-sequence.v1\0"
+)
+FISHER_BOUNDARY_HORIZON: Final = 1
 RULER_CALIBRATION_SELECTION_NAMESPACE: Final = (
     "recurquant.experiment013.ruler.calibration-sequence.v1\0"
 )
 RULER_STAGE_A_SELECTION_NAMESPACE: Final = "recurquant.experiment013.ruler.stage-a-sequence.v1\0"
+RULER_SEQUENCE_NAMESPACE: Final = "recurquant.experiment013.ruler.sequence.v1"
 RULER_CATEGORIES: Final = (
     "retrieval",
     "multi_hop_tracing",
@@ -175,6 +224,7 @@ RECORD_FIELDS: Final = frozenset(
         "tokenizer_manifest_sha256",
         "token_span",
         "anchor_manifest_sha256",
+        "fisher_boundary",
         "identity_record_sha256",
     }
 )
@@ -189,13 +239,29 @@ TOKEN_SPAN_FIELDS: Final = frozenset(
         "cache_exposed_stop",
     }
 )
+FISHER_BOUNDARY_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "horizon",
+        "boundary_positions",
+        "input_positions",
+        "target_positions",
+        "input_token_ids_sha256",
+        "target_token_ids_sha256",
+        "fisher_boundary_sha256",
+    }
+)
+FISHER_BOUNDARY_PAYLOAD_FIELDS: Final = FISHER_BOUNDARY_FIELDS - {"fisher_boundary_sha256"}
 CALIBRATION_BINDING_FIELDS: Final = frozenset(
     {
         "calibration_identity_file_sha256",
         "calibration_score_artifact_file_sha256",
+        "comparator_score_artifact_file_sha256",
         "split_half_stability_artifact_file_sha256",
+        "static_fisher_k29334_policy_file_sha256",
         "static_k27030_policy_file_sha256",
         "static_k29334_policy_file_sha256",
+        "static_mse_k29334_policy_file_sha256",
     }
 )
 EXECUTION_BINDING_FIELDS: Final = frozenset(
@@ -239,8 +305,8 @@ FROZEN_RECORD_FIELDS: Final = RECORD_FIELDS | {
     "anchor_positions_sha256",
 }
 STAGE_A_BINDING_ARTIFACT_KIND: Final = "recurquant_experiment013_stage_a_calibration_binding"
-STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION: Final = 2
-STAGE_A_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibration-binding-v2"
+STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION: Final = 3
+STAGE_A_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibration-binding-v3"
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -248,7 +314,7 @@ def canonical_json_bytes(value: object) -> bytes:
 
     return (
         json.dumps(
-            value,
+            _deep_thaw(value),
             ensure_ascii=False,
             allow_nan=False,
             sort_keys=True,
@@ -294,11 +360,88 @@ def require_int(value: object, *, context: str, minimum: int = 0) -> int:
     return value
 
 
-def require_string(value: object, *, context: str, allow_empty: bool = False) -> str:
+def require_string(
+    value: object,
+    *,
+    context: str,
+    allow_empty: bool = False,
+    maximum_length: int = MAX_METADATA_STRING_LENGTH,
+) -> str:
     if not isinstance(value, str) or (not allow_empty and not value):
         raise ValueError(f"{context} must be a non-empty string")
     if value != unicodedata.normalize("NFC", value) or value != value.strip():
         raise ValueError(f"{context} must be stripped NFC text")
+    if len(value) > maximum_length:
+        raise ValueError(f"{context} exceeds the metadata length limit of {maximum_length}")
+    if any(unicodedata.category(character).startswith("C") for character in value):
+        raise ValueError(f"{context} contains a forbidden control character")
+    if any(character.isspace() for character in value):
+        raise ValueError(f"{context} cannot contain whitespace or raw content")
+    return value
+
+
+def _validate_pg19_canonical_url(value: str, *, context: str) -> None:
+    """Require the exact URL shape emitted by the pinned PG19 extractor."""
+
+    match = PG19_CANONICAL_URL_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            f"{context} must be an exact http://www.gutenberg.org/ebooks/<positive-id> URL"
+        )
+
+
+def _validate_humaneval_plus_task_id(value: str, *, context: str) -> None:
+    """Require one canonical HumanEval+ task ID from the pinned 164-row split."""
+
+    match = HUMANEVAL_PLUS_TASK_ID_RE.fullmatch(value)
+    if match is None or int(match.group("task_number")) >= HUMANEVAL_PLUS_TASK_COUNT:
+        raise ValueError(f"{context} must be a canonical HumanEval/0..163 task ID")
+
+
+class _FrozenSequence(tuple[Any, ...]):
+    """Tuple storage with structural equality against ordinary JSON arrays."""
+
+    def __new__(cls, values: Sequence[Any]) -> _FrozenSequence:
+        return super().__new__(cls, values)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(other, (str, bytes, bytearray)):
+            return tuple(self) == tuple(other)
+        return NotImplemented
+
+    __hash__ = tuple.__hash__
+
+    @staticmethod
+    def _immutable(*_args: object, **_kwargs: object) -> None:
+        raise TypeError("verified resolver sequences are immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+
+def _deep_freeze(value: Any) -> Any:
+    """Recursively detach and freeze JSON-like verified data."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return _FrozenSequence(tuple(_deep_freeze(item) for item in value))
+    return value
+
+
+def _deep_thaw(value: Any) -> Any:
+    """Convert immutable DTO views back to ordinary canonical-JSON containers."""
+
+    if isinstance(value, Mapping):
+        return {key: _deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_deep_thaw(item) for item in value]
     return value
 
 
@@ -334,6 +477,126 @@ def sequence_token_ids_sha256(token_ids: Sequence[int]) -> str:
         for index, token_id in enumerate(token_ids)
     ]
     return sha256_bytes(canonical_json_bytes(normalized))
+
+
+def _fisher_boundary_token_ids_sha256(token_ids: Sequence[int], *, role: str) -> str:
+    """Hash one ordered Fisher token sequence under an exact role binding."""
+
+    if role not in {"input", "target"}:
+        raise ValueError("Fisher boundary token role must be input or target")
+    if isinstance(token_ids, (str, bytes, bytearray)) or not isinstance(token_ids, Sequence):
+        raise ValueError("Fisher boundary token IDs must be an integer sequence")
+    normalized = [
+        require_int(token_id, context=f"Fisher boundary {role} token IDs[{index}]")
+        for index, token_id in enumerate(token_ids)
+    ]
+    payload = {"role": role, "token_ids": normalized}
+    return sha256_bytes(
+        FISHER_BOUNDARY_TOKEN_NAMESPACE.encode("utf-8") + canonical_json_bytes(payload)
+    )
+
+
+def fisher_boundary_sha256(boundary: Mapping[str, Any]) -> str:
+    """Hash the public Fisher boundary payload under its dedicated domain."""
+
+    missing = FISHER_BOUNDARY_PAYLOAD_FIELDS - set(boundary)
+    if missing:
+        raise ValueError(f"Fisher boundary payload is missing fields: {sorted(missing)}")
+    payload = {name: boundary[name] for name in sorted(FISHER_BOUNDARY_PAYLOAD_FIELDS)}
+    return sha256_bytes(FISHER_BOUNDARY_NAMESPACE.encode("utf-8") + canonical_json_bytes(payload))
+
+
+def build_fisher_boundary_contract(token_ids: Sequence[int]) -> dict[str, Any]:
+    """Bind the frozen H=1 Fisher input/target pairs without exposing token IDs."""
+
+    if isinstance(token_ids, (str, bytes, bytearray)) or not isinstance(token_ids, Sequence):
+        raise ValueError("Fisher boundary token IDs must be an integer sequence")
+    normalized = [
+        require_int(token_id, context=f"Fisher boundary sequence token IDs[{index}]")
+        for index, token_id in enumerate(token_ids)
+    ]
+    if len(normalized) < 3:
+        raise ValueError("Fisher boundary requires a sequence length of at least three tokens")
+    boundary_positions = list(anchor_positions(len(normalized) - 2))
+    input_positions = [boundary + FISHER_BOUNDARY_HORIZON for boundary in boundary_positions]
+    target_positions = [position + 1 for position in input_positions]
+    payload: dict[str, Any] = {
+        "schema": FISHER_BOUNDARY_SCHEMA,
+        "horizon": FISHER_BOUNDARY_HORIZON,
+        "boundary_positions": boundary_positions,
+        "input_positions": input_positions,
+        "target_positions": target_positions,
+        "input_token_ids_sha256": _fisher_boundary_token_ids_sha256(
+            [normalized[position] for position in input_positions],
+            role="input",
+        ),
+        "target_token_ids_sha256": _fisher_boundary_token_ids_sha256(
+            [normalized[position] for position in target_positions],
+            role="target",
+        ),
+    }
+    payload["fisher_boundary_sha256"] = fisher_boundary_sha256(payload)
+    return payload
+
+
+def _normalize_fisher_boundary(
+    value: object, *, sequence_length: int, context: str
+) -> dict[str, Any]:
+    """Strictly validate a redacted Fisher boundary against B(T), H, and itself."""
+
+    boundary = require_mapping(value, context=context)
+    require_exact_fields(boundary, FISHER_BOUNDARY_FIELDS, context=context)
+    if boundary["schema"] != FISHER_BOUNDARY_SCHEMA:
+        raise ValueError(f"{context} schema drifted")
+    horizon = require_int(boundary["horizon"], context=f"{context}.horizon", minimum=1)
+    if horizon != FISHER_BOUNDARY_HORIZON:
+        raise ValueError(f"{context} horizon must equal H=1")
+    if sequence_length < 3:
+        raise ValueError(f"{context} requires a sequence length of at least three tokens")
+
+    expected_boundary_positions = list(anchor_positions(sequence_length - 2))
+    expected_input_positions = [position + horizon for position in expected_boundary_positions]
+    expected_target_positions = [position + 1 for position in expected_input_positions]
+
+    def positions(name: str) -> list[int]:
+        raw_positions = require_sequence(boundary[name], context=f"{context}.{name}")
+        return [
+            require_int(position, context=f"{context}.{name}[{index}]")
+            for index, position in enumerate(raw_positions)
+        ]
+
+    normalized_boundary_positions = positions("boundary_positions")
+    normalized_input_positions = positions("input_positions")
+    normalized_target_positions = positions("target_positions")
+    if normalized_boundary_positions != expected_boundary_positions:
+        raise ValueError(f"{context} boundary positions differ from B(T)=anchor_positions(T-2)")
+    if normalized_input_positions != expected_input_positions:
+        raise ValueError(f"{context} input positions differ from x[b+1]")
+    if normalized_target_positions != expected_target_positions:
+        raise ValueError(f"{context} target positions differ from x[b+2]")
+
+    normalized = {
+        "schema": FISHER_BOUNDARY_SCHEMA,
+        "horizon": horizon,
+        "boundary_positions": normalized_boundary_positions,
+        "input_positions": normalized_input_positions,
+        "target_positions": normalized_target_positions,
+        "input_token_ids_sha256": require_sha256(
+            boundary["input_token_ids_sha256"],
+            context=f"{context}.input_token_ids_sha256",
+        ),
+        "target_token_ids_sha256": require_sha256(
+            boundary["target_token_ids_sha256"],
+            context=f"{context}.target_token_ids_sha256",
+        ),
+        "fisher_boundary_sha256": require_sha256(
+            boundary["fisher_boundary_sha256"],
+            context=f"{context}.fisher_boundary_sha256",
+        ),
+    }
+    if normalized["fisher_boundary_sha256"] != fisher_boundary_sha256(normalized):
+        raise ValueError(f"{context} self-hash drifted")
+    return normalized
 
 
 def identity_anchor_manifest_sha256(
@@ -379,6 +642,15 @@ def selection_sha256(namespace: str, canonical_id: str) -> str:
     return sha256_bytes(namespace.encode("utf-8") + canonical_id.encode("utf-8"))
 
 
+def ruler_canonical_id(*, category: str, config: str, configured_length: int, seed: int) -> str:
+    """Return the sole canonical identity for one frozen RULER generation tuple."""
+
+    return (
+        f"{RULER_SEQUENCE_NAMESPACE}:{RULER_REVISION}:{category}:{config}:"
+        f"length={configured_length}:seed={seed}:sample=0"
+    )
+
+
 def mbpp_selection_sha256(canonical_id: str) -> str:
     return sha256_bytes(f"{MBPP_SELECTION_NAMESPACE}|{canonical_id}".encode())
 
@@ -422,6 +694,9 @@ def mbpp_calibration_identity() -> tuple[tuple[str, ...], str]:
 
 
 def _validate_sha_rank_order(rows: Sequence[Mapping[str, Any]], *, context: str) -> None:
+    selection_keys = [(str(row["selection_sha256"]), str(row["canonical_id"])) for row in rows]
+    if len(selection_keys) != len(set(selection_keys)):
+        raise ValueError(f"{context} contains duplicate canonical selection keys")
     ranked = sorted(
         rows,
         key=lambda row: (str(row["selection_sha256"]), str(row["canonical_id"])),
@@ -451,8 +726,13 @@ def _json_without_duplicate_keys(raw: bytes, *, context: str) -> dict[str, Any]:
 
 
 def _validate_dataset_contracts(
-    value: object, *, expected_revisions: Mapping[str, str]
+    value: object,
+    *,
+    expected_revisions: Mapping[str, str],
+    phase: str,
 ) -> tuple[dict[str, Any], ...]:
+    if phase not in ALLOWED_PHASES:
+        raise ValueError(f"dataset contract phase is unsupported: {phase!r}")
     entries = require_sequence(value, context="datasets")
     if len(entries) != len(DATASET_KEYS):
         raise ValueError("datasets must contain exactly four contracts")
@@ -496,6 +776,20 @@ def _validate_dataset_contracts(
             raise ValueError(
                 f"{key} canonical ID field must be {FROZEN_CANONICAL_ID_FIELDS[key]!r}"
             )
+        if contract["config"] != FROZEN_DATASET_CONFIGS[key]:
+            raise ValueError(f"{key} dataset config must be {FROZEN_DATASET_CONFIGS[key]!r}")
+        if contract["split"] != FROZEN_DATASET_SPLITS[phase][key]:
+            raise ValueError(
+                f"{phase} {key} dataset split must be {FROZEN_DATASET_SPLITS[phase][key]!r}"
+            )
+        if contract["formatter_id"] != FROZEN_FORMATTER_IDS[key]:
+            raise ValueError(f"{key} formatter ID must be {FROZEN_FORMATTER_IDS[key]!r}")
+        expected_formatter_sha256 = FROZEN_STATIC_FORMATTER_SHA256.get(key)
+        if (
+            expected_formatter_sha256 is not None
+            and contract["formatter_sha256"] != expected_formatter_sha256
+        ):
+            raise ValueError(f"{key} formatter SHA-256 drifted from the frozen specification")
         if key == "mbpp" and (
             contract["dataset_id"] != MBPP_DATASET_ID or contract["config"] != MBPP_CONFIG
         ):
@@ -526,6 +820,8 @@ def _validate_tokenizer(value: object) -> dict[str, Any]:
     if tokenizer["transformers_version"] != TRANSFORMERS_VERSION:
         raise ValueError("Transformers version drifted")
     tokenizer_class = require_string(tokenizer["class"], context="tokenizer.class")
+    if TOKENIZER_CLASS_RE.fullmatch(tokenizer_class) is None:
+        raise ValueError("tokenizer.class must be a bounded Python identifier")
     raw_files = require_sequence(tokenizer["files"], context="tokenizer.files")
     if not raw_files:
         raise ValueError("tokenizer.files cannot be empty")
@@ -535,7 +831,11 @@ def _validate_tokenizer(value: object) -> dict[str, Any]:
         item = require_mapping(raw, context=f"tokenizer.files[{index}]")
         require_exact_fields(item, TOKENIZER_FILE_FIELDS, context=f"tokenizer.files[{index}]")
         name = require_string(item["name"], context=f"tokenizer.files[{index}].name")
-        if Path(name).name != name or name in names:
+        if (
+            Path(name).name != name
+            or TOKENIZER_FILE_NAME_RE.fullmatch(name) is None
+            or name in names
+        ):
             raise ValueError("tokenizer file names must be unique basenames")
         names.add(name)
         files.append(
@@ -593,6 +893,16 @@ def _normalize_record(
         raise ValueError(f"records[{index}].family is unknown")
     canonical_id = require_string(item["canonical_id"], context=f"records[{index}].canonical_id")
     config = require_string(item["config"], context=f"records[{index}].config", allow_empty=True)
+    if family == "pg19":
+        _validate_pg19_canonical_url(
+            canonical_id,
+            context=f"records[{index}].canonical_id",
+        )
+    elif family == "humaneval_plus":
+        _validate_humaneval_plus_task_id(
+            canonical_id,
+            context=f"records[{index}].canonical_id",
+        )
     rank = require_int(item["selection_rank"], context=f"records[{index}].selection_rank")
     seed_value = item["seed"]
     seed = None if seed_value is None else require_int(seed_value, context=f"records[{index}].seed")
@@ -628,14 +938,27 @@ def _normalize_record(
         expected_category = RULER_CONFIG_CATEGORY.get(config)
         if expected_category is None or ruler_category != expected_category:
             raise ValueError(f"records[{index}] RULER config/category binding drifted")
-        if configured_length is None or generator_receipt_sha256 is None:
+        if configured_length is None or generator_receipt_sha256 is None or seed is None:
             raise ValueError(
-                f"records[{index}] RULER configured length and generator receipt are required"
+                f"records[{index}] RULER configured length, seed, and generator receipt "
+                "are required"
             )
+        expected_canonical_id = ruler_canonical_id(
+            category=ruler_category,
+            config=config,
+            configured_length=configured_length,
+            seed=seed,
+        )
+        if canonical_id != expected_canonical_id:
+            raise ValueError(f"records[{index}] RULER canonical ID drifted")
     elif any(
         value is not None for value in (configured_length, ruler_category, generator_receipt_sha256)
     ):
         raise ValueError(f"records[{index}] non-RULER rows cannot carry RULER-only fields")
+    elif config != FROZEN_DATASET_CONFIGS[family]:
+        raise ValueError(
+            f"records[{index}] {family} config must be {FROZEN_DATASET_CONFIGS[family]!r}"
+        )
     sequence_length = require_int(
         item["sequence_length"],
         context=f"records[{index}].sequence_length",
@@ -699,6 +1022,11 @@ def _normalize_record(
     if configured_length is not None and sequence_length > configured_length:
         raise ValueError(f"records[{index}] actual sequence exceeds the RULER configured length")
     positions = anchor_positions(sequence_length)
+    fisher_boundary = _normalize_fisher_boundary(
+        item["fisher_boundary"],
+        sequence_length=sequence_length,
+        context=f"records[{index}].fisher_boundary",
+    )
     sequence_hash = require_sha256(
         item["sequence_token_ids_sha256"],
         context=f"records[{index}].sequence_token_ids_sha256",
@@ -746,6 +1074,7 @@ def _normalize_record(
         "tokenizer_manifest_sha256": tokenizer_hash,
         "token_span": normalized_span,
         "anchor_manifest_sha256": recorded_anchor_hash,
+        "fisher_boundary": fisher_boundary,
         "identity_record_sha256": require_sha256(
             item["identity_record_sha256"],
             context=f"records[{index}].identity_record_sha256",
@@ -834,17 +1163,7 @@ def _validate_calibration_records(records: Sequence[Mapping[str, Any]]) -> None:
     for row in grouped["mbpp"]:
         if row["seed"] is not None:
             raise ValueError("MBPP calibration records cannot have a generator seed")
-    identities = [
-        (
-            row["family"],
-            row["canonical_id"],
-            row["ruler_category"],
-            row["config"],
-            row["configured_length"],
-            row["seed"],
-        )
-        for row in records
-    ]
+    identities = [(row["family"], row["canonical_id"]) for row in records]
     if len(identities) != len(set(identities)):
         raise ValueError("calibration canonical identities are not unique")
 
@@ -910,15 +1229,7 @@ def _validate_stage_a_records(records: Sequence[Mapping[str, Any]]) -> None:
             )
         if row["sequence_length"] != span["scored_stop"]:
             raise ValueError("Stage-A HumanEval+ sequence length must equal span stop")
-    identities = [
-        (
-            row["family"],
-            row["canonical_id"],
-            row["ruler_category"],
-            row["config"],
-        )
-        for row in records
-    ]
+    identities = [(row["family"], row["canonical_id"]) for row in records]
     if len(identities) != len(set(identities)):
         raise ValueError("Stage-A canonical identities are not unique")
 
@@ -1008,7 +1319,7 @@ def build_candidate(
         raise ValueError("identity input schema drifted")
     if phase not in ALLOWED_PHASES:
         if phase in PROTECTED_STAGES:
-            raise PermissionError(f"{phase} is protected and unavailable in resolver v4")
+            raise PermissionError(f"{phase} is protected and unavailable in resolver v5")
         raise ValueError(f"unsupported identity phase: {phase!r}")
     if source["model_weights_loaded"] is not False:
         raise ValueError("identity resolution must occur before model weights")
@@ -1029,16 +1340,17 @@ def build_candidate(
     }
     if revisions != FROZEN_DATASET_REVISIONS:
         raise ValueError("CLI dataset revisions do not match the frozen upstream commits")
-    datasets = _validate_dataset_contracts(source["datasets"], expected_revisions=revisions)
+    datasets = _validate_dataset_contracts(
+        source["datasets"],
+        expected_revisions=revisions,
+        phase=str(phase),
+    )
     tokenizer = _validate_tokenizer(source["tokenizer"])
     execution_bindings = _validate_execution_bindings(source["execution_bindings"])
     parquet_materialization_manifest_file_sha256 = execution_bindings[
         "parquet_materialization_manifest_file_sha256"
     ]
-    if (
-        parquet_materialization_manifest_file_sha256
-        != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
-    ):
+    if parquet_materialization_manifest_file_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
         raise ValueError("Parquet materialization manifest file SHA-256 drifted")
     raw_records = require_sequence(source["records"], context="records")
     records = [
@@ -1065,7 +1377,7 @@ def build_candidate(
     content_manifest_hash = sha256_bytes(canonical_json_bytes(records))
     source_hash = sha256_bytes(canonical_json_bytes(source))
     evidence: dict[str, Any] = {
-        "schema_version": 4,
+        "schema_version": 5,
         "artifact_kind": ARTIFACT_KIND,
         "identity_schema": CANDIDATE_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
@@ -1136,7 +1448,7 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
         raise ValueError("candidate canonical evidence SHA-256 drifted")
     phase = evidence["phase"]
     exact_scalars = {
-        "schema_version": 4,
+        "schema_version": 5,
         "artifact_kind": ARTIFACT_KIND,
         "identity_schema": CANDIDATE_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
@@ -1147,8 +1459,7 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
     }
     for name, expected in exact_scalars.items():
         if (
-            isinstance(expected, (bool, int))
-            and type(evidence[name]) is not type(expected)
+            isinstance(expected, (bool, int)) and type(evidence[name]) is not type(expected)
         ) or evidence[name] != expected:
             raise ValueError(f"candidate {name} drifted")
     if phase not in ALLOWED_PHASES:
@@ -1201,6 +1512,7 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
     datasets = _validate_dataset_contracts(
         evidence["datasets"],
         expected_revisions=FROZEN_DATASET_REVISIONS,
+        phase=str(phase),
     )
     if list(datasets) != evidence["datasets"]:
         raise ValueError("candidate dataset contracts are not canonical")
@@ -1330,101 +1642,71 @@ def promote_candidate(
     }
 
 
+@dataclass(frozen=True, slots=True)
 class FrozenCalibrationIdentityArtifact:
     """Strictly verified frozen calibration identity and its binding commitments."""
 
-    __slots__ = (
-        "file_sha256",
-        "canonical_evidence_sha256",
-        "records",
-        "assignment",
-        "assignment_sha256",
-        "tokenizer_manifest_sha256",
-        "parquet_materialization_manifest_file_sha256",
-        "execution_bindings",
-    )
+    file_sha256: str
+    canonical_evidence_sha256: str
+    records: tuple[Mapping[str, Any], ...]
+    assignment: tuple[Mapping[str, Any], ...]
+    assignment_sha256: str
+    tokenizer_manifest_sha256: str
+    parquet_materialization_manifest_file_sha256: str
+    execution_bindings: Mapping[str, str]
 
-    def __init__(
-        self,
-        *,
-        file_sha256: str,
-        canonical_evidence_sha256: str,
-        records: tuple[dict[str, Any], ...],
-        assignment: tuple[dict[str, Any], ...],
-        assignment_sha256: str,
-        tokenizer_manifest_sha256: str,
-        parquet_materialization_manifest_file_sha256: str,
-        execution_bindings: dict[str, str],
-    ) -> None:
-        self.file_sha256 = file_sha256
-        self.canonical_evidence_sha256 = canonical_evidence_sha256
-        self.records = records
-        self.assignment = assignment
-        self.assignment_sha256 = assignment_sha256
-        self.tokenizer_manifest_sha256 = tokenizer_manifest_sha256
-        self.parquet_materialization_manifest_file_sha256 = (
-            parquet_materialization_manifest_file_sha256
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "records",
+            tuple(_deep_freeze(record) for record in self.records),
         )
-        self.execution_bindings = execution_bindings
+        object.__setattr__(
+            self,
+            "assignment",
+            tuple(_deep_freeze(item) for item in self.assignment),
+        )
+        object.__setattr__(self, "execution_bindings", _deep_freeze(self.execution_bindings))
 
 
+@dataclass(frozen=True, slots=True)
 class FrozenStageAIdentityArtifact:
-    """Strictly verified frozen Stage-A identity and five-file calibration binding."""
+    """Strictly verified frozen Stage-A identity and eight-file calibration binding."""
 
-    __slots__ = (
-        "file_sha256",
-        "canonical_evidence_sha256",
-        "records",
-        "tokenizer_manifest_sha256",
-        "calibration_binding",
-        "parquet_materialization_manifest_file_sha256",
-        "execution_bindings",
-    )
+    file_sha256: str
+    canonical_evidence_sha256: str
+    records: tuple[Mapping[str, Any], ...]
+    tokenizer_manifest_sha256: str
+    calibration_binding: Mapping[str, str]
+    parquet_materialization_manifest_file_sha256: str
+    execution_bindings: Mapping[str, str]
 
-    def __init__(
-        self,
-        *,
-        file_sha256: str,
-        canonical_evidence_sha256: str,
-        records: tuple[dict[str, Any], ...],
-        tokenizer_manifest_sha256: str,
-        calibration_binding: dict[str, str],
-        parquet_materialization_manifest_file_sha256: str,
-        execution_bindings: dict[str, str],
-    ) -> None:
-        self.file_sha256 = file_sha256
-        self.canonical_evidence_sha256 = canonical_evidence_sha256
-        self.records = records
-        self.tokenizer_manifest_sha256 = tokenizer_manifest_sha256
-        self.calibration_binding = calibration_binding
-        self.parquet_materialization_manifest_file_sha256 = (
-            parquet_materialization_manifest_file_sha256
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "records",
+            tuple(_deep_freeze(record) for record in self.records),
         )
-        self.execution_bindings = execution_bindings
+        object.__setattr__(self, "calibration_binding", _deep_freeze(self.calibration_binding))
+        object.__setattr__(self, "execution_bindings", _deep_freeze(self.execution_bindings))
 
 
+@dataclass(frozen=True, slots=True)
 class StageACalibrationBindingArtifact:
-    """Verified five-field Stage-A binding and authenticated dependency hashes."""
+    """Verified eight-field Stage-A binding and authenticated dependency hashes."""
 
-    __slots__ = (
-        "binding",
-        "dependency_file_sha256",
-        "canonical_evidence_sha256",
-        "file_sha256",
-    )
+    binding: Mapping[str, str]
+    dependency_file_sha256: Mapping[str, str]
+    canonical_evidence_sha256: str
+    file_sha256: str
 
-    def __init__(
-        self,
-        *,
-        binding: dict[str, str],
-        dependency_file_sha256: dict[str, str],
-        canonical_evidence_sha256: str,
-        file_sha256: str,
-    ) -> None:
-        self.binding = binding
-        self.dependency_file_sha256 = dependency_file_sha256
-        self.canonical_evidence_sha256 = canonical_evidence_sha256
-        self.file_sha256 = file_sha256
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "binding", _deep_freeze(self.binding))
+        object.__setattr__(
+            self,
+            "dependency_file_sha256",
+            _deep_freeze(self.dependency_file_sha256),
+        )
 
 
 def deserialize_frozen_calibration_identity_artifact(
@@ -1465,7 +1747,7 @@ def deserialize_frozen_calibration_identity_artifact(
     if canonical_evidence_sha256 != sha256_bytes(canonical_json_bytes(evidence)):
         raise ValueError("frozen identity canonical evidence SHA-256 drifted")
     exact_scalars = {
-        "schema_version": 4,
+        "schema_version": 5,
         "artifact_kind": ARTIFACT_KIND,
         "identity_schema": FROZEN_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
@@ -1478,8 +1760,7 @@ def deserialize_frozen_calibration_identity_artifact(
     }
     for name, expected in exact_scalars.items():
         if (
-            isinstance(expected, (bool, int))
-            and type(evidence[name]) is not type(expected)
+            isinstance(expected, (bool, int)) and type(evidence[name]) is not type(expected)
         ) or evidence[name] != expected:
             raise ValueError(f"frozen identity {name} drifted")
     require_sha256(
@@ -1489,9 +1770,7 @@ def deserialize_frozen_calibration_identity_artifact(
     execution_bindings = _validate_execution_bindings(evidence["execution_bindings"])
     if dict(evidence["execution_bindings"]) != execution_bindings:
         raise ValueError("frozen execution bindings are not canonical")
-    parquet_manifest_sha256 = execution_bindings[
-        "parquet_materialization_manifest_file_sha256"
-    ]
+    parquet_manifest_sha256 = execution_bindings["parquet_materialization_manifest_file_sha256"]
     if parquet_manifest_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
         raise ValueError("frozen Parquet materialization manifest file SHA-256 drifted")
 
@@ -1530,6 +1809,7 @@ def deserialize_frozen_calibration_identity_artifact(
     datasets = _validate_dataset_contracts(
         evidence["datasets"],
         expected_revisions=FROZEN_DATASET_REVISIONS,
+        phase="calibration",
     )
     if list(datasets) != evidence["datasets"]:
         raise ValueError("frozen dataset contracts are not canonical")
@@ -1784,9 +2064,7 @@ def deserialize_frozen_stage_a_identity_artifact(
         context="frozen Stage-A tokenizer manifest SHA-256",
     )
     execution_bindings = _validate_execution_bindings(candidate_evidence["execution_bindings"])
-    parquet_manifest_sha256 = execution_bindings[
-        "parquet_materialization_manifest_file_sha256"
-    ]
+    parquet_manifest_sha256 = execution_bindings["parquet_materialization_manifest_file_sha256"]
     if parquet_manifest_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
         raise ValueError("frozen Stage-A Parquet materialization manifest file SHA-256 drifted")
     return FrozenStageAIdentityArtifact(
@@ -1877,24 +2155,48 @@ def _derive_stage_a_calibration_binding(
     split_half_stability_artifact: bytes,
     static_k27030_policy_artifact: bytes,
     static_k29334_policy_artifact: bytes,
+    comparator_score_artifact: bytes,
+    static_fisher_k29334_policy_artifact: bytes,
+    static_mse_k29334_policy_artifact: bytes,
 ) -> tuple[dict[str, str], dict[str, str]]:
     from recurquant.static_q468 import (
         FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        FROZEN_STATELEASE_RESIDENT_BYTES,
         FROZEN_STATIC_Q468_ABLATION_STEPS,
         FROZEN_STATIC_Q468_PRIMARY_STEPS,
+        FROZEN_TRANSFORMERS_VERSION,
+        PRIMARY_MODEL_ID,
+        PRIMARY_MODEL_REVISION,
+        PRIMARY_TOKENIZER_ID,
+        PRIMARY_TOKENIZER_REVISION,
         STATIC_Q468_ABLATION_METHOD,
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+        STATIC_Q468_MSE_METHOD,
         STATIC_Q468_PRIMARY_METHOD,
+        build_static_rht_q468_policy,
         deserialize_static_rht_q468_policy,
+        serialize_static_rht_q468_policy,
+        static_q468_byte_ledger,
+        static_q468_distortion_sha256,
     )
     from recurquant.static_q468_calibration import (
         CALIBRATION_SCORE_ARTIFACT_KIND,
+        FROZEN_COMPARATOR_PROFILE_ORDER,
+        FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+        FROZEN_UNWEIGHTED_MSE_PROFILE,
         calibration_identity_record_manifest_sha256,
         deserialize_calibration_score_artifact,
+        deserialize_comparator_score_artifact,
         deserialize_frozen_split_half_stability_artifact,
+        static_q468_code_map_sha256,
     )
 
     identity = deserialize_frozen_calibration_identity_artifact(frozen_identity_artifact)
+    if identity.file_sha256 != sha256_bytes(frozen_identity_artifact):
+        raise ValueError("frozen identity decoder returned the wrong dependency file hash")
     scores = deserialize_calibration_score_artifact(calibration_score_artifact)
+    if scores.file_sha256 != sha256_bytes(calibration_score_artifact):
+        raise ValueError("score decoder returned the wrong dependency file hash")
     if scores.artifact_kind != CALIBRATION_SCORE_ARTIFACT_KIND:
         raise ValueError("Stage-A binding requires the official frozen score artifact")
     expected_identity_manifest = calibration_identity_record_manifest_sha256(identity.records)
@@ -1902,12 +2204,33 @@ def _derive_stage_a_calibration_binding(
         raise ValueError("score artifact is not bound to the frozen identity file")
     if scores.aggregate.identity_record_manifest_sha256 != expected_identity_manifest:
         raise ValueError("score identity-record manifest differs from the frozen identity")
+    comparators = deserialize_comparator_score_artifact(
+        comparator_score_artifact,
+        expected_calibration_identity_sha256=identity.file_sha256,
+    )
+    if (
+        comparators.file_sha256 != sha256_bytes(comparator_score_artifact)
+        or comparators.calibration_identity_sha256 != identity.file_sha256
+        or tuple(comparators.selectors) != FROZEN_COMPARATOR_PROFILE_ORDER
+    ):
+        raise ValueError("comparator score artifact must contain exactly the two official profiles")
+    for method_id in FROZEN_COMPARATOR_PROFILE_ORDER:
+        if (
+            comparators.selectors[method_id].aggregate.identity_record_manifest_sha256
+            != expected_identity_manifest
+        ):
+            raise ValueError(
+                f"comparator {method_id} identity-record manifest differs from the "
+                "complete frozen identity"
+            )
     split = deserialize_frozen_split_half_stability_artifact(
         split_half_stability_artifact,
         expected_identity_file_sha256=identity.file_sha256,
         expected_canonical_identity_sha256=identity.canonical_evidence_sha256,
         expected_resolver_assignment_sha256=identity.assignment_sha256,
     )
+    if split.file_sha256 != sha256_bytes(split_half_stability_artifact):
+        raise ValueError("split-half decoder returned the wrong dependency file hash")
     if (
         split.identity_file_sha256 != identity.file_sha256
         or split.canonical_identity_sha256 != identity.canonical_evidence_sha256
@@ -1941,6 +2264,7 @@ def _derive_stage_a_calibration_binding(
         ),
     )
     allocations = {steps: (codes, digest) for steps, codes, digest in scores.allocations}
+    torch = __import__("torch")
     for policy, method_id, steps in expected_policy_contracts:
         if (
             policy.method_id != method_id
@@ -1953,6 +2277,14 @@ def _derive_stage_a_calibration_binding(
         if policy.tokenizer_manifest_sha256 != identity.tokenizer_manifest_sha256:
             raise ValueError(f"policy {method_id} tokenizer manifest differs from identity")
         if (
+            policy.model_id != PRIMARY_MODEL_ID
+            or policy.model_revision != PRIMARY_MODEL_REVISION
+            or policy.tokenizer_id != PRIMARY_TOKENIZER_ID
+            or policy.tokenizer_revision != PRIMARY_TOKENIZER_REVISION
+            or policy.transformers_version != FROZEN_TRANSFORMERS_VERSION
+        ):
+            raise ValueError(f"policy {method_id} frozen model contract drifted")
+        if (
             policy.calibration_manifest_sha256 != scores.aggregate.sequence_score_manifest_sha256
             or policy.calibration_scores_sha256 != scores.calibration_scores_sha256
         ):
@@ -1960,27 +2292,147 @@ def _derive_stage_a_calibration_binding(
         if steps not in allocations:
             raise ValueError(f"official score artifact is missing exact K{steps}")
         allocation_codes, allocation_hash = allocations[steps]
-        if policy.code_map_sha256 != allocation_hash or not __import__("torch").equal(
+        if policy.code_map_sha256 != allocation_hash or not torch.equal(
             policy.precision_codes().reshape(-1).to("cpu"),
-            allocation_codes,
+            allocation_codes.reshape(-1).to("cpu"),
         ):
             raise ValueError(f"policy {method_id} code map differs from exact allocation")
     if policy27030.source_commit != policy29334.source_commit:
         raise ValueError("K27030 and K29334 policies must share one source commit")
+    source_commit_h0 = policy29334.source_commit
+
+    comparator_policies = (
+        (
+            deserialize_static_rht_q468_policy(static_mse_k29334_policy_artifact),
+            STATIC_Q468_MSE_METHOD,
+            FROZEN_UNWEIGHTED_MSE_PROFILE,
+        ),
+        (
+            deserialize_static_rht_q468_policy(static_fisher_k29334_policy_artifact),
+            STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+            FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+        ),
+    )
+    for policy, method_id, selector_profile in comparator_policies:
+        if method_id != selector_profile:
+            raise RuntimeError("frozen comparator method/profile constants disagree")
+        selector = comparators.selectors[selector_profile]
+        if (
+            policy.method_id != method_id
+            or policy.marginal_steps != FROZEN_STATIC_Q468_PRIMARY_STEPS
+            or policy.geometry != FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+        ):
+            raise ValueError(
+                f"comparator policy {method_id} does not satisfy its frozen K29334 geometry"
+            )
+        if (
+            policy.model_id != PRIMARY_MODEL_ID
+            or policy.model_revision != PRIMARY_MODEL_REVISION
+            or policy.tokenizer_id != PRIMARY_TOKENIZER_ID
+            or policy.tokenizer_revision != PRIMARY_TOKENIZER_REVISION
+            or policy.transformers_version != FROZEN_TRANSFORMERS_VERSION
+        ):
+            raise ValueError(f"comparator policy {method_id} frozen model contract drifted")
+        if (
+            policy.identity_artifact_sha256 != identity.file_sha256
+            or policy.tokenizer_manifest_sha256 != identity.tokenizer_manifest_sha256
+        ):
+            raise ValueError(f"comparator policy {method_id} frozen identity binding drifted")
+        if policy.source_commit != source_commit_h0:
+            raise ValueError(f"comparator policy {method_id} source commit differs from H0")
+        if (
+            policy.calibration_manifest_sha256 != selector.aggregate.sequence_score_manifest_sha256
+            or selector.calibration_scores_sha256 != selector.aggregate.aggregate_scores_sha256
+        ):
+            raise ValueError(
+                f"comparator policy {method_id} differs from its decoded selector scores"
+            )
+        expected_policy_score_sha256 = static_q468_distortion_sha256(
+            *selector.aggregate.scores(),
+            geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        )
+        if policy.calibration_scores_sha256 != expected_policy_score_sha256:
+            raise ValueError(
+                f"comparator policy {method_id} raw distortion hash differs from its "
+                "decoded selector arrays"
+            )
+        expected_policy = build_static_rht_q468_policy(
+            *selector.aggregate.scores(),
+            geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+            marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+            calibration_manifest_sha256=(selector.aggregate.sequence_score_manifest_sha256),
+            identity_artifact_sha256=identity.file_sha256,
+            tokenizer_manifest_sha256=identity.tokenizer_manifest_sha256,
+            source_commit=source_commit_h0,
+            calibration_scores_sha256=expected_policy_score_sha256,
+            method_id=method_id,
+        )
+        if serialize_static_rht_q468_policy(expected_policy) != (
+            static_mse_k29334_policy_artifact
+            if method_id == STATIC_Q468_MSE_METHOD
+            else static_fisher_k29334_policy_artifact
+        ):
+            raise ValueError(
+                f"comparator policy {method_id} bytes differ from deterministic reconstruction"
+            )
+        selector_codes = selector.precision_codes.reshape(-1).to("cpu")
+        expected_code_map_sha256 = static_q468_code_map_sha256(
+            selector_codes,
+            geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+            marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+        )
+        if (
+            selector.method_id != method_id
+            or selector.marginal_steps != FROZEN_STATIC_Q468_PRIMARY_STEPS
+            or selector.code_map_sha256 != expected_code_map_sha256
+            or policy.code_map_sha256 != expected_code_map_sha256
+            or not torch.equal(
+                policy.precision_codes().reshape(-1).to("cpu"),
+                selector_codes,
+            )
+        ):
+            raise ValueError(
+                f"comparator policy {method_id} code map differs from its exact allocation"
+            )
+        ledger = static_q468_byte_ledger(
+            policy.geometry,
+            policy.marginal_steps,
+            method_id=policy.method_id,
+        )
+        if (
+            ledger.method_id != method_id
+            or ledger.selected_units != FROZEN_STATIC_Q468_PRIMARY_STEPS
+            or ledger.resident_bytes != FROZEN_STATELEASE_RESIDENT_BYTES
+            or ledger.target_resident_bytes != FROZEN_STATELEASE_RESIDENT_BYTES
+            or ledger.budget_delta_bytes != 0
+            or ledger.exact_budget_eligible is not True
+        ):
+            raise ValueError(
+                f"comparator policy {method_id} does not realize the exact "
+                f"{FROZEN_STATELEASE_RESIDENT_BYTES}-byte ledger"
+            )
 
     binding = {
         "calibration_identity_file_sha256": identity.file_sha256,
         "calibration_score_artifact_file_sha256": scores.file_sha256,
+        "comparator_score_artifact_file_sha256": comparators.file_sha256,
         "split_half_stability_artifact_file_sha256": split.file_sha256,
+        "static_fisher_k29334_policy_file_sha256": sha256_bytes(
+            static_fisher_k29334_policy_artifact
+        ),
         "static_k27030_policy_file_sha256": sha256_bytes(static_k27030_policy_artifact),
         "static_k29334_policy_file_sha256": sha256_bytes(static_k29334_policy_artifact),
+        "static_mse_k29334_policy_file_sha256": sha256_bytes(static_mse_k29334_policy_artifact),
     }
     dependency_hashes = {
         "calibration_score_artifact": scores.file_sha256,
+        "comparator_score_artifact": comparators.file_sha256,
         "frozen_identity_artifact": identity.file_sha256,
         "split_half_stability_artifact": split.file_sha256,
+        "static_fisher_k29334_policy_artifact": sha256_bytes(static_fisher_k29334_policy_artifact),
         "static_k27030_policy_artifact": sha256_bytes(static_k27030_policy_artifact),
         "static_k29334_policy_artifact": sha256_bytes(static_k29334_policy_artifact),
+        "static_mse_k29334_policy_artifact": sha256_bytes(static_mse_k29334_policy_artifact),
     }
     return binding, dependency_hashes
 
@@ -1992,15 +2444,21 @@ def build_stage_a_calibration_binding_artifact(
     split_half_stability_artifact: bytes,
     static_k27030_policy_artifact: bytes,
     static_k29334_policy_artifact: bytes,
+    comparator_score_artifact: bytes,
+    static_fisher_k29334_policy_artifact: bytes,
+    static_mse_k29334_policy_artifact: bytes,
 ) -> bytes:
-    """Build the five-field Stage-A binding only from fully verified dependencies."""
+    """Build the eight-field Stage-A binding only from fully verified dependencies."""
 
     dependencies = {
         "calibration_score_artifact": calibration_score_artifact,
+        "comparator_score_artifact": comparator_score_artifact,
         "frozen_identity_artifact": frozen_identity_artifact,
         "split_half_stability_artifact": split_half_stability_artifact,
+        "static_fisher_k29334_policy_artifact": static_fisher_k29334_policy_artifact,
         "static_k27030_policy_artifact": static_k27030_policy_artifact,
         "static_k29334_policy_artifact": static_k29334_policy_artifact,
+        "static_mse_k29334_policy_artifact": static_mse_k29334_policy_artifact,
     }
     binding, dependency_hashes = _derive_stage_a_calibration_binding(
         frozen_identity_artifact=frozen_identity_artifact,
@@ -2008,6 +2466,9 @@ def build_stage_a_calibration_binding_artifact(
         split_half_stability_artifact=split_half_stability_artifact,
         static_k27030_policy_artifact=static_k27030_policy_artifact,
         static_k29334_policy_artifact=static_k29334_policy_artifact,
+        comparator_score_artifact=comparator_score_artifact,
+        static_fisher_k29334_policy_artifact=static_fisher_k29334_policy_artifact,
+        static_mse_k29334_policy_artifact=static_mse_k29334_policy_artifact,
     )
     evidence = {
         "artifact_revision": STAGE_A_BINDING_ARTIFACT_REVISION,
@@ -2090,10 +2551,13 @@ def deserialize_stage_a_calibration_binding_artifact(
     dependency_names = frozenset(
         {
             "calibration_score_artifact",
+            "comparator_score_artifact",
             "frozen_identity_artifact",
             "split_half_stability_artifact",
+            "static_fisher_k29334_policy_artifact",
             "static_k27030_policy_artifact",
             "static_k29334_policy_artifact",
+            "static_mse_k29334_policy_artifact",
         }
     )
     require_exact_fields(
@@ -2108,16 +2572,40 @@ def deserialize_stage_a_calibration_binding_artifact(
         )
         for name in sorted(dependency_names)
     }
+    recorded_dependency_hashes = require_mapping(
+        evidence["dependency_file_sha256"],
+        context="Stage-A binding dependency hashes",
+    )
+    require_exact_fields(
+        recorded_dependency_hashes,
+        dependency_names,
+        context="Stage-A binding dependency hashes",
+    )
+    normalized_dependency_hashes = {
+        name: require_sha256(
+            recorded_dependency_hashes[name],
+            context=f"Stage-A dependency {name} file SHA-256",
+        )
+        for name in sorted(dependency_names)
+    }
+    embedded_dependency_hashes = {
+        name: sha256_bytes(dependencies[name]) for name in sorted(dependency_names)
+    }
+    if normalized_dependency_hashes != embedded_dependency_hashes:
+        raise ValueError("Stage-A calibration dependency bytes differ from their file hashes")
     binding, dependency_hashes = _derive_stage_a_calibration_binding(
         frozen_identity_artifact=dependencies["frozen_identity_artifact"],
         calibration_score_artifact=dependencies["calibration_score_artifact"],
         split_half_stability_artifact=dependencies["split_half_stability_artifact"],
         static_k27030_policy_artifact=dependencies["static_k27030_policy_artifact"],
         static_k29334_policy_artifact=dependencies["static_k29334_policy_artifact"],
+        comparator_score_artifact=dependencies["comparator_score_artifact"],
+        static_fisher_k29334_policy_artifact=(dependencies["static_fisher_k29334_policy_artifact"]),
+        static_mse_k29334_policy_artifact=dependencies["static_mse_k29334_policy_artifact"],
     )
     if evidence["binding"] != binding:
         raise ValueError("Stage-A calibration binding fields drifted")
-    if evidence["dependency_file_sha256"] != dependency_hashes:
+    if normalized_dependency_hashes != dependency_hashes:
         raise ValueError("Stage-A calibration dependency hashes drifted")
     return StageACalibrationBindingArtifact(
         binding=binding,

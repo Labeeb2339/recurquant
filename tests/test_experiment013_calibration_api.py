@@ -11,6 +11,7 @@ from recurquant.experiment013_calibration_api import (
     AuthenticatedModelFiles,
     AuthenticatedSequence,
     CalibrationAdapter,
+    FisherStepObservation,
     ModelFileIdentity,
     StepObservation,
 )
@@ -85,6 +86,7 @@ def test_context_normalizes_and_freezes_runtime_authentication_paths() -> None:
 def test_adapter_facing_values_have_one_stable_importable_identity() -> None:
     sequence = AuthenticatedSequence((1, 2), "a" * 64, "b" * 64, None, "c" * 64)
     observation = StepObservation(0, 1, (0,), object(), None, (1,))
+    fisher = FisherStepObservation(0, 1, 2, 2, 3, observation, object(), object(), 1.25)
     file_identity = ModelFileIdentity(
         "model.safetensors",
         1,
@@ -105,6 +107,8 @@ def test_adapter_facing_values_have_one_stable_importable_identity() -> None:
 
     assert sequence.token_ids == (1, 2)
     assert observation.successful_kernel_calls_per_layer == (1,)
+    assert (fisher.boundary_position, fisher.input_position, fisher.target_position) == (0, 1, 2)
+    assert fisher.step_observation is observation
     assert authenticated.files == (file_identity,)
 
 
@@ -147,6 +151,10 @@ def test_runtime_protocol_accepts_structural_adapter() -> None:
             del model, record
 
         def step_token(self, model: object, **kwargs: object) -> object:
+            del model, kwargs
+            return object()
+
+        def step_token_with_fisher(self, model: object, **kwargs: object) -> object:
             del model, kwargs
             return object()
 

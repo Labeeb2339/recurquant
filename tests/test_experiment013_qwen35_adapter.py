@@ -3,6 +3,8 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import os
+import subprocess
 import sys
 import types
 import weakref
@@ -13,6 +15,7 @@ import pytest
 import torch
 
 from recurquant import experiment013_qwen35_adapter as adapter_module
+from recurquant import experiment013_source as source_module
 from recurquant.experiment013_calibration_api import (
     AdapterConstructionContext,
     AuthenticatedModelFiles,
@@ -76,7 +79,7 @@ def _fake_capture_binding(
 def _source_manifest_bytes(payload: bytes) -> bytes:
     return json.dumps(
         {
-            "schema": adapter_module.SOURCE_MANIFEST_SCHEMA,
+            "schema": source_module.EXPERIMENT013_SOURCE_MANIFEST_SCHEMA,
             "paths": [
                 {
                     "path": adapter_module.CAPTURE_SOURCE_PATH,
@@ -85,6 +88,40 @@ def _source_manifest_bytes(payload: bytes) -> bytes:
             ],
         }
     ).encode("utf-8")
+
+
+def _git(root: Path, *arguments: str) -> None:
+    process = subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+    )
+    if process.returncode != 0:
+        raise AssertionError(process.stderr or process.stdout)
+
+
+def _canonical_v2_source_manifest_bytes(root: Path, payload: bytes) -> bytes:
+    root.mkdir(parents=True)
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Experiment 013 Adapter Test")
+    _git(root, "config", "user.email", "experiment013-adapter@example.invalid")
+    (root / ".gitattributes").write_text("* text eol=lf\n", encoding="utf-8", newline="\n")
+    (root / ".gitignore").write_text("artifacts/\n", encoding="utf-8", newline="\n")
+    for relative in source_module.EXPERIMENT013_SOURCE_PATHS:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            payload
+            if relative == adapter_module.CAPTURE_SOURCE_PATH
+            else f"adapter-v2-fixture:{relative}\n".encode()
+        )
+    _git(root, "add", "--", ".")
+    _git(root, "commit", "-m", "adapter v2 source fixture")
+    manifest = source_module.capture_experiment013_source_manifest(root)
+    return source_module.canonical_experiment013_source_manifest_bytes(manifest)
 
 
 def _identity_record(index: int, token_ids: tuple[int, ...]) -> dict[str, object]:
@@ -258,6 +295,39 @@ def test_capture_loader_executes_manifest_bound_bytes_without_leaving_a_module(
     adapter_module._verify_capture_binding(binding)
 
 
+def test_capture_loader_accepts_canonical_v2_source_manifest(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    payload = b"AUTHENTICATED_VALUE = 23\n"
+    manifest_bytes = _canonical_v2_source_manifest_bytes(root, payload)
+    manifest = json.loads(manifest_bytes)
+
+    assert manifest["schema"] == "recurquant.experiment013.source-manifest.v2"
+    assert manifest["schema"] == source_module.EXPERIMENT013_SOURCE_MANIFEST_SCHEMA
+
+    binding = adapter_module._load_capture_module(root, manifest_bytes)
+
+    assert binding.module.AUTHENTICATED_VALUE == 23
+    assert binding.raw_sha256 == hashlib.sha256(payload).hexdigest()
+    assert adapter_module.CAPTURE_MODULE_NAME not in sys.modules
+    adapter_module._verify_capture_binding(binding)
+
+
+def test_capture_loader_rejects_retired_v1_source_manifest(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    path = root / Path(adapter_module.CAPTURE_SOURCE_PATH)
+    path.parent.mkdir(parents=True)
+    payload = b"AUTHENTICATED_VALUE = 17\n"
+    path.write_bytes(payload)
+    manifest = json.loads(_source_manifest_bytes(payload))
+    manifest["schema"] = "recurquant.experiment013.source-manifest.v1"
+
+    with pytest.raises(
+        adapter_module.Experiment013AdapterError,
+        match="repository source manifest schema drifted",
+    ):
+        adapter_module._load_capture_module(root, json.dumps(manifest).encode("utf-8"))
+
+
 def test_capture_loader_rejects_every_preloaded_capture_module(tmp_path: Path) -> None:
     root = tmp_path / "repository"
     path = root / Path(adapter_module.CAPTURE_SOURCE_PATH)
@@ -352,6 +422,7 @@ def test_materialization_rechecks_capture_source_after_call(
 class _FakeCacheLayer:
     def __init__(self) -> None:
         self.recurrent_states: dict[int, torch.Tensor | None] = {0: None}
+        self.is_recurrent_states_initialized: dict[int, bool] = {0: False}
 
 
 class _FakeDynamicCache:
@@ -371,6 +442,7 @@ class _FakeDynamicCache:
             cached = torch.empty_like(state)
             self.layers[layer_index].recurrent_states[0] = cached
         cached.copy_(state)
+        self.layers[layer_index].is_recurrent_states_initialized[0] = True
         if layer_index == self.corrupt_layer:
             cached.add_(1)
         return cached
@@ -388,6 +460,7 @@ class Qwen3_5GatedDeltaNet:
         self.bad_query = False
         self.bad_query_dtype = False
         self.bad_state = False
+        self.mutate_source_state = False
         self.causal_conv1d_fn = None
         self.causal_conv1d_update = lambda *args, **kwargs: None
         self.chunk_gated_delta_rule = self._chunk
@@ -401,6 +474,8 @@ class Qwen3_5GatedDeltaNet:
                 float(self.layer_idx + 1),
                 dtype=torch.float32,
             )
+        if self.mutate_source_state:
+            initial_state.data.add_(0.5)
         return initial_state + 1.0
 
     def _chunk(
@@ -529,6 +604,56 @@ class _FakeLiveModel:
         self.config = types.SimpleNamespace()
         self.model = _FakeTextModel()
         self.training = False
+        self._parameter = torch.nn.Parameter(torch.tensor(1.0), requires_grad=False)
+        self.fail_after_fisher_forward = False
+
+    def parameters(self):
+        return iter((self._parameter,))
+
+    def __call__(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        past_key_values: _FakeDynamicCache,
+        use_cache: bool,
+        logits_to_keep: int,
+    ) -> object:
+        assert tuple(input_ids.shape) == (1, 1)
+        assert tuple(position_ids.shape) == (1, 1)
+        assert use_cache is True
+        assert logits_to_keep == 1
+        assert torch.is_grad_enabled()
+        position = int(position_ids.item())
+        state_scalars: list[torch.Tensor] = []
+        for layer_index in adapter_module.RECURRENT_LAYER_INDICES:
+            module = self.model.layers[layer_index].linear_attn
+            query = torch.full(
+                adapter_module.QUERY_SHAPE,
+                float(layer_index + position),
+                dtype=torch.bfloat16,
+            )
+            cached = past_key_values.layers[layer_index].recurrent_states[0]
+            assert isinstance(cached, torch.Tensor)
+            output = module.recurrent_gated_delta_rule(
+                query,
+                torch.zeros_like(query),
+                torch.zeros_like(query),
+                g=torch.zeros((1, 1, 16), dtype=torch.float32),
+                beta=torch.zeros((1, 1, 16), dtype=torch.float32),
+                initial_state=cached,
+                output_final_state=True,
+                use_qk_l2norm_in_kernel=True,
+            )
+            past_key_values.update_recurrent_state(output[1], layer_index)
+            state_scalars.append(output[1][0, 0, 0, 0])
+        past_key_values.sequence_length += 1
+        if self.fail_after_fisher_forward:
+            raise RuntimeError("fake differentiable forward failure")
+        score = torch.stack(state_scalars).sum() * 1e-4
+        vocabulary_axis = torch.arange(32, dtype=torch.float32)
+        logits = (score * vocabulary_axis).reshape(1, 1, -1)
+        return types.SimpleNamespace(logits=logits, past_key_values=past_key_values)
 
 
 def _bind_fake_model(
@@ -628,6 +753,223 @@ def test_one_token_chunk_then_recurrent_and_anchor_only_state(tmp_path: Path) ->
         assert model.model.layers[layer_index].linear_attn.calls == ["chunk", "recurrent"]
     assert observer.is_idle
     adapter.end_sequence(model, record)
+    adapter.close_model(model)
+
+
+def test_h1_fisher_step_is_causal_functional_and_detached(tmp_path: Path) -> None:
+    adapter = adapter_module.create_adapter(_context(tmp_path))
+    model, observer = _bind_fake_model(adapter)
+    record = _sequence_record(length=4)
+    adapter.begin_sequence(model, record)
+    adapter.step_token(model, token_id=5, position=0, capture_state=False)
+
+    result = adapter.step_token_with_fisher(
+        model,
+        token_id=6,
+        position=1,
+        target_token_id=7,
+        capture_state=True,
+    )
+
+    assert (result.boundary_position, result.input_position, result.target_position) == (0, 1, 2)
+    assert (result.input_token_id, result.target_token_id) == (6, 7)
+    assert result.step_observation.position == 1
+    assert result.step_observation.token_id == 6
+    assert result.step_observation.recurrence_query.shape == (18, 16, 128)
+    assert result.step_observation.recurrent_state.shape == (18, 16, 128, 128)
+    assert result.source_recurrent_state.shape == (18, 16, 128, 128)
+    assert result.source_state_gradient.shape == (18, 16, 128, 128)
+    assert result.source_recurrent_state.dtype == torch.float32
+    assert result.source_state_gradient.dtype == torch.float32
+    assert torch.count_nonzero(result.source_state_gradient).item() == 18
+    assert result.target_nll > 0.0
+    score = (result.source_recurrent_state[:, 0, 0, 0] + 1.0).sum() * 1e-4
+    vocabulary_axis = torch.arange(32, dtype=torch.float32)
+    probabilities = torch.softmax(score * vocabulary_axis, dim=0)
+    analytic_gradient = float(
+        ((probabilities * vocabulary_axis).sum() - result.target_token_id).item() * 1e-4
+    )
+    observed_gradient = float(result.source_state_gradient[0, 0, 0, 0].item())
+    assert observed_gradient == pytest.approx(analytic_gradient, rel=2e-6, abs=1e-9)
+
+    score_fp64 = float(score.item())
+    axis_fp64 = torch.arange(32, dtype=torch.float64)
+
+    def perturbed_nll(delta: float) -> float:
+        logits = (score_fp64 + delta * 1e-4) * axis_fp64
+        return float((torch.logsumexp(logits, dim=0) - logits[7]).item())
+
+    epsilon = 1e-2
+    finite_difference = (perturbed_nll(epsilon) - perturbed_nll(-epsilon)) / (2 * epsilon)
+    assert observed_gradient == pytest.approx(finite_difference, rel=2e-5, abs=1e-9)
+    assert adapter.runtime_metadata()["fisher_step_count"] == 1
+    assert "update_recurrent_state" not in adapter._sequence.cache.__dict__  # type: ignore[union-attr]
+    assert model._parameter.requires_grad is False
+    assert model._parameter.grad is None
+    for layer_index in adapter_module.RECURRENT_LAYER_INDICES:
+        cached = adapter._sequence.cache.layers[layer_index].recurrent_states[0]  # type: ignore[union-attr]
+        assert isinstance(cached, torch.Tensor)
+        assert cached.requires_grad is False
+        assert cached.grad_fn is None
+
+    continued = adapter.step_token(model, token_id=7, position=2, capture_state=True)
+    assert continued.position == 2
+    assert continued.recurrent_state is not None
+    assert torch.equal(
+        continued.recurrent_state[:, 0, 0, 0],
+        result.step_observation.recurrent_state[:, 0, 0, 0] + 1.0,
+    )
+    assert adapter._sequence is not None
+    assert adapter._sequence.next_position == 3
+    assert adapter._sequence.cache.get_seq_length() == 3
+    assert observer.is_idle
+    adapter.end_sequence(model, record)
+    adapter.close_model(model)
+
+
+def test_h1_fisher_failure_rolls_back_cache_and_invalidates_sequence(tmp_path: Path) -> None:
+    adapter = adapter_module.create_adapter(_context(tmp_path))
+    model, observer = _bind_fake_model(adapter)
+    record = _sequence_record(length=3)
+    adapter.begin_sequence(model, record)
+    adapter.step_token(model, token_id=5, position=0, capture_state=False)
+    assert adapter._sequence is not None
+    before = {
+        layer_index: adapter._sequence.cache.layers[layer_index].recurrent_states[0].clone()
+        for layer_index in adapter_module.RECURRENT_LAYER_INDICES
+    }
+    model.fail_after_fisher_forward = True
+
+    with pytest.raises(RuntimeError, match="fake differentiable forward failure"):
+        adapter.step_token_with_fisher(
+            model,
+            token_id=6,
+            position=1,
+            target_token_id=7,
+            capture_state=False,
+        )
+
+    assert adapter._sequence_failed is True
+    assert adapter._sequence.cache.get_seq_length() == 1
+    assert "update_recurrent_state" not in adapter._sequence.cache.__dict__
+    for layer_index, expected in before.items():
+        restored = adapter._sequence.cache.layers[layer_index].recurrent_states[0]
+        assert torch.equal(restored, expected)
+        assert restored.requires_grad is False
+        assert restored.grad_fn is None
+    assert observer.is_idle
+    assert model._parameter.grad is None
+    adapter.end_sequence(model, record)
+    adapter.close_model(model)
+
+
+def test_h1_fisher_rejects_in_place_source_state_mutation_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    adapter = adapter_module.create_adapter(_context(tmp_path))
+    model, observer = _bind_fake_model(adapter)
+    record = _sequence_record(length=3)
+    adapter.begin_sequence(model, record)
+    adapter.step_token(model, token_id=5, position=0, capture_state=False)
+    assert adapter._sequence is not None
+    before = {
+        layer_index: adapter._sequence.cache.layers[layer_index].recurrent_states[0].clone()
+        for layer_index in adapter_module.RECURRENT_LAYER_INDICES
+    }
+    for layer_index in adapter_module.RECURRENT_LAYER_INDICES:
+        model.model.layers[layer_index].linear_attn.mutate_source_state = True
+
+    with pytest.raises(
+        adapter_module.Experiment013AdapterError,
+        match="mutated source state",
+    ):
+        adapter.step_token_with_fisher(
+            model,
+            token_id=6,
+            position=1,
+            target_token_id=7,
+            capture_state=False,
+        )
+
+    assert adapter._sequence_failed is True
+    assert adapter._sequence.cache.get_seq_length() == 1
+    for layer_index, expected in before.items():
+        restored = adapter._sequence.cache.layers[layer_index].recurrent_states[0]
+        assert torch.equal(restored, expected)
+        assert restored.requires_grad is False
+        assert restored.grad_fn is None
+    assert observer.is_idle
+    adapter.end_sequence(model, record)
+    adapter.close_model(model)
+
+
+def test_h1_fisher_detach_failure_rolls_back_without_advancing_counters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = adapter_module.create_adapter(_context(tmp_path))
+    model, observer = _bind_fake_model(adapter)
+    record = _sequence_record(length=3)
+    adapter.begin_sequence(model, record)
+    adapter.step_token(model, token_id=5, position=0, capture_state=False)
+    assert adapter._sequence is not None
+    before = {
+        layer_index: adapter._sequence.cache.layers[layer_index].recurrent_states[0].clone()
+        for layer_index in adapter_module.RECURRENT_LAYER_INDICES
+    }
+
+    def fail_detach(_cache: object) -> None:
+        raise RuntimeError("synthetic detach failure")
+
+    monkeypatch.setattr(adapter_module, "_detach_cache_tensors", fail_detach)
+    with pytest.raises(RuntimeError, match="synthetic detach failure"):
+        adapter.step_token_with_fisher(
+            model,
+            token_id=6,
+            position=1,
+            target_token_id=7,
+            capture_state=False,
+        )
+
+    assert adapter._sequence_failed is True
+    assert adapter._sequence.next_position == 1
+    assert adapter._sequence.cache.get_seq_length() == 1
+    assert adapter.runtime_metadata()["fisher_step_count"] == 0
+    for layer_index, expected in before.items():
+        restored = adapter._sequence.cache.layers[layer_index].recurrent_states[0]
+        assert torch.equal(restored, expected)
+    assert observer.is_idle
+    adapter.end_sequence(model, record)
+    adapter.close_model(model)
+
+
+def test_h1_fisher_requires_warm_boundary_and_future_target(tmp_path: Path) -> None:
+    adapter = adapter_module.create_adapter(_context(tmp_path))
+    model, _observer = _bind_fake_model(adapter)
+    warm_record = _sequence_record(length=3)
+    adapter.begin_sequence(model, warm_record)
+    with pytest.raises(adapter_module.Experiment013AdapterError, match="warm S_b"):
+        adapter.step_token_with_fisher(
+            model,
+            token_id=5,
+            position=0,
+            target_token_id=6,
+            capture_state=False,
+        )
+    adapter.end_sequence(model, warm_record)
+
+    short_record = _sequence_record(length=2)
+    adapter.begin_sequence(model, short_record)
+    adapter.step_token(model, token_id=5, position=0, capture_state=False)
+    with pytest.raises(adapter_module.Experiment013AdapterError, match=r"x_\(b\+2\) target"):
+        adapter.step_token_with_fisher(
+            model,
+            token_id=6,
+            position=1,
+            target_token_id=7,
+            capture_state=False,
+        )
+    adapter.end_sequence(model, short_record)
     adapter.close_model(model)
 
 

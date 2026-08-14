@@ -22,6 +22,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import math
 import os
 import platform
 import re
@@ -47,21 +48,37 @@ CALIBRATION_API_MODULE: Final = "recurquant.experiment013_calibration_api"
 CALIBRATION_API_PATH: Final = "src/recurquant/experiment013_calibration_api.py"
 SOURCE_VERIFIER_PATH: Final = "src/recurquant/experiment013_source.py"
 SOURCE_CAPTURE_MODULE: Final = "recurquant_experiment013_source_capture"
+MODEL_STAGING_SOURCE_MODULE: Final = "recurquant_experiment013_source_for_model_staging"
+MODEL_STAGING_RESOLVER_MODULE: Final = "recurquant_experiment013_resolver_for_model_staging"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 IDENTITY_RESOLVER_SOURCE_PATH: Final = "scripts/resolve_static_q468_identity.py"
 CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_adapter"
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v1"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v2"
+FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
+FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
+FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
+FISHER_BOUNDARY_HORIZON: Final = 1
+FISHER_BOUNDARY_FIELDS: Final = {
+    "boundary_positions",
+    "fisher_boundary_sha256",
+    "horizon",
+    "input_positions",
+    "input_token_ids_sha256",
+    "schema",
+    "target_positions",
+    "target_token_ids_sha256",
+}
 MODEL_FILE_MANIFEST_KIND: Final = "recurquant_experiment013_model_file_manifest"
 MODEL_FILE_MANIFEST_SCHEMA: Final = 1
 MODEL_FILE_MANIFEST_DERIVATION: Final = "huggingface-hub-pinned-tree-lfs-v1"
 MODEL_FILE_SELECTION_PROFILE: Final = "qwen35-config-index-safetensors-v1"
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 3
+RUNTIME_MANIFEST_SCHEMA: Final = 4
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
-RUN_REPORT_SCHEMA: Final = 1
+RUN_REPORT_SCHEMA: Final = 2
 
 QUERY_EMA_DECAY: Final = 2.0 ** (-1.0 / 32.0)
 QUERY_ENERGY_EPSILON: Final = 1.0e-6
@@ -76,13 +93,19 @@ _WEIGHT_FILE_RE: Final = re.compile(
 )
 
 SCORE_FILENAME: Final = "calibration-scores.json"
+COMPARATOR_SCORE_FILENAME: Final = "comparator-scores.json"
 SPLIT_FILENAME: Final = "split-half-stability.json"
 K27030_FILENAME: Final = "static-k27030-policy.json"
 K29334_FILENAME: Final = "static-k29334-policy.json"
+MSE_K29334_FILENAME: Final = "static-mse-k29334-policy.json"
+FISHER_K29334_FILENAME: Final = "static-diagonal-fisher-h1-k29334-policy.json"
 Q48_FILENAME: Final = "static-q48-p14739-policy.json"
 BINDING_FILENAME: Final = "stage-a-calibration-binding.json"
 REPORT_FILENAME: Final = "calibration-run-report.json"
 COMPLETE_FILENAME: Final = "CALIBRATION_COMPLETE"
+FISHER_SMOKE_REPORT_FILENAME: Final = "fisher-h1-smoke-report.json"
+FISHER_SMOKE_COMPLETE_FILENAME: Final = "FISHER_H1_SMOKE_COMPLETE"
+FISHER_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
 PREPARED_RUNTIME_MANIFEST_FILENAME: Final = "calibration-runtime-manifest.json"
 PREPARED_RUNTIME_COMPLETE_FILENAME: Final = "RUNTIME_PREPARED"
 DEFAULT_PACKAGE_RUNTIME_ROOT_NAME: Final = "calibration-packages"
@@ -92,9 +115,7 @@ STAGING_EXCLUDED_DISTRIBUTIONS: Final = frozenset({"pip", "setuptools"})
 _WINDOWS_REPARSE_POINT: Final = 0x400
 _RUNTIME_ROOT_NAME_RE: Final = re.compile(r"[a-z][a-z0-9-]{0,63}")
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
-_FORBIDDEN_RUNTIME_SUFFIXES: Final = frozenset(
-    {"._pth", ".egg-link", ".pth", ".pyc", ".pyo"}
-)
+_FORBIDDEN_RUNTIME_SUFFIXES: Final = frozenset({"._pth", ".egg-link", ".pth", ".pyc", ".pyo"})
 _FORBIDDEN_RUNTIME_DIRECTORY_NAMES: Final = frozenset({"__pycache__"})
 _FORBIDDEN_RUNTIME_FILENAMES: Final = frozenset(
     {"pyvenv.cfg", "sitecustomize.py", "usercustomize.py"}
@@ -240,7 +261,7 @@ class BootstrapSource:
 
 
 def _bootstrap_identity_bindings(data: bytes) -> BootstrapIdentityBindings:
-    """Strictly extract only the v4 execution bindings using stdlib code.
+    """Strictly extract only the v5 execution bindings using stdlib code.
 
     Full semantic decoding remains the authenticated resolver's job.  This
     minimal pass exists solely to authenticate the code that performs it.
@@ -259,7 +280,7 @@ def _bootstrap_identity_bindings(data: bytes) -> BootstrapIdentityBindings:
         raise CalibrationRunError("frozen calibration identity bootstrap evidence is missing")
     if (
         type(evidence.get("schema_version")) is not int
-        or evidence.get("schema_version") != 4
+        or evidence.get("schema_version") != FROZEN_IDENTITY_SCHEMA_VERSION
         or evidence.get("status") != "frozen"
         or evidence.get("phase") != "calibration"
         or evidence.get("identity_only") is not True
@@ -320,14 +341,24 @@ def _canonical_relative_path(value: object, *, context: str) -> str:
     if "\\" in value or "\0" in value or "\n" in value or "\r" in value:
         raise CalibrationRunError(f"{context} must be a single-line POSIX path")
     path = PurePosixPath(value)
+    parts = path.parts
     if (
-        path.is_absolute()
-        or path.parts[0].endswith(":")
-        or any(part in {"", ".", ".."} for part in path.parts)
+        not parts
+        or path.is_absolute()
+        or parts[0].endswith(":")
+        or any(part in {"", ".", ".."} for part in parts)
         or path.as_posix() != value
     ):
         raise CalibrationRunError(f"{context} must be repository-relative")
     return value
+
+
+def _canonical_base_sys_path_entry(value: object, *, context: str) -> str:
+    """Accept only the runtime-root sentinel beyond canonical relative paths."""
+
+    if isinstance(value, str) and value == ".":
+        return "."
+    return _canonical_relative_path(value, context=context)
 
 
 def _is_link_or_reparse(path: Path) -> bool:
@@ -372,6 +403,7 @@ def _bootstrap_source_manifest(
         manifest,
         {
             "canonical_manifest_sha256",
+            "git_executable",
             "object_format",
             "paths",
             "profile",
@@ -387,6 +419,22 @@ def _bootstrap_source_manifest(
     )
     if claimed != _source_manifest_canonical_sha256(manifest):
         raise CalibrationRunError("repository source manifest canonical SHA-256 drifted")
+    if (
+        manifest["schema"] != "recurquant.experiment013.source-manifest.v2"
+        or manifest["profile"] != "experiment-013-static-q468-frozen-source-v2"
+        or manifest["object_format"] != "sha1"
+    ):
+        raise CalibrationRunError("repository source manifest profile drifted")
+    git_record = manifest["git_executable"]
+    if not isinstance(git_record, dict):
+        raise CalibrationRunError("repository source Git executable record is missing")
+    _exact_fields(
+        git_record,
+        {"sha256", "size_bytes"},
+        context="repository source Git executable",
+    )
+    _sha256(git_record["sha256"], context="repository source Git executable SHA-256")
+    _positive_int(git_record["size_bytes"], context="repository source Git executable size")
     source_commit = _git_revision(
         manifest["source_commit"],
         context="repository source manifest source commit",
@@ -526,19 +574,36 @@ def _load_source_capture_module(repository_root: Path) -> ModuleType:
 
 
 def _sanitized_git_environment() -> dict[str, str]:
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    inherited = {key.upper(): (key, value) for key, value in os.environ.items()}
+    environment = {
+        inherited[name][0]: inherited[name][1]
+        for name in ("SYSTEMROOT", "WINDIR", "COMSPEC")
+        if name in inherited
+    }
     environment.update(
         {
+            "GIT_AUTHOR_NAME": "RecurQuant Experiment 013",
+            "GIT_AUTHOR_EMAIL": "experiment013@invalid",
+            "GIT_COMMITTER_NAME": "RecurQuant Experiment 013",
+            "GIT_COMMITTER_EMAIL": "experiment013@invalid",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_TERMINAL_PROMPT": "0",
+            "LC_ALL": "C",
+            "LANG": "C",
         }
     )
     return environment
 
 
-def _assert_source_manifest_output_location(repository_root: Path, output: Path) -> Path:
+def _assert_source_manifest_output_location(
+    repository_root: Path,
+    output: Path,
+    *,
+    git_executable: AuthenticatedGitExecutable,
+) -> Path:
     """Allow source manifests only outside the repository or at an ignored path."""
 
     try:
@@ -557,7 +622,14 @@ def _assert_source_manifest_output_location(repository_root: Path, output: Path)
     if not relative.parts or relative.parts[0].casefold() == ".git":
         raise CalibrationRunError("source manifest output cannot be repository metadata")
     process = subprocess.run(
-        ["git", "check-ignore", "--quiet", "--no-index", "--", relative.as_posix()],
+        [
+            str(git_executable.path),
+            "check-ignore",
+            "--quiet",
+            "--no-index",
+            "--",
+            relative.as_posix(),
+        ],
         cwd=root,
         check=False,
         capture_output=True,
@@ -635,13 +707,27 @@ class FrozenCalibrationIdentity:
 
 @dataclass(frozen=True, slots=True)
 class CapturedSequence:
-    """Only the current sequence's frozen anchor tensors, all on CPU FP64."""
+    """One causal pass worth of post-token and H=1 endpoint tensors."""
 
     anchor_positions: tuple[int, ...]
     query_energy: Any
     q4_mse: Any
     q6_mse: Any
     q8_mse: Any
+    fisher_boundary_positions: tuple[int, ...]
+    fisher_q4_risk: Any
+    fisher_q6_risk: Any
+    fisher_q8_risk: Any
+    fisher_target_nlls: Any
+
+
+@dataclass(frozen=True, slots=True)
+class ReducedSequenceScores:
+    """Candidate, unweighted-MSE, and H=1 Fisher scores for one identity row."""
+
+    candidate: Any
+    mse: Any
+    fisher: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,6 +748,15 @@ class ModelFileManifest:
     files: tuple[ModelFileRecord, ...]
     hub_tree_manifest_sha256: str
     file_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ModelStagingAuthorization:
+    identity: FrozenCalibrationIdentity
+    model_manifest: ModelFileManifest
+    frozen_identity_file_sha256: str
+    identity_commit: str
+    source_commit: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,6 +808,14 @@ class RuntimeRequirement:
 
 
 @dataclass(frozen=True, slots=True)
+class AuthenticatedGitExecutable:
+    path: Path
+    absolute_path_sha256: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class CalibrationRuntimeManifest:
     python_implementation: str
     python_version: str
@@ -731,6 +834,9 @@ class CalibrationRuntimeManifest:
     interpreter_relative_path: str
     interpreter_size_bytes: int
     interpreter_sha256: str
+    git_executable_absolute_path_sha256: str
+    git_executable_sha256: str
+    git_executable_size_bytes: int
     runtime_trees: tuple[RuntimeTreeRecord, ...]
     distributions: tuple[RuntimeDistributionRecord, ...]
     file_sha256: str
@@ -743,6 +849,9 @@ class AuthenticatedRuntime:
     python_version: str
     python_cache_tag: str
     interpreter_sha256: str
+    git_executable_absolute_path_sha256: str
+    git_executable_sha256: str
+    git_executable_size_bytes: int
     machine_name: str
     base_runtime_file_count: int
     package_root_count: int
@@ -757,6 +866,7 @@ class SealedRuntimeContext:
     base_runtime_root: Path
     package_roots: Mapping[str, Path]
     package_import_paths: Mapping[str, str]
+    git_executable_path: Path
     pycache_prefix: Path
 
 
@@ -765,14 +875,15 @@ class CalibrationArtifacts:
     """In-memory pass artifacts; no publication occurs until all are built."""
 
     score: bytes
+    comparator_score: bytes
     split_half: bytes
     static_k27030: bytes
     static_k29334: bytes
+    static_mse_k29334: bytes
+    static_fisher_k29334: bytes
     static_q48: bytes
     stage_a_binding: bytes
     stability: Mapping[str, object]
-    calibration_scores_sha256: str
-    sequence_score_manifest_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -797,6 +908,9 @@ class CalibrationRunConfig:
     expected_runtime_manifest_sha256: str
     output_dir: Path
     require_cuda: bool = True
+    fisher_h1_smoke: bool = False
+    prior_fisher_h1_smoke_report_bytes: bytes | None = None
+    prior_fisher_h1_smoke_complete_bytes: bytes | None = None
 
 
 class CalibrationBackend(Protocol):
@@ -823,6 +937,7 @@ class CalibrationBackend(Protocol):
 SourceVerifier = Callable[[Mapping[str, object], Path], tuple[dict[str, object], str]]
 AdapterValidator = Callable[[Any], None]
 DistortionFunction = Callable[[Any, Geometry], tuple[Any, Any, Any]]
+FisherDistortionFunction = Callable[[Any, Any, Geometry], tuple[Any, Any, Any]]
 ModelAuthenticator = Callable[[Path, ModelFileManifest], Any]
 RuntimeAuthenticator = Callable[[CalibrationRuntimeManifest], AuthenticatedRuntime]
 
@@ -831,11 +946,21 @@ RuntimeAuthenticator = Callable[[CalibrationRuntimeManifest], AuthenticatedRunti
 class RunnerServices:
     backend: CalibrationBackend
     calibration_api: ModuleType
+    identity_resolver: Any | None
     verify_repository_source: SourceVerifier
     validate_adapter: AdapterValidator
     distortion_function: DistortionFunction
+    fisher_distortion_function: FisherDistortionFunction
     authenticate_model_files: ModelAuthenticator
     authenticate_runtime: RuntimeAuthenticator
+
+
+def _selected_model_tree_path(path: str) -> bool:
+    if "/" in path:
+        return False
+    return path in {"config.json", "model.safetensors.index.json"} or bool(
+        _WEIGHT_FILE_RE.fullmatch(path)
+    )
 
 
 def parse_model_file_manifest(data: bytes) -> ModelFileManifest:
@@ -925,8 +1050,11 @@ def parse_model_file_manifest(data: bytes) -> ModelFileManifest:
                 raise ValueError("model LFS identity must equal the local content contract")
         else:
             raise ValueError("model LFS SHA-256 and size must either both be null or both be set")
-        if _WEIGHT_FILE_RE.search(name) and lfs_sha256 is None:
+        is_weight = _WEIGHT_FILE_RE.fullmatch(name) is not None
+        if is_weight and lfs_sha256 is None:
             raise ValueError("safetensors weights require a pinned Hub LFS identity")
+        if not is_weight and lfs_sha256 is not None:
+            raise ValueError("model config and index files must be ordinary Git blobs")
         files.append(
             ModelFileRecord(
                 name=name,
@@ -940,9 +1068,15 @@ def parse_model_file_manifest(data: bytes) -> ModelFileManifest:
     names = [item.name for item in files]
     if names != sorted(names) or len(names) != len(set(names)):
         raise ValueError("model file manifest names must be unique and sorted")
+    if len({name.casefold() for name in names}) != len(names):
+        raise ValueError("model file manifest names contain a case-insensitive collision")
+    if any(not _selected_model_tree_path(name) for name in names):
+        raise ValueError("model file manifest contains a file outside its selection profile")
     if "config.json" not in names:
         raise ValueError("model file manifest must authenticate config.json")
-    if not any(_WEIGHT_FILE_RE.search(name) for name in names):
+    if "model.safetensors.index.json" not in names:
+        raise ValueError("model file manifest must authenticate model.safetensors.index.json")
+    if not any(_WEIGHT_FILE_RE.fullmatch(name) for name in names):
         raise ValueError(
             "model file manifest must authenticate at least one safetensors weight file"
         )
@@ -977,14 +1111,6 @@ def _hub_value(value: object, name: str, *, default: object = None) -> object:
     return getattr(value, name, default)
 
 
-def _selected_model_tree_path(path: str) -> bool:
-    if "/" in path:
-        return False
-    return path in {"config.json", "model.safetensors.index.json"} or bool(
-        _WEIGHT_FILE_RE.fullmatch(path)
-    )
-
-
 def capture_model_file_manifest_from_hub(
     model_id: str,
     revision: str,
@@ -993,7 +1119,7 @@ def capture_model_file_manifest_from_hub(
     api: object | None = None,
     tree_entries: Sequence[object] | None = None,
     resolved_revision: str | None = None,
-    token: str | bool | None = None,
+    token: bool = False,
 ) -> bytes:
     """Build the local-file contract using only pinned Hub tree/LFS metadata.
 
@@ -1004,6 +1130,8 @@ def capture_model_file_manifest_from_hub(
 
     if not isinstance(model_id, str) or not model_id or model_id != model_id.strip():
         raise ValueError("model_id must be a non-empty canonical string")
+    if token is not False:
+        raise CalibrationRunError("Experiment 013 Hub metadata access must be unauthenticated")
     pinned_revision = _git_revision(revision, context="model Hub revision")
     if (
         not isinstance(transformers_version, str)
@@ -1014,12 +1142,12 @@ def capture_model_file_manifest_from_hub(
         if api is None:
             from huggingface_hub import HfApi
 
-            api = HfApi()
+            api = HfApi(token=False, endpoint="https://huggingface.co")
         info = api.model_info(  # type: ignore[attr-defined]
             model_id,
             revision=pinned_revision,
             files_metadata=False,
-            token=token,
+            token=False,
         )
         resolved = _git_revision(
             getattr(info, "sha", None),
@@ -1034,7 +1162,7 @@ def capture_model_file_manifest_from_hub(
                 expand=False,
                 revision=pinned_revision,
                 repo_type="model",
-                token=token,
+                token=False,
             )
         )
     else:
@@ -1147,6 +1275,55 @@ def _stream_file_sha256(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def _absolute_path_sha256(path: Path) -> str:
+    normalized = os.path.normcase(str(path.resolve(strict=True)))
+    return sha256_bytes(normalized.encode("utf-8"))
+
+
+def _assert_absolute_path_components_not_links(path: Path, *, context: str) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if _is_link_or_reparse(current):
+            raise CalibrationRunError(f"{context} traverses a link or reparse point")
+
+
+def _authenticate_git_executable(
+    executable: str | os.PathLike[str] | None,
+) -> AuthenticatedGitExecutable:
+    selected: str | os.PathLike[str]
+    if executable is None:
+        discovered = shutil.which("git")
+        if discovered is None:
+            raise CalibrationRunError("Git executable is unavailable")
+        selected = discovered
+    else:
+        selected = executable
+    try:
+        resolved = Path(selected).resolve(strict=True)
+    except (OSError, TypeError, ValueError) as exc:
+        raise CalibrationRunError("Git executable is unavailable") from exc
+    if resolved.name.casefold() == "git.exe" and resolved.parent.name.casefold() == "cmd":
+        try:
+            resolved = (resolved.parent.parent / "mingw64" / "bin" / "git.exe").resolve(strict=True)
+        except OSError as exc:
+            raise CalibrationRunError(
+                "Git-for-Windows cmd shim has no canonical mingw64 executable"
+            ) from exc
+    _assert_absolute_path_components_not_links(resolved, context="Git executable")
+    if not resolved.is_file() or _is_link_or_reparse(resolved):
+        raise CalibrationRunError("Git executable must be a regular non-link file")
+    digest, size = _stream_file_sha256(resolved)
+    if size <= 0:
+        raise CalibrationRunError("Git executable must be non-empty")
+    return AuthenticatedGitExecutable(
+        path=resolved,
+        absolute_path_sha256=_absolute_path_sha256(resolved),
+        sha256=digest,
+        size_bytes=size,
+    )
+
+
 def _stream_model_file_identity(path: Path) -> tuple[str, str, int]:
     before = path.stat()
     size = before.st_size
@@ -1171,13 +1348,11 @@ def _stream_model_file_identity(path: Path) -> tuple[str, str, int]:
     return sha256.hexdigest(), git_blob.hexdigest(), size
 
 
-def authenticate_local_model_files(
+def _verify_exact_local_model_tree(
     model_root: Path,
     manifest: ModelFileManifest,
-    *,
-    calibration_api: ModuleType,
-) -> Any:
-    """Hash every exact local model file immediately before model loading."""
+) -> Path:
+    """Authenticate one exact, regular, link-free local model tree."""
 
     root = Path(os.path.abspath(model_root))
     if not root.is_dir():
@@ -1196,6 +1371,8 @@ def authenticate_local_model_files(
                 f"local model path is not a regular file/directory: {relative}"
             )
     actual_names.sort()
+    if len({name.casefold() for name in actual_names}) != len(actual_names):
+        raise CalibrationRunError("local model file set has a case-insensitive collision")
     expected_names = [item.name for item in manifest.files]
     if actual_names != expected_names:
         raise CalibrationRunError(
@@ -1213,6 +1390,18 @@ def authenticate_local_model_files(
         )
         if size != item.size_bytes or not content_matches:
             raise CalibrationRunError(f"local model file authentication failed: {item.name}")
+    return root
+
+
+def authenticate_local_model_files(
+    model_root: Path,
+    manifest: ModelFileManifest,
+    *,
+    calibration_api: ModuleType,
+) -> Any:
+    """Hash every exact local model file immediately before model loading."""
+
+    root = _verify_exact_local_model_tree(model_root, manifest)
     identities = tuple(
         calibration_api.ModelFileIdentity(
             name=item.name,
@@ -1233,6 +1422,557 @@ def authenticate_local_model_files(
         hub_tree_manifest_sha256=manifest.hub_tree_manifest_sha256,
         manifest_file_sha256=manifest.file_sha256,
     )
+
+
+def _read_stable_regular_bytes(path: Path, *, context: str) -> bytes:
+    candidate = Path(os.path.abspath(path))
+    try:
+        before = candidate.lstat()
+    except OSError as exc:
+        raise CalibrationRunError(f"{context} is unavailable") from exc
+    if _is_link_or_reparse(candidate) or not stat.S_ISREG(before.st_mode):
+        raise CalibrationRunError(f"{context} must be a regular non-link file")
+    try:
+        data = candidate.read_bytes()
+        after = candidate.lstat()
+    except OSError as exc:
+        raise CalibrationRunError(f"cannot read {context}") from exc
+    if (
+        _is_link_or_reparse(candidate)
+        or not stat.S_ISREG(after.st_mode)
+        or len(data) != after.st_size
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+    ):
+        raise CalibrationRunError(f"{context} changed while it was read")
+    return data
+
+
+def _git_blob_oid_bytes(data: bytes) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)
+    digest.update(f"blob {len(data)}\0".encode("ascii"))
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def _run_model_staging_git(
+    git_executable: AuthenticatedGitExecutable,
+    repository_root: Path,
+    *arguments: str,
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [str(git_executable.path), "-C", str(repository_root), *arguments],
+        check=False,
+        capture_output=True,
+        timeout=30,
+        env=_sanitized_git_environment(),
+    )
+
+
+def _one_nul_git_record(process: subprocess.CompletedProcess[bytes], *, context: str) -> bytes:
+    if process.returncode != 0:
+        raise CalibrationRunError(f"cannot authenticate {context}")
+    records = process.stdout.split(b"\0")
+    if records[-1:] != [b""] or len(records) != 2 or not records[0]:
+        raise CalibrationRunError(f"{context} is not exactly one Git record")
+    return records[0]
+
+
+def _verify_committed_frozen_identity(
+    git_executable: AuthenticatedGitExecutable,
+    repository_root: Path,
+    identity_path: Path,
+    identity_bytes: bytes,
+    *,
+    identity_commit: str,
+) -> str:
+    """Require the promoted identity to be the exact clean blob at current HEAD."""
+
+    root = Path(os.path.abspath(repository_root)).resolve(strict=True)
+    declared = Path(os.path.abspath(identity_path))
+    try:
+        relative_path = declared.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise CalibrationRunError(
+            "frozen identity must be committed inside the repository"
+        ) from exc
+    if not relative_path or "\t" in relative_path:
+        raise CalibrationRunError("frozen identity repository path is not canonical")
+    authenticated_path = _assert_no_link_components(root, PurePosixPath(relative_path))
+    if authenticated_path.read_bytes() != identity_bytes:
+        raise CalibrationRunError("committed frozen identity changed after authorization")
+
+    expected_commit = _git_revision(identity_commit, context="identity commit")
+    head = _run_model_staging_git(
+        git_executable,
+        root,
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}",
+    )
+    if head.returncode != 0:
+        raise CalibrationRunError("cannot resolve current HEAD for frozen identity provenance")
+    actual_head = _git_revision(
+        head.stdout.decode("ascii", errors="strict").strip(),
+        context="current identity commit",
+    )
+    if actual_head != expected_commit:
+        raise CalibrationRunError("current HEAD differs from the explicit identity commit")
+
+    tree_record = _one_nul_git_record(
+        _run_model_staging_git(
+            git_executable,
+            root,
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            expected_commit,
+            "--",
+            relative_path,
+        ),
+        context="frozen identity HEAD entry",
+    )
+    try:
+        tree_header, tree_path = tree_record.split(b"\t", 1)
+        mode, object_type, head_oid = tree_header.decode("ascii").split(" ", 2)
+        decoded_tree_path = tree_path.decode("utf-8", errors="strict")
+    except (UnicodeError, ValueError) as exc:
+        raise CalibrationRunError("frozen identity HEAD entry is malformed") from exc
+    if mode != "100644" or object_type != "blob" or decoded_tree_path != relative_path:
+        raise CalibrationRunError("frozen identity HEAD entry has the wrong mode, type, or path")
+
+    index_record = _one_nul_git_record(
+        _run_model_staging_git(
+            git_executable,
+            root,
+            "ls-files",
+            "--stage",
+            "-z",
+            "--",
+            relative_path,
+        ),
+        context="frozen identity index entry",
+    )
+    try:
+        index_header, index_path = index_record.split(b"\t", 1)
+        index_mode, index_oid, stage = index_header.decode("ascii").split(" ", 2)
+        decoded_index_path = index_path.decode("utf-8", errors="strict")
+    except (UnicodeError, ValueError) as exc:
+        raise CalibrationRunError("frozen identity index entry is malformed") from exc
+    expected_oid = _git_blob_oid_bytes(identity_bytes)
+    if (
+        index_mode != "100644"
+        or stage != "0"
+        or decoded_index_path != relative_path
+        or head_oid != expected_oid
+        or index_oid != expected_oid
+    ):
+        raise CalibrationRunError("frozen identity HEAD, index, and worktree bytes differ")
+    return actual_head
+
+
+def _authenticate_model_staging_authorization(
+    *,
+    git_executable: AuthenticatedGitExecutable,
+    frozen_identity_path: Path,
+    expected_frozen_identity_sha256: str,
+    identity_commit: str,
+    repository_root: Path,
+    repository_source_manifest_path: Path,
+    source_commit: str,
+    model_file_manifest_path: Path,
+    expected_model_file_manifest_sha256: str,
+) -> ModelStagingAuthorization:
+    """Authenticate promotion, committed provenance, source, and model metadata."""
+
+    expected_identity_sha256 = _sha256(
+        expected_frozen_identity_sha256,
+        context="expected frozen identity SHA-256",
+    )
+    identity_bytes = _read_stable_regular_bytes(
+        frozen_identity_path,
+        context="frozen identity",
+    )
+    if sha256_bytes(identity_bytes) != expected_identity_sha256:
+        raise CalibrationRunError("frozen identity bytes differ from the explicit SHA-256")
+    bindings = _bootstrap_identity_bindings(identity_bytes)
+
+    source_manifest_bytes = _read_stable_regular_bytes(
+        repository_source_manifest_path,
+        context="repository source manifest",
+    )
+    if sha256_bytes(source_manifest_bytes) != bindings.repository_source_manifest_file_sha256:
+        raise CalibrationRunError("repository source manifest differs from the frozen identity")
+    bootstrap_source = _bootstrap_source_manifest(
+        source_manifest_bytes,
+        repository_root=repository_root,
+        require_adapter=False,
+    )
+    requested_source_commit = _git_revision(source_commit, context="requested source commit")
+    if requested_source_commit != bootstrap_source.source_commit:
+        raise CalibrationRunError("requested source commit differs from the identity-bound H0")
+
+    source_module = _load_exact_source_module(
+        MODEL_STAGING_SOURCE_MODULE,
+        SOURCE_VERIFIER_PATH,
+        repository_root=repository_root,
+        entry=bootstrap_source.entries[SOURCE_VERIFIER_PATH],
+    )
+    resolver_module: ModuleType | None = None
+    try:
+        verified_source = source_module.verify_experiment013_source_manifest(
+            bootstrap_source.manifest,
+            repo_root=repository_root,
+            git_executable=git_executable.path,
+        )
+        if verified_source != bootstrap_source.manifest:
+            raise CalibrationRunError("source verifier returned different model-staging evidence")
+        if verified_source.get("source_commit") != requested_source_commit:
+            raise CalibrationRunError(
+                "verified source-manifest commit differs from requested frozen source commit"
+            )
+        resolver_module = _load_exact_source_module(
+            MODEL_STAGING_RESOLVER_MODULE,
+            IDENTITY_RESOLVER_SOURCE_PATH,
+            repository_root=repository_root,
+            entry=bootstrap_source.entries[IDENTITY_RESOLVER_SOURCE_PATH],
+        )
+        identity = _identity_view_from_resolver(
+            identity_bytes,
+            resolver_module,
+            expected_file_sha256=expected_identity_sha256,
+        )
+    finally:
+        if resolver_module is not None:
+            sys.modules.pop(MODEL_STAGING_RESOLVER_MODULE, None)
+        sys.modules.pop(MODEL_STAGING_SOURCE_MODULE, None)
+    if (
+        identity.repository_source_manifest_file_sha256
+        != bindings.repository_source_manifest_file_sha256
+        or identity.runtime_manifest_file_sha256 != bindings.runtime_manifest_file_sha256
+        or identity.model_file_manifest_file_sha256 != bindings.model_file_manifest_file_sha256
+        or identity.parquet_materialization_manifest_file_sha256
+        != bindings.parquet_materialization_manifest_file_sha256
+    ):
+        raise CalibrationRunError("full frozen identity differs from its bootstrap bindings")
+
+    committed_at = _verify_committed_frozen_identity(
+        git_executable,
+        repository_root,
+        frozen_identity_path,
+        identity_bytes,
+        identity_commit=identity_commit,
+    )
+    model_manifest_bytes = _read_stable_regular_bytes(
+        model_file_manifest_path,
+        context="model file manifest",
+    )
+    expected_model_sha256 = _sha256(
+        expected_model_file_manifest_sha256,
+        context="expected model file manifest SHA-256",
+    )
+    actual_model_sha256 = sha256_bytes(model_manifest_bytes)
+    if (
+        actual_model_sha256 != expected_model_sha256
+        or actual_model_sha256 != bindings.model_file_manifest_file_sha256
+    ):
+        raise CalibrationRunError(
+            "model file manifest differs from the frozen identity/CLI binding"
+        )
+    model_manifest = parse_model_file_manifest(model_manifest_bytes)
+    _model_contract_matches(identity, model_manifest)
+    return ModelStagingAuthorization(
+        identity=identity,
+        model_manifest=model_manifest,
+        frozen_identity_file_sha256=expected_identity_sha256,
+        identity_commit=committed_at,
+        source_commit=requested_source_commit,
+    )
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _ensure_regular_directory(path: Path, *, context: str) -> Path:
+    absolute = Path(os.path.abspath(path))
+    if os.path.lexists(absolute):
+        if _is_link_or_reparse(absolute) or not absolute.is_dir():
+            raise CalibrationRunError(f"{context} must be a regular non-link directory")
+    else:
+        absolute.mkdir(parents=True, exist_ok=False)
+    candidate = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        candidate /= part
+        if _is_link_or_reparse(candidate) or not candidate.is_dir():
+            raise CalibrationRunError(f"{context} traverses a link or non-directory")
+    return absolute.resolve(strict=True)
+
+
+def _validate_model_staging_roots(
+    *,
+    repository_root: Path,
+    hub_cache_root: Path,
+    output_root: Path,
+) -> tuple[Path, Path]:
+    repository = Path(os.path.abspath(repository_root)).resolve(strict=True)
+    destination = Path(os.path.abspath(output_root))
+    if not destination.name:
+        raise CalibrationRunError("model output root cannot be a filesystem root")
+    if os.path.lexists(destination):
+        raise FileExistsError(f"refusing to overwrite staged model root: {destination}")
+    parent = _ensure_regular_directory(destination.parent, context="model output parent")
+    cache = _ensure_regular_directory(hub_cache_root, context="Hub cache root")
+    resolved_destination = parent / destination.name
+    roots = (("model output root", resolved_destination), ("Hub cache root", cache))
+    for context, candidate in roots:
+        if _path_is_within(candidate, repository):
+            raise CalibrationRunError(f"{context} must be outside the repository")
+    if _path_is_within(resolved_destination, cache) or _path_is_within(cache, resolved_destination):
+        raise CalibrationRunError("Hub cache and staged model roots must not be nested")
+    return cache, resolved_destination
+
+
+def _assert_regular_cache_payload(cache_root: Path, returned_path: object) -> Path:
+    if not isinstance(returned_path, (str, os.PathLike)):
+        raise CalibrationRunError("Hub downloader did not return a filesystem path")
+    cache = cache_root.resolve(strict=True)
+    returned = Path(os.path.abspath(returned_path))
+    if not _path_is_within(returned, cache):
+        raise CalibrationRunError("Hub downloader returned a path outside the explicit cache")
+    candidate = cache
+    relative = returned.relative_to(cache)
+    if not relative.parts:
+        raise CalibrationRunError("Hub downloader returned the cache root instead of a file")
+    for part in relative.parts[:-1]:
+        candidate /= part
+        if _is_link_or_reparse(candidate) or not candidate.is_dir():
+            raise CalibrationRunError("Hub cache payload path traverses a link or non-directory")
+    if not os.path.lexists(returned):
+        raise CalibrationRunError("Hub downloader returned an unavailable cache path")
+    try:
+        payload = returned.resolve(strict=True)
+        payload.relative_to(cache)
+    except (OSError, ValueError) as exc:
+        raise CalibrationRunError("Hub cache pointer escapes the explicit cache") from exc
+    payload_relative = payload.relative_to(cache)
+    candidate = cache
+    for part in payload_relative.parts:
+        candidate /= part
+        if _is_link_or_reparse(candidate):
+            raise CalibrationRunError(
+                "resolved Hub cache payload traverses a link or reparse point"
+            )
+    try:
+        status = payload.stat()
+    except OSError as exc:
+        raise CalibrationRunError("resolved Hub cache payload is unavailable") from exc
+    if not stat.S_ISREG(status.st_mode):
+        raise CalibrationRunError("resolved Hub cache payload is not a regular file")
+    return payload
+
+
+def _copy_authenticated_model_payload(
+    source: Path,
+    destination: Path,
+    record: ModelFileRecord,
+) -> None:
+    try:
+        before = source.stat()
+    except OSError as exc:
+        raise CalibrationRunError(f"cannot stat cached model file: {record.name}") from exc
+    if not stat.S_ISREG(before.st_mode) or _is_link_or_reparse(source):
+        raise CalibrationRunError(f"cached model payload is not a regular file: {record.name}")
+    if before.st_size != record.size_bytes:
+        raise CalibrationRunError(f"cached model file size differs from manifest: {record.name}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    sha256 = hashlib.sha256()
+    git_blob = hashlib.sha1(usedforsecurity=False)
+    git_blob.update(f"blob {record.size_bytes}\0".encode("ascii"))
+    copied = 0
+    try:
+        with source.open("rb") as reader, destination.open("xb") as writer:
+            for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+                sha256.update(chunk)
+                git_blob.update(chunk)
+                writer.write(chunk)
+                copied += len(chunk)
+            writer.flush()
+            os.fsync(writer.fileno())
+        after = source.stat()
+    except OSError as exc:
+        raise CalibrationRunError(f"cannot stage cached model file: {record.name}") from exc
+    if (
+        copied != record.size_bytes
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+    ):
+        raise CalibrationRunError(f"cached model file changed while staging: {record.name}")
+    content_matches = (
+        sha256.hexdigest() == record.lfs_sha256
+        if record.lfs_sha256 is not None
+        else git_blob.hexdigest() == record.git_blob_oid
+    )
+    if not content_matches:
+        raise CalibrationRunError(f"cached model file authentication failed: {record.name}")
+
+
+def _atomic_rename_directory_no_overwrite(source: Path, destination: Path) -> None:
+    """Publish a sibling directory atomically without replacement races."""
+
+    if source.parent != destination.parent:
+        raise CalibrationRunError("atomic model publication requires sibling directories")
+    if os.path.lexists(destination):
+        raise FileExistsError(f"refusing to overwrite staged model root: {destination}")
+    if os.name == "nt":
+        try:
+            source.rename(destination)
+        except OSError as exc:
+            if os.path.lexists(destination):
+                raise FileExistsError(
+                    f"refusing to overwrite staged model root: {destination}"
+                ) from exc
+            raise
+        return
+    if sys.platform.startswith("linux"):
+        import ctypes
+        import errno
+
+        library = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(library, "renameat2", None)
+        if renameat2 is None:
+            raise CalibrationRunError("atomic no-replace directory publication is unavailable")
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            -100,
+            os.fsencode(source),
+            -100,
+            os.fsencode(destination),
+            1,
+        )
+        if result == 0:
+            return
+        error_number = ctypes.get_errno()
+        if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise FileExistsError(f"refusing to overwrite staged model root: {destination}")
+        raise OSError(error_number, os.strerror(error_number), str(destination))
+    raise CalibrationRunError("atomic no-replace directory publication is unsupported")
+
+
+def stage_identity_bound_model(
+    *,
+    git_executable_path: Path | None = None,
+    frozen_identity_path: Path,
+    expected_frozen_identity_sha256: str,
+    identity_commit: str,
+    repository_root: Path,
+    repository_source_manifest_path: Path,
+    source_commit: str,
+    model_file_manifest_path: Path,
+    expected_model_file_manifest_sha256: str,
+    hub_cache_root: Path,
+    output_root: Path,
+    local_files_only: bool = False,
+    downloader: Callable[..., object] | None = None,
+) -> dict[str, object]:
+    """Stage only identity-bound model files after committed promotion."""
+
+    if type(local_files_only) is not bool:
+        raise TypeError("local_files_only must be bool")
+    git_executable = _authenticate_git_executable(git_executable_path)
+    authorization = _authenticate_model_staging_authorization(
+        git_executable=git_executable,
+        frozen_identity_path=frozen_identity_path,
+        expected_frozen_identity_sha256=expected_frozen_identity_sha256,
+        identity_commit=identity_commit,
+        repository_root=repository_root,
+        repository_source_manifest_path=repository_source_manifest_path,
+        source_commit=source_commit,
+        model_file_manifest_path=model_file_manifest_path,
+        expected_model_file_manifest_sha256=expected_model_file_manifest_sha256,
+    )
+    cache, destination = _validate_model_staging_roots(
+        repository_root=repository_root,
+        hub_cache_root=hub_cache_root,
+        output_root=output_root,
+    )
+    if downloader is None:
+        from huggingface_hub import hf_hub_download
+
+        downloader = hf_hub_download
+
+    prefix = f".{destination.name}.staging-"
+    staging = Path(tempfile.mkdtemp(prefix=prefix, dir=destination.parent))
+    owned_staging = True
+    try:
+        for record in authorization.model_manifest.files:
+            returned = downloader(
+                repo_id=authorization.model_manifest.model_id,
+                filename=record.name,
+                repo_type="model",
+                revision=authorization.model_manifest.revision,
+                cache_dir=cache,
+                local_files_only=local_files_only,
+                token=False,
+                endpoint="https://huggingface.co",
+            )
+            source = _assert_regular_cache_payload(cache, returned)
+            _copy_authenticated_model_payload(source, staging / record.name, record)
+        _verify_exact_local_model_tree(staging, authorization.model_manifest)
+
+        repeated = _authenticate_model_staging_authorization(
+            git_executable=git_executable,
+            frozen_identity_path=frozen_identity_path,
+            expected_frozen_identity_sha256=expected_frozen_identity_sha256,
+            identity_commit=identity_commit,
+            repository_root=repository_root,
+            repository_source_manifest_path=repository_source_manifest_path,
+            source_commit=source_commit,
+            model_file_manifest_path=model_file_manifest_path,
+            expected_model_file_manifest_sha256=expected_model_file_manifest_sha256,
+        )
+        if repeated != authorization:
+            raise CalibrationRunError("model-staging authorization changed before publication")
+        _verify_exact_local_model_tree(staging, repeated.model_manifest)
+        _atomic_rename_directory_no_overwrite(staging, destination)
+        owned_staging = False
+    finally:
+        if owned_staging:
+            try:
+                staging.relative_to(destination.parent)
+            except ValueError as exc:
+                raise RuntimeError("owned model staging directory escaped its parent") from exc
+            if not staging.name.startswith(prefix):
+                raise RuntimeError("owned model staging directory name drifted")
+            shutil.rmtree(staging, ignore_errors=False)
+    _verify_exact_local_model_tree(destination, authorization.model_manifest)
+    return {
+        "file_count": len(authorization.model_manifest.files),
+        "frozen_identity_file_sha256": authorization.frozen_identity_file_sha256,
+        "identity_commit": authorization.identity_commit,
+        "model_id": authorization.model_manifest.model_id,
+        "model_manifest_file_sha256": authorization.model_manifest.file_sha256,
+        "model_root": str(destination),
+        "revision": authorization.model_manifest.revision,
+        "source_commit": authorization.source_commit,
+        "status": "staged_authenticated_model",
+        "total_size_bytes": sum(item.size_bytes for item in authorization.model_manifest.files),
+    }
 
 
 def _normalized_distribution_name(value: object) -> str:
@@ -1311,9 +2051,7 @@ def _normalized_package_import_paths(
     if not isinstance(package_import_paths, Mapping) or set(package_import_paths) != set(
         package_roots
     ):
-        raise CalibrationRunError(
-            "package import paths must exactly match the named package roots"
-        )
+        raise CalibrationRunError("package import paths must exactly match the named package roots")
     normalized: dict[str, str] = {}
     for name in sorted(package_roots):
         relative = _canonical_relative_path(
@@ -1346,13 +2084,14 @@ def _capture_base_sys_path(
 ) -> tuple[str, ...]:
     if supplied is not None:
         values = tuple(
-            _canonical_relative_path(item, context="base sys.path entry") for item in supplied
+            _canonical_base_sys_path_entry(item, context="base sys.path entry") for item in supplied
         )
     else:
         root = base_runtime_root.resolve(strict=True)
-        if Path(sys.prefix).resolve(strict=True) != root or Path(sys.base_prefix).resolve(
-            strict=True
-        ) != root:
+        if (
+            Path(sys.prefix).resolve(strict=True) != root
+            or Path(sys.base_prefix).resolve(strict=True) != root
+        ):
             raise CalibrationRunError(
                 "runtime capture must run from the staged base interpreter with no virtualenv"
             )
@@ -1366,9 +2105,7 @@ def _capture_base_sys_path(
                 raise CalibrationRunError(
                     "isolated base sys.path escapes the staged base runtime"
                 ) from exc
-            captured.append(
-                _canonical_relative_path(relative, context="base sys.path entry")
-            )
+            captured.append(_canonical_base_sys_path_entry(relative, context="base sys.path entry"))
         values = tuple(captured)
     if not values or len(set(item.casefold() for item in values)) != len(values):
         raise CalibrationRunError("base sys.path entries must be non-empty and unique")
@@ -1425,9 +2162,7 @@ def _runtime_tree_files(root: Path, *, kind: str) -> tuple[RuntimeFileRecord, ..
             try:
                 status = entry.stat(follow_symlinks=False)
             except OSError as exc:
-                raise CalibrationRunError(
-                    f"runtime tree path is unavailable: {relative}"
-                ) from exc
+                raise CalibrationRunError(f"runtime tree path is unavailable: {relative}") from exc
             if entry.is_symlink() or (
                 getattr(status, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
             ):
@@ -1492,9 +2227,7 @@ def _record_paths(distribution: Any, *, name: str) -> tuple[str, ...]:
     try:
         for index, row in enumerate(csv.reader(StringIO(record_text, newline=""))):
             if len(row) != 3:
-                raise CalibrationRunError(
-                    f"distribution {name} RECORD row {index} is malformed"
-                )
+                raise CalibrationRunError(f"distribution {name} RECORD row {index} is malformed")
             parsed.append(
                 _raw_record_path(
                     row[0],
@@ -1563,9 +2296,7 @@ def _distribution_record(
             )
         rendered_paths.append(matched_path.relative_to(package_roots[matched_root]).as_posix())
     assert selected_root is not None
-    import_root = package_roots[selected_root] / PurePosixPath(
-        package_import_paths[selected_root]
-    )
+    import_root = package_roots[selected_root] / PurePosixPath(package_import_paths[selected_root])
     try:
         import_root.resolve(strict=True).relative_to(package_roots[selected_root])
     except (OSError, ValueError) as exc:
@@ -1621,6 +2352,7 @@ def _installed_distribution_map(
 
 def capture_calibration_runtime_manifest(
     *,
+    git_executable_path: Path | None = None,
     base_runtime_root: Path,
     package_roots: Mapping[str, Path],
     package_import_paths: Mapping[str, str],
@@ -1637,6 +2369,7 @@ def capture_calibration_runtime_manifest(
     accept them.
     """
 
+    git_executable = _authenticate_git_executable(git_executable_path)
     roots = _runtime_root_map(base_runtime_root, package_roots)
     packages = {name: roots[name] for name in sorted(roots) if name != BASE_RUNTIME_ROOT_NAME}
     import_paths = _normalized_package_import_paths(packages, package_import_paths)
@@ -1769,6 +2502,11 @@ def capture_calibration_runtime_manifest(
             "sha256": interpreter.sha256,
             "size_bytes": interpreter.size_bytes,
         },
+        "git_executable": {
+            "absolute_path_sha256": git_executable.absolute_path_sha256,
+            "sha256": git_executable.sha256,
+            "size_bytes": git_executable.size_bytes,
+        },
         "launch_policy": dict(SEALED_LAUNCH_POLICY),
         "machine": dict(
             zip(
@@ -1777,9 +2515,7 @@ def capture_calibration_runtime_manifest(
                 strict=True,
             )
         ),
-        "package_roots": [
-            {"import_path": import_paths[name], "name": name} for name in packages
-        ],
+        "package_roots": [{"import_path": import_paths[name], "name": name} for name in packages],
         "python": {
             "abi_flags": python_identity[3],
             "cache_tag": python_identity[2],
@@ -1840,9 +2576,7 @@ def _parse_runtime_tree(raw_tree: object, *, index: int) -> RuntimeTreeRecord:
                 size_bytes=_nonnegative_int(
                     raw_file["size_bytes"], context=f"runtime tree {name} file size"
                 ),
-                sha256=_sha256(
-                    raw_file["sha256"], context=f"runtime tree {name} file SHA-256"
-                ),
+                sha256=_sha256(raw_file["sha256"], context=f"runtime tree {name} file SHA-256"),
             )
         )
     if [item.path for item in files] != sorted(item.path for item in files) or len(
@@ -1861,6 +2595,7 @@ def parse_calibration_runtime_manifest(data: bytes) -> CalibrationRuntimeManifes
             "base_runtime_root",
             "base_sys_path",
             "distributions",
+            "git_executable",
             "interpreter",
             "launch_policy",
             "machine",
@@ -1883,6 +2618,27 @@ def parse_calibration_runtime_manifest(data: bytes) -> CalibrationRuntimeManifes
         root["launch_policy"],
         SEALED_LAUNCH_POLICY,
         context="calibration runtime launch policy",
+    )
+
+    raw_git_executable = root["git_executable"]
+    if not isinstance(raw_git_executable, dict):
+        raise ValueError("calibration runtime Git executable record must be an object")
+    _exact_fields(
+        raw_git_executable,
+        {"absolute_path_sha256", "sha256", "size_bytes"},
+        context="calibration runtime Git executable",
+    )
+    git_absolute_path_sha256 = _sha256(
+        raw_git_executable["absolute_path_sha256"],
+        context="runtime Git executable absolute-path SHA-256",
+    )
+    git_sha256 = _sha256(
+        raw_git_executable["sha256"],
+        context="runtime Git executable SHA-256",
+    )
+    git_size_bytes = _positive_int(
+        raw_git_executable["size_bytes"],
+        context="runtime Git executable size",
     )
 
     python_record = root["python"]
@@ -1922,7 +2678,7 @@ def parse_calibration_runtime_manifest(data: bytes) -> CalibrationRuntimeManifes
     if not isinstance(raw_base_sys_path, list) or not raw_base_sys_path:
         raise ValueError("base_sys_path must be a non-empty list")
     base_sys_path = tuple(
-        _canonical_relative_path(item, context="base sys.path entry")
+        _canonical_base_sys_path_entry(item, context="base sys.path entry")
         for item in raw_base_sys_path
     )
     if len({item.casefold() for item in base_sys_path}) != len(base_sys_path):
@@ -1978,16 +2734,14 @@ def parse_calibration_runtime_manifest(data: bytes) -> CalibrationRuntimeManifes
     interpreter_path = _canonical_relative_path(
         interpreter["relative_path"], context="runtime interpreter relative path"
     )
-    interpreter_sha256 = _sha256(
-        interpreter["sha256"], context="runtime interpreter SHA-256"
-    )
-    interpreter_size = _positive_int(
-        interpreter["size_bytes"], context="runtime interpreter size"
-    )
+    interpreter_sha256 = _sha256(interpreter["sha256"], context="runtime interpreter SHA-256")
+    interpreter_size = _positive_int(interpreter["size_bytes"], context="runtime interpreter size")
     base_files = {item.path: item for item in trees[0].files}
     for sys_path_entry in base_sys_path:
-        present = sys_path_entry in base_files or any(
-            path.startswith(f"{sys_path_entry}/") for path in base_files
+        present = (
+            sys_path_entry == "."
+            or sys_path_entry in base_files
+            or any(path.startswith(f"{sys_path_entry}/") for path in base_files)
         )
         optional_zip = re.fullmatch(r"python[0-9]+\.zip", sys_path_entry) is not None
         if not present and not optional_zip:
@@ -2069,6 +2823,9 @@ def parse_calibration_runtime_manifest(data: bytes) -> CalibrationRuntimeManifes
         interpreter_relative_path=interpreter_path,
         interpreter_size_bytes=interpreter_size,
         interpreter_sha256=interpreter_sha256,
+        git_executable_absolute_path_sha256=git_absolute_path_sha256,
+        git_executable_sha256=git_sha256,
+        git_executable_size_bytes=git_size_bytes,
         runtime_trees=trees,
         distributions=tuple(parsed),
         file_sha256=sha256_bytes(data),
@@ -2082,11 +2839,19 @@ def authenticate_calibration_runtime(
     package_roots: Mapping[str, Path],
     distributions: Sequence[Any] | None = None,
     interpreter_path: Path | None = None,
+    git_executable_path: Path | None = None,
 ) -> AuthenticatedRuntime:
     """Rehash both complete staged trees and exact RECORD inventories."""
 
     if not isinstance(manifest, CalibrationRuntimeManifest):
         raise TypeError("manifest must be CalibrationRuntimeManifest")
+    git_executable = _authenticate_git_executable(git_executable_path)
+    if (
+        git_executable.absolute_path_sha256 != manifest.git_executable_absolute_path_sha256
+        or git_executable.sha256 != manifest.git_executable_sha256
+        or git_executable.size_bytes != manifest.git_executable_size_bytes
+    ):
+        raise CalibrationRunError("Git executable differs from the frozen runtime manifest")
     roots = _runtime_root_map(Path(base_runtime_root), package_roots)
     packages = {name: roots[name] for name in sorted(roots) if name != BASE_RUNTIME_ROOT_NAME}
     manifest_package_names = tuple(item.name for item in manifest.package_roots)
@@ -2171,6 +2936,9 @@ def authenticate_calibration_runtime(
         python_version=manifest.python_version,
         python_cache_tag=manifest.python_cache_tag,
         interpreter_sha256=manifest.interpreter_sha256,
+        git_executable_absolute_path_sha256=manifest.git_executable_absolute_path_sha256,
+        git_executable_sha256=manifest.git_executable_sha256,
+        git_executable_size_bytes=manifest.git_executable_size_bytes,
         machine_name=manifest.machine_name,
         base_runtime_file_count=len(manifest.runtime_trees[0].files),
         package_root_count=len(manifest.package_roots),
@@ -2488,7 +3256,7 @@ def _copy_record_only_packages(
         raise CalibrationRunError("selected distributions contributed no staged package files")
 
 
-_RUNTIME_PROBE_SOURCE: Final = r'''
+_RUNTIME_PROBE_SOURCE: Final = r"""
 import json
 import os
 import platform
@@ -2538,7 +3306,7 @@ payload = {
     },
 }
 print(json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":")))
-'''.strip()
+""".strip()
 
 
 def _probe_staged_interpreter(
@@ -2596,7 +3364,7 @@ def _probe_staged_interpreter(
             context="runtime probe pointer_bits",
         ),
         base_sys_path=tuple(
-            _canonical_relative_path(item, context="runtime probe base sys.path")
+            _canonical_base_sys_path_entry(item, context="runtime probe base sys.path")
             for item in raw_paths
         ),
     )
@@ -2607,6 +3375,7 @@ def prepare_calibration_runtime(
     source_python: Path,
     requirements_file: Path,
     output_root: Path,
+    git_executable_path: Path | None = None,
     package_root_name: str = DEFAULT_PACKAGE_RUNTIME_ROOT_NAME,
 ) -> dict[str, object]:
     """Stage independent base bytes and only exact wheel-RECORD package bytes."""
@@ -2644,6 +3413,7 @@ def prepare_calibration_runtime(
         package_roots = {name: package_root}
         package_import_paths = {name: import_path}
         payload = capture_calibration_runtime_manifest(
+            git_executable_path=git_executable_path,
             base_runtime_root=base_root,
             package_roots=package_roots,
             package_import_paths=package_import_paths,
@@ -2655,6 +3425,7 @@ def prepare_calibration_runtime(
         if manifest_path.read_bytes() != payload:
             raise CalibrationRunError("prepared runtime manifest changed after publication")
         repeated = capture_calibration_runtime_manifest(
+            git_executable_path=git_executable_path,
             base_runtime_root=base_root,
             package_roots=package_roots,
             package_import_paths=package_import_paths,
@@ -2742,8 +3513,7 @@ def _verify_sealed_launch_state(
         str(base_root / PurePosixPath(relative)) for relative in manifest.base_sys_path
     ]
     expected_sys_path.extend(
-        str(roots[item.name] / PurePosixPath(item.import_path))
-        for item in manifest.package_roots
+        str(roots[item.name] / PurePosixPath(item.import_path)) for item in manifest.package_roots
     )
     if [os.path.abspath(item) for item in sys.path] != [
         os.path.abspath(item) for item in expected_sys_path
@@ -2759,6 +3529,7 @@ def _authenticate_sealed_runtime_context(
     package_roots: Mapping[str, Path],
     package_import_paths: Mapping[str, str],
     interpreter_path: Path,
+    git_executable_path: Path,
     pycache_prefix: Path,
 ) -> tuple[CalibrationRuntimeManifest, SealedRuntimeContext, AuthenticatedRuntime]:
     """Reauthenticate explicit launcher inputs without copying them to globals."""
@@ -2768,9 +3539,7 @@ def _authenticate_sealed_runtime_context(
     declared_names = tuple(item.name for item in manifest.package_roots)
     actual_names = tuple(name for name in roots if name != BASE_RUNTIME_ROOT_NAME)
     if actual_names != declared_names:
-        raise CalibrationRunError(
-            "bootstrap package roots differ from the frozen runtime manifest"
-        )
+        raise CalibrationRunError("bootstrap package roots differ from the frozen runtime manifest")
     normalized_import_paths = _normalized_package_import_paths(
         {item.name: roots[item.name] for item in manifest.package_roots},
         package_import_paths,
@@ -2790,12 +3559,14 @@ def _authenticate_sealed_runtime_context(
         base_runtime_root=base_runtime_root,
         package_roots=package_roots,
         interpreter_path=interpreter_path,
+        git_executable_path=git_executable_path,
     )
     context = SealedRuntimeContext(
         manifest_file_sha256=manifest.file_sha256,
         base_runtime_root=roots[BASE_RUNTIME_ROOT_NAME],
         package_roots={item.name: roots[item.name] for item in manifest.package_roots},
         package_import_paths=normalized_import_paths,
+        git_executable_path=_authenticate_git_executable(git_executable_path).path,
         pycache_prefix=verified_pycache,
     )
     return manifest, context, authenticated
@@ -2812,20 +3583,151 @@ def _load_identity_resolver(repository_root: Path) -> Any:
     return module
 
 
-def _identity_view(data: bytes, repository_root: Path) -> FrozenCalibrationIdentity:
-    resolver = _load_identity_resolver(repository_root)
-    decoded = resolver.deserialize_frozen_calibration_identity_artifact(data)
+def _identity_records_with_fisher_boundary(
+    decoded: object,
+    evidence: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    """Preserve each resolver-validated schema-v5 Fisher boundary exactly."""
+
+    raw_records = evidence.get("records")
+    decoded_records = getattr(decoded, "records", None)
+    if not isinstance(raw_records, list) or not isinstance(decoded_records, (list, tuple)):
+        raise CalibrationRunError("schema-v5 frozen identity records are missing")
+    if len(raw_records) != len(decoded_records):
+        raise CalibrationRunError("decoded schema-v5 record inventory differs from evidence")
+
+    normalized_records: list[dict[str, object]] = []
+    for index, (raw_record, decoded_record) in enumerate(
+        zip(raw_records, decoded_records, strict=True)
+    ):
+        if not isinstance(raw_record, Mapping) or not isinstance(decoded_record, Mapping):
+            raise CalibrationRunError(f"schema-v5 records[{index}] is not an object")
+        raw_boundary = raw_record.get("fisher_boundary")
+        decoded_boundary = decoded_record.get("fisher_boundary")
+        if not isinstance(raw_boundary, Mapping) or not isinstance(decoded_boundary, Mapping):
+            raise CalibrationRunError(f"schema-v5 records[{index}].fisher_boundary is missing")
+        try:
+            _exact_fields(
+                raw_boundary,
+                FISHER_BOUNDARY_FIELDS,
+                context=f"identity evidence records[{index}].fisher_boundary",
+            )
+            _exact_fields(
+                decoded_boundary,
+                FISHER_BOUNDARY_FIELDS,
+                context=f"decoded records[{index}].fisher_boundary",
+            )
+        except ValueError as exc:
+            raise CalibrationRunError(
+                f"schema-v5 records[{index}].fisher_boundary fields drifted"
+            ) from exc
+        if dict(decoded_boundary) != dict(raw_boundary):
+            raise CalibrationRunError(
+                f"decoded records[{index}].fisher_boundary differs from identity evidence"
+            )
+        if decoded_boundary["schema"] != FISHER_BOUNDARY_SCHEMA:
+            raise CalibrationRunError(f"schema-v5 records[{index}].fisher_boundary schema drifted")
+        horizon = decoded_boundary["horizon"]
+        if type(horizon) is not int or horizon != FISHER_BOUNDARY_HORIZON:
+            raise CalibrationRunError(f"schema-v5 records[{index}].fisher_boundary horizon drifted")
+
+        positions: dict[str, list[int]] = {}
+        for name in ("boundary_positions", "input_positions", "target_positions"):
+            values = decoded_boundary[name]
+            if (
+                not isinstance(values, list)
+                or not values
+                or any(type(value) is not int or value < 0 for value in values)
+            ):
+                raise CalibrationRunError(
+                    f"schema-v5 records[{index}].fisher_boundary {name} is invalid"
+                )
+            positions[name] = list(values)
+        if not (
+            len(positions["boundary_positions"])
+            == len(positions["input_positions"])
+            == len(positions["target_positions"])
+        ):
+            raise CalibrationRunError(
+                f"schema-v5 records[{index}].fisher_boundary position lengths drifted"
+            )
+        if positions["input_positions"] != [
+            value + FISHER_BOUNDARY_HORIZON for value in positions["boundary_positions"]
+        ] or positions["target_positions"] != [value + 1 for value in positions["input_positions"]]:
+            raise CalibrationRunError(
+                f"schema-v5 records[{index}].fisher_boundary H=1 positions drifted"
+            )
+        sequence_length = decoded_record.get("sequence_length")
+        if type(sequence_length) is not int or sequence_length < 3:
+            raise CalibrationRunError(
+                f"schema-v5 records[{index}] cannot support an H=1 Fisher boundary"
+            )
+        if positions["boundary_positions"] != list(frozen_anchor_positions(sequence_length - 2)):
+            raise CalibrationRunError(
+                f"schema-v5 records[{index}].fisher_boundary B(T) positions drifted"
+            )
+        try:
+            for name in (
+                "input_token_ids_sha256",
+                "target_token_ids_sha256",
+                "fisher_boundary_sha256",
+            ):
+                _sha256(
+                    decoded_boundary[name],
+                    context=f"records[{index}].fisher_boundary.{name}",
+                )
+        except ValueError as exc:
+            raise CalibrationRunError(
+                f"schema-v5 records[{index}].fisher_boundary hash is invalid"
+            ) from exc
+        boundary_payload = {
+            name: decoded_boundary[name]
+            for name in FISHER_BOUNDARY_FIELDS - {"fisher_boundary_sha256"}
+        }
+        if decoded_boundary["fisher_boundary_sha256"] != sha256_bytes(
+            FISHER_BOUNDARY_NAMESPACE + canonical_json_bytes(boundary_payload)
+        ):
+            raise CalibrationRunError(
+                f"schema-v5 records[{index}].fisher_boundary self-hash drifted"
+            )
+
+        normalized_boundary = dict(decoded_boundary)
+        normalized_boundary.update(positions)
+        normalized_record = dict(decoded_record)
+        normalized_record["fisher_boundary"] = normalized_boundary
+        normalized_records.append(normalized_record)
+    return tuple(normalized_records)
+
+
+def _identity_view_from_resolver(
+    data: bytes,
+    resolver: Any,
+    *,
+    expected_file_sha256: str | None = None,
+) -> FrozenCalibrationIdentity:
+    if expected_file_sha256 is None:
+        decoded = resolver.deserialize_frozen_calibration_identity_artifact(data)
+    else:
+        decoded = resolver.deserialize_frozen_calibration_identity_artifact(
+            data,
+            expected_file_sha256=expected_file_sha256,
+        )
     root = _strict_json_bytes(data, context="frozen calibration identity")
     evidence = root.get("evidence")
     if not isinstance(evidence, dict):  # independently decoded above; defensive only
         raise ValueError("frozen identity evidence is missing")
+    if (
+        type(evidence.get("schema_version")) is not int
+        or evidence.get("schema_version") != FROZEN_IDENTITY_SCHEMA_VERSION
+    ):
+        raise CalibrationRunError("frozen identity is not strict schema v5")
     model_contracts = cast(dict[str, object], evidence["model_contracts"])
     primary = cast(dict[str, object], model_contracts["primary"])
     tokenizer = cast(dict[str, object], evidence["tokenizer"])
     execution_bindings = getattr(decoded, "execution_bindings", None)
     if not isinstance(execution_bindings, Mapping):
         raise CalibrationRunError(
-            "frozen identity does not contain schema-v4 execution_bindings; "
+            "frozen identity does not contain schema-v5 execution_bindings; "
             "runtime/model access remains unauthorized"
         )
     _exact_fields(
@@ -2840,10 +3742,11 @@ def _identity_view(data: bytes, repository_root: Path) -> FrozenCalibrationIdent
     )
     if evidence.get("execution_bindings") != dict(execution_bindings):
         raise CalibrationRunError("decoded execution bindings differ from identity evidence")
+    records = _identity_records_with_fisher_boundary(decoded, evidence)
     return FrozenCalibrationIdentity(
         file_sha256=decoded.file_sha256,
         canonical_evidence_sha256=decoded.canonical_evidence_sha256,
-        records=tuple(dict(record) for record in decoded.records),
+        records=records,
         assignment=tuple(dict(item) for item in decoded.assignment),
         assignment_sha256=decoded.assignment_sha256,
         tokenizer_manifest_sha256=decoded.tokenizer_manifest_sha256,
@@ -2874,9 +3777,15 @@ def _identity_view(data: bytes, repository_root: Path) -> FrozenCalibrationIdent
     )
 
 
+def _identity_view(data: bytes, repository_root: Path) -> FrozenCalibrationIdentity:
+    return _identity_view_from_resolver(data, _load_identity_resolver(repository_root))
+
+
 def verify_repository_source_manifest(
     expected: Mapping[str, object],
     repository_root: Path,
+    *,
+    git_executable_path: Path | None = None,
 ) -> tuple[dict[str, object], str]:
     """Use the frozen source API to reauthenticate code at point of use."""
 
@@ -2887,6 +3796,7 @@ def verify_repository_source_manifest(
     verified = module.verify_experiment013_source_manifest(
         normalized_expected,
         repo_root=repository_root,
+        git_executable=git_executable_path,
     )
     if verified != normalized_expected:
         raise CalibrationRunError("repository source verification returned a different manifest")
@@ -2905,25 +3815,6 @@ def validate_adapter_contract(adapter: Any, *, calibration_api: ModuleType) -> N
 
     if not isinstance(adapter, calibration_api.CalibrationAdapter):
         raise TypeError("reviewed adapter does not implement CalibrationAdapter")
-
-
-def _verify_repository_commit(repository_root: Path, expected: str) -> str:
-    revision = _git_revision(expected, context="expected source commit")
-    process = subprocess.run(
-        ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if process.returncode != 0:
-        raise CalibrationRunError("cannot resolve repository HEAD for policy provenance")
-    actual = process.stdout.strip()
-    if actual != revision:
-        raise CalibrationRunError(
-            f"repository HEAD differs from expected source commit: {actual!r} != {revision!r}"
-        )
-    return revision
 
 
 def _record_int(record: Mapping[str, object], name: str) -> int:
@@ -2949,6 +3840,7 @@ def validate_materialized_sequence(
     materialized: Any,
     *,
     calibration_api: ModuleType,
+    identity_resolver: Any,
 ) -> tuple[int, ...]:
     """Reauthenticate all sequence commitments without retaining source text."""
 
@@ -2989,6 +3881,27 @@ def validate_materialized_sequence(
     for name, actual in exact.items():
         if actual != record.get(name):
             raise CalibrationRunError(f"materialized {name} differs from frozen identity")
+    build_fisher_boundary = getattr(
+        identity_resolver,
+        "build_fisher_boundary_contract",
+        None,
+    )
+    if not callable(build_fisher_boundary):
+        raise CalibrationRunError(
+            "authenticated identity resolver lacks the Fisher-boundary contract builder"
+        )
+    try:
+        expected_fisher_boundary = build_fisher_boundary(token_ids)
+    except (TypeError, ValueError) as exc:
+        raise CalibrationRunError(
+            "materialized token IDs cannot satisfy the frozen Fisher-boundary contract"
+        ) from exc
+    if not isinstance(expected_fisher_boundary, Mapping) or dict(
+        expected_fisher_boundary
+    ) != record.get("fisher_boundary"):
+        raise CalibrationRunError(
+            "materialized Fisher input/target tokens differ from frozen identity"
+        )
     return token_ids
 
 
@@ -3006,50 +3919,64 @@ def compute_anchor_distortions(
     state: Any,
     geometry: Geometry,
 ) -> tuple[Any, Any, Any]:
-    """Return per-row RHT Q4/Q6/Q8 MSE, releasing layer workspaces eagerly."""
+    """Return Q4/Q6/Q8 endpoint MSE with deterministic CPU-FP64 reduction."""
 
-    torch = _torch_runtime()
-    from recurquant.quantization import QuantizationSpec, quantize_dequantize
-    from recurquant.rht import right_rht_encode
+    from recurquant.static_q468 import StaticRhtQ468Geometry
+    from recurquant.static_q468_calibration import compute_rht_unweighted_mse_endpoints
 
-    expected = (
-        geometry.layers,
-        geometry.heads,
-        geometry.key_rows,
-        geometry.value_width,
+    endpoint_geometry = StaticRhtQ468Geometry(
+        layer_indices=geometry.layer_indices,
+        heads=geometry.heads,
+        key_rows=geometry.key_rows,
+        value_width=geometry.value_width,
+        # Endpoint score math does not consume the packing target.  A positive
+        # inert value keeps the shared geometry validator authoritative.
+        target_resident_bytes=1,
     )
-    if not isinstance(state, torch.Tensor) or tuple(state.shape) != expected:
-        raise CalibrationRunError(f"anchor state must have shape {expected}")
-    if not state.is_floating_point() or not torch.isfinite(state).all().item():
-        raise CalibrationRunError("anchor state must be finite floating point")
-    specifications = tuple(
-        QuantizationSpec(
-            bits=bits,
-            group_size=geometry.value_width,
-            scale_bits=16,
-            flatten_last_dims=1,
-            rounding="nearest",
-            seed=RHT_SEED,
+    try:
+        return cast(
+            tuple[Any, Any, Any],
+            compute_rht_unweighted_mse_endpoints(
+                state,
+                geometry=endpoint_geometry,
+            ),
         )
-        for bits in (4, 6, 8)
+    except (TypeError, ValueError) as exc:
+        raise CalibrationRunError("anchor state violates the frozen endpoint contract") from exc
+
+
+def compute_fisher_distortions(
+    source_state: Any,
+    source_gradient: Any,
+    geometry: Geometry,
+) -> tuple[Any, Any, Any]:
+    """Return causal H=1 diagonal-Fisher Q4/Q6/Q8 endpoint risks."""
+
+    from recurquant.static_q468 import StaticRhtQ468Geometry
+    from recurquant.static_q468_calibration import (
+        compute_rht_diagonal_empirical_fisher_h1_endpoints,
     )
-    per_bit: list[list[Any]] = [[], [], []]
-    with torch.no_grad():
-        for local_index, layer_index in enumerate(geometry.layer_indices):
-            encoded = right_rht_encode(
-                state[local_index].unsqueeze(0),
-                layer_index=layer_index,
-                expected_heads=geometry.heads,
-                output_dtype=torch.float32,
-            )
-            for destination, specification in zip(per_bit, specifications, strict=True):
-                restored = quantize_dequantize(encoded, specification).tensor
-                mse = (restored - encoded).square().mean(dim=-1).squeeze(0)
-                destination.append(mse.detach().to(device="cpu", dtype=torch.float64))
-    return cast(
-        tuple[Any, Any, Any],
-        tuple(torch.stack(rows, dim=0).contiguous() for rows in per_bit),
+
+    endpoint_geometry = StaticRhtQ468Geometry(
+        layer_indices=geometry.layer_indices,
+        heads=geometry.heads,
+        key_rows=geometry.key_rows,
+        value_width=geometry.value_width,
+        target_resident_bytes=1,
     )
+    try:
+        return cast(
+            tuple[Any, Any, Any],
+            compute_rht_diagonal_empirical_fisher_h1_endpoints(
+                source_state,
+                source_gradient,
+                geometry=endpoint_geometry,
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise CalibrationRunError(
+            "Fisher source state/gradient violates the frozen endpoint contract"
+        ) from exc
 
 
 def capture_sequence_causally(
@@ -3062,30 +3989,106 @@ def capture_sequence_causally(
     calibration_api: ModuleType,
     require_cuda: bool,
     distortion_function: DistortionFunction = compute_anchor_distortions,
+    fisher_distortion_function: FisherDistortionFunction = compute_fisher_distortions,
 ) -> CapturedSequence:
-    """Process exactly one token per adapter call and retain only anchor tensors."""
+    """Run exactly one forward per token and collect both frozen endpoint sets."""
 
     torch = _torch_runtime()
     anchors = frozen_anchor_positions(len(token_ids))
     anchor_set = set(anchors)
+    boundary = record.get("fisher_boundary")
+    if not isinstance(boundary, Mapping):
+        raise CalibrationRunError("identity record is missing its Fisher-boundary contract")
+    try:
+        fisher_boundaries = tuple(cast(Sequence[int], boundary["boundary_positions"]))
+        fisher_inputs = tuple(cast(Sequence[int], boundary["input_positions"]))
+        fisher_targets = tuple(cast(Sequence[int], boundary["target_positions"]))
+    except (KeyError, TypeError) as exc:
+        raise CalibrationRunError("identity Fisher-boundary positions are malformed") from exc
+    expected_boundaries = frozen_anchor_positions(len(token_ids) - 2)
+    expected_inputs = tuple(position + 1 for position in expected_boundaries)
+    expected_targets = tuple(position + 1 for position in expected_inputs)
+    if (
+        fisher_boundaries != expected_boundaries
+        or fisher_inputs != expected_inputs
+        or fisher_targets != expected_targets
+    ):
+        raise CalibrationRunError("identity Fisher-boundary positions differ from B(T), H=1")
+    fisher_by_input = dict(zip(fisher_inputs, fisher_boundaries, strict=True))
     query_ema: Any | None = None
     energies: list[Any] = []
     q4_rows: list[Any] = []
     q6_rows: list[Any] = []
     q8_rows: list[Any] = []
+    fisher_q4_rows: list[Any] = []
+    fisher_q6_rows: list[Any] = []
+    fisher_q8_rows: list[Any] = []
+    fisher_target_nlls: list[float] = []
+    expected_rows = (geometry.layers, geometry.heads, geometry.key_rows)
+    expected_state_shape = (*expected_rows, geometry.value_width)
+
+    def validate_endpoint_triplet(
+        values: tuple[Any, Any, Any],
+        *,
+        context: str,
+    ) -> tuple[Any, Any, Any]:
+        for name, tensor in zip(("Q4", "Q6", "Q8"), values, strict=True):
+            if (
+                not isinstance(tensor, torch.Tensor)
+                or tuple(tensor.shape) != expected_rows
+                or tensor.device.type != "cpu"
+                or tensor.dtype != torch.float64
+                or not torch.isfinite(tensor).all().item()
+                or (tensor < 0).any().item()
+            ):
+                raise CalibrationRunError(
+                    f"{context} {name} endpoint must be finite non-negative CPU FP64 "
+                    f"{expected_rows}"
+                )
+        return values
+
     adapter.begin_sequence(model, record)
     completed = False
     try:
         for position, token_id in enumerate(token_ids):
             capture_state = position in anchor_set
-            observation = adapter.step_token(
-                model,
-                token_id=token_id,
-                position=position,
-                capture_state=capture_state,
-            )
+            fisher_observation: Any | None = None
+            if position in fisher_by_input:
+                target_position = position + 1
+                fisher_observation = adapter.step_token_with_fisher(
+                    model,
+                    token_id=token_id,
+                    position=position,
+                    target_token_id=token_ids[target_position],
+                    capture_state=capture_state,
+                )
+                if not isinstance(
+                    fisher_observation,
+                    calibration_api.FisherStepObservation,
+                ):
+                    raise TypeError(
+                        "adapter.step_token_with_fisher must return FisherStepObservation"
+                    )
+                if (
+                    fisher_observation.boundary_position != fisher_by_input[position]
+                    or fisher_observation.input_position != position
+                    or fisher_observation.target_position != target_position
+                    or fisher_observation.input_token_id != token_id
+                    or fisher_observation.target_token_id != token_ids[target_position]
+                ):
+                    raise CalibrationRunError(
+                        "adapter Fisher observation differs from the frozen H=1 causal pair"
+                    )
+                observation = fisher_observation.step_observation
+            else:
+                observation = adapter.step_token(
+                    model,
+                    token_id=token_id,
+                    position=position,
+                    capture_state=capture_state,
+                )
             if not isinstance(observation, calibration_api.StepObservation):
-                raise TypeError("adapter.step_token must return StepObservation")
+                raise TypeError("adapter causal step must return StepObservation")
             if (
                 observation.position != position
                 or observation.token_id != token_id
@@ -3114,6 +4117,41 @@ def capture_sequence_causally(
             query_ema = QUERY_EMA_DECAY * query_ema + (1.0 - QUERY_EMA_DECAY) * energy
             if not torch.isfinite(query_ema).all().item() or (query_ema < 0).any().item():
                 raise CalibrationRunError("normalized-query-energy EMA became invalid")
+
+            if fisher_observation is not None:
+                source_state = fisher_observation.source_recurrent_state
+                source_gradient = fisher_observation.source_state_gradient
+                for name, tensor in (
+                    ("source recurrent state", source_state),
+                    ("source state gradient", source_gradient),
+                ):
+                    if (
+                        not isinstance(tensor, torch.Tensor)
+                        or tuple(tensor.shape) != expected_state_shape
+                        or tensor.dtype != torch.float32
+                        or tensor.device != query.device
+                        or not torch.isfinite(tensor).all().item()
+                    ):
+                        raise CalibrationRunError(
+                            f"Fisher {name} must be finite FP32 {expected_state_shape} "
+                            "on the recurrence-query device"
+                        )
+                    if require_cuda and tensor.device.type != "cuda":
+                        raise CalibrationRunError(
+                            f"official Fisher {name} must be an actual CUDA tensor"
+                        )
+                target_nll = fisher_observation.target_nll
+                if type(target_nll) is not float or not math.isfinite(target_nll) or target_nll < 0:
+                    raise CalibrationRunError("Fisher target-token NLL must be finite non-negative")
+                fisher_values = validate_endpoint_triplet(
+                    fisher_distortion_function(source_state, source_gradient, geometry),
+                    context="Fisher",
+                )
+                fisher_q4_rows.append(fisher_values[0])
+                fisher_q6_rows.append(fisher_values[1])
+                fisher_q8_rows.append(fisher_values[2])
+                fisher_target_nlls.append(target_nll)
+
             if capture_state:
                 if observation.recurrent_state is None:
                     raise CalibrationRunError("adapter omitted recurrent state at a frozen anchor")
@@ -3130,25 +4168,10 @@ def capture_sequence_causally(
                     )
                 if state.dtype != torch.float32:
                     raise CalibrationRunError("reference recurrent state must be FP32")
-                d4, d6, d8 = distortion_function(state, geometry)
-                expected_rows = (geometry.layers, geometry.heads, geometry.key_rows)
-                for name, tensor in (
-                    ("D4", d4),
-                    ("D6", d6),
-                    ("D8", d8),
-                ):
-                    if (
-                        not isinstance(tensor, torch.Tensor)
-                        or tuple(tensor.shape) != expected_rows
-                        or tensor.device.type != "cpu"
-                        or tensor.dtype != torch.float64
-                        or not torch.isfinite(tensor).all().item()
-                        or (tensor < 0).any().item()
-                    ):
-                        raise CalibrationRunError(
-                            f"{name} distortion must be finite non-negative CPU FP64 "
-                            f"{expected_rows}"
-                        )
+                d4, d6, d8 = validate_endpoint_triplet(
+                    distortion_function(state, geometry),
+                    context="MSE",
+                )
                 energies.append(query_ema.detach().to(device="cpu", dtype=torch.float64))
                 q4_rows.append(d4)
                 q6_rows.append(d6)
@@ -3158,14 +4181,28 @@ def capture_sequence_causally(
         completed = True
     finally:
         adapter.end_sequence(model, record)
-    if not completed or len(energies) != len(anchors):
-        raise CalibrationRunError("causal sequence capture did not complete every frozen anchor")
+    if (
+        not completed
+        or len(energies) != len(anchors)
+        or len(fisher_q4_rows) != len(fisher_boundaries)
+        or len(fisher_q6_rows) != len(fisher_boundaries)
+        or len(fisher_q8_rows) != len(fisher_boundaries)
+        or len(fisher_target_nlls) != len(fisher_boundaries)
+    ):
+        raise CalibrationRunError(
+            "causal sequence capture did not complete every post-token and Fisher endpoint"
+        )
     return CapturedSequence(
         anchor_positions=anchors,
         query_energy=torch.stack(energies).contiguous(),
         q4_mse=torch.stack(q4_rows).contiguous(),
         q6_mse=torch.stack(q6_rows).contiguous(),
         q8_mse=torch.stack(q8_rows).contiguous(),
+        fisher_boundary_positions=fisher_boundaries,
+        fisher_q4_risk=torch.stack(fisher_q4_rows).contiguous(),
+        fisher_q6_risk=torch.stack(fisher_q6_rows).contiguous(),
+        fisher_q8_risk=torch.stack(fisher_q8_rows).contiguous(),
+        fisher_target_nlls=torch.tensor(fisher_target_nlls, dtype=torch.float64),
     )
 
 
@@ -3219,18 +4256,25 @@ class Experiment013Backend:
         captured: CapturedSequence,
     ) -> object:
         from recurquant.static_q468_calibration import (
+            FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+            FROZEN_UNWEIGHTED_MSE_PROFILE,
             AnchorDistortionBatch,
+            FrozenComparatorEndpointBatch,
             reduce_frozen_anchor_distortions,
+            reduce_frozen_comparator_endpoints,
         )
 
-        batch = AnchorDistortionBatch(
-            family=cast(Any, record["family"]),
-            config=cast(str, record["config"]),
-            ruler_category=cast(Any, record["ruler_category"]),
-            canonical_id=cast(str, record["canonical_id"]),
-            seed=cast(int | None, record["seed"]),
-            configured_length=cast(int | None, record["configured_length"]),
-            token_count=len(token_ids),
+        metadata = {
+            "family": cast(Any, record["family"]),
+            "config": cast(str, record["config"]),
+            "ruler_category": cast(Any, record["ruler_category"]),
+            "canonical_id": cast(str, record["canonical_id"]),
+            "seed": cast(int | None, record["seed"]),
+            "configured_length": cast(int | None, record["configured_length"]),
+            "token_count": len(token_ids),
+        }
+        candidate_batch = AnchorDistortionBatch(
+            **metadata,
             anchor_positions=captured.anchor_positions,
             query_energy=captured.query_energy,
             q4_mse=captured.q4_mse,
@@ -3239,7 +4283,32 @@ class Experiment013Backend:
             sequence_token_ids=token_ids,
             identity_record=record,
         )
-        return reduce_frozen_anchor_distortions(batch)
+        mse_batch = FrozenComparatorEndpointBatch(
+            selector_profile=FROZEN_UNWEIGHTED_MSE_PROFILE,
+            **metadata,
+            endpoint_positions=captured.anchor_positions,
+            q4_scores=captured.q4_mse,
+            q6_scores=captured.q6_mse,
+            q8_scores=captured.q8_mse,
+            sequence_token_ids=token_ids,
+            identity_record=record,
+        )
+        fisher_batch = FrozenComparatorEndpointBatch(
+            selector_profile=FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+            **metadata,
+            endpoint_positions=captured.fisher_boundary_positions,
+            q4_scores=captured.fisher_q4_risk,
+            q6_scores=captured.fisher_q6_risk,
+            q8_scores=captured.fisher_q8_risk,
+            sequence_token_ids=token_ids,
+            identity_record=record,
+            target_nlls=captured.fisher_target_nlls,
+        )
+        return ReducedSequenceScores(
+            candidate=reduce_frozen_anchor_distortions(candidate_batch),
+            mse=reduce_frozen_comparator_endpoints(mse_batch),
+            fisher=reduce_frozen_comparator_endpoints(fisher_batch),
+        )
 
     def finalize(
         self,
@@ -3255,6 +4324,8 @@ class Experiment013Backend:
             FROZEN_STATIC_Q468_PRIMARY_STEPS,
             STATIC_Q48_COMPARATOR_METHOD,
             STATIC_Q468_ABLATION_METHOD,
+            STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+            STATIC_Q468_MSE_METHOD,
             STATIC_Q468_PRIMARY_METHOD,
             build_static_rht_q48_policy,
             build_static_rht_q468_policy,
@@ -3264,20 +4335,32 @@ class Experiment013Backend:
             serialize_static_rht_q468_policy,
         )
         from recurquant.static_q468_calibration import (
+            FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+            FROZEN_UNWEIGHTED_MSE_PROFILE,
             aggregate_calibration_scores,
+            aggregate_comparator_scores,
             build_frozen_calibration_score_artifact,
+            build_frozen_comparator_score_artifact,
             build_frozen_split_half_stability_artifact,
             deserialize_calibration_score_artifact,
+            deserialize_comparator_score_artifact,
             deserialize_frozen_split_half_stability_artifact,
             fit_split_half_policy,
         )
 
         resolver = _load_identity_resolver(self.repository_root)
-        typed_scores = cast(list[Any], list(scores))
-        aggregate = aggregate_calibration_scores(typed_scores)
+        if not scores or any(not isinstance(item, ReducedSequenceScores) for item in scores):
+            raise TypeError("scores must contain non-empty ReducedSequenceScores")
+        typed_scores = cast(list[ReducedSequenceScores], list(scores))
+        candidate_scores = [item.candidate for item in typed_scores]
+        mse_scores = [item.mse for item in typed_scores]
+        fisher_scores = [item.fisher for item in typed_scores]
+        aggregate = aggregate_calibration_scores(candidate_scores)
+        mse_aggregate = aggregate_comparator_scores(mse_scores)
+        fisher_aggregate = aggregate_comparator_scores(fisher_scores)
         geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
         fit = fit_split_half_policy(
-            typed_scores,
+            candidate_scores,
             layer_indices=geometry.layer_indices,
             rows_per_layer=geometry.rows_per_layer,
             marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
@@ -3300,6 +4383,19 @@ class Experiment013Backend:
             calibration_identity_sha256=identity.file_sha256,
         )
         decoded_score = deserialize_calibration_score_artifact(score_bytes)
+        comparator_score_bytes = build_frozen_comparator_score_artifact(
+            mse_aggregate,
+            fisher_aggregate,
+            calibration_identity_sha256=identity.file_sha256,
+        )
+        decoded_comparator_score = deserialize_comparator_score_artifact(
+            comparator_score_bytes,
+            expected_calibration_identity_sha256=identity.file_sha256,
+        )
+        mse_selector = decoded_comparator_score.selectors[FROZEN_UNWEIGHTED_MSE_PROFILE]
+        fisher_selector = decoded_comparator_score.selectors[
+            FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE
+        ]
         split_bytes = build_frozen_split_half_stability_artifact(
             fit.half_a_aggregate,
             fit.half_b_aggregate,
@@ -3339,6 +4435,29 @@ class Experiment013Backend:
             method_id=STATIC_Q468_PRIMARY_METHOD,
             **policy_common,
         )
+        comparator_policy_common = {
+            "geometry": geometry,
+            "identity_artifact_sha256": identity.file_sha256,
+            "tokenizer_manifest_sha256": identity.tokenizer_manifest_sha256,
+            "source_commit": source_commit,
+            "marginal_steps": FROZEN_STATIC_Q468_PRIMARY_STEPS,
+        }
+        mse_k29334 = build_static_rht_q468_policy(
+            mse_selector.aggregate.d4,
+            mse_selector.aggregate.d6,
+            mse_selector.aggregate.d8,
+            calibration_manifest_sha256=(mse_selector.aggregate.sequence_score_manifest_sha256),
+            method_id=STATIC_Q468_MSE_METHOD,
+            **comparator_policy_common,
+        )
+        fisher_k29334 = build_static_rht_q468_policy(
+            fisher_selector.aggregate.d4,
+            fisher_selector.aggregate.d6,
+            fisher_selector.aggregate.d8,
+            calibration_manifest_sha256=(fisher_selector.aggregate.sequence_score_manifest_sha256),
+            method_id=STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+            **comparator_policy_common,
+        )
         q48 = build_static_rht_q48_policy(
             aggregate.d4,
             aggregate.d8,
@@ -3352,9 +4471,13 @@ class Experiment013Backend:
         )
         k27030_bytes = serialize_static_rht_q468_policy(k27030)
         k29334_bytes = serialize_static_rht_q468_policy(k29334)
+        mse_k29334_bytes = serialize_static_rht_q468_policy(mse_k29334)
+        fisher_k29334_bytes = serialize_static_rht_q468_policy(fisher_k29334)
         q48_bytes = serialize_static_rht_q48_policy(q48)
         deserialize_static_rht_q468_policy(k27030_bytes)
         deserialize_static_rht_q468_policy(k29334_bytes)
+        deserialize_static_rht_q468_policy(mse_k29334_bytes)
+        deserialize_static_rht_q468_policy(fisher_k29334_bytes)
         deserialize_static_rht_q48_policy(q48_bytes)
         binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
             frozen_identity_artifact=identity.artifact_bytes,
@@ -3362,6 +4485,9 @@ class Experiment013Backend:
             split_half_stability_artifact=split_bytes,
             static_k27030_policy_artifact=k27030_bytes,
             static_k29334_policy_artifact=k29334_bytes,
+            comparator_score_artifact=comparator_score_bytes,
+            static_fisher_k29334_policy_artifact=fisher_k29334_bytes,
+            static_mse_k29334_policy_artifact=mse_k29334_bytes,
         )
         resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
         return FinalizationResult(
@@ -3369,14 +4495,15 @@ class Experiment013Backend:
             stability=stability,
             artifacts=CalibrationArtifacts(
                 score=score_bytes,
+                comparator_score=comparator_score_bytes,
                 split_half=split_bytes,
                 static_k27030=k27030_bytes,
                 static_k29334=k29334_bytes,
+                static_mse_k29334=mse_k29334_bytes,
+                static_fisher_k29334=fisher_k29334_bytes,
                 static_q48=q48_bytes,
                 stage_a_binding=binding_bytes,
                 stability=stability,
-                calibration_scores_sha256=decoded_score.calibration_scores_sha256,
-                sequence_score_manifest_sha256=aggregate.sequence_score_manifest_sha256,
             ),
         )
 
@@ -3442,15 +4569,21 @@ def _report_bytes(
     model_files: Any,
     sequence_count: int,
     token_count: int,
-    anchor_count: int,
+    post_token_anchor_count: int,
+    fisher_boundary_count: int,
+    observed_fisher_step_count: int,
     stability: Mapping[str, object],
     artifacts: Mapping[str, bytes],
     runtime: Mapping[str, object],
+    fisher_h1_smoke_report_file_sha256: str | None,
 ) -> bytes:
     evidence = {
         "artifacts": {name: sha256_bytes(payload) for name, payload in sorted(artifacts.items())},
         "calibration": {
-            "anchor_count": anchor_count,
+            "expected_fisher_step_count": fisher_boundary_count,
+            "observed_fisher_step_count": observed_fisher_step_count,
+            "fisher_boundary_count": fisher_boundary_count,
+            "post_token_anchor_count": post_token_anchor_count,
             "sequence_count": sequence_count,
             "token_count": token_count,
         },
@@ -3483,6 +4616,9 @@ def _report_bytes(
             "epsilon_hex": QUERY_ENERGY_EPSILON.hex(),
             "prior": "uniform_1_over_key_rows",
         },
+        "prerequisites": {
+            "fisher_h1_smoke_report_file_sha256": (fisher_h1_smoke_report_file_sha256),
+        },
         "repository": {
             "source_commit": source_commit,
             "source_manifest_file_sha256": source_manifest_file_sha256,
@@ -3500,6 +4636,206 @@ def _report_bytes(
         "schema_version": RUN_REPORT_SCHEMA,
     }
     return canonical_json_bytes(document)
+
+
+def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
+    report_bytes: bytes,
+    complete_marker_bytes: bytes,
+    *,
+    identity: FrozenCalibrationIdentity,
+    source_commit: str,
+    source_manifest_sha256: str,
+    source_manifest_file_sha256: str,
+    model_manifest: ModelFileManifest,
+    authenticated_runtime: AuthenticatedRuntime,
+) -> str:
+    """Authenticate the mandatory one-sequence Fisher H=1 smoke receipt."""
+
+    if not isinstance(report_bytes, bytes) or not isinstance(complete_marker_bytes, bytes):
+        raise TypeError("Fisher H=1 smoke prerequisite files must be bytes")
+    if complete_marker_bytes != FISHER_SMOKE_COMPLETE_BYTES:
+        raise CalibrationRunError("Fisher H=1 smoke completion marker drifted")
+    root = _strict_json_bytes(report_bytes, context="Fisher H=1 smoke report")
+    _exact_fields(
+        root,
+        {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
+        context="Fisher H=1 smoke report",
+    )
+    if canonical_json_bytes(root) != report_bytes:
+        raise CalibrationRunError("Fisher H=1 smoke report is not canonical JSON")
+    if (
+        root["artifact_kind"] != RUN_REPORT_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != RUN_REPORT_SCHEMA
+    ):
+        raise CalibrationRunError("Fisher H=1 smoke report kind or schema drifted")
+    evidence = root["evidence"]
+    if not isinstance(evidence, dict):
+        raise CalibrationRunError("Fisher H=1 smoke evidence is missing")
+    _exact_fields(
+        evidence,
+        {
+            "artifacts",
+            "calibration",
+            "identity",
+            "model_files",
+            "prerequisites",
+            "query_energy_ema",
+            "repository",
+            "runner_revision",
+            "runtime",
+            "stability",
+            "status",
+        },
+        context="Fisher H=1 smoke evidence",
+    )
+    canonical_hash = _sha256(
+        root["canonical_evidence_sha256"],
+        context="Fisher H=1 smoke canonical evidence SHA-256",
+    )
+    if canonical_hash != sha256_bytes(canonical_json_bytes(evidence)):
+        raise CalibrationRunError("Fisher H=1 smoke canonical evidence SHA-256 drifted")
+    if (
+        evidence["status"] != "fisher_h1_smoke_passed"
+        or evidence["runner_revision"] != RUNNER_REVISION
+        or evidence["artifacts"] != {}
+        or evidence["prerequisites"] != {"fisher_h1_smoke_report_file_sha256": None}
+    ):
+        raise CalibrationRunError("Fisher H=1 smoke status or provenance drifted")
+    _exact_typed_mapping(
+        evidence["stability"],
+        {
+            "checks": [],
+            "evaluated": False,
+            "passed": None,
+            "scope": "smoke_only",
+        },
+        context="Fisher H=1 smoke stability",
+    )
+    _exact_typed_mapping(
+        evidence["query_energy_ema"],
+        {
+            "decay_hex": QUERY_EMA_DECAY.hex(),
+            "epsilon_hex": QUERY_ENERGY_EPSILON.hex(),
+            "prior": "uniform_1_over_key_rows",
+        },
+        context="Fisher H=1 smoke query-energy contract",
+    )
+
+    first_record = identity.records[0]
+    token_count = _positive_int(
+        first_record.get("sequence_length"),
+        context="first frozen smoke sequence length",
+    )
+    raw_boundary = first_record.get("fisher_boundary")
+    if not isinstance(raw_boundary, Mapping):
+        raise CalibrationRunError("first frozen smoke sequence has no Fisher boundary")
+    boundary_positions = raw_boundary.get("boundary_positions")
+    if not isinstance(boundary_positions, list):
+        raise CalibrationRunError("first frozen smoke Fisher boundary positions are missing")
+    fisher_count = len(boundary_positions)
+    if fisher_count <= 0:
+        raise CalibrationRunError("first frozen smoke sequence has no Fisher H=1 steps")
+    _exact_typed_mapping(
+        evidence["calibration"],
+        {
+            "expected_fisher_step_count": fisher_count,
+            "observed_fisher_step_count": fisher_count,
+            "fisher_boundary_count": fisher_count,
+            "post_token_anchor_count": len(frozen_anchor_positions(token_count)),
+            "sequence_count": 1,
+            "token_count": token_count,
+        },
+        context="Fisher H=1 smoke calibration receipt",
+    )
+    _exact_typed_mapping(
+        evidence["identity"],
+        {
+            "canonical_evidence_sha256": identity.canonical_evidence_sha256,
+            "file_sha256": identity.file_sha256,
+            "identity_input_manifest_sha256": identity.identity_input_manifest_sha256,
+            "tokenizer_manifest_sha256": identity.tokenizer_manifest_sha256,
+            "execution_bindings": {
+                "calibration_runtime_manifest_file_sha256": (identity.runtime_manifest_file_sha256),
+                "model_file_manifest_file_sha256": identity.model_file_manifest_file_sha256,
+                "parquet_materialization_manifest_file_sha256": (
+                    identity.parquet_materialization_manifest_file_sha256
+                ),
+                "repository_source_manifest_file_sha256": (
+                    identity.repository_source_manifest_file_sha256
+                ),
+            },
+        },
+        context="Fisher H=1 smoke identity receipt",
+    )
+    _exact_typed_mapping(
+        evidence["model_files"],
+        {
+            "file_count": len(model_manifest.files),
+            "hub_tree_manifest_sha256": model_manifest.hub_tree_manifest_sha256,
+            "manifest_file_sha256": model_manifest.file_sha256,
+            "model_id": model_manifest.model_id,
+            "revision": model_manifest.revision,
+            "transformers_version": model_manifest.transformers_version,
+        },
+        context="Fisher H=1 smoke model receipt",
+    )
+    _exact_typed_mapping(
+        evidence["repository"],
+        {
+            "source_commit": source_commit,
+            "source_manifest_file_sha256": source_manifest_file_sha256,
+            "source_manifest_sha256": source_manifest_sha256,
+        },
+        context="Fisher H=1 smoke source receipt",
+    )
+    runtime = evidence["runtime"]
+    if not isinstance(runtime, Mapping):
+        raise CalibrationRunError("Fisher H=1 smoke runtime receipt is missing")
+    if (
+        runtime.get("runtime_manifest_file_sha256") != authenticated_runtime.manifest_file_sha256
+        or runtime.get("authenticated_distribution_count")
+        != authenticated_runtime.distribution_count
+        or runtime.get("authenticated_file_count") != authenticated_runtime.file_count
+        or runtime.get("packages") != dict(authenticated_runtime.distributions)
+        or runtime.get("cuda_available") is not True
+        or not isinstance(runtime.get("gpu"), Mapping)
+    ):
+        raise CalibrationRunError("Fisher H=1 smoke runtime identity drifted")
+    adapter = runtime.get("adapter")
+    if not isinstance(adapter, Mapping) or adapter.get("fisher_step_count") != fisher_count:
+        raise CalibrationRunError("Fisher H=1 smoke adapter step receipt drifted")
+    return sha256_bytes(report_bytes)
+
+
+def authenticate_fisher_h1_smoke_prerequisite(
+    report_bytes: bytes,
+    complete_marker_bytes: bytes,
+    *,
+    identity: FrozenCalibrationIdentity,
+    source_commit: str,
+    source_manifest_sha256: str,
+    source_manifest_file_sha256: str,
+    model_manifest: ModelFileManifest,
+    authenticated_runtime: AuthenticatedRuntime,
+) -> str:
+    """Fail closed with one public error type for malformed smoke evidence."""
+
+    try:
+        return _authenticate_fisher_h1_smoke_prerequisite_unchecked(
+            report_bytes,
+            complete_marker_bytes,
+            identity=identity,
+            source_commit=source_commit,
+            source_manifest_sha256=source_manifest_sha256,
+            source_manifest_file_sha256=source_manifest_file_sha256,
+            model_manifest=model_manifest,
+            authenticated_runtime=authenticated_runtime,
+        )
+    except CalibrationRunError:
+        raise
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise CalibrationRunError(str(exc)) from exc
 
 
 def _atomic_publish_new(path: Path, payload: bytes) -> None:
@@ -3521,7 +4857,14 @@ def _atomic_publish_new(path: Path, payload: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _publish_output_directory(output_dir: Path, payloads: Mapping[str, bytes]) -> None:
+def _publish_output_directory(
+    output_dir: Path,
+    payloads: Mapping[str, bytes],
+    *,
+    complete_filename: str = COMPLETE_FILENAME,
+) -> None:
+    if complete_filename not in {COMPLETE_FILENAME, FISHER_SMOKE_COMPLETE_FILENAME}:
+        raise ValueError("completion marker is not a frozen Experiment 013 marker")
     resolved = Path(os.path.abspath(output_dir))
     parent = resolved.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -3541,8 +4884,12 @@ def _publish_output_directory(output_dir: Path, payloads: Mapping[str, bytes]) -
         for name in ordered:
             _atomic_publish_new(staging / name, payloads[name])
         _atomic_publish_new(
-            staging / COMPLETE_FILENAME,
-            b"recurquant-experiment013-calibration-complete-v1\n",
+            staging / complete_filename,
+            (
+                FISHER_SMOKE_COMPLETE_BYTES
+                if complete_filename == FISHER_SMOKE_COMPLETE_FILENAME
+                else b"recurquant-experiment013-calibration-complete-v1\n"
+            ),
         )
         if resolved.exists():
             raise FileExistsError(f"refusing to overwrite existing calibration output: {resolved}")
@@ -3577,6 +4924,17 @@ def run_calibration(
     """Execute the authenticated calibration and publish one no-overwrite result set."""
 
     started = time.perf_counter()
+    if not isinstance(config.require_cuda, bool) or not isinstance(config.fisher_h1_smoke, bool):
+        raise TypeError("calibration mode flags must be booleans")
+    for name, value in (
+        ("prior_fisher_h1_smoke_report_bytes", config.prior_fisher_h1_smoke_report_bytes),
+        (
+            "prior_fisher_h1_smoke_complete_bytes",
+            config.prior_fisher_h1_smoke_complete_bytes,
+        ),
+    ):
+        if value is not None and not isinstance(value, bytes):
+            raise TypeError(f"{name} must be bytes or None")
     # First executable boundary: a strict promoted identity decode. No source
     # adapter, model path, repository command, or output path is touched first.
     identity = services.backend.decode_identity(config.frozen_identity_bytes)
@@ -3584,10 +4942,28 @@ def run_calibration(
         raise FileExistsError(
             f"refusing to overwrite existing calibration output: {config.output_dir.resolve()}"
         )
+    if config.fisher_h1_smoke:
+        if (
+            config.prior_fisher_h1_smoke_report_bytes is not None
+            or config.prior_fisher_h1_smoke_complete_bytes is not None
+        ):
+            raise CalibrationRunError("Fisher H=1 smoke mode forbids a prior smoke prerequisite")
+    elif (
+        config.prior_fisher_h1_smoke_report_bytes is None
+        or config.prior_fisher_h1_smoke_complete_bytes is None
+    ):
+        raise CalibrationRunError(
+            "full calibration requires the prior Fisher H=1 smoke report and marker"
+        )
 
-    source_commit = _verify_repository_commit(
-        config.repository_root,
+    # H0 remains the policy/report provenance even when the authenticated
+    # verifier accepts a later HEAD whose complete frozen source inventory is
+    # byte-identical to H0.  The verifier below proves ancestry and equality;
+    # a raw HEAD == H0 check would incorrectly forbid committing the promoted
+    # identity before opening weights.
+    source_commit = _git_revision(
         config.expected_source_commit,
+        context="expected source commit",
     )
     source_manifest_file_sha256 = sha256_bytes(config.repository_source_manifest_bytes)
     if source_manifest_file_sha256 != identity.repository_source_manifest_file_sha256:
@@ -3649,24 +5025,38 @@ def run_calibration(
         config.expected_parquet_materialization_manifest_sha256,
         context="expected parquet materialization manifest SHA-256",
     )
-    parquet_manifest_file_sha256 = sha256_bytes(
-        config.parquet_materialization_manifest_bytes
-    )
+    parquet_manifest_file_sha256 = sha256_bytes(config.parquet_materialization_manifest_bytes)
     if (
         parquet_manifest_file_sha256 != expected_parquet_manifest_sha256
-        or parquet_manifest_file_sha256
-        != identity.parquet_materialization_manifest_file_sha256
+        or parquet_manifest_file_sha256 != identity.parquet_materialization_manifest_file_sha256
     ):
         raise CalibrationRunError(
-            "parquet materialization manifest bytes differ from the frozen identity/config "
-            "binding"
+            "parquet materialization manifest bytes differ from the frozen identity/config binding"
         )
 
     runtime_before_data = services.authenticate_runtime(runtime_manifest)
     if runtime_before_data != authenticated_runtime:
         raise CalibrationRunError("calibration runtime identity changed before data access")
 
+    fisher_h1_smoke_report_file_sha256: str | None = None
+    if not config.fisher_h1_smoke:
+        assert config.prior_fisher_h1_smoke_report_bytes is not None
+        assert config.prior_fisher_h1_smoke_complete_bytes is not None
+        fisher_h1_smoke_report_file_sha256 = authenticate_fisher_h1_smoke_prerequisite(
+            config.prior_fisher_h1_smoke_report_bytes,
+            config.prior_fisher_h1_smoke_complete_bytes,
+            identity=identity,
+            source_commit=source_commit,
+            source_manifest_sha256=source_manifest_sha256,
+            source_manifest_file_sha256=source_manifest_file_sha256,
+            model_manifest=model_manifest,
+            authenticated_runtime=authenticated_runtime,
+        )
+
     materialized: list[tuple[dict[str, object], tuple[int, ...]]] = []
+    identity_resolver = services.identity_resolver
+    if identity_resolver is None:
+        identity_resolver = _load_identity_resolver(config.repository_root)
     for record in identity.records:
         candidate = adapter.materialize_sequence(record)
         materialized.append(
@@ -3676,6 +5066,7 @@ def run_calibration(
                     record,
                     candidate,
                     calibration_api=services.calibration_api,
+                    identity_resolver=identity_resolver,
                 ),
             )
         )
@@ -3705,6 +5096,7 @@ def run_calibration(
     scores: list[object] = []
     total_tokens = 0
     total_anchors = 0
+    total_fisher_boundaries = 0
     try:
         # The adapter may call AutoModel only inside this method. The exact local
         # file set has already been hashed, revision checked, and source verified.
@@ -3714,7 +5106,8 @@ def run_calibration(
         )
         if authenticated_after_load != authenticated_model:
             raise CalibrationRunError("local model identity changed while loading weights")
-        for record, token_ids in materialized:
+        selected_materialized = materialized[:1] if config.fisher_h1_smoke else materialized
+        for record, token_ids in selected_materialized:
             captured = capture_sequence_causally(
                 adapter,
                 model,
@@ -3724,14 +5117,20 @@ def run_calibration(
                 calibration_api=services.calibration_api,
                 require_cuda=config.require_cuda,
                 distortion_function=services.distortion_function,
+                fisher_distortion_function=services.fisher_distortion_function,
             )
             scores.append(services.backend.reduce_sequence(record, token_ids, captured))
             total_tokens += len(token_ids)
             total_anchors += len(captured.anchor_positions)
-        result = services.backend.finalize(
-            scores,
-            identity=identity,
-            source_commit=source_commit,
+            total_fisher_boundaries += len(captured.fisher_boundary_positions)
+        result = (
+            None
+            if config.fisher_h1_smoke
+            else services.backend.finalize(
+                scores,
+                identity=identity,
+                source_commit=source_commit,
+            )
         )
         # Snapshot run metadata while the authenticated model/device/observer
         # are still live. Cleanup follows immediately and every external
@@ -3743,6 +5142,11 @@ def run_calibration(
 
     if adapter_runtime_metadata is None:
         raise RuntimeError("successful calibration omitted live adapter runtime metadata")
+    observed_fisher_steps = adapter_runtime_metadata.get("fisher_step_count")
+    if type(observed_fisher_steps) is not int or observed_fisher_steps != total_fisher_boundaries:
+        raise CalibrationRunError(
+            "adapter Fisher-step count differs from the frozen boundary inventory"
+        )
 
     authenticated_after_run = services.authenticate_model_files(config.model_root, model_manifest)
     if authenticated_after_run != authenticated_model:
@@ -3767,6 +5171,48 @@ def run_calibration(
     if final_model != authenticated_model:
         raise CalibrationRunError("local model identity changed before publication")
 
+    if config.fisher_h1_smoke:
+        if len(scores) != 1:
+            raise RuntimeError("Fisher H=1 smoke must cover exactly one frozen sequence")
+        report = _report_bytes(
+            status="fisher_h1_smoke_passed",
+            identity=identity,
+            source_commit=source_commit,
+            source_manifest_sha256=source_manifest_sha256,
+            source_manifest_file_sha256=source_manifest_file_sha256,
+            model_files=authenticated_model,
+            sequence_count=len(scores),
+            token_count=total_tokens,
+            post_token_anchor_count=total_anchors,
+            fisher_boundary_count=total_fisher_boundaries,
+            observed_fisher_step_count=cast(int, observed_fisher_steps),
+            stability={
+                "checks": [],
+                "evaluated": False,
+                "passed": None,
+                "scope": "smoke_only",
+            },
+            artifacts={},
+            runtime=runtime,
+            fisher_h1_smoke_report_file_sha256=None,
+        )
+        smoke_payloads = {FISHER_SMOKE_REPORT_FILENAME: report}
+        _publish_output_directory(
+            config.output_dir,
+            smoke_payloads,
+            complete_filename=FISHER_SMOKE_COMPLETE_FILENAME,
+        )
+        return {
+            "artifact_sha256": {FISHER_SMOKE_REPORT_FILENAME: sha256_bytes(report)},
+            "fisher_boundary_count": total_fisher_boundaries,
+            "output_dir": str(config.output_dir.resolve()),
+            "sequence_count": len(scores),
+            "status": "fisher_h1_smoke_passed",
+            "token_count": total_tokens,
+        }
+
+    if result is None:
+        raise RuntimeError("full calibration omitted its finalization result")
     if not result.passed:
         report = _report_bytes(
             status="stability_failed",
@@ -3777,10 +5223,13 @@ def run_calibration(
             model_files=authenticated_model,
             sequence_count=len(scores),
             token_count=total_tokens,
-            anchor_count=total_anchors,
+            post_token_anchor_count=total_anchors,
+            fisher_boundary_count=total_fisher_boundaries,
+            observed_fisher_step_count=cast(int, observed_fisher_steps),
             stability=result.stability,
             artifacts={},
             runtime=runtime,
+            fisher_h1_smoke_report_file_sha256=(fisher_h1_smoke_report_file_sha256),
         )
         _publish_output_directory(config.output_dir, {REPORT_FILENAME: report})
         report_path = config.output_dir / REPORT_FILENAME
@@ -3792,9 +5241,12 @@ def run_calibration(
     artifacts = result.artifacts
     payloads = {
         SCORE_FILENAME: artifacts.score,
+        COMPARATOR_SCORE_FILENAME: artifacts.comparator_score,
         SPLIT_FILENAME: artifacts.split_half,
         K27030_FILENAME: artifacts.static_k27030,
         K29334_FILENAME: artifacts.static_k29334,
+        MSE_K29334_FILENAME: artifacts.static_mse_k29334,
+        FISHER_K29334_FILENAME: artifacts.static_fisher_k29334,
         Q48_FILENAME: artifacts.static_q48,
         BINDING_FILENAME: artifacts.stage_a_binding,
     }
@@ -3807,10 +5259,13 @@ def run_calibration(
         model_files=authenticated_model,
         sequence_count=len(scores),
         token_count=total_tokens,
-        anchor_count=total_anchors,
+        post_token_anchor_count=total_anchors,
+        fisher_boundary_count=total_fisher_boundaries,
+        observed_fisher_step_count=cast(int, observed_fisher_steps),
         stability=result.stability,
         artifacts=payloads,
         runtime=runtime,
+        fisher_h1_smoke_report_file_sha256=fisher_h1_smoke_report_file_sha256,
     )
     payloads[REPORT_FILENAME] = report
     _publish_output_directory(config.output_dir, payloads)
@@ -3829,6 +5284,7 @@ def default_services(
     calibration_api: ModuleType | None = None,
     interpreter_path: Path,
     package_roots: Mapping[str, Path],
+    git_executable_path: Path | None = None,
 ) -> RunnerServices:
     api = _AUTHENTICATED_CALIBRATION_API if calibration_api is None else calibration_api
     if api is None:
@@ -3837,12 +5293,20 @@ def default_services(
     return RunnerServices(
         backend=backend,
         calibration_api=api,
-        verify_repository_source=verify_repository_source_manifest,
+        # The stdlib bootstrap authenticates and installs the resolver before
+        # run_calibration.  Keep service construction import-free.
+        identity_resolver=None,
+        verify_repository_source=lambda manifest, root: verify_repository_source_manifest(
+            manifest,
+            root,
+            git_executable_path=git_executable_path,
+        ),
         validate_adapter=lambda adapter: validate_adapter_contract(
             adapter,
             calibration_api=api,
         ),
         distortion_function=compute_anchor_distortions,
+        fisher_distortion_function=compute_fisher_distortions,
         authenticate_model_files=lambda root, manifest: authenticate_local_model_files(
             root,
             manifest,
@@ -3853,6 +5317,7 @@ def default_services(
             base_runtime_root=base_runtime_root,
             package_roots=package_roots,
             interpreter_path=interpreter_path,
+            git_executable_path=git_executable_path,
         ),
     )
 
@@ -3930,6 +5395,30 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
+        "--fisher-h1-smoke",
+        action="store_true",
+        help=(
+            "Run exactly the first frozen calibration sequence through the full causal H=1 "
+            "path and publish only its authenticated smoke receipt."
+        ),
+    )
+    parser.add_argument(
+        "--prior-fisher-h1-smoke-report",
+        type=Path,
+        help=(
+            "Canonical smoke report from the required earlier --fisher-h1-smoke run; "
+            "mandatory for full calibration and forbidden in smoke mode."
+        ),
+    )
+    parser.add_argument(
+        "--prior-fisher-h1-smoke-complete-marker",
+        type=Path,
+        help=(
+            "FISHER_H1_SMOKE_COMPLETE marker paired with the prior smoke report; "
+            "mandatory for full calibration and forbidden in smoke mode."
+        ),
+    )
+    parser.add_argument(
         "--adapter",
         choices=[CANONICAL_ADAPTER_SPEC],
         default=CANONICAL_ADAPTER_SPEC,
@@ -3944,11 +5433,13 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         "capture-runtime-manifest",
         "capture-model-manifest",
         "prepare-runtime",
+        "stage-model",
     }:
         return None
     command = arguments[0]
     parser = argparse.ArgumentParser(prog=f"{Path(__file__).name} {command}")
     if command == "prepare-runtime":
+        parser.add_argument("--git-executable", required=True, type=Path)
         parser.add_argument("--source-python", required=True, type=Path)
         parser.add_argument("--requirements", required=True, type=Path)
         parser.add_argument("--output-root", required=True, type=Path)
@@ -3956,11 +5447,26 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             "--package-root-name",
             default=DEFAULT_PACKAGE_RUNTIME_ROOT_NAME,
         )
+    elif command == "stage-model":
+        parser.add_argument("--git-executable", required=True, type=Path)
+        parser.add_argument("--frozen-identity", required=True, type=Path)
+        parser.add_argument("--expected-frozen-identity-sha256", required=True)
+        parser.add_argument("--identity-commit", required=True)
+        parser.add_argument("--repository-root", required=True, type=Path)
+        parser.add_argument("--repository-source-manifest", required=True, type=Path)
+        parser.add_argument("--source-commit", required=True)
+        parser.add_argument("--model-file-manifest", required=True, type=Path)
+        parser.add_argument("--expected-model-file-manifest-sha256", required=True)
+        parser.add_argument("--hub-cache-root", required=True, type=Path)
+        parser.add_argument("--output-root", required=True, type=Path)
+        parser.add_argument("--local-files-only", action="store_true")
     else:
         parser.add_argument("--output", required=True, type=Path)
     if command == "capture-source-manifest":
+        parser.add_argument("--git-executable", required=True, type=Path)
         parser.add_argument("--repository-root", required=True, type=Path)
     if command == "capture-runtime-manifest":
+        parser.add_argument("--git-executable", required=True, type=Path)
         parser.add_argument("--base-runtime-root", required=True, type=Path)
         parser.add_argument("--staged-interpreter", required=True, type=Path)
         parser.add_argument("--package-root", required=True, action="append")
@@ -3972,10 +5478,28 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
     args = parser.parse_args(arguments[1:])
     if command == "prepare-runtime":
         details = prepare_calibration_runtime(
+            git_executable_path=args.git_executable,
             source_python=args.source_python,
             requirements_file=args.requirements,
             output_root=args.output_root,
             package_root_name=args.package_root_name,
+        )
+        print(json.dumps(details, sort_keys=True))
+        return 0
+    if command == "stage-model":
+        details = stage_identity_bound_model(
+            git_executable_path=args.git_executable,
+            frozen_identity_path=args.frozen_identity,
+            expected_frozen_identity_sha256=args.expected_frozen_identity_sha256,
+            identity_commit=args.identity_commit,
+            repository_root=args.repository_root,
+            repository_source_manifest_path=args.repository_source_manifest,
+            source_commit=args.source_commit,
+            model_file_manifest_path=args.model_file_manifest,
+            expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
+            hub_cache_root=args.hub_cache_root,
+            output_root=args.output_root,
+            local_files_only=args.local_files_only,
         )
         print(json.dumps(details, sort_keys=True))
         return 0
@@ -3984,13 +5508,22 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
     if command == "capture-source-manifest":
         source_module = _load_source_capture_module(args.repository_root)
         try:
-            captured = source_module.capture_experiment013_source_manifest(args.repository_root)
+            captured = source_module.capture_experiment013_source_manifest(
+                args.repository_root,
+                git_executable=args.git_executable,
+            )
             normalized = source_module.validate_experiment013_source_manifest(captured)
             payload = source_module.canonical_experiment013_source_manifest_bytes(normalized)
-            output = _assert_source_manifest_output_location(args.repository_root, args.output)
+            git_executable = _authenticate_git_executable(args.git_executable)
+            output = _assert_source_manifest_output_location(
+                args.repository_root,
+                args.output,
+                git_executable=git_executable,
+            )
             before_publish = source_module.verify_experiment013_source_manifest(
                 normalized,
                 args.repository_root,
+                git_executable=git_executable.path,
             )
             if before_publish != normalized:
                 raise CalibrationRunError("source verifier changed the captured manifest")
@@ -4000,6 +5533,7 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             after_publish = source_module.verify_experiment013_source_manifest(
                 normalized,
                 args.repository_root,
+                git_executable=git_executable.path,
             )
             if after_publish != normalized:
                 raise CalibrationRunError("source identity changed after manifest publication")
@@ -4020,6 +5554,7 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             context="package import path",
         )
         payload = capture_calibration_runtime_manifest(
+            git_executable_path=args.git_executable,
             base_runtime_root=args.base_runtime_root,
             package_roots=package_roots,
             package_import_paths=package_import_paths,
@@ -4030,6 +5565,7 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             args.model_id,
             args.revision,
             transformers_version=args.transformers_version,
+            token=False,
         )
     if command != "capture-source-manifest":
         output = args.output.resolve()
@@ -4092,6 +5628,26 @@ def _official_main(
             raise CalibrationRunError(
                 f"{name} manifest bytes differ from the frozen identity bootstrap binding"
             )
+    if args.fisher_h1_smoke:
+        if (
+            args.prior_fisher_h1_smoke_report is not None
+            or args.prior_fisher_h1_smoke_complete_marker is not None
+        ):
+            raise CalibrationRunError(
+                "Fisher H=1 smoke mode forbids prior smoke prerequisite paths"
+            )
+        prior_smoke_report_bytes = None
+        prior_smoke_complete_bytes = None
+    else:
+        if (
+            args.prior_fisher_h1_smoke_report is None
+            or args.prior_fisher_h1_smoke_complete_marker is None
+        ):
+            raise CalibrationRunError(
+                "full calibration requires prior Fisher H=1 smoke report and marker paths"
+            )
+        prior_smoke_report_bytes = args.prior_fisher_h1_smoke_report.read_bytes()
+        prior_smoke_complete_bytes = args.prior_fisher_h1_smoke_complete_marker.read_bytes()
     if (
         _sha256(
             args.expected_runtime_manifest_sha256,
@@ -4127,7 +5683,15 @@ def _official_main(
     requested_commit = _git_revision(args.source_commit, context="requested source commit")
     if requested_commit != bootstrap_source.source_commit:
         raise CalibrationRunError("CLI source commit differs from source-manifest commit")
-    _verify_repository_commit(args.repository_root, requested_commit)
+    source_git = bootstrap_source.manifest["git_executable"]
+    runtime_git = _authenticate_git_executable(runtime_context.git_executable_path)
+    if source_git != {
+        "sha256": runtime_git.sha256,
+        "size_bytes": runtime_git.size_bytes,
+    }:
+        raise CalibrationRunError(
+            "source and runtime manifests bind different Git executable bytes"
+        )
 
     _AUTHENTICATED_CALIBRATION_API = _load_exact_source_module(
         CALIBRATION_API_MODULE,
@@ -4153,6 +5717,7 @@ def _official_main(
         calibration_api=_AUTHENTICATED_CALIBRATION_API,
         interpreter_path=interpreter_path,
         package_roots=runtime_context.package_roots,
+        git_executable_path=runtime_context.git_executable_path,
     )
     identity = services.backend.decode_identity(identity_bytes)
     if (
@@ -4169,7 +5734,9 @@ def _official_main(
         args.repository_root,
     )
     if verified_source.get("source_commit") != requested_commit:
-        raise CalibrationRunError("verified source-manifest commit differs from current HEAD")
+        raise CalibrationRunError(
+            "verified source-manifest commit differs from requested frozen source commit"
+        )
     runtime_manifest = parse_calibration_runtime_manifest(runtime_manifest_bytes)
     authenticated_runtime = services.authenticate_runtime(runtime_manifest)
     if authenticated_runtime.manifest_file_sha256 != bindings.runtime_manifest_file_sha256:
@@ -4189,6 +5756,7 @@ def _official_main(
         },
         runtime_authentication_context={
             "base_runtime_root": runtime_context.base_runtime_root,
+            "git_executable": runtime_context.git_executable_path,
             "staged_interpreter": Path(interpreter_path),
             "package_runtime_roots": dict(runtime_context.package_roots),
             "package_import_paths": dict(runtime_context.package_import_paths),
@@ -4217,6 +5785,9 @@ def _official_main(
         expected_runtime_manifest_sha256=args.expected_runtime_manifest_sha256,
         output_dir=args.output_dir,
         require_cuda=True,
+        fisher_h1_smoke=args.fisher_h1_smoke,
+        prior_fisher_h1_smoke_report_bytes=prior_smoke_report_bytes,
+        prior_fisher_h1_smoke_complete_bytes=prior_smoke_complete_bytes,
     )
     result = run_calibration(
         config,
@@ -4234,6 +5805,7 @@ def sealed_main(
     package_roots: Mapping[str, Path],
     package_import_paths: Mapping[str, str],
     interpreter_path: Path,
+    git_executable_path: Path,
     pycache_prefix: Path,
 ) -> int:
     """Run only after the stdlib bootstrap supplies explicit authenticated roots."""
@@ -4247,6 +5819,7 @@ def sealed_main(
         package_roots=package_roots,
         package_import_paths=package_import_paths,
         interpreter_path=interpreter_path,
+        git_executable_path=git_executable_path,
         pycache_prefix=pycache_prefix,
     )
     if manifest.file_sha256 != _sha256(
@@ -4272,12 +5845,13 @@ def sealed_main(
         base_runtime_root=runtime_context.base_runtime_root,
         package_roots=runtime_context.package_roots,
         interpreter_path=interpreter_path,
+        git_executable_path=git_executable_path,
     )
     return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Expose metadata preparation only; official runs require the sealed launcher."""
+    """Expose authenticated preparation only; official runs require the sealed launcher."""
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     capture_result = _capture_manifest_mode(arguments)

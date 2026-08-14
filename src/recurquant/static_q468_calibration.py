@@ -27,6 +27,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal, TypeAlias, cast
 
 import numpy as np
@@ -36,6 +37,8 @@ from .evidence import canonical_json_bytes
 from .metrics import spearman_correlation
 from .multibit_policy import allocate_exact_multibit_codes_fast
 from .multibit_quantization import _pack_precision_codes
+from .quantization import QuantizationSpec, quantize_dequantize
+from .rht import RHT_SEED, right_rht_encode
 from .static_q468 import (
     FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
     FROZEN_STATIC_Q468_ABLATION_STEPS,
@@ -53,6 +56,10 @@ RulerCategory: TypeAlias = Literal[
     "question_answering",
 ]
 SplitHalf: TypeAlias = Literal["a", "b"]
+UnweightedSelectorProfile: TypeAlias = Literal[
+    "rht_q468_static_mse_k29334",
+    "rht_q468_static_diag_empirical_fisher_h1_k29334",
+]
 
 FROZEN_ANCHOR_COUNT = 16
 CALIBRATION_FAMILY_ORDER = ("mbpp", "pg19", "ruler")
@@ -86,14 +93,64 @@ SPLIT_HALF_STABILITY_ARTIFACT_PROFILE = (
 
 GENERIC_REDUCTION_PROFILE = "generic-anchor-row-reduction-v1"
 FROZEN_REDUCTION_PROFILE = "experiment-013-qwen35-0.8b-anchor-reduction-v1"
+FROZEN_UNWEIGHTED_MSE_PROFILE = "rht_q468_static_mse_k29334"
+FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE = "rht_q468_static_diag_empirical_fisher_h1_k29334"
+FROZEN_FISHER_HORIZON = 1
 FROZEN_SOURCE_AXIS_ORDER = ("anchor", "layer", "head", "key_row")
 _SOURCE_TENSOR_NAMES = ("query_energy", "q4_mse", "q6_mse", "q8_mse")
+
+COMPARATOR_SCORE_ARTIFACT_KIND = "recurquant_experiment013_static_q468_comparator_scores"
+COMPARATOR_SCORE_ARTIFACT_SCHEMA_VERSION = 1
+COMPARATOR_SCORE_ARTIFACT_REVISION = "experiment-013-static-q468-comparator-scores-v1"
+COMPARATOR_SCORE_ARTIFACT_PROFILE = "experiment-013-qwen35-0.8b-static-q468-comparators-frozen-v1"
+FROZEN_COMPARATOR_PROFILE_ORDER: tuple[UnweightedSelectorProfile, ...] = (
+    FROZEN_UNWEIGHTED_MSE_PROFILE,
+    FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+)
+FROZEN_COMPARATOR_ENDPOINT_AXIS_ORDER = (
+    "endpoint_position",
+    "layer",
+    "head",
+    "key_row",
+)
+FROZEN_COMPARATOR_POSITION_CONTRACTS = {
+    FROZEN_UNWEIGHTED_MSE_PROFILE: "A(T)=frozen_anchor_positions(T)",
+    FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE: ("B(T)=frozen_anchor_positions(T-2)"),
+}
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _SCORE_HASH_DOMAIN = b"recurquant.experiment013.sequence-scores.v1\0"
 _ANCHOR_INPUT_HASH_DOMAIN = b"recurquant.experiment013.anchor-inputs.v1\0"
 _CODE_MAP_HASH_DOMAIN = b"recurquant.static-q468-code-map.v1\0"
 _IDENTITY_RECORD_HASH_DOMAIN = b"recurquant.experiment013.identity-record.v1\0"
+_FISHER_BOUNDARY_HASH_DOMAIN = b"recurquant.experiment013.fisher-boundary.v1\0"
+_FISHER_BOUNDARY_TOKEN_HASH_DOMAIN = b"recurquant.experiment013.fisher-boundary-token-sequence.v1\0"
+_COMPARATOR_POSITION_HASH_DOMAIN = b"recurquant.experiment013.comparator-position-manifest.v1\0"
+_COMPARATOR_ENDPOINT_INPUT_HASH_DOMAIN = b"recurquant.experiment013.comparator-endpoint-input.v1\0"
+_COMPARATOR_TARGET_NLL_HASH_DOMAIN = b"recurquant.experiment013.comparator-target-nll.v1\0"
+_COMPARATOR_SEQUENCE_SCORE_HASH_DOMAIN = b"recurquant.experiment013.comparator-sequence-score.v1\0"
+_COMPARATOR_AGGREGATE_SCORE_HASH_DOMAIN = (
+    b"recurquant.experiment013.comparator-aggregate-score.v1\0"
+)
+_COMPARATOR_SEQUENCE_MANIFEST_HASH_DOMAIN = (
+    b"recurquant.experiment013.comparator-sequence-manifest.v1\0"
+)
+_COMPARATOR_POSITION_MANIFEST_HASH_DOMAIN = (
+    b"recurquant.experiment013.comparator-ordered-position-manifest.v1\0"
+)
+_FISHER_BOUNDARY_SCHEMA = "recurquant.experiment013.fisher-boundary.v1"
+_FISHER_BOUNDARY_FIELDS = frozenset(
+    {
+        "schema",
+        "horizon",
+        "boundary_positions",
+        "input_positions",
+        "target_positions",
+        "input_token_ids_sha256",
+        "target_token_ids_sha256",
+        "fisher_boundary_sha256",
+    }
+)
 _TOKEN_SPAN_ORDER = (
     "prefill_start",
     "prefill_stop",
@@ -122,6 +179,7 @@ _IDENTITY_RECORD_PAYLOAD_FIELDS = frozenset(
         "tokenizer_manifest_sha256",
         "token_span",
         "anchor_manifest_sha256",
+        "fisher_boundary",
     }
 )
 _AGGREGATION_CONTRACT = {
@@ -134,6 +192,11 @@ _AGGREGATION_CONTRACT = {
         "equal-weight category macro"
     ),
     "sequence_reduction": "equal-weight arithmetic mean within MBPP and PG19",
+}
+_COMPARATOR_AGGREGATION_CONTRACT = {
+    **_AGGREGATION_CONTRACT,
+    "endpoint_reduction": "equal-weight CPU-float64 mean over frozen positions",
+    "profiles": list(FROZEN_COMPARATOR_PROFILE_ORDER),
 }
 
 
@@ -258,6 +321,255 @@ def frozen_anchor_positions(token_count: int) -> tuple[int, ...]:
     return positions
 
 
+def fisher_h1_boundary_positions(token_count: int) -> tuple[int, ...]:
+    """Return boundary positions with both causal input and target available.
+
+    A boundary ``b`` stores ``S_b``; H=1 consumes ``x_(b+1)`` and scores the
+    resulting logits against ``x_(b+2)``.  Therefore a length-``T`` sequence
+    has exactly ``T - 2`` eligible boundaries before the frozen anchor equation
+    is applied.
+    """
+
+    tokens = _strict_positive_int(token_count, name="token_count")
+    if tokens < 3:
+        raise ValueError("H=1 Fisher calibration requires at least three tokens")
+    return frozen_anchor_positions(tokens - 2)
+
+
+def _q468_endpoint_specs(geometry: StaticRhtQ468Geometry) -> tuple[QuantizationSpec, ...]:
+    common = {
+        "group_size": geometry.value_width,
+        "scale_bits": 16,
+        "flatten_last_dims": 1,
+        "rounding": "nearest",
+        "seed": RHT_SEED,
+    }
+    return tuple(QuantizationSpec(bits=bits, **common) for bits in (4, 6, 8))
+
+
+def _endpoint_state_tensor(
+    value: object,
+    *,
+    name: str,
+    geometry: StaticRhtQ468Geometry,
+    device: torch.device | None = None,
+) -> torch.Tensor:
+    if not isinstance(value, torch.Tensor):
+        raise TypeError(f"{name} must be a torch.Tensor")
+    expected = (
+        len(geometry.layer_indices),
+        geometry.heads,
+        geometry.key_rows,
+        geometry.value_width,
+    )
+    if tuple(value.shape) != expected:
+        raise ValueError(f"{name} must have shape {expected}")
+    if value.device.type == "meta" or not value.is_floating_point():
+        raise TypeError(f"{name} must be a materialized floating-point tensor")
+    if device is not None and value.device != device:
+        raise ValueError(f"{name} must be on {device}")
+    normalized = value.detach().to(torch.float32)
+    if not torch.isfinite(normalized).all().item():
+        raise ValueError(f"{name} must contain only finite values")
+    return normalized
+
+
+def compute_rht_unweighted_mse_endpoints(
+    recurrent_state: torch.Tensor,
+    *,
+    geometry: StaticRhtQ468Geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute equal-weight per-row RHT Q4/Q6/Q8 MSE without query proxies."""
+
+    if not isinstance(geometry, StaticRhtQ468Geometry):
+        raise TypeError("geometry must be a StaticRhtQ468Geometry")
+    state = _endpoint_state_tensor(
+        recurrent_state,
+        name="recurrent_state",
+        geometry=geometry,
+    )
+    per_bit: list[list[torch.Tensor]] = [[], [], []]
+    specifications = _q468_endpoint_specs(geometry)
+    with torch.no_grad():
+        for local_index, layer_index in enumerate(geometry.layer_indices):
+            encoded = right_rht_encode(
+                state[local_index].unsqueeze(0),
+                layer_index=layer_index,
+                expected_heads=geometry.heads,
+                output_dtype=torch.float32,
+            )
+            for destination, specification in zip(per_bit, specifications, strict=True):
+                restored = quantize_dequantize(encoded, specification).tensor
+                error_fp64 = (
+                    (restored - encoded)
+                    .detach()
+                    .to(
+                        device="cpu",
+                        dtype=torch.float64,
+                    )
+                )
+                destination.append(error_fp64.square().mean(dim=-1).squeeze(0).contiguous())
+    return cast(
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple(torch.stack(rows, dim=0).contiguous() for rows in per_bit),
+    )
+
+
+def compute_rht_diagonal_empirical_fisher_h1_endpoints(
+    recurrent_state: torch.Tensor,
+    state_gradient: torch.Tensor,
+    *,
+    geometry: StaticRhtQ468Geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute ``0.5 * sum_v((RHT grad)^2 * quantization_error^2)``.
+
+    Both state and loss gradient are transformed by the same orthonormal right
+    RHT.  Scores are returned as CPU-FP64 ``[layer, head, key_row]`` tensors and
+    intentionally use neither query-energy weighting nor proxy normalization.
+    """
+
+    if not isinstance(geometry, StaticRhtQ468Geometry):
+        raise TypeError("geometry must be a StaticRhtQ468Geometry")
+    state = _endpoint_state_tensor(
+        recurrent_state,
+        name="recurrent_state",
+        geometry=geometry,
+    )
+    gradient = _endpoint_state_tensor(
+        state_gradient,
+        name="state_gradient",
+        geometry=geometry,
+        device=state.device,
+    )
+    per_bit: list[list[torch.Tensor]] = [[], [], []]
+    specifications = _q468_endpoint_specs(geometry)
+    with torch.no_grad():
+        for local_index, layer_index in enumerate(geometry.layer_indices):
+            encoded_state = right_rht_encode(
+                state[local_index].unsqueeze(0),
+                layer_index=layer_index,
+                expected_heads=geometry.heads,
+                output_dtype=torch.float32,
+            )
+            encoded_gradient = right_rht_encode(
+                gradient[local_index].unsqueeze(0),
+                layer_index=layer_index,
+                expected_heads=geometry.heads,
+                output_dtype=torch.float32,
+            )
+            gradient_fp64 = encoded_gradient.detach().to(
+                device="cpu",
+                dtype=torch.float64,
+            )
+            squared_gradient = gradient_fp64.square()
+            for destination, specification in zip(per_bit, specifications, strict=True):
+                restored = quantize_dequantize(encoded_state, specification).tensor
+                error_fp64 = (
+                    (restored - encoded_state)
+                    .detach()
+                    .to(
+                        device="cpu",
+                        dtype=torch.float64,
+                    )
+                )
+                risk = 0.5 * (squared_gradient * error_fp64.square()).sum(dim=-1)
+                destination.append(risk.squeeze(0).contiguous())
+    return cast(
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple(torch.stack(rows, dim=0).contiguous() for rows in per_bit),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class UnweightedEndpointBatch:
+    """Per-anchor Q4/Q6/Q8 endpoint scores for one static selector."""
+
+    selector_profile: UnweightedSelectorProfile
+    token_count: int
+    anchor_positions: tuple[int, ...]
+    q4_scores: torch.Tensor
+    q6_scores: torch.Tensor
+    q8_scores: torch.Tensor
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenComparatorEndpointBatch:
+    """Identity-v5-bound endpoint scores for one frozen comparator sequence."""
+
+    selector_profile: UnweightedSelectorProfile
+    family: CalibrationFamily
+    config: str
+    ruler_category: RulerCategory | None
+    canonical_id: str
+    seed: int | None
+    configured_length: int | None
+    token_count: int
+    endpoint_positions: tuple[int, ...]
+    q4_scores: torch.Tensor
+    q6_scores: torch.Tensor
+    q8_scores: torch.Tensor
+    sequence_token_ids: tuple[int, ...]
+    identity_record: Mapping[str, object]
+    target_nlls: torch.Tensor | None = None
+
+
+def reduce_unweighted_endpoint_anchors(
+    batch: UnweightedEndpointBatch,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Take an equal CPU-FP64 mean over anchors, with no proxy weighting."""
+
+    if not isinstance(batch, UnweightedEndpointBatch):
+        raise TypeError("batch must be an UnweightedEndpointBatch")
+    if batch.selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE:
+        expected_positions = frozen_anchor_positions(batch.token_count)
+    elif batch.selector_profile == FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE:
+        expected_positions = fisher_h1_boundary_positions(batch.token_count)
+    else:
+        raise ValueError("selector_profile is not a frozen unweighted selector")
+    if not isinstance(batch.anchor_positions, tuple):
+        raise TypeError("anchor_positions must be a tuple")
+    if batch.anchor_positions != expected_positions:
+        raise ValueError("anchor_positions differ from the selector's frozen equation")
+    anchors = len(expected_positions)
+    values = tuple(
+        _cpu_fp64_matrix(value, name=name, anchors=anchors)
+        for name, value in (
+            ("q4_scores", batch.q4_scores),
+            ("q6_scores", batch.q6_scores),
+            ("q8_scores", batch.q8_scores),
+        )
+    )
+    if values[1].shape != values[0].shape or values[2].shape != values[0].shape:
+        raise ValueError("Q4/Q6/Q8 endpoint score shapes must match exactly")
+    return cast(
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple(value.mean(dim=0).contiguous() for value in values),
+    )
+
+
+def allocate_unweighted_endpoint_policy(
+    batch: UnweightedEndpointBatch,
+    *,
+    marginal_steps: int,
+) -> torch.Tensor:
+    """Allocate an exact Q4/Q6/Q8 code map from unweighted endpoint scores."""
+
+    scores = reduce_unweighted_endpoint_anchors(batch)
+    rows = scores[0].numel()
+    steps = _strict_nonnegative_int(marginal_steps, name="marginal_steps")
+    if steps > 2 * rows:
+        raise ValueError("marginal_steps exceeds two steps per row")
+    code_map = allocate_exact_multibit_codes_fast(
+        *(value.reshape(1, rows) for value in scores),
+        marginal_steps=steps,
+    ).reshape(-1)
+    if code_map.dtype != torch.uint8 or code_map.device.type != "cpu":
+        raise RuntimeError("exact allocator returned a non-canonical code map")
+    if int(code_map.to(torch.int64).sum().item()) != steps:
+        raise RuntimeError("exact allocator did not satisfy the requested marginal budget")
+    return code_map.contiguous()
+
+
 def _cpu_fp64_matrix(
     value: object,
     *,
@@ -305,6 +617,13 @@ def _cpu_fp64_scores(value: object, *, name: str, expected_rows: int | None = No
 def _tensor_bytes(value: torch.Tensor) -> bytes:
     array = value.detach().to(device="cpu", dtype=torch.float64).contiguous().numpy()
     return array.astype("<f8", copy=False).tobytes(order="C")
+
+
+def _domain_json_sha256(domain: bytes, value: object) -> str:
+    digest = hashlib.sha256()
+    digest.update(domain)
+    digest.update(canonical_json_bytes(value))
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,6 +724,64 @@ def sequence_token_ids_sha256(token_ids: Sequence[int]) -> str:
     if not normalized:
         raise ValueError("sequence_token_ids cannot be empty")
     return hashlib.sha256(_resolver_canonical_json_bytes(normalized)).hexdigest()
+
+
+def _fisher_token_ids_sha256(token_ids: Sequence[int], *, role: str) -> str:
+    payload = {"role": role, "token_ids": list(token_ids)}
+    return hashlib.sha256(
+        _FISHER_BOUNDARY_TOKEN_HASH_DOMAIN + _resolver_canonical_json_bytes(payload)
+    ).hexdigest()
+
+
+def _validate_fisher_boundary(
+    value: object,
+    *,
+    sequence_token_ids: tuple[int, ...],
+) -> None:
+    if not isinstance(value, Mapping) or set(value) != _FISHER_BOUNDARY_FIELDS:
+        raise ValueError("fisher_boundary must contain the exact frozen H=1 fields")
+    if value["schema"] != _FISHER_BOUNDARY_SCHEMA:
+        raise ValueError("fisher_boundary schema drifted")
+    horizon = value["horizon"]
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon != 1:
+        raise ValueError("fisher_boundary horizon must equal H=1")
+    boundary_positions = list(fisher_h1_boundary_positions(len(sequence_token_ids)))
+    input_positions = [position + 1 for position in boundary_positions]
+    target_positions = [position + 1 for position in input_positions]
+    expected_positions = {
+        "boundary_positions": boundary_positions,
+        "input_positions": input_positions,
+        "target_positions": target_positions,
+    }
+    for name, expected in expected_positions.items():
+        if not isinstance(value[name], list) or value[name] != expected:
+            raise ValueError(f"fisher_boundary.{name} differs from the causal H=1 contract")
+    for name in (
+        "input_token_ids_sha256",
+        "target_token_ids_sha256",
+        "fisher_boundary_sha256",
+    ):
+        _sha256(value[name], name=f"fisher_boundary.{name}")
+    expected_input_hash = _fisher_token_ids_sha256(
+        [sequence_token_ids[position] for position in input_positions],
+        role="input",
+    )
+    expected_target_hash = _fisher_token_ids_sha256(
+        [sequence_token_ids[position] for position in target_positions],
+        role="target",
+    )
+    if value["input_token_ids_sha256"] != expected_input_hash:
+        raise ValueError("fisher_boundary input token-ID hash differs from exact sequence tokens")
+    if value["target_token_ids_sha256"] != expected_target_hash:
+        raise ValueError("fisher_boundary target token-ID hash differs from exact sequence tokens")
+    payload = {
+        name: value[name] for name in sorted(_FISHER_BOUNDARY_FIELDS - {"fisher_boundary_sha256"})
+    }
+    expected_self_hash = hashlib.sha256(
+        _FISHER_BOUNDARY_HASH_DOMAIN + _resolver_canonical_json_bytes(payload)
+    ).hexdigest()
+    if value["fisher_boundary_sha256"] != expected_self_hash:
+        raise ValueError("fisher_boundary self-hash drifted")
 
 
 def _normalize_token_span(value: object, *, sequence_length: int) -> tuple[tuple[str, int], ...]:
@@ -633,7 +1010,7 @@ class _ValidatedIdentityLineage:
 
 
 def _validate_frozen_identity_lineage(
-    batch: AnchorDistortionBatch,
+    batch: AnchorDistortionBatch | FrozenComparatorEndpointBatch,
 ) -> _ValidatedIdentityLineage:
     token_ids = batch.sequence_token_ids
     record = batch.identity_record
@@ -665,6 +1042,10 @@ def _validate_frozen_identity_lineage(
         raise ValueError("identity sequence length differs from the processed token count")
     if record["sequence_token_ids_sha256"] != token_hash:
         raise ValueError("sequence token-ID SHA-256 differs from the capture identity")
+    _validate_fisher_boundary(
+        record["fisher_boundary"],
+        sequence_token_ids=token_ids,
+    )
     for field, actual in (
         ("family", batch.family),
         ("config", batch.config),
@@ -708,6 +1089,298 @@ def _validate_frozen_identity_lineage(
         token_span=span,
         identity_anchor_manifest_sha256=computed_anchor_hash,
         identity_record_sha256=computed_record_hash,
+    )
+
+
+def _comparator_expected_positions(
+    selector_profile: object,
+    token_count: int,
+) -> tuple[int, ...]:
+    if selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE:
+        return frozen_anchor_positions(token_count)
+    if selector_profile == FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE:
+        return fisher_h1_boundary_positions(token_count)
+    raise ValueError("selector_profile must be one of the two frozen comparator methods")
+
+
+def _comparator_position_payload(
+    *,
+    selector_profile: UnweightedSelectorProfile,
+    token_count: int,
+    endpoint_positions: tuple[int, ...],
+    sequence_token_ids_sha256_value: str,
+    identity_anchor_manifest_sha256_value: str,
+    identity_record_sha256_value: str,
+    fisher_boundary_sha256: str,
+) -> dict[str, object]:
+    return {
+        "endpoint_positions": list(endpoint_positions),
+        "fisher_boundary_sha256": fisher_boundary_sha256,
+        "identity_anchor_manifest_sha256": identity_anchor_manifest_sha256_value,
+        "identity_record_sha256": identity_record_sha256_value,
+        "position_contract": FROZEN_COMPARATOR_POSITION_CONTRACTS[selector_profile],
+        "selector_profile": selector_profile,
+        "sequence_token_ids_sha256": sequence_token_ids_sha256_value,
+        "token_count": token_count,
+    }
+
+
+def _comparator_sequence_score_sha256(
+    *,
+    selector_profile: UnweightedSelectorProfile,
+    position_manifest_sha256: str,
+    endpoint_inputs_sha256: str,
+    identity_record_sha256_value: str,
+    d4: torch.Tensor,
+    d6: torch.Tensor,
+    d8: torch.Tensor,
+) -> str:
+    metadata = {
+        "endpoint_inputs_sha256": endpoint_inputs_sha256,
+        "identity_record_sha256": identity_record_sha256_value,
+        "position_manifest_sha256": position_manifest_sha256,
+        "row_count": d4.numel(),
+        "selector_profile": selector_profile,
+    }
+    return _hash_score_triplet(
+        d4,
+        d6,
+        d8,
+        domain=_COMPARATOR_SEQUENCE_SCORE_HASH_DOMAIN,
+        metadata=metadata,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorSequenceScores:
+    """One identity-bound sequence reduced to comparator row scores."""
+
+    selector_profile: UnweightedSelectorProfile
+    family: CalibrationFamily
+    config: str
+    ruler_category: RulerCategory | None
+    canonical_id: str
+    seed: int | None
+    configured_length: int | None
+    token_count: int
+    endpoint_positions: tuple[int, ...]
+    position_manifest_sha256: str
+    endpoint_inputs_sha256: str
+    sequence_scores_sha256: str
+    d4: torch.Tensor
+    d6: torch.Tensor
+    d8: torch.Tensor
+    source_shape: tuple[int, ...]
+    sequence_token_ids_sha256: str
+    token_span: tuple[tuple[str, int], ...]
+    identity_anchor_manifest_sha256: str
+    identity_record_sha256: str
+    fisher_boundary_sha256: str
+    target_nlls_sha256: str | None
+
+    @property
+    def row_count(self) -> int:
+        return self.d4.numel()
+
+    def identity_tuple(self) -> tuple[object, ...]:
+        return (
+            self.family,
+            self.ruler_category,
+            self.config,
+            self.canonical_id,
+            self.seed,
+            self.configured_length,
+            self.token_count,
+        )
+
+    def position_manifest_record(self) -> dict[str, object]:
+        return {
+            "canonical_id": self.canonical_id,
+            "config": self.config,
+            "configured_length": self.configured_length,
+            "family": self.family,
+            "identity_record_sha256": self.identity_record_sha256,
+            "position_manifest_sha256": self.position_manifest_sha256,
+            "ruler_category": self.ruler_category,
+            "seed": self.seed,
+            "token_count": self.token_count,
+        }
+
+    def manifest_record(self) -> dict[str, object]:
+        return {
+            **self.position_manifest_record(),
+            "endpoint_inputs_sha256": self.endpoint_inputs_sha256,
+            "fisher_boundary_sha256": self.fisher_boundary_sha256,
+            "identity_anchor_manifest_sha256": self.identity_anchor_manifest_sha256,
+            "selector_profile": self.selector_profile,
+            "sequence_scores_sha256": self.sequence_scores_sha256,
+            "sequence_token_ids_sha256": self.sequence_token_ids_sha256,
+            "source_shape": list(self.source_shape),
+            "target_nlls_sha256": self.target_nlls_sha256,
+            "token_span": dict(self.token_span),
+        }
+
+
+def reduce_frozen_comparator_endpoints(
+    batch: FrozenComparatorEndpointBatch,
+) -> ComparatorSequenceScores:
+    """Reduce one strict Identity-v5 comparator endpoint batch on CPU-FP64."""
+
+    if not isinstance(batch, FrozenComparatorEndpointBatch):
+        raise TypeError("batch must be a FrozenComparatorEndpointBatch")
+    (
+        family,
+        config,
+        ruler_category,
+        canonical_id,
+        seed,
+        configured_length,
+        token_count,
+    ) = _metadata(
+        family=batch.family,
+        config=batch.config,
+        ruler_category=batch.ruler_category,
+        canonical_id=batch.canonical_id,
+        seed=batch.seed,
+        configured_length=batch.configured_length,
+        token_count=batch.token_count,
+    )
+    expected_positions = _comparator_expected_positions(batch.selector_profile, token_count)
+    if not isinstance(batch.endpoint_positions, tuple):
+        raise TypeError("endpoint_positions must be a tuple")
+    if batch.endpoint_positions != expected_positions:
+        raise ValueError(
+            "endpoint_positions differ from the selector-specific frozen A(T)/B(T) equation"
+        )
+    if not isinstance(batch.sequence_token_ids, tuple):
+        raise TypeError("sequence_token_ids must be a tuple")
+    if not isinstance(batch.identity_record, Mapping):
+        raise TypeError("identity_record must be a mapping")
+    lineage = _validate_frozen_identity_lineage(batch)
+
+    source_shape = (
+        len(expected_positions),
+        *FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape,
+    )
+    endpoint_values: list[torch.Tensor] = []
+    for name, value in (
+        ("q4_scores", batch.q4_scores),
+        ("q6_scores", batch.q6_scores),
+        ("q8_scores", batch.q8_scores),
+    ):
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"{name} must be a torch.Tensor")
+        if tuple(value.shape) != source_shape:
+            raise ValueError(f"{name} must have frozen source shape {source_shape}")
+        if value.device.type != "cpu" or value.dtype != torch.float64:
+            raise TypeError(f"{name} must be a CPU torch.float64 tensor")
+        endpoint_values.append(
+            _cpu_fp64_matrix(
+                value,
+                name=name,
+                anchors=len(expected_positions),
+                expected_shape=source_shape,
+            )
+        )
+
+    target_nlls_sha256: str | None = None
+    if batch.selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE:
+        if batch.target_nlls is not None:
+            raise ValueError("unweighted MSE comparator cannot carry target_nlls")
+    else:
+        if batch.target_nlls is None:
+            raise ValueError("diagonal empirical-Fisher H1 comparator requires target_nlls")
+        target_nlls = batch.target_nlls
+        if not isinstance(target_nlls, torch.Tensor):
+            raise TypeError("target_nlls must be a torch.Tensor or None")
+        if (
+            target_nlls.device.type != "cpu"
+            or target_nlls.dtype != torch.float64
+            or tuple(target_nlls.shape) != (len(expected_positions),)
+        ):
+            raise TypeError(
+                "target_nlls must be a CPU torch.float64 vector matching endpoint positions"
+            )
+        if not torch.isfinite(target_nlls).all().item() or (target_nlls < 0).any().item():
+            raise ValueError("target_nlls must contain only finite non-negative values")
+        target_nlls_sha256 = hashlib.sha256(
+            _COMPARATOR_TARGET_NLL_HASH_DOMAIN + _tensor_bytes(target_nlls)
+        ).hexdigest()
+
+    raw_boundary = batch.identity_record["fisher_boundary"]
+    assert isinstance(raw_boundary, Mapping)
+    fisher_boundary_hash = _sha256(
+        raw_boundary["fisher_boundary_sha256"],
+        name="identity_record.fisher_boundary.fisher_boundary_sha256",
+    )
+    position_payload = _comparator_position_payload(
+        selector_profile=batch.selector_profile,
+        token_count=token_count,
+        endpoint_positions=expected_positions,
+        sequence_token_ids_sha256_value=lineage.sequence_token_ids_sha256,
+        identity_anchor_manifest_sha256_value=lineage.identity_anchor_manifest_sha256,
+        identity_record_sha256_value=lineage.identity_record_sha256,
+        fisher_boundary_sha256=fisher_boundary_hash,
+    )
+    position_manifest_sha256 = _domain_json_sha256(
+        _COMPARATOR_POSITION_HASH_DOMAIN,
+        position_payload,
+    )
+    endpoint_metadata = {
+        "axis_order": list(FROZEN_COMPARATOR_ENDPOINT_AXIS_ORDER),
+        "dtype": CALIBRATION_SCORE_DTYPE,
+        "position_manifest_sha256": position_manifest_sha256,
+        "selector_profile": batch.selector_profile,
+        "shape": list(source_shape),
+        "target_nlls_sha256": target_nlls_sha256,
+    }
+    endpoint_digest = hashlib.sha256()
+    endpoint_digest.update(_COMPARATOR_ENDPOINT_INPUT_HASH_DOMAIN)
+    endpoint_digest.update(canonical_json_bytes(endpoint_metadata))
+    for label, value in zip(
+        (b"Q4\0", b"Q6\0", b"Q8\0"),
+        endpoint_values,
+        strict=True,
+    ):
+        endpoint_digest.update(label)
+        endpoint_digest.update(_tensor_bytes(value))
+    endpoint_inputs_sha256 = endpoint_digest.hexdigest()
+    reduced = cast(
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple(value.mean(dim=0).contiguous() for value in endpoint_values),
+    )
+    sequence_scores_sha256 = _comparator_sequence_score_sha256(
+        selector_profile=batch.selector_profile,
+        position_manifest_sha256=position_manifest_sha256,
+        endpoint_inputs_sha256=endpoint_inputs_sha256,
+        identity_record_sha256_value=lineage.identity_record_sha256,
+        d4=reduced[0],
+        d6=reduced[1],
+        d8=reduced[2],
+    )
+    return ComparatorSequenceScores(
+        selector_profile=batch.selector_profile,
+        family=family,
+        config=config,
+        ruler_category=ruler_category,
+        canonical_id=canonical_id,
+        seed=seed,
+        configured_length=configured_length,
+        token_count=token_count,
+        endpoint_positions=expected_positions,
+        position_manifest_sha256=position_manifest_sha256,
+        endpoint_inputs_sha256=endpoint_inputs_sha256,
+        sequence_scores_sha256=sequence_scores_sha256,
+        d4=reduced[0],
+        d6=reduced[1],
+        d8=reduced[2],
+        source_shape=source_shape,
+        sequence_token_ids_sha256=lineage.sequence_token_ids_sha256,
+        token_span=lineage.token_span,
+        identity_anchor_manifest_sha256=lineage.identity_anchor_manifest_sha256,
+        identity_record_sha256=lineage.identity_record_sha256,
+        fisher_boundary_sha256=fisher_boundary_hash,
+        target_nlls_sha256=target_nlls_sha256,
     )
 
 
@@ -1050,45 +1723,14 @@ def _mean_score_rows(rows: list[torch.Tensor], *, context: str) -> torch.Tensor:
     return result.contiguous()
 
 
-def aggregate_calibration_scores(
-    sequences: list[CalibrationSequenceScores] | tuple[CalibrationSequenceScores, ...],
-) -> CalibrationAggregate:
-    """Compute the frozen MBPP + PG19 + equal-RULER-category macro."""
-
-    if not isinstance(sequences, (list, tuple)) or not sequences:
-        raise ValueError("sequences must be a non-empty list or tuple")
-    ordered = sorted(sequences, key=_sequence_sort_key)
-    expected_rows: int | None = None
-    identities: set[tuple[object, ...]] = set()
-    for sequence in ordered:
-        _validate_sequence_score(sequence, expected_rows=expected_rows)
-        expected_rows = sequence.row_count if expected_rows is None else expected_rows
-        identity = sequence.identity_tuple()
-        if identity in identities:
-            raise ValueError(f"duplicate calibration sequence identity: {identity!r}")
-        identities.add(identity)
-    assert expected_rows is not None
-    source_contracts = {sequence.source_contract for sequence in ordered}
-    if len(source_contracts) != 1:
-        raise ValueError("all calibration sequences must use one source tensor contract")
-    source_contract = next(iter(source_contracts))
-    if source_contract == FROZEN_SOURCE_TENSOR_CONTRACT:
-        lineage_records = [
-            {
-                "family": sequence.family,
-                "ruler_category": sequence.ruler_category,
-                "config": sequence.config,
-                "canonical_id": sequence.canonical_id,
-                "seed": sequence.seed,
-                "configured_length": sequence.configured_length,
-                "sequence_length": sequence.token_count,
-                "identity_record_sha256": sequence.identity_record_sha256,
-            }
-            for sequence in ordered
-        ]
-        identity_manifest_sha256 = calibration_identity_record_manifest_sha256(lineage_records)
-    else:
-        identity_manifest_sha256 = None
+def _family_balanced_score_aggregate(
+    ordered: Sequence[CalibrationSequenceScores | ComparatorSequenceScores],
+) -> tuple[
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    tuple[tuple[str, int], ...],
+    tuple[tuple[str, int], ...],
+]:
+    """Apply one shared MBPP/PG19/four-category-RULER macro equation."""
 
     grouped = {
         family: [sequence for sequence in ordered if sequence.family == family]
@@ -1129,9 +1771,6 @@ def aggregate_calibration_scores(
         aggregate_by_bit.append(
             _mean_score_rows([mbpp, pg19, ruler], context=f"broad-family macro {attribute}")
         )
-
-    manifest = [sequence.manifest_record() for sequence in ordered]
-    manifest_sha256 = hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
     family_counts = tuple((family, len(grouped[family])) for family in CALIBRATION_FAMILY_ORDER)
     ruler_counts = tuple(
         (
@@ -1140,6 +1779,60 @@ def aggregate_calibration_scores(
         )
         for category in ruler_categories
     )
+    return (
+        cast(
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+            tuple(aggregate_by_bit),
+        ),
+        family_counts,
+        ruler_counts,
+    )
+
+
+def aggregate_calibration_scores(
+    sequences: list[CalibrationSequenceScores] | tuple[CalibrationSequenceScores, ...],
+) -> CalibrationAggregate:
+    """Compute the frozen MBPP + PG19 + equal-RULER-category macro."""
+
+    if not isinstance(sequences, (list, tuple)) or not sequences:
+        raise ValueError("sequences must be a non-empty list or tuple")
+    ordered = sorted(sequences, key=_sequence_sort_key)
+    expected_rows: int | None = None
+    identities: set[tuple[object, ...]] = set()
+    for sequence in ordered:
+        _validate_sequence_score(sequence, expected_rows=expected_rows)
+        expected_rows = sequence.row_count if expected_rows is None else expected_rows
+        identity = sequence.identity_tuple()
+        if identity in identities:
+            raise ValueError(f"duplicate calibration sequence identity: {identity!r}")
+        identities.add(identity)
+    assert expected_rows is not None
+    source_contracts = {sequence.source_contract for sequence in ordered}
+    if len(source_contracts) != 1:
+        raise ValueError("all calibration sequences must use one source tensor contract")
+    source_contract = next(iter(source_contracts))
+    if source_contract == FROZEN_SOURCE_TENSOR_CONTRACT:
+        lineage_records = [
+            {
+                "family": sequence.family,
+                "ruler_category": sequence.ruler_category,
+                "config": sequence.config,
+                "canonical_id": sequence.canonical_id,
+                "seed": sequence.seed,
+                "configured_length": sequence.configured_length,
+                "sequence_length": sequence.token_count,
+                "identity_record_sha256": sequence.identity_record_sha256,
+            }
+            for sequence in ordered
+        ]
+        identity_manifest_sha256 = calibration_identity_record_manifest_sha256(lineage_records)
+    else:
+        identity_manifest_sha256 = None
+
+    aggregate_by_bit, family_counts, ruler_counts = _family_balanced_score_aggregate(ordered)
+
+    manifest = [sequence.manifest_record() for sequence in ordered]
+    manifest_sha256 = hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
     return CalibrationAggregate(
         d4=aggregate_by_bit[0],
         d6=aggregate_by_bit[1],
@@ -1149,6 +1842,260 @@ def aggregate_calibration_scores(
         sequence_score_manifest_sha256=manifest_sha256,
         source_contract=source_contract,
         identity_record_manifest_sha256=identity_manifest_sha256,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorAggregate:
+    """Family-balanced score arrays and complete hashed comparator lineage."""
+
+    selector_profile: UnweightedSelectorProfile
+    d4: torch.Tensor
+    d6: torch.Tensor
+    d8: torch.Tensor
+    family_sequence_counts: tuple[tuple[str, int], ...]
+    ruler_category_sequence_counts: tuple[tuple[str, int], ...]
+    position_manifest_sha256: str
+    sequence_score_manifest_sha256: str
+    identity_record_manifest_sha256: str
+    aggregate_scores_sha256: str
+
+    @property
+    def row_count(self) -> int:
+        return self.d4.numel()
+
+    def scores(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.d4, self.d6, self.d8
+
+
+def _comparator_sequence_sort_key(sequence: ComparatorSequenceScores) -> tuple[object, ...]:
+    return (
+        CALIBRATION_FAMILY_ORDER.index(sequence.family),
+        "" if sequence.ruler_category is None else sequence.ruler_category,
+        sequence.config,
+        sequence.canonical_id,
+        -1 if sequence.seed is None else sequence.seed,
+        -1 if sequence.configured_length is None else sequence.configured_length,
+        sequence.token_count,
+    )
+
+
+def _validate_comparator_sequence_score(
+    sequence: object,
+    *,
+    expected_rows: int | None,
+) -> ComparatorSequenceScores:
+    if not isinstance(sequence, ComparatorSequenceScores):
+        raise TypeError("sequences must contain ComparatorSequenceScores")
+    _metadata(
+        family=sequence.family,
+        config=sequence.config,
+        ruler_category=sequence.ruler_category,
+        canonical_id=sequence.canonical_id,
+        seed=sequence.seed,
+        configured_length=sequence.configured_length,
+        token_count=sequence.token_count,
+    )
+    expected_positions = _comparator_expected_positions(
+        sequence.selector_profile,
+        sequence.token_count,
+    )
+    if sequence.endpoint_positions != expected_positions:
+        raise ValueError("comparator sequence positions drifted from frozen A(T)/B(T)")
+    expected_shape = (
+        len(expected_positions),
+        *FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape,
+    )
+    if sequence.source_shape != expected_shape:
+        raise ValueError("comparator sequence source shape drifted")
+    rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    if expected_rows is not None and rows != expected_rows:
+        raise ValueError("comparator sequence row count differs")
+    for name, value in (("D4", sequence.d4), ("D6", sequence.d6), ("D8", sequence.d8)):
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"{name} must be a torch.Tensor")
+        if (
+            value.device.type != "cpu"
+            or value.dtype != torch.float64
+            or tuple(value.shape) != (rows,)
+            or not value.is_contiguous()
+        ):
+            raise TypeError(f"{name} must be a contiguous CPU torch.float64 row vector")
+    d4, d6, d8 = cast(
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple(
+            _cpu_fp64_scores(value, name=name, expected_rows=rows)
+            for name, value in (
+                ("D4", sequence.d4),
+                ("D6", sequence.d6),
+                ("D8", sequence.d8),
+            )
+        ),
+    )
+    token_hash = _sha256(
+        sequence.sequence_token_ids_sha256,
+        name="sequence_token_ids_sha256",
+    )
+    span = _normalize_token_span(
+        dict(sequence.token_span),
+        sequence_length=sequence.token_count,
+    )
+    identity_anchor_hash = identity_anchor_manifest_sha256(
+        canonical_id=sequence.canonical_id,
+        sequence_length=sequence.token_count,
+        sequence_token_ids_sha256_value=token_hash,
+        token_span=span,
+    )
+    if identity_anchor_hash != sequence.identity_anchor_manifest_sha256:
+        raise ValueError("comparator identity anchor manifest SHA-256 drifted")
+    identity_record_hash = _sha256(
+        sequence.identity_record_sha256,
+        name="identity_record_sha256",
+    )
+    fisher_boundary_hash = _sha256(
+        sequence.fisher_boundary_sha256,
+        name="fisher_boundary_sha256",
+    )
+    if sequence.target_nlls_sha256 is not None:
+        _sha256(sequence.target_nlls_sha256, name="target_nlls_sha256")
+    if (
+        sequence.selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE
+        and sequence.target_nlls_sha256 is not None
+    ):
+        raise ValueError("unweighted MSE sequence cannot claim target NLL input")
+    if (
+        sequence.selector_profile == FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE
+        and sequence.target_nlls_sha256 is None
+    ):
+        raise ValueError("diagonal empirical-Fisher H1 sequence requires a target NLL receipt")
+    endpoint_hash = _sha256(
+        sequence.endpoint_inputs_sha256,
+        name="endpoint_inputs_sha256",
+    )
+    position_payload = _comparator_position_payload(
+        selector_profile=sequence.selector_profile,
+        token_count=sequence.token_count,
+        endpoint_positions=expected_positions,
+        sequence_token_ids_sha256_value=token_hash,
+        identity_anchor_manifest_sha256_value=identity_anchor_hash,
+        identity_record_sha256_value=identity_record_hash,
+        fisher_boundary_sha256=fisher_boundary_hash,
+    )
+    expected_position_hash = _domain_json_sha256(
+        _COMPARATOR_POSITION_HASH_DOMAIN,
+        position_payload,
+    )
+    if sequence.position_manifest_sha256 != expected_position_hash:
+        raise ValueError("comparator position-manifest SHA-256 drifted")
+    expected_score_hash = _comparator_sequence_score_sha256(
+        selector_profile=sequence.selector_profile,
+        position_manifest_sha256=expected_position_hash,
+        endpoint_inputs_sha256=endpoint_hash,
+        identity_record_sha256_value=identity_record_hash,
+        d4=d4,
+        d6=d6,
+        d8=d8,
+    )
+    if sequence.sequence_scores_sha256 != expected_score_hash:
+        raise ValueError("comparator sequence-score SHA-256 drifted")
+    return sequence
+
+
+def _comparator_aggregate_score_sha256(
+    aggregate: ComparatorAggregate,
+) -> str:
+    metadata = {
+        "family_sequence_counts": [
+            {"count": count, "family": family} for family, count in aggregate.family_sequence_counts
+        ],
+        "identity_record_manifest_sha256": aggregate.identity_record_manifest_sha256,
+        "position_manifest_sha256": aggregate.position_manifest_sha256,
+        "row_count": aggregate.row_count,
+        "ruler_category_sequence_counts": [
+            {"category": category, "count": count}
+            for category, count in aggregate.ruler_category_sequence_counts
+        ],
+        "selector_profile": aggregate.selector_profile,
+        "sequence_score_manifest_sha256": aggregate.sequence_score_manifest_sha256,
+    }
+    return _hash_score_triplet(
+        *aggregate.scores(),
+        domain=_COMPARATOR_AGGREGATE_SCORE_HASH_DOMAIN,
+        metadata=metadata,
+    )
+
+
+def aggregate_comparator_scores(
+    sequences: list[ComparatorSequenceScores] | tuple[ComparatorSequenceScores, ...],
+) -> ComparatorAggregate:
+    """Aggregate one comparator with the candidate's exact family-balanced macro."""
+
+    if not isinstance(sequences, (list, tuple)) or not sequences:
+        raise ValueError("sequences must be a non-empty list or tuple")
+    if any(not isinstance(sequence, ComparatorSequenceScores) for sequence in sequences):
+        raise TypeError("sequences must contain ComparatorSequenceScores")
+    selector_profiles = {sequence.selector_profile for sequence in sequences}
+    if len(selector_profiles) != 1:
+        raise ValueError("one comparator aggregate cannot mix selector profiles")
+    selector_profile = next(iter(selector_profiles))
+    _comparator_expected_positions(selector_profile, 3)
+    expected_rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    for sequence in sequences:
+        _validate_comparator_sequence_score(sequence, expected_rows=expected_rows)
+    ordered = sorted(sequences, key=_comparator_sequence_sort_key)
+    identities: set[tuple[object, ...]] = set()
+    for sequence in ordered:
+        identity = sequence.identity_tuple()
+        if identity in identities:
+            raise ValueError(f"duplicate comparator sequence identity: {identity!r}")
+        identities.add(identity)
+
+    aggregate_scores, family_counts, ruler_counts = _family_balanced_score_aggregate(ordered)
+    identity_records = [
+        {
+            "canonical_id": sequence.canonical_id,
+            "config": sequence.config,
+            "configured_length": sequence.configured_length,
+            "family": sequence.family,
+            "identity_record_sha256": sequence.identity_record_sha256,
+            "ruler_category": sequence.ruler_category,
+            "seed": sequence.seed,
+            "sequence_length": sequence.token_count,
+        }
+        for sequence in ordered
+    ]
+    identity_manifest_hash = calibration_identity_record_manifest_sha256(identity_records)
+    position_manifest_hash = _domain_json_sha256(
+        _COMPARATOR_POSITION_MANIFEST_HASH_DOMAIN,
+        [sequence.position_manifest_record() for sequence in ordered],
+    )
+    sequence_manifest_hash = _domain_json_sha256(
+        _COMPARATOR_SEQUENCE_MANIFEST_HASH_DOMAIN,
+        [sequence.manifest_record() for sequence in ordered],
+    )
+    provisional = ComparatorAggregate(
+        selector_profile=cast(UnweightedSelectorProfile, selector_profile),
+        d4=aggregate_scores[0],
+        d6=aggregate_scores[1],
+        d8=aggregate_scores[2],
+        family_sequence_counts=family_counts,
+        ruler_category_sequence_counts=ruler_counts,
+        position_manifest_sha256=position_manifest_hash,
+        sequence_score_manifest_sha256=sequence_manifest_hash,
+        identity_record_manifest_sha256=identity_manifest_hash,
+        aggregate_scores_sha256="0" * 64,
+    )
+    return ComparatorAggregate(
+        selector_profile=provisional.selector_profile,
+        d4=provisional.d4,
+        d6=provisional.d6,
+        d8=provisional.d8,
+        family_sequence_counts=provisional.family_sequence_counts,
+        ruler_category_sequence_counts=provisional.ruler_category_sequence_counts,
+        position_manifest_sha256=provisional.position_manifest_sha256,
+        sequence_score_manifest_sha256=provisional.sequence_score_manifest_sha256,
+        identity_record_manifest_sha256=provisional.identity_record_manifest_sha256,
+        aggregate_scores_sha256=_comparator_aggregate_score_sha256(provisional),
     )
 
 
@@ -2302,6 +3249,523 @@ def verify_calibration_score_artifact(
         "canonical_evidence_sha256": artifact.canonical_evidence_sha256,
         "errors": [],
         "file_sha256": artifact.file_sha256,
+        "valid": True,
+    }
+
+
+def _validate_frozen_comparator_aggregate(
+    aggregate: object,
+    *,
+    expected_profile: UnweightedSelectorProfile,
+) -> ComparatorAggregate:
+    if not isinstance(aggregate, ComparatorAggregate):
+        raise TypeError("aggregate must be a ComparatorAggregate")
+    if aggregate.selector_profile != expected_profile:
+        raise ValueError("comparator aggregate selector profile differs from its slot")
+    expected_rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    for name, value in (("D4", aggregate.d4), ("D6", aggregate.d6), ("D8", aggregate.d8)):
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"{name} must be a torch.Tensor")
+        if (
+            value.device.type != "cpu"
+            or value.dtype != torch.float64
+            or tuple(value.shape) != (expected_rows,)
+            or not value.is_contiguous()
+        ):
+            raise TypeError(f"{name} must be a contiguous CPU torch.float64 row vector")
+    scores = tuple(
+        _cpu_fp64_scores(value, name=name, expected_rows=expected_rows)
+        for name, value in (
+            ("D4", aggregate.d4),
+            ("D6", aggregate.d6),
+            ("D8", aggregate.d8),
+        )
+    )
+    if any(
+        not torch.equal(left, right) for left, right in zip(scores, aggregate.scores(), strict=True)
+    ):
+        raise ValueError("comparator aggregate scores are not canonical CPU-FP64 vectors")
+    if aggregate.family_sequence_counts != (
+        ("mbpp", 128),
+        ("pg19", 16),
+        ("ruler", 16),
+    ):
+        raise ValueError("frozen comparator counts must be MBPP=128, PG19=16, RULER=16")
+    if aggregate.ruler_category_sequence_counts != tuple(
+        (category, 4) for category in RULER_CATEGORY_ORDER
+    ):
+        raise ValueError("each frozen comparator RULER category must contain four sequences")
+    for name, value in (
+        ("position_manifest_sha256", aggregate.position_manifest_sha256),
+        ("sequence_score_manifest_sha256", aggregate.sequence_score_manifest_sha256),
+        ("identity_record_manifest_sha256", aggregate.identity_record_manifest_sha256),
+        ("aggregate_scores_sha256", aggregate.aggregate_scores_sha256),
+    ):
+        _sha256(value, name=name)
+    if aggregate.aggregate_scores_sha256 != _comparator_aggregate_score_sha256(aggregate):
+        raise ValueError("comparator aggregate-score SHA-256 drifted")
+    return aggregate
+
+
+def _allocate_frozen_comparator_codes(aggregate: ComparatorAggregate) -> torch.Tensor:
+    rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    codes = allocate_exact_multibit_codes_fast(
+        *(value.reshape(1, rows) for value in aggregate.scores()),
+        marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+    ).reshape(-1)
+    if codes.device.type != "cpu" or codes.dtype != torch.uint8 or codes.shape != (rows,):
+        raise RuntimeError("comparator allocator returned a non-canonical code map")
+    if int(codes.to(torch.int64).sum().item()) != FROZEN_STATIC_Q468_PRIMARY_STEPS:
+        raise RuntimeError("comparator allocator missed exact K29334")
+    return codes.contiguous()
+
+
+def _frozen_comparator_selector_record(
+    aggregate: ComparatorAggregate,
+) -> dict[str, object]:
+    codes = _allocate_frozen_comparator_codes(aggregate)
+    geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    return {
+        "allocation": {
+            "allocator_revision": STATIC_Q468_ALLOCATOR_REVISION,
+            "code_counts_q4_q6_q8": [int((codes == code).sum().item()) for code in range(3)],
+            "code_map_sha256": static_q468_code_map_sha256(
+                codes,
+                geometry=geometry,
+                marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+            ),
+            "marginal_steps": FROZEN_STATIC_Q468_PRIMARY_STEPS,
+            "packed_precision_bytes": math.ceil(geometry.total_rows * 2 / 8),
+        },
+        "calibration_scores_sha256": aggregate.aggregate_scores_sha256,
+        "family_sequence_counts": [
+            {"count": count, "family": family} for family, count in aggregate.family_sequence_counts
+        ],
+        "method_id": aggregate.selector_profile,
+        "position_contract": FROZEN_COMPARATOR_POSITION_CONTRACTS[aggregate.selector_profile],
+        "position_manifest_sha256": aggregate.position_manifest_sha256,
+        "ruler_category_sequence_counts": [
+            {"category": category, "count": count}
+            for category, count in aggregate.ruler_category_sequence_counts
+        ],
+        "scores": {
+            "axis_order": ["bitwidth", "flattened_layer_head_key_row"],
+            "bitwidths": [4, 6, 8],
+            "data_base64": _score_data_b64(aggregate.scores()),
+            "dtype": CALIBRATION_SCORE_DTYPE,
+            "shape": [3, geometry.total_rows],
+        },
+        "sequence_score_manifest_sha256": aggregate.sequence_score_manifest_sha256,
+    }
+
+
+def build_frozen_comparator_score_artifact(
+    mse_aggregate: ComparatorAggregate,
+    fisher_aggregate: ComparatorAggregate,
+    *,
+    calibration_identity_sha256: str,
+) -> bytes:
+    """Build canonical ``comparator-scores.json`` with both exact-K29334 methods."""
+
+    identity_sha256 = _sha256(
+        calibration_identity_sha256,
+        name="calibration_identity_sha256",
+    )
+    normalized_mse = _validate_frozen_comparator_aggregate(
+        mse_aggregate,
+        expected_profile=FROZEN_UNWEIGHTED_MSE_PROFILE,
+    )
+    normalized_fisher = _validate_frozen_comparator_aggregate(
+        fisher_aggregate,
+        expected_profile=FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+    )
+    if (
+        normalized_mse.identity_record_manifest_sha256
+        != normalized_fisher.identity_record_manifest_sha256
+    ):
+        raise ValueError("both comparator profiles must bind the same Identity-v5 records")
+    if (
+        normalized_mse.family_sequence_counts != normalized_fisher.family_sequence_counts
+        or normalized_mse.ruler_category_sequence_counts
+        != normalized_fisher.ruler_category_sequence_counts
+    ):
+        raise ValueError("both comparator profiles must cover the same frozen sequence counts")
+
+    geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    evidence = {
+        "aggregation_contract": _COMPARATOR_AGGREGATION_CONTRACT,
+        "artifact_profile": COMPARATOR_SCORE_ARTIFACT_PROFILE,
+        "artifact_revision": COMPARATOR_SCORE_ARTIFACT_REVISION,
+        "calibration_identity_sha256": identity_sha256,
+        "endpoint_tensor_contract": {
+            "axis_order": list(FROZEN_COMPARATOR_ENDPOINT_AXIS_ORDER),
+            "dtype": CALIBRATION_SCORE_DTYPE,
+            "trailing_shape": list(FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape),
+        },
+        "geometry": geometry.canonical_dict(),
+        "geometry_sha256": geometry.geometry_sha256,
+        "identity_record_manifest_sha256": (normalized_mse.identity_record_manifest_sha256),
+        "selectors": [
+            _frozen_comparator_selector_record(normalized_mse),
+            _frozen_comparator_selector_record(normalized_fisher),
+        ],
+    }
+    canonical_evidence_sha256 = hashlib.sha256(canonical_json_bytes(evidence)).hexdigest()
+    return canonical_json_bytes(
+        {
+            "artifact_kind": COMPARATOR_SCORE_ARTIFACT_KIND,
+            "canonical_evidence_sha256": canonical_evidence_sha256,
+            "evidence": evidence,
+            "schema_version": COMPARATOR_SCORE_ARTIFACT_SCHEMA_VERSION,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorSelectorArtifact:
+    method_id: UnweightedSelectorProfile
+    aggregate: ComparatorAggregate
+    position_manifest_sha256: str
+    calibration_scores_sha256: str
+    marginal_steps: int
+    precision_codes: torch.Tensor
+    code_map_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorScoreArtifact:
+    selectors: Mapping[str, ComparatorSelectorArtifact]
+    calibration_identity_sha256: str
+    canonical_evidence_sha256: str
+    file_sha256: str
+
+
+def _decode_comparator_scores(
+    value: object,
+    *,
+    context: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    record = _mapping(value, context=context)
+    _exact_keys(
+        record,
+        {"axis_order", "bitwidths", "data_base64", "dtype", "shape"},
+        context=context,
+    )
+    geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    if record["axis_order"] != ["bitwidth", "flattened_layer_head_key_row"]:
+        raise CalibrationArtifactError(f"{context}.axis_order drifted")
+    if record["bitwidths"] != [4, 6, 8]:
+        raise CalibrationArtifactError(f"{context}.bitwidths must be Q4, Q6, Q8")
+    if record["dtype"] != CALIBRATION_SCORE_DTYPE:
+        raise CalibrationArtifactError(f"{context}.dtype must be float64-le")
+    if record["shape"] != [3, geometry.total_rows]:
+        raise CalibrationArtifactError(f"{context}.shape differs from frozen geometry")
+    encoded = record["data_base64"]
+    if not isinstance(encoded, str):
+        raise CalibrationArtifactError(f"{context}.data_base64 must be a string")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise CalibrationArtifactError(f"{context}.data_base64 is invalid") from exc
+    if base64.b64encode(raw).decode("ascii") != encoded:
+        raise CalibrationArtifactError(f"{context}.data_base64 is not canonical")
+    expected_bytes = 3 * geometry.total_rows * 8
+    if len(raw) != expected_bytes:
+        raise CalibrationArtifactError(
+            f"{context} byte length differs: expected {expected_bytes}, got {len(raw)}"
+        )
+    array = np.frombuffer(raw, dtype="<f8").copy().reshape(3, geometry.total_rows)
+    if not np.isfinite(array).all() or (array < 0).any():
+        raise CalibrationArtifactError(f"{context} arrays must be finite and non-negative")
+    return cast(
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple(torch.from_numpy(array[index].copy()) for index in range(3)),
+    )
+
+
+def deserialize_comparator_score_artifact(
+    data: bytes,
+    *,
+    expected_calibration_identity_sha256: str | None = None,
+) -> ComparatorScoreArtifact:
+    """Strictly decode and recompute canonical comparator-score evidence."""
+
+    if not isinstance(data, bytes):
+        raise TypeError("data must be bytes")
+    file_sha256 = hashlib.sha256(data).hexdigest()
+    try:
+        document = json.loads(
+            data.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        if isinstance(exc, CalibrationArtifactError):
+            raise
+        raise CalibrationArtifactError(
+            f"comparator artifact is not strict UTF-8 JSON: {exc}"
+        ) from exc
+    root = _mapping(document, context="comparator artifact")
+    _exact_keys(
+        root,
+        {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
+        context="comparator artifact",
+    )
+    if root["artifact_kind"] != COMPARATOR_SCORE_ARTIFACT_KIND:
+        raise CalibrationArtifactError("comparator artifact kind drifted")
+    if (
+        _artifact_int(
+            root["schema_version"],
+            context="comparator artifact.schema_version",
+            minimum=1,
+        )
+        != COMPARATOR_SCORE_ARTIFACT_SCHEMA_VERSION
+    ):
+        raise CalibrationArtifactError("comparator artifact schema version drifted")
+    evidence = _mapping(root["evidence"], context="comparator artifact.evidence")
+    _exact_keys(
+        evidence,
+        {
+            "aggregation_contract",
+            "artifact_profile",
+            "artifact_revision",
+            "calibration_identity_sha256",
+            "endpoint_tensor_contract",
+            "geometry",
+            "geometry_sha256",
+            "identity_record_manifest_sha256",
+            "selectors",
+        },
+        context="comparator artifact.evidence",
+    )
+    if evidence["artifact_profile"] != COMPARATOR_SCORE_ARTIFACT_PROFILE:
+        raise CalibrationArtifactError("comparator artifact profile drifted")
+    if evidence["artifact_revision"] != COMPARATOR_SCORE_ARTIFACT_REVISION:
+        raise CalibrationArtifactError("comparator artifact revision drifted")
+    if evidence["aggregation_contract"] != _COMPARATOR_AGGREGATION_CONTRACT:
+        raise CalibrationArtifactError("comparator aggregation contract drifted")
+    geometry = _parse_geometry(evidence["geometry"])
+    if geometry != FROZEN_QWEN35_STATIC_Q468_GEOMETRY:
+        raise CalibrationArtifactError("comparator geometry differs from frozen Qwen3.5 geometry")
+    geometry_hash = _artifact_sha(
+        evidence["geometry_sha256"],
+        context="comparator artifact.evidence.geometry_sha256",
+    )
+    if geometry_hash != geometry.geometry_sha256:
+        raise CalibrationArtifactError("comparator geometry SHA-256 mismatch")
+    expected_endpoint_contract = {
+        "axis_order": list(FROZEN_COMPARATOR_ENDPOINT_AXIS_ORDER),
+        "dtype": CALIBRATION_SCORE_DTYPE,
+        "trailing_shape": list(FROZEN_SOURCE_TENSOR_CONTRACT.trailing_shape),
+    }
+    if evidence["endpoint_tensor_contract"] != expected_endpoint_contract:
+        raise CalibrationArtifactError("comparator endpoint tensor contract drifted")
+    calibration_identity_hash = _artifact_sha(
+        evidence["calibration_identity_sha256"],
+        context="comparator artifact.evidence.calibration_identity_sha256",
+    )
+    if expected_calibration_identity_sha256 is not None:
+        expected_identity = _artifact_sha(
+            expected_calibration_identity_sha256,
+            context="expected_calibration_identity_sha256",
+        )
+        if calibration_identity_hash != expected_identity:
+            raise CalibrationArtifactError(
+                "comparator calibration identity SHA-256 differs from expected identity"
+            )
+    identity_manifest_hash = _artifact_sha(
+        evidence["identity_record_manifest_sha256"],
+        context="comparator artifact.evidence.identity_record_manifest_sha256",
+    )
+    recorded_canonical_hash = _artifact_sha(
+        root["canonical_evidence_sha256"],
+        context="comparator artifact.canonical_evidence_sha256",
+    )
+    computed_canonical_hash = hashlib.sha256(canonical_json_bytes(evidence)).hexdigest()
+    if recorded_canonical_hash != computed_canonical_hash:
+        raise CalibrationArtifactError("comparator canonical evidence SHA-256 mismatch")
+    if canonical_json_bytes(root) != data:
+        raise CalibrationArtifactError("comparator artifact bytes are not canonical JSON")
+
+    selector_values = _sequence(
+        evidence["selectors"],
+        context="comparator artifact.evidence.selectors",
+    )
+    if len(selector_values) != len(FROZEN_COMPARATOR_PROFILE_ORDER):
+        raise CalibrationArtifactError("comparator artifact must contain exactly two selectors")
+    decoded_selectors: dict[str, ComparatorSelectorArtifact] = {}
+    for index, (raw_selector, expected_method) in enumerate(
+        zip(selector_values, FROZEN_COMPARATOR_PROFILE_ORDER, strict=True)
+    ):
+        context = f"comparator artifact.evidence.selectors[{index}]"
+        selector = _mapping(raw_selector, context=context)
+        _exact_keys(
+            selector,
+            {
+                "allocation",
+                "calibration_scores_sha256",
+                "family_sequence_counts",
+                "method_id",
+                "position_contract",
+                "position_manifest_sha256",
+                "ruler_category_sequence_counts",
+                "scores",
+                "sequence_score_manifest_sha256",
+            },
+            context=context,
+        )
+        if selector["method_id"] != expected_method:
+            raise CalibrationArtifactError(
+                "comparator selectors must contain exactly MSE then diagonal Fisher H1"
+            )
+        if selector["position_contract"] != FROZEN_COMPARATOR_POSITION_CONTRACTS[expected_method]:
+            raise CalibrationArtifactError(f"{context}.position_contract drifted")
+        family_counts = _parse_counts(
+            selector["family_sequence_counts"],
+            context=f"{context}.family_sequence_counts",
+            key_name="family",
+            expected_names=CALIBRATION_FAMILY_ORDER,
+        )
+        ruler_counts = _parse_counts(
+            selector["ruler_category_sequence_counts"],
+            context=f"{context}.ruler_category_sequence_counts",
+            key_name="category",
+            expected_names=RULER_CATEGORY_ORDER,
+        )
+        scores = _decode_comparator_scores(selector["scores"], context=f"{context}.scores")
+        position_hash = _artifact_sha(
+            selector["position_manifest_sha256"],
+            context=f"{context}.position_manifest_sha256",
+        )
+        sequence_manifest_hash = _artifact_sha(
+            selector["sequence_score_manifest_sha256"],
+            context=f"{context}.sequence_score_manifest_sha256",
+        )
+        aggregate_score_hash = _artifact_sha(
+            selector["calibration_scores_sha256"],
+            context=f"{context}.calibration_scores_sha256",
+        )
+        aggregate = ComparatorAggregate(
+            selector_profile=expected_method,
+            d4=scores[0],
+            d6=scores[1],
+            d8=scores[2],
+            family_sequence_counts=family_counts,
+            ruler_category_sequence_counts=ruler_counts,
+            position_manifest_sha256=position_hash,
+            sequence_score_manifest_sha256=sequence_manifest_hash,
+            identity_record_manifest_sha256=identity_manifest_hash,
+            aggregate_scores_sha256=aggregate_score_hash,
+        )
+        _validate_frozen_comparator_aggregate(
+            aggregate,
+            expected_profile=expected_method,
+        )
+
+        allocation = _mapping(selector["allocation"], context=f"{context}.allocation")
+        _exact_keys(
+            allocation,
+            {
+                "allocator_revision",
+                "code_counts_q4_q6_q8",
+                "code_map_sha256",
+                "marginal_steps",
+                "packed_precision_bytes",
+            },
+            context=f"{context}.allocation",
+        )
+        if allocation["allocator_revision"] != STATIC_Q468_ALLOCATOR_REVISION:
+            raise CalibrationArtifactError(f"{context}.allocation allocator revision drifted")
+        marginal_steps = _artifact_int(
+            allocation["marginal_steps"],
+            context=f"{context}.allocation.marginal_steps",
+        )
+        if marginal_steps != FROZEN_STATIC_Q468_PRIMARY_STEPS:
+            raise CalibrationArtifactError(f"{context} allocation must spend exact K29334")
+        expected_packed_bytes = math.ceil(geometry.total_rows * 2 / 8)
+        if (
+            _artifact_int(
+                allocation["packed_precision_bytes"],
+                context=f"{context}.allocation.packed_precision_bytes",
+            )
+            != expected_packed_bytes
+        ):
+            raise CalibrationArtifactError(f"{context} packed precision byte count drifted")
+        raw_counts = _sequence(
+            allocation["code_counts_q4_q6_q8"],
+            context=f"{context}.allocation.code_counts_q4_q6_q8",
+        )
+        if len(raw_counts) != 3:
+            raise CalibrationArtifactError(f"{context} allocation needs Q4/Q6/Q8 counts")
+        counts = [
+            _artifact_int(value, context=f"{context}.allocation.code_counts[{position}]")
+            for position, value in enumerate(raw_counts)
+        ]
+        codes = _allocate_frozen_comparator_codes(aggregate)
+        computed_counts = [int((codes == code).sum().item()) for code in range(3)]
+        if counts != computed_counts or sum(counts) != geometry.total_rows:
+            raise CalibrationArtifactError(f"{context} code counts differ from exact allocation")
+        code_map_hash = _artifact_sha(
+            allocation["code_map_sha256"],
+            context=f"{context}.allocation.code_map_sha256",
+        )
+        computed_code_hash = static_q468_code_map_sha256(
+            codes,
+            geometry=geometry,
+            marginal_steps=marginal_steps,
+        )
+        if code_map_hash != computed_code_hash:
+            raise CalibrationArtifactError(f"{context} code-map SHA-256 drifted")
+        decoded_selectors[expected_method] = ComparatorSelectorArtifact(
+            method_id=expected_method,
+            aggregate=aggregate,
+            position_manifest_sha256=position_hash,
+            calibration_scores_sha256=aggregate_score_hash,
+            marginal_steps=marginal_steps,
+            precision_codes=codes,
+            code_map_sha256=computed_code_hash,
+        )
+
+    if set(decoded_selectors) != set(FROZEN_COMPARATOR_PROFILE_ORDER):
+        raise CalibrationArtifactError("comparator artifact is missing a frozen selector")
+    return ComparatorScoreArtifact(
+        selectors=MappingProxyType(decoded_selectors),
+        calibration_identity_sha256=calibration_identity_hash,
+        canonical_evidence_sha256=computed_canonical_hash,
+        file_sha256=file_sha256,
+    )
+
+
+def verify_comparator_score_artifact(
+    data: bytes,
+    *,
+    expected_calibration_identity_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Return a JSON-compatible fail-closed comparator verification report."""
+
+    file_sha256 = hashlib.sha256(data).hexdigest() if isinstance(data, bytes) else None
+    try:
+        artifact = deserialize_comparator_score_artifact(
+            data,
+            expected_calibration_identity_sha256=expected_calibration_identity_sha256,
+        )
+    except (TypeError, ValueError) as exc:
+        return {
+            "errors": [str(exc)],
+            "file_sha256": file_sha256,
+            "selectors": [],
+            "valid": False,
+        }
+    return {
+        "errors": [],
+        "file_sha256": artifact.file_sha256,
+        "selectors": [
+            {
+                "code_map_sha256": artifact.selectors[method].code_map_sha256,
+                "method_id": method,
+            }
+            for method in FROZEN_COMPARATOR_PROFILE_ORDER
+        ],
         "valid": True,
     }
 

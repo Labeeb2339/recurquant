@@ -24,6 +24,17 @@ assert API_SPEC is not None and API_SPEC.loader is not None
 api = importlib.util.module_from_spec(API_SPEC)
 sys.modules[API_SPEC.name] = api
 API_SPEC.loader.exec_module(api)
+RESOLVER_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "scripts" / "resolve_static_q468_identity.py"
+)
+RESOLVER_SPEC = importlib.util.spec_from_file_location(
+    "resolve_static_q468_identity_for_runner_tests",
+    RESOLVER_SCRIPT,
+)
+assert RESOLVER_SPEC is not None and RESOLVER_SPEC.loader is not None
+identity_resolver = importlib.util.module_from_spec(RESOLVER_SPEC)
+sys.modules[RESOLVER_SPEC.name] = identity_resolver
+RESOLVER_SPEC.loader.exec_module(identity_resolver)
 SPEC = importlib.util.spec_from_file_location("run_static_q468_calibration", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 runner = importlib.util.module_from_spec(SPEC)
@@ -50,6 +61,16 @@ def current_head() -> str:
     return process.stdout.strip()
 
 
+def authenticated_git_path() -> Path:
+    return runner._authenticate_git_executable(None).path
+
+
+def fisher_boundary_contract(
+    token_ids: tuple[int, ...] = (1, 2, 3),
+) -> dict[str, object]:
+    return identity_resolver.build_fisher_boundary_contract(token_ids)
+
+
 def record(token_ids: tuple[int, ...] = (1, 2, 3)) -> dict[str, object]:
     prompt_stop = max(1, len(token_ids) - 1)
     return {
@@ -57,6 +78,7 @@ def record(token_ids: tuple[int, ...] = (1, 2, 3)) -> dict[str, object]:
         "config": "default",
         "family": "mbpp",
         "formatted_content_sha256": "b" * 64,
+        "fisher_boundary": fisher_boundary_contract(token_ids),
         "generator_receipt_sha256": None,
         "prompt_token_ids_sha256": token_digest(token_ids[:prompt_stop]),
         "ruler_category": None,
@@ -132,7 +154,7 @@ def bootstrap_identity_bytes(
         "identity_only": True,
         "phase": "calibration",
         "promotion_required": False,
-        "schema_version": 4,
+        "schema_version": runner.FROZEN_IDENTITY_SCHEMA_VERSION,
         "status": "frozen",
     }
     return runner.canonical_json_bytes(
@@ -184,7 +206,31 @@ def model_manifest_bytes(files: Mapping[str, bytes]) -> bytes:
     return runner.canonical_json_bytes(payload)
 
 
+def staged_model_files() -> dict[str, bytes]:
+    return {
+        "config.json": b"{}",
+        "model.safetensors": b"authenticated-weight-placeholder",
+        "model.safetensors.index.json": b"{}",
+    }
+
+
+def model_staging_authorization(
+    files: Mapping[str, bytes] | None = None,
+) -> Any:
+    payload = model_manifest_bytes(files or staged_model_files())
+    manifest = runner.parse_model_file_manifest(payload)
+    frozen = identity((), model_manifest_sha256=digest(payload))
+    return runner.ModelStagingAuthorization(
+        identity=frozen,
+        model_manifest=manifest,
+        frozen_identity_file_sha256="d" * 64,
+        identity_commit="3" * 40,
+        source_commit="1" * 40,
+    )
+
+
 def runtime_manifest_bytes() -> bytes:
+    git_executable = runner._authenticate_git_executable(None)
     interpreter_sha256, interpreter_size = runner._stream_file_sha256(
         Path(sys.executable).resolve(strict=True)
     )
@@ -230,6 +276,11 @@ def runtime_manifest_bytes() -> bytes:
             "root": runner.BASE_RUNTIME_ROOT_NAME,
             "sha256": interpreter_sha256,
             "size_bytes": interpreter_size,
+        },
+        "git_executable": {
+            "absolute_path_sha256": git_executable.absolute_path_sha256,
+            "sha256": git_executable.sha256,
+            "size_bytes": git_executable.size_bytes,
         },
         "launch_policy": dict(runner.SEALED_LAUNCH_POLICY),
         "machine": dict(
@@ -289,7 +340,24 @@ def test_bootstrap_identity_rejects_float_schema_version() -> None:
         parquet_manifest_sha256="a" * 64,
     )
     document = json.loads(data)
-    document["evidence"]["schema_version"] = 4.0
+    document["evidence"]["schema_version"] = 5.0
+    document["canonical_evidence_sha256"] = digest(
+        runner.canonical_json_bytes(document["evidence"])
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="state"):
+        runner._bootstrap_identity_bindings(runner.canonical_json_bytes(document))
+
+
+def test_bootstrap_identity_rejects_obsolete_schema_v4() -> None:
+    data = bootstrap_identity_bytes(
+        source_manifest_sha256="7" * 64,
+        runtime_manifest_sha256="8" * 64,
+        model_manifest_sha256="9" * 64,
+        parquet_manifest_sha256="a" * 64,
+    )
+    document = json.loads(data)
+    document["evidence"]["schema_version"] = 4
     document["canonical_evidence_sha256"] = digest(
         runner.canonical_json_bytes(document["evidence"])
     )
@@ -331,11 +399,13 @@ class FakeBackend:
         *,
         stability_passed: bool = True,
         decode_error: BaseException | None = None,
+        expected_source_commit: str | None = None,
     ) -> None:
         self.frozen_identity = frozen_identity
         self.events = events
         self.stability_passed = stability_passed
         self.decode_error = decode_error
+        self.expected_source_commit = expected_source_commit or current_head()
         self.captured: list[Any] = []
 
     def decode_identity(self, data: bytes) -> Any:
@@ -364,7 +434,7 @@ class FakeBackend:
     ) -> Any:
         self.events.append("finalize")
         assert len(scores) == len(identity.records)
-        assert source_commit == current_head()
+        assert source_commit == self.expected_source_commit
         stability = {
             "checks": [{"name": "fake", "passed": self.stability_passed}],
             "passed": self.stability_passed,
@@ -377,14 +447,15 @@ class FakeBackend:
             )
         artifacts = runner.CalibrationArtifacts(
             score=b"score",
+            comparator_score=b"comparator-score",
             split_half=b"split",
             static_k27030=b"k27030",
             static_k29334=b"k29334",
+            static_mse_k29334=b"mse-k29334",
+            static_fisher_k29334=b"fisher-k29334",
             static_q48=b"q48",
             stage_a_binding=b"binding",
             stability=stability,
-            calibration_scores_sha256="3" * 64,
-            sequence_score_manifest_sha256="4" * 64,
         )
         return runner.FinalizationResult(
             passed=True,
@@ -406,6 +477,8 @@ class FakeAdapter:
         self.invalid_kernel_receipt = invalid_kernel_receipt
         self.closed = False
         self.capture_flags: list[bool] = []
+        self.fisher_calls: list[tuple[int, int, int]] = []
+        self.geometry = FakeBackend.geometry
 
     def materialize_sequence(self, item: Mapping[str, object]) -> Any:
         self.events.append("materialize_sequence")
@@ -431,7 +504,7 @@ class FakeAdapter:
         del model
         self.events.append("step_token")
         self.capture_flags.append(capture_state)
-        geometry = FakeBackend.geometry
+        geometry = self.geometry
         return api.StepObservation(
             position=position,
             token_id=token_id,
@@ -456,6 +529,42 @@ class FakeAdapter:
             ),
         )
 
+    def step_token_with_fisher(
+        self,
+        model: object,
+        *,
+        token_id: int,
+        position: int,
+        target_token_id: int,
+        capture_state: bool,
+    ) -> object:
+        self.events.append("step_token_with_fisher")
+        self.fisher_calls.append((position, token_id, target_token_id))
+        observation = self.step_token(
+            model,
+            token_id=token_id,
+            position=position,
+            capture_state=capture_state,
+        )
+        geometry = self.geometry
+        source = torch.ones(
+            geometry.layers,
+            geometry.heads,
+            geometry.key_rows,
+            geometry.value_width,
+        )
+        return api.FisherStepObservation(
+            boundary_position=position - 1,
+            input_position=position,
+            target_position=position + 1,
+            input_token_id=token_id,
+            target_token_id=target_token_id,
+            step_observation=observation,
+            source_recurrent_state=source,
+            source_state_gradient=torch.full_like(source, 0.25),
+            target_nll=1.0,
+        )
+
     def end_sequence(self, model: object, item: Mapping[str, object]) -> None:
         del model, item
         self.events.append("end_sequence")
@@ -468,6 +577,7 @@ class FakeAdapter:
     def runtime_metadata(self) -> Mapping[str, object]:
         self.events.append("runtime_metadata")
         return {
+            "fisher_step_count": len(self.fisher_calls),
             "model_open": not self.closed,
             "name": "fake",
             "one_token_calls": self.events.count("step_token"),
@@ -485,18 +595,33 @@ def fake_distortions(state: torch.Tensor, geometry: Any) -> Any:
     return tuple(torch.full(shape, value, dtype=torch.float64) for value in (3.0, 2.0, 1.0))
 
 
-def source_verifier(events: list[str], *, fail_on_call: int | None = None) -> Any:
+def fake_fisher_distortions(
+    state: torch.Tensor,
+    gradient: torch.Tensor,
+    geometry: Any,
+) -> Any:
+    assert state.shape == gradient.shape
+    return fake_distortions(state, geometry)
+
+
+def source_verifier(
+    events: list[str],
+    *,
+    fail_on_call: int | None = None,
+    source_commit: str | None = None,
+) -> Any:
     calls = 0
+    expected_source_commit = source_commit or current_head()
 
     def verify(expected: Mapping[str, object], root: Path) -> Any:
         nonlocal calls
         calls += 1
         events.append("verify_source")
-        assert expected == {"manifest": "expected", "source_commit": current_head()}
+        assert expected == {"manifest": "expected", "source_commit": expected_source_commit}
         assert root == SCRIPT.parents[1]
         if fail_on_call == calls:
             raise runner.CalibrationRunError("source drift")
-        return {"manifest": "expected", "source_commit": current_head()}, "5" * 64
+        return {"manifest": "expected", "source_commit": expected_source_commit}, "5" * 64
 
     return verify
 
@@ -508,11 +633,17 @@ def configured_run(
     stability_passed: bool = True,
     source_fail_on_call: int | None = None,
     decode_error: BaseException | None = None,
+    source_commit: str | None = None,
 ) -> tuple[Any, Any, Any, Any]:
     selected_records = list(records or [record()])
-    files = {"config.json": b"{}", "model.safetensors": b"safe-test-placeholder"}
+    expected_source_commit = source_commit or current_head()
+    files = {
+        "config.json": b"{}",
+        "model.safetensors": b"safe-test-placeholder",
+        "model.safetensors.index.json": b"{}",
+    }
     source_bytes = runner.canonical_json_bytes(
-        {"manifest": "expected", "source_commit": current_head()}
+        {"manifest": "expected", "source_commit": expected_source_commit}
     )
     model_bytes = model_manifest_bytes(files)
     runtime_bytes = runtime_manifest_bytes()
@@ -532,6 +663,7 @@ def configured_run(
         events,
         stability_passed=stability_passed,
         decode_error=decode_error,
+        expected_source_commit=expected_source_commit,
     )
     sequence_map = {
         str(item["canonical_id"]): materialized(
@@ -554,6 +686,9 @@ def configured_run(
             python_version=manifest.python_version,
             python_cache_tag=manifest.python_cache_tag,
             interpreter_sha256=manifest.interpreter_sha256,
+            git_executable_absolute_path_sha256=(manifest.git_executable_absolute_path_sha256),
+            git_executable_sha256=manifest.git_executable_sha256,
+            git_executable_size_bytes=manifest.git_executable_size_bytes,
             machine_name=manifest.machine_name,
             base_runtime_file_count=len(manifest.runtime_trees[0].files),
             package_root_count=len(manifest.package_roots),
@@ -565,9 +700,15 @@ def configured_run(
     services = runner.RunnerServices(
         backend=backend,
         calibration_api=api,
-        verify_repository_source=source_verifier(events, fail_on_call=source_fail_on_call),
+        identity_resolver=identity_resolver,
+        verify_repository_source=source_verifier(
+            events,
+            fail_on_call=source_fail_on_call,
+            source_commit=expected_source_commit,
+        ),
         validate_adapter=lambda _adapter: events.append("validate_adapter"),
         distortion_function=fake_distortions,
+        fisher_distortion_function=fake_fisher_distortions,
         authenticate_model_files=authenticate,
         authenticate_runtime=authenticate_runtime,
     )
@@ -579,12 +720,64 @@ def configured_run(
         runtime_manifest_bytes=runtime_bytes,
         model_root=model_root,
         repository_root=SCRIPT.parents[1],
-        expected_source_commit=current_head(),
+        expected_source_commit=expected_source_commit,
         expected_model_file_manifest_sha256=digest(model_bytes),
         expected_parquet_materialization_manifest_sha256=digest(parquet_bytes),
         expected_runtime_manifest_sha256=digest(runtime_bytes),
         output_dir=tmp_path / "output",
         require_cuda=False,
+    )
+    parsed_runtime = runner.parse_calibration_runtime_manifest(runtime_bytes)
+    authenticated_runtime = authenticate_runtime(parsed_runtime)
+    events.clear()
+    parsed_model = runner.parse_model_file_manifest(model_bytes)
+    authenticated_model = runner.authenticate_local_model_files(
+        model_root,
+        parsed_model,
+        calibration_api=api,
+    )
+    first_record = frozen.records[0]
+    first_token_count = int(first_record["sequence_length"])
+    first_fisher_count = len(first_record["fisher_boundary"]["boundary_positions"])
+    smoke_report = runner._report_bytes(
+        status="fisher_h1_smoke_passed",
+        identity=frozen,
+        source_commit=expected_source_commit,
+        source_manifest_sha256="5" * 64,
+        source_manifest_file_sha256=digest(source_bytes),
+        model_files=authenticated_model,
+        sequence_count=1,
+        token_count=first_token_count,
+        post_token_anchor_count=len(runner.frozen_anchor_positions(first_token_count)),
+        fisher_boundary_count=first_fisher_count,
+        observed_fisher_step_count=first_fisher_count,
+        stability={
+            "checks": [],
+            "evaluated": False,
+            "passed": None,
+            "scope": "smoke_only",
+        },
+        artifacts={},
+        runtime={
+            "adapter": {"fisher_step_count": first_fisher_count},
+            "authenticated_distribution_count": authenticated_runtime.distribution_count,
+            "authenticated_file_count": authenticated_runtime.file_count,
+            "cuda_available": True,
+            "cuda_runtime": "test",
+            "elapsed_seconds_hex": (0.0).hex(),
+            "gpu": {"name": "test-gpu"},
+            "packages": dict(authenticated_runtime.distributions),
+            "platform": "test",
+            "python": "test",
+            "runtime_manifest_file_sha256": authenticated_runtime.manifest_file_sha256,
+            "torch": "test",
+        },
+        fisher_h1_smoke_report_file_sha256=None,
+    )
+    config = replace(
+        config,
+        prior_fisher_h1_smoke_report_bytes=smoke_report,
+        prior_fisher_h1_smoke_complete_bytes=runner.FISHER_SMOKE_COMPLETE_BYTES,
     )
     return config, adapter, services, events
 
@@ -597,9 +790,12 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
     assert result["status"] == "passed"
     assert set(path.name for path in config.output_dir.iterdir()) == {
         runner.SCORE_FILENAME,
+        runner.COMPARATOR_SCORE_FILENAME,
         runner.SPLIT_FILENAME,
         runner.K27030_FILENAME,
         runner.K29334_FILENAME,
+        runner.MSE_K29334_FILENAME,
+        runner.FISHER_K29334_FILENAME,
         runner.Q48_FILENAME,
         runner.BINDING_FILENAME,
         runner.REPORT_FILENAME,
@@ -625,7 +821,10 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
     report = json.loads((config.output_dir / runner.REPORT_FILENAME).read_text())
     assert report["evidence"]["status"] == "passed"
     assert report["evidence"]["calibration"] == {
-        "anchor_count": 3,
+        "expected_fisher_step_count": 1,
+        "observed_fisher_step_count": 1,
+        "fisher_boundary_count": 1,
+        "post_token_anchor_count": 3,
         "sequence_count": 1,
         "token_count": 3,
     }
@@ -638,9 +837,106 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
         ),
         "repository_source_manifest_file_sha256": digest(config.repository_source_manifest_bytes),
     }
+    assert report["evidence"]["prerequisites"] == {
+        "fisher_h1_smoke_report_file_sha256": digest(config.prior_fisher_h1_smoke_report_bytes)
+    }
 
 
-def test_identity_view_consumes_strict_schema_v4_execution_bindings(
+def test_fisher_h1_smoke_runs_first_frozen_sequence_and_publishes_only_receipt(
+    tmp_path: Path,
+) -> None:
+    first = record()
+    second = {**record(), "canonical_id": "item-2"}
+    config, adapter, services, events = configured_run(
+        tmp_path,
+        records=[first, second],
+    )
+    config = replace(
+        config,
+        fisher_h1_smoke=True,
+        prior_fisher_h1_smoke_report_bytes=None,
+        prior_fisher_h1_smoke_complete_bytes=None,
+    )
+
+    result = runner.run_calibration(config, adapter, services=services)
+
+    assert result["status"] == "fisher_h1_smoke_passed"
+    assert result["sequence_count"] == 1
+    assert result["token_count"] == 3
+    assert result["fisher_boundary_count"] == 1
+    assert events.count("materialize_sequence") == 2
+    assert events.count("reduce_sequence") == 1
+    assert "finalize" not in events
+    assert adapter.closed
+    assert {path.name for path in config.output_dir.iterdir()} == {
+        runner.FISHER_SMOKE_REPORT_FILENAME,
+        runner.FISHER_SMOKE_COMPLETE_FILENAME,
+    }
+    report = json.loads((config.output_dir / runner.FISHER_SMOKE_REPORT_FILENAME).read_text())
+    assert report["evidence"]["status"] == "fisher_h1_smoke_passed"
+    assert report["evidence"]["calibration"] == {
+        "expected_fisher_step_count": 1,
+        "observed_fisher_step_count": 1,
+        "fisher_boundary_count": 1,
+        "post_token_anchor_count": 3,
+        "sequence_count": 1,
+        "token_count": 3,
+    }
+    assert report["evidence"]["artifacts"] == {}
+    assert report["evidence"]["prerequisites"] == {"fisher_h1_smoke_report_file_sha256": None}
+
+
+def test_full_calibration_requires_authenticated_prior_fisher_smoke_before_data(
+    tmp_path: Path,
+) -> None:
+    config, adapter, services, events = configured_run(tmp_path)
+    config = replace(
+        config,
+        prior_fisher_h1_smoke_report_bytes=None,
+        prior_fisher_h1_smoke_complete_bytes=None,
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="requires the prior Fisher H=1"):
+        runner.run_calibration(config, adapter, services=services)
+
+    assert events == ["decode_identity"]
+    assert not config.output_dir.exists()
+
+
+def test_full_calibration_rejects_rehashed_smoke_from_another_identity_before_data(
+    tmp_path: Path,
+) -> None:
+    config, adapter, services, events = configured_run(tmp_path)
+    document = json.loads(config.prior_fisher_h1_smoke_report_bytes)
+    document["evidence"]["identity"]["file_sha256"] = "0" * 64
+    document["canonical_evidence_sha256"] = digest(
+        runner.canonical_json_bytes(document["evidence"])
+    )
+    config = replace(
+        config,
+        prior_fisher_h1_smoke_report_bytes=runner.canonical_json_bytes(document),
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="smoke identity receipt"):
+        runner.run_calibration(config, adapter, services=services)
+
+    assert "materialize_sequence" not in events
+    assert "authenticate_model_files" not in events
+    assert "load_model" not in events
+
+
+def test_authenticated_unchanged_descendant_retains_h0_provenance(tmp_path: Path) -> None:
+    h0 = "1" * 40
+    config, adapter, services, _events = configured_run(tmp_path, source_commit=h0)
+
+    runner.run_calibration(config, adapter, services=services)
+
+    report = json.loads((config.output_dir / runner.REPORT_FILENAME).read_text())
+    assert report["evidence"]["repository"]["source_commit"] == h0
+    assert report["evidence"]["repository"]["source_commit"] != current_head()
+
+
+def test_identity_view_consumes_schema_v5_bindings_and_preserves_fisher_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -650,9 +946,17 @@ def test_identity_view_consumes_strict_schema_v4_execution_bindings(
         "parquet_materialization_manifest_file_sha256": "9" * 64,
         "repository_source_manifest_file_sha256": "3" * 64,
     }
+    boundary = fisher_boundary_contract()
+    decoded_record = {
+        "canonical_id": "item-1",
+        "fisher_boundary": boundary,
+        "sequence_length": 3,
+    }
     evidence = {
         "execution_bindings": bindings,
         "model_contracts": {"primary": {"id": "example/model", "revision": "4" * 40}},
+        "records": [decoded_record],
+        "schema_version": runner.FROZEN_IDENTITY_SCHEMA_VERSION,
         "source_manifest_sha256": "5" * 64,
         "tokenizer": {"transformers_version": "5.14.1"},
     }
@@ -661,7 +965,7 @@ def test_identity_view_consumes_strict_schema_v4_execution_bindings(
     class Decoded:
         file_sha256 = digest(payload)
         canonical_evidence_sha256 = "6" * 64
-        records = ()
+        records = (decoded_record,)
         assignment = ()
         assignment_sha256 = "7" * 64
         tokenizer_manifest_sha256 = "8" * 64
@@ -680,6 +984,49 @@ def test_identity_view_consumes_strict_schema_v4_execution_bindings(
     assert decoded.runtime_manifest_file_sha256 == "1" * 64
     assert decoded.model_file_manifest_file_sha256 == "2" * 64
     assert decoded.parquet_materialization_manifest_file_sha256 == "9" * 64
+    assert decoded.records[0]["fisher_boundary"] == boundary
+    assert decoded.records[0]["fisher_boundary"] is not boundary
+
+
+def test_identity_view_rejects_resolver_record_that_drops_fisher_boundary() -> None:
+    bindings = {
+        "calibration_runtime_manifest_file_sha256": "1" * 64,
+        "model_file_manifest_file_sha256": "2" * 64,
+        "parquet_materialization_manifest_file_sha256": "9" * 64,
+        "repository_source_manifest_file_sha256": "3" * 64,
+    }
+    evidence_record = {
+        "canonical_id": "item-1",
+        "fisher_boundary": fisher_boundary_contract(),
+        "sequence_length": 3,
+    }
+    evidence = {
+        "execution_bindings": bindings,
+        "model_contracts": {"primary": {"id": "example/model", "revision": "4" * 40}},
+        "records": [evidence_record],
+        "schema_version": runner.FROZEN_IDENTITY_SCHEMA_VERSION,
+        "source_manifest_sha256": "5" * 64,
+        "tokenizer": {"transformers_version": "5.14.1"},
+    }
+    payload = runner.canonical_json_bytes({"evidence": evidence})
+
+    class Decoded:
+        file_sha256 = digest(payload)
+        canonical_evidence_sha256 = "6" * 64
+        records = ({"canonical_id": "item-1"},)
+        assignment = ()
+        assignment_sha256 = "7" * 64
+        tokenizer_manifest_sha256 = "8" * 64
+        execution_bindings = bindings
+
+    class Resolver:
+        @staticmethod
+        def deserialize_frozen_calibration_identity_artifact(data: bytes) -> Decoded:
+            assert data == payload
+            return Decoded()
+
+    with pytest.raises(runner.CalibrationRunError, match="fisher_boundary"):
+        runner._identity_view_from_resolver(payload, Resolver())
 
 
 def test_failed_stability_publishes_only_report_and_never_binding(tmp_path: Path) -> None:
@@ -734,7 +1081,7 @@ def test_source_drift_stops_before_dataset_and_model_access(tmp_path: Path) -> N
     assert not config.output_dir.exists()
 
 
-def test_source_manifest_commit_must_equal_reported_head(tmp_path: Path) -> None:
+def test_source_manifest_commit_must_equal_requested_frozen_commit(tmp_path: Path) -> None:
     config, adapter, services, events = configured_run(tmp_path)
 
     def wrong_commit(expected: Mapping[str, object], root: Path) -> Any:
@@ -766,6 +1113,29 @@ def test_materialized_token_mismatch_stops_before_model_file_open_or_load(tmp_pa
     config.model_root.joinpath("model.safetensors").unlink()
 
     with pytest.raises(runner.CalibrationRunError, match="token IDs differ"):
+        runner.run_calibration(config, adapter, services=services)
+
+    assert "authenticate_model_files" not in events
+    assert "load_model" not in events
+
+
+def test_materialized_fisher_token_hash_mismatch_reaches_exact_boundary_check(
+    tmp_path: Path,
+) -> None:
+    item = record()
+    boundary = dict(item["fisher_boundary"])
+    boundary["input_token_ids_sha256"] = "0" * 64
+    boundary_without_hash = {
+        name: value for name, value in boundary.items() if name != "fisher_boundary_sha256"
+    }
+    boundary["fisher_boundary_sha256"] = digest(
+        identity_resolver.FISHER_BOUNDARY_NAMESPACE.encode("utf-8")
+        + runner.canonical_json_bytes(boundary_without_hash)
+    )
+    item["fisher_boundary"] = boundary
+    config, adapter, services, events = configured_run(tmp_path, records=[item])
+
+    with pytest.raises(runner.CalibrationRunError, match="Fisher input/target tokens"):
         runner.run_calibration(config, adapter, services=services)
 
     assert "authenticate_model_files" not in events
@@ -821,11 +1191,7 @@ def test_point_used_runtime_drift_stops_before_data_access(tmp_path: Path) -> No
         nonlocal calls
         calls += 1
         authenticated = original(manifest)
-        return (
-            replace(authenticated, machine_name="drifted")
-            if calls == 2
-            else authenticated
-        )
+        return replace(authenticated, machine_name="drifted") if calls == 2 else authenticated
 
     services = replace(services, authenticate_runtime=drifting)
     with pytest.raises(runner.CalibrationRunError, match="before data access"):
@@ -846,7 +1212,15 @@ def test_empty_calibration_target_is_hash_checked_and_allowed() -> None:
     item["target_token_ids_sha256"] = token_digest(())
     candidate = materialized(item, token_ids)
 
-    assert runner.validate_materialized_sequence(item, candidate, calibration_api=api) == token_ids
+    assert (
+        runner.validate_materialized_sequence(
+            item,
+            candidate,
+            calibration_api=api,
+            identity_resolver=identity_resolver,
+        )
+        == token_ids
+    )
 
 
 def test_exact_local_model_file_mismatch_stops_before_model_load(tmp_path: Path) -> None:
@@ -882,7 +1256,11 @@ def test_model_authentication_rejects_reparse_or_symlink_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    files = {"config.json": b"{}", "model.safetensors": b"weights"}
+    files = {
+        "config.json": b"{}",
+        "model.safetensors": b"weights",
+        "model.safetensors.index.json": b"{}",
+    }
     root = tmp_path / "model"
     write_model_root(root, files)
     manifest = runner.parse_model_file_manifest(model_manifest_bytes(files))
@@ -948,6 +1326,7 @@ def test_capture_uses_frozen_ema_and_only_requests_state_at_anchors() -> None:
             )
 
     adapter = QueryAdapter({}, events)
+    adapter.geometry = geometry
     captured = runner.capture_sequence_causally(
         adapter,
         object(),
@@ -957,9 +1336,13 @@ def test_capture_uses_frozen_ema_and_only_requests_state_at_anchors() -> None:
         calibration_api=api,
         require_cuda=False,
         distortion_function=fake_distortions,
+        fisher_distortion_function=fake_fisher_distortions,
     )
 
     assert captured.anchor_positions == runner.frozen_anchor_positions(17)
+    assert captured.fisher_boundary_positions == runner.frozen_anchor_positions(15)
+    assert len(adapter.capture_flags) == len(tokens)
+    assert events.count("step_token_with_fisher") == len(captured.fisher_boundary_positions)
     assert adapter.capture_flags[15] is False
     assert sum(adapter.capture_flags) == 16
     first_energy = torch.tensor(
@@ -971,11 +1354,54 @@ def test_capture_uses_frozen_ema_and_only_requests_state_at_anchors() -> None:
     torch.testing.assert_close(captured.query_energy[0, 0, 0], expected, rtol=1e-6, atol=1e-8)
     assert captured.query_energy.dtype == torch.float64
     assert captured.q4_mse.shape == (16, 1, 1, 4)
+    assert captured.fisher_q4_risk.shape == (15, 1, 1, 4)
+    assert captured.fisher_target_nlls.shape == (15,)
+    assert captured.fisher_target_nlls.dtype == torch.float64
+
+
+def test_three_token_capture_uses_one_exact_h1_fisher_step_and_three_forwards() -> None:
+    tokens = (10, 11, 12)
+    events: list[str] = []
+
+    class CountingModel:
+        def __init__(self) -> None:
+            self.forward_count = 0
+
+        def forward(self) -> None:
+            self.forward_count += 1
+
+    class CountingAdapter(FakeAdapter):
+        def step_token(self, model: object, **kwargs: object) -> Any:
+            assert isinstance(model, CountingModel)
+            model.forward()
+            return super().step_token(model, **kwargs)
+
+    adapter = CountingAdapter({}, events)
+    model = CountingModel()
+
+    captured = runner.capture_sequence_causally(
+        adapter,
+        model,
+        record(tokens),
+        tokens,
+        geometry=FakeBackend.geometry,
+        calibration_api=api,
+        require_cuda=False,
+        distortion_function=fake_distortions,
+        fisher_distortion_function=fake_fisher_distortions,
+    )
+
+    assert captured.fisher_boundary_positions == (0,)
+    assert events.count("step_token") == len(tokens)
+    assert events.count("step_token_with_fisher") == 1
+    assert adapter.fisher_calls == [(1, 11, 12)]
+    assert len(adapter.capture_flags) == len(tokens)
+    assert model.forward_count == len(tokens)
 
 
 def test_official_capture_rejects_cpu_queries_even_when_cuda_might_exist() -> None:
     geometry = FakeBackend.geometry
-    tokens = (1,)
+    tokens = (1, 2, 3)
     adapter = FakeAdapter({}, [])
 
     with pytest.raises(runner.CalibrationRunError, match="actual CUDA"):
@@ -988,6 +1414,7 @@ def test_official_capture_rejects_cpu_queries_even_when_cuda_might_exist() -> No
             calibration_api=api,
             require_cuda=True,
             distortion_function=fake_distortions,
+            fisher_distortion_function=fake_fisher_distortions,
         )
 
 
@@ -1006,16 +1433,19 @@ def test_capture_rejects_non_fp32_reference_state() -> None:
                 successful_kernel_calls_per_layer=(1,),
             )
 
+    adapter = Bf16Adapter({}, [])
+    adapter.geometry = geometry
     with pytest.raises(runner.CalibrationRunError, match="must be FP32"):
         runner.capture_sequence_causally(
-            Bf16Adapter({}, []),
+            adapter,
             object(),
-            record((1,)),
-            (1,),
+            record((1, 2, 3)),
+            (1, 2, 3),
             geometry=geometry,
             calibration_api=api,
             require_cuda=False,
             distortion_function=fake_distortions,
+            fisher_distortion_function=fake_fisher_distortions,
         )
 
 
@@ -1037,12 +1467,59 @@ def test_compute_anchor_distortions_is_cpu_fp64_and_precision_ordered() -> None:
     assert torch.all(d8 <= d4)
 
 
+def test_compute_fisher_distortions_delegates_exact_cpu_fp64_endpoint_math() -> None:
+    from recurquant.static_q468 import StaticRhtQ468Geometry
+    from recurquant.static_q468_calibration import (
+        compute_rht_diagonal_empirical_fisher_h1_endpoints,
+    )
+
+    geometry = runner.Geometry(layer_indices=(3,), heads=1, key_rows=2, value_width=4)
+    source = torch.tensor(
+        [[[[1.2, -0.1, 0.4, 2.3], [0.2, 0.7, -1.4, 0.5]]]],
+        dtype=torch.float32,
+    )
+    gradient = torch.tensor(
+        [[[[0.3, -0.2, 0.1, 0.4], [0.5, 0.1, -0.3, 0.2]]]],
+        dtype=torch.float32,
+    )
+    endpoint_geometry = StaticRhtQ468Geometry(
+        layer_indices=geometry.layer_indices,
+        heads=geometry.heads,
+        key_rows=geometry.key_rows,
+        value_width=geometry.value_width,
+        target_resident_bytes=1,
+    )
+
+    actual = runner.compute_fisher_distortions(source, gradient, geometry)
+    expected = compute_rht_diagonal_empirical_fisher_h1_endpoints(
+        source,
+        gradient,
+        geometry=endpoint_geometry,
+    )
+
+    for actual_tensor, expected_tensor in zip(actual, expected, strict=True):
+        assert actual_tensor.device.type == "cpu"
+        assert actual_tensor.dtype == torch.float64
+        torch.testing.assert_close(actual_tensor, expected_tensor, rtol=0, atol=0)
+
+    with pytest.raises(runner.CalibrationRunError, match="source state/gradient"):
+        runner.compute_fisher_distortions(source, gradient[..., :3], geometry)
+
+
 def test_model_manifest_rejects_noncanonical_duplicate_and_traversal() -> None:
-    files = {"config.json": b"{}", "model.safetensors": b"weights"}
+    files = {
+        "config.json": b"{}",
+        "model.safetensors": b"weights",
+        "model.safetensors.index.json": b"{}",
+    }
     valid = model_manifest_bytes(files)
     parsed = runner.parse_model_file_manifest(valid)
     assert parsed.file_sha256 == digest(valid)
-    assert [item.name for item in parsed.files] == ["config.json", "model.safetensors"]
+    assert [item.name for item in parsed.files] == [
+        "config.json",
+        "model.safetensors",
+        "model.safetensors.index.json",
+    ]
 
     with pytest.raises(ValueError, match="canonical"):
         runner.parse_model_file_manifest(valid.rstrip(b"\n") + b" \n")
@@ -1055,6 +1532,25 @@ def test_model_manifest_rejects_noncanonical_duplicate_and_traversal() -> None:
     payload["files"][0]["name"] = "../config.json"
     with pytest.raises(ValueError, match="name is invalid|relative POSIX"):
         runner.parse_model_file_manifest(runner.canonical_json_bytes(payload))
+
+
+def test_model_manifest_enforces_exact_selection_profile_and_portable_names() -> None:
+    required = {
+        "config.json": b"{}",
+        "model.safetensors": b"weights",
+        "model.safetensors.index.json": b"{}",
+    }
+
+    with pytest.raises(ValueError, match="case-insensitive collision"):
+        runner.parse_model_file_manifest(
+            model_manifest_bytes({**required, "CONFIG.JSON": b"other"})
+        )
+    with pytest.raises(ValueError, match="selection profile"):
+        runner.parse_model_file_manifest(model_manifest_bytes({**required, "unbound.json": b"x"}))
+    with pytest.raises(ValueError, match="index"):
+        runner.parse_model_file_manifest(
+            model_manifest_bytes({"config.json": b"{}", "model.safetensors": b"weights"})
+        )
 
 
 def hub_tree_entries() -> list[dict[str, object]]:
@@ -1074,6 +1570,12 @@ def hub_tree_entries() -> list[dict[str, object]]:
         {
             "blob_id": "3" * 40,
             "lfs": None,
+            "path": "model.safetensors.index.json",
+            "size": 321,
+        },
+        {
+            "blob_id": "4" * 40,
+            "lfs": None,
             "path": "README.md",
             "size": 50,
         },
@@ -1091,7 +1593,11 @@ def test_model_manifest_capture_uses_only_pinned_hub_tree_lfs_metadata() -> None
     )
     parsed = runner.parse_model_file_manifest(payload)
 
-    assert [item.name for item in parsed.files] == ["config.json", "model.safetensors"]
+    assert [item.name for item in parsed.files] == [
+        "config.json",
+        "model.safetensors",
+        "model.safetensors.index.json",
+    ]
     assert parsed.files[0].sha256 is None
     assert parsed.files[0].git_blob_oid == "1" * 40
     assert parsed.files[1].sha256 == "a" * 64
@@ -1145,13 +1651,15 @@ def test_model_manifest_capture_calls_only_metadata_api_surfaces() -> None:
     class Api:
         @staticmethod
         def model_info(*args: object, **kwargs: object) -> Info:
-            del args, kwargs
+            del args
+            assert kwargs["token"] is False
             calls.append("model_info")
             return Info()
 
         @staticmethod
         def list_repo_tree(*args: object, **kwargs: object) -> list[dict[str, object]]:
-            del args, kwargs
+            del args
+            assert kwargs["token"] is False
             calls.append("list_repo_tree")
             return hub_tree_entries()
 
@@ -1221,13 +1729,354 @@ def test_model_manifest_parser_detects_tree_metadata_tamper() -> None:
 
 
 def test_model_authentication_rejects_extra_files(tmp_path: Path) -> None:
-    files = {"config.json": b"{}", "model.safetensors": b"weights"}
+    files = {
+        "config.json": b"{}",
+        "model.safetensors": b"weights",
+        "model.safetensors.index.json": b"{}",
+    }
     root = tmp_path / "model"
     write_model_root(root, {**files, "unbound.txt": b"extra"})
     manifest = runner.parse_model_file_manifest(model_manifest_bytes(files))
 
     with pytest.raises(runner.CalibrationRunError, match="file set differs"):
         runner.authenticate_local_model_files(root, manifest, calibration_api=api)
+
+
+def test_stage_model_authenticates_before_touching_downloader_cache_or_output(
+    tmp_path: Path,
+) -> None:
+    candidate = runner.canonical_json_bytes(
+        {
+            "canonical_evidence_sha256": "0" * 64,
+            "evidence": {
+                "identity_only": True,
+                "phase": "calibration",
+                "promotion_required": True,
+                "schema_version": runner.FROZEN_IDENTITY_SCHEMA_VERSION,
+                "status": "candidate",
+            },
+        }
+    )
+    identity_path = tmp_path / "candidate.json"
+    identity_path.write_bytes(candidate)
+    cache = tmp_path / "cache"
+    output = tmp_path / "model"
+    calls: list[dict[str, object]] = []
+
+    with pytest.raises(runner.CalibrationRunError, match="state"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=identity_path,
+            expected_frozen_identity_sha256=digest(candidate),
+            identity_commit="3" * 40,
+            repository_root=SCRIPT.parents[1],
+            repository_source_manifest_path=tmp_path / "missing-source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "missing-model.json",
+            expected_model_file_manifest_sha256="2" * 64,
+            hub_cache_root=cache,
+            output_root=output,
+            downloader=lambda **kwargs: calls.append(kwargs),
+        )
+
+    assert calls == []
+    assert not cache.exists()
+    assert not output.exists()
+
+
+def test_committed_frozen_identity_requires_exact_head_index_and_worktree_blob(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    identity_path = repository / "evidence" / "identity.json"
+    identity_path.parent.mkdir()
+    identity_bytes = b'{"status":"frozen"}\n'
+    identity_path.write_bytes(identity_bytes)
+    subprocess.run(["git", "add", "--", "evidence/identity.json"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "freeze identity"],
+        cwd=repository,
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert (
+        runner._verify_committed_frozen_identity(
+            runner._authenticate_git_executable(authenticated_git_path()),
+            repository,
+            identity_path,
+            identity_bytes,
+            identity_commit=head,
+        )
+        == head
+    )
+    identity_path.write_bytes(b'{"status":"changed"}\n')
+    with pytest.raises(runner.CalibrationRunError, match="changed|differ"):
+        runner._verify_committed_frozen_identity(
+            runner._authenticate_git_executable(authenticated_git_path()),
+            repository,
+            identity_path,
+            identity_bytes,
+            identity_commit=head,
+        )
+
+
+def test_stage_model_downloads_only_exact_bound_files_and_publishes_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = staged_model_files()
+    authorization = model_staging_authorization(files)
+    authorizations: list[str] = []
+
+    def authenticate(**kwargs: object) -> Any:
+        del kwargs
+        authorizations.append("authenticated")
+        return authorization
+
+    calls: list[dict[str, object]] = []
+
+    def download(**kwargs: object) -> str:
+        calls.append(dict(kwargs))
+        name = str(kwargs["filename"])
+        cache = Path(kwargs["cache_dir"])
+        target = cache / "models--example--model" / "snapshots" / ("2" * 40) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(files[name])
+        return str(target)
+
+    monkeypatch.setattr(runner, "_authenticate_model_staging_authorization", authenticate)
+    cache = tmp_path / "hub-cache"
+    output = tmp_path / "published-model"
+    result = runner.stage_identity_bound_model(
+        frozen_identity_path=tmp_path / "identity.json",
+        expected_frozen_identity_sha256="d" * 64,
+        identity_commit="3" * 40,
+        repository_root=SCRIPT.parents[1],
+        repository_source_manifest_path=tmp_path / "source.json",
+        source_commit="1" * 40,
+        model_file_manifest_path=tmp_path / "model-manifest.json",
+        expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
+        hub_cache_root=cache,
+        output_root=output,
+        local_files_only=True,
+        downloader=download,
+    )
+
+    assert authorizations == ["authenticated", "authenticated"]
+    assert [call["filename"] for call in calls] == sorted(files)
+    assert all(
+        call
+        == {
+            "cache_dir": cache.resolve(),
+            "endpoint": "https://huggingface.co",
+            "filename": call["filename"],
+            "local_files_only": True,
+            "repo_id": "example/model",
+            "repo_type": "model",
+            "revision": "2" * 40,
+            "token": False,
+        }
+        for call in calls
+    )
+    assert {path.name for path in output.iterdir()} == set(files)
+    assert all((output / name).read_bytes() == content for name, content in files.items())
+    assert not list(tmp_path.glob(".published-model.staging-*"))
+    assert result["status"] == "staged_authenticated_model"
+    assert result["source_commit"] == "1" * 40
+
+
+def test_stage_model_failure_cleans_owned_staging_and_never_exposes_final_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    files = staged_model_files()
+    authorization = model_staging_authorization(files)
+    calls = 0
+
+    def download(**kwargs: object) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected download failure")
+        name = str(kwargs["filename"])
+        target = Path(kwargs["cache_dir"]) / "snapshot" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(files[name])
+        return str(target)
+
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_model_staging_authorization",
+        lambda **_kwargs: authorization,
+    )
+    output = tmp_path / "published-model"
+    with pytest.raises(OSError, match="injected"):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=SCRIPT.parents[1],
+            repository_source_manifest_path=tmp_path / "source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "manifest.json",
+            expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
+            hub_cache_root=tmp_path / "cache",
+            output_root=output,
+            downloader=download,
+        )
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".published-model.staging-*"))
+
+
+@pytest.mark.parametrize("outside_kind", ("outside", "wrong-content"))
+def test_stage_model_rejects_untrusted_cache_payload_without_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outside_kind: str,
+) -> None:
+    files = staged_model_files()
+    authorization = model_staging_authorization(files)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_model_staging_authorization",
+        lambda **_kwargs: authorization,
+    )
+
+    def download(**kwargs: object) -> str:
+        name = str(kwargs["filename"])
+        if outside_kind == "outside":
+            target = tmp_path / "outside" / name
+            content = files[name]
+        else:
+            target = Path(kwargs["cache_dir"]) / "snapshot" / name
+            content = b"tampered" if name.endswith(".safetensors") else files[name]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        return str(target)
+
+    output = tmp_path / "published-model"
+    message = "outside" if outside_kind == "outside" else "size differs|authentication failed"
+    with pytest.raises(runner.CalibrationRunError, match=message):
+        runner.stage_identity_bound_model(
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256="d" * 64,
+            identity_commit="3" * 40,
+            repository_root=SCRIPT.parents[1],
+            repository_source_manifest_path=tmp_path / "source.json",
+            source_commit="1" * 40,
+            model_file_manifest_path=tmp_path / "manifest.json",
+            expected_model_file_manifest_sha256=authorization.model_manifest.file_sha256,
+            hub_cache_root=tmp_path / "cache",
+            output_root=output,
+            downloader=download,
+        )
+    assert not output.exists()
+
+
+def test_cache_pointer_is_confined_and_never_published_as_a_link(tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    blob = cache / "blobs" / "payload"
+    pointer = cache / "snapshots" / ("2" * 40) / "model.safetensors"
+    blob.parent.mkdir(parents=True)
+    pointer.parent.mkdir(parents=True)
+    blob.write_bytes(b"payload")
+    try:
+        pointer.symlink_to(blob)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+
+    assert runner._assert_regular_cache_payload(cache, pointer) == blob.resolve()
+    pointer.unlink()
+    outside = tmp_path / "outside-payload"
+    outside.write_bytes(b"payload")
+    pointer.symlink_to(outside)
+    with pytest.raises(runner.CalibrationRunError, match="escapes"):
+        runner._assert_regular_cache_payload(cache, pointer)
+
+
+def test_atomic_model_directory_publish_never_replaces_racing_destination(tmp_path: Path) -> None:
+    source = tmp_path / "staging"
+    destination = tmp_path / "model"
+    source.mkdir()
+    destination.mkdir()
+    (source / "source.txt").write_text("source", encoding="utf-8")
+    (destination / "owner.txt").write_text("owner", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        runner._atomic_rename_directory_no_overwrite(source, destination)
+
+    assert (source / "source.txt").read_text(encoding="utf-8") == "source"
+    assert (destination / "owner.txt").read_text(encoding="utf-8") == "owner"
+
+
+def test_runtime_probe_and_manifest_accept_exact_runtime_root_sys_path_sentinel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_payload = runner.canonical_json_bytes(
+        {
+            "base_sys_path": ["Lib", "."],
+            "machine": {
+                "architecture": "64bit",
+                "byteorder": "little",
+                "machine": "test-machine",
+                "pointer_bits": 64,
+                "system": "TestOS",
+            },
+            "python": {
+                "abi_flags": "",
+                "cache_tag": "cpython-311",
+                "implementation": "CPython",
+                "version": "3.11.0",
+            },
+        }
+    )
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=probe_payload,
+            stderr=b"",
+        ),
+    )
+
+    probe = runner._probe_staged_interpreter(tmp_path / "python", tmp_path / "runtime")
+    assert probe.base_sys_path == ("Lib", ".")
+
+    manifest_payload = json.loads(runtime_manifest_bytes())
+    manifest_payload["base_sys_path"] = ["."]
+    manifest = runner.parse_calibration_runtime_manifest(
+        runner.canonical_json_bytes(manifest_payload)
+    )
+    assert manifest.base_sys_path == (".",)
+
+
+@pytest.mark.parametrize("value", ["", False, "/absolute", "../escape"])
+def test_runtime_root_sys_path_normalizer_rejects_malformed_entries(value: object) -> None:
+    with pytest.raises(runner.CalibrationRunError):
+        runner._canonical_base_sys_path_entry(value, context="test base sys.path")
+
+
+def test_runtime_root_sentinel_remains_invalid_for_ordinary_repository_paths() -> None:
+    with pytest.raises(runner.CalibrationRunError):
+        runner._canonical_relative_path(".", context="ordinary repository path")
 
 
 def test_runtime_manifest_hashes_complete_record_inventory(tmp_path: Path) -> None:
@@ -1404,11 +2253,7 @@ def test_record_only_staging_preserves_scripts_outside_site_packages(tmp_path: P
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
     record_path.parent.mkdir(parents=True, exist_ok=True)
-    record_text = (
-        "demo/__init__.py,,\n"
-        "demo-1.0.dist-info/RECORD,,\n"
-        "../../Scripts/demo.exe,,\n"
-    )
+    record_text = "demo/__init__.py,,\ndemo-1.0.dist-info/RECORD,,\n../../Scripts/demo.exe,,\n"
     record_path.write_text(record_text, encoding="utf-8")
     destination.mkdir()
 
@@ -1507,8 +2352,13 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
 
     class FakeSourceCapture:
         @staticmethod
-        def capture_experiment013_source_manifest(root: Path) -> dict[str, object]:
+        def capture_experiment013_source_manifest(
+            root: Path,
+            *,
+            git_executable: Path,
+        ) -> dict[str, object]:
             assert root == repository_root
+            assert git_executable == authenticated_git_path()
             return source_manifest
 
         @staticmethod
@@ -1529,9 +2379,12 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
         def verify_experiment013_source_manifest(
             manifest: Mapping[str, object],
             root: Path,
+            *,
+            git_executable: Path,
         ) -> dict[str, object]:
             assert manifest is source_manifest
             assert root == repository_root
+            assert git_executable == authenticated_git_path()
             verification_calls.append(dict(manifest))
             return source_manifest
 
@@ -1548,6 +2401,8 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
         runner.main(
             [
                 "capture-source-manifest",
+                "--git-executable",
+                str(authenticated_git_path()),
                 "--repository-root",
                 str(repository_root),
                 "--output",
@@ -1562,6 +2417,8 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
         runner.main(
             [
                 "capture-source-manifest",
+                "--git-executable",
+                str(authenticated_git_path()),
                 "--repository-root",
                 str(repository_root),
                 "--output",
@@ -1571,6 +2428,8 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
 
     runtime_args = [
         "capture-runtime-manifest",
+        "--git-executable",
+        str(authenticated_git_path()),
         "--output",
         str(runtime_output),
         "--base-runtime-root",
@@ -1587,6 +2446,7 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
     assert runtime_calls == [
         {
             "base_runtime_root": tmp_path / "base",
+            "git_executable_path": authenticated_git_path(),
             "interpreter_path": tmp_path / "base" / "python.exe",
             "package_import_paths": {"packages": "Lib/site-packages"},
             "package_roots": {"packages": tmp_path / "packages"},
@@ -1600,12 +2460,14 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
         revision: str,
         *,
         transformers_version: str,
+        token: bool,
     ) -> bytes:
         assert (model_id, revision, transformers_version) == (
             "example/model",
             "4" * 40,
             "5.14.1",
         )
+        assert token is False
         return b"model\n"
 
     monkeypatch.setattr(runner, "capture_model_file_manifest_from_hub", model_capture)
@@ -1628,6 +2490,63 @@ def test_capture_manifest_cli_modes_are_no_overwrite(
     assert model_output.read_bytes() == b"model\n"
 
 
+def test_stage_model_cli_forwards_only_explicit_authorization_and_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def stage(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {"status": "staged_authenticated_model"}
+
+    monkeypatch.setattr(runner, "stage_identity_bound_model", stage)
+    arguments = [
+        "stage-model",
+        "--git-executable",
+        str(authenticated_git_path()),
+        "--frozen-identity",
+        str(tmp_path / "identity.json"),
+        "--expected-frozen-identity-sha256",
+        "1" * 64,
+        "--identity-commit",
+        "2" * 40,
+        "--repository-root",
+        str(tmp_path / "repository"),
+        "--repository-source-manifest",
+        str(tmp_path / "source.json"),
+        "--source-commit",
+        "3" * 40,
+        "--model-file-manifest",
+        str(tmp_path / "model.json"),
+        "--expected-model-file-manifest-sha256",
+        "4" * 64,
+        "--hub-cache-root",
+        str(tmp_path / "cache"),
+        "--output-root",
+        str(tmp_path / "output"),
+        "--local-files-only",
+    ]
+
+    assert runner.main(arguments) == 0
+    assert calls == [
+        {
+            "expected_frozen_identity_sha256": "1" * 64,
+            "expected_model_file_manifest_sha256": "4" * 64,
+            "frozen_identity_path": tmp_path / "identity.json",
+            "git_executable_path": authenticated_git_path(),
+            "hub_cache_root": tmp_path / "cache",
+            "identity_commit": "2" * 40,
+            "local_files_only": True,
+            "model_file_manifest_path": tmp_path / "model.json",
+            "output_root": tmp_path / "output",
+            "repository_root": tmp_path / "repository",
+            "repository_source_manifest_path": tmp_path / "source.json",
+            "source_commit": "3" * 40,
+        }
+    ]
+
+
 def test_source_manifest_output_location_allows_only_external_or_ignored_paths(
     tmp_path: Path,
 ) -> None:
@@ -1638,13 +2557,32 @@ def test_source_manifest_output_location_allows_only_external_or_ignored_paths(
 
     outside = tmp_path / "outside.json"
     ignored = repository / "artifacts" / "source.json"
-    assert runner._assert_source_manifest_output_location(repository, outside) == outside.resolve()
-    assert runner._assert_source_manifest_output_location(repository, ignored) == ignored.resolve()
+    git_executable = runner._authenticate_git_executable(authenticated_git_path())
+    assert (
+        runner._assert_source_manifest_output_location(
+            repository, outside, git_executable=git_executable
+        )
+        == outside.resolve()
+    )
+    assert (
+        runner._assert_source_manifest_output_location(
+            repository, ignored, git_executable=git_executable
+        )
+        == ignored.resolve()
+    )
 
     with pytest.raises(runner.CalibrationRunError, match="must be ignored"):
-        runner._assert_source_manifest_output_location(repository, repository / "source.json")
+        runner._assert_source_manifest_output_location(
+            repository,
+            repository / "source.json",
+            git_executable=git_executable,
+        )
     with pytest.raises(runner.CalibrationRunError, match="repository metadata"):
-        runner._assert_source_manifest_output_location(repository, repository / ".git" / "new.json")
+        runner._assert_source_manifest_output_location(
+            repository,
+            repository / ".git" / "new.json",
+            git_executable=git_executable,
+        )
 
 
 def test_public_main_binds_manifest_bytes_before_adapter_import(
@@ -1713,6 +2651,7 @@ def test_public_main_binds_manifest_bytes_before_adapter_import(
                 base_runtime_root=tmp_path / "base",
                 package_roots={"packages": tmp_path / "packages"},
                 package_import_paths={"packages": "Lib/site-packages"},
+                git_executable_path=authenticated_git_path(),
                 pycache_prefix=tmp_path / "pycache",
             ),
             interpreter_path=tmp_path / "base" / "python.exe",

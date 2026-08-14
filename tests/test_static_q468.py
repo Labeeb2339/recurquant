@@ -14,9 +14,15 @@ from recurquant.static_q468 import (
     FROZEN_STATIC_Q48_PROMOTIONS,
     FROZEN_STATIC_Q468_ABLATION_STEPS,
     FROZEN_STATIC_Q468_PRIMARY_STEPS,
+    FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS,
+    FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS,
     STATIC_Q48_COMPARATOR_METHOD,
     STATIC_Q468_ABLATION_METHOD,
+    STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    STATIC_Q468_MSE_METHOD,
     STATIC_Q468_PRIMARY_METHOD,
+    STATIC_Q468_UNIFORM_Q4_METHOD,
+    STATIC_Q468_UNIFORM_Q8_METHOD,
     StaticPackedRhtQ48State,
     StaticPackedRhtQ468State,
     StaticRhtQ468Geometry,
@@ -226,6 +232,44 @@ def test_frozen_static_ledgers_distinguish_data_alignment_and_budget_eligibility
         "selected_units": FROZEN_STATIC_Q468_ABLATION_STEPS,
         "target_resident_bytes": 3_454_664,
     }
+    for method_id in (
+        STATIC_Q468_MSE_METHOD,
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    ):
+        assert accounting[method_id] == {
+            **accounting[STATIC_Q468_PRIMARY_METHOD],
+            "method_id": method_id,
+        }
+    assert accounting[STATIC_Q468_UNIFORM_Q4_METHOD] == {
+        "alignment_bytes": 0,
+        "budget_delta_bytes": 938_696,
+        "codec": "q468",
+        "data_bytes": 2_515_968,
+        "exact_budget_eligible": False,
+        "method_id": STATIC_Q468_UNIFORM_Q4_METHOD,
+        "payload_bytes": 2_359_296,
+        "pool_offset_bytes": 73_728,
+        "precision_code_bytes": 9_216,
+        "resident_bytes": 2_515_968,
+        "scale_bytes": 73_728,
+        "selected_units": FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS,
+        "target_resident_bytes": 3_454_664,
+    }
+    assert accounting[STATIC_Q468_UNIFORM_Q8_METHOD] == {
+        "alignment_bytes": 0,
+        "budget_delta_bytes": -1_420_600,
+        "codec": "q468",
+        "data_bytes": 4_875_264,
+        "exact_budget_eligible": False,
+        "method_id": STATIC_Q468_UNIFORM_Q8_METHOD,
+        "payload_bytes": 4_718_592,
+        "pool_offset_bytes": 73_728,
+        "precision_code_bytes": 9_216,
+        "resident_bytes": 4_875_264,
+        "scale_bytes": 73_728,
+        "selected_units": FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS,
+        "target_resident_bytes": 3_454_664,
+    }
     assert accounting[STATIC_Q48_COMPARATOR_METHOD] == {
         "alignment_bytes": 8,
         "budget_delta_bytes": 0,
@@ -325,10 +369,13 @@ def test_policy_codes_offsets_hashes_and_serialization_are_deterministic(tmp_pat
     assert loaded.evidence_dict() == first.evidence_dict()
     assert torch.equal(loaded.precision_codes(), first.precision_codes())
     assert torch.equal(loaded.pool_offsets, first.pool_offsets)
-    assert verify_static_rht_q468_policy(
-        loaded,
-        expected_policy_sha256=first.policy_sha256,
-    )["policy_sha256"] == first.policy_sha256
+    assert (
+        verify_static_rht_q468_policy(
+            loaded,
+            expected_policy_sha256=first.policy_sha256,
+        )["policy_sha256"]
+        == first.policy_sha256
+    )
 
 
 def test_q48_policy_artifact_is_deterministic_strict_and_atomically_published(
@@ -358,10 +405,13 @@ def test_q48_policy_artifact_is_deterministic_strict_and_atomically_published(
     assert serialized == serialize_static_rht_q48_policy(second)
     loaded = deserialize_static_rht_q48_policy(serialized)
     assert loaded.evidence_dict() == first.evidence_dict()
-    assert verify_static_rht_q48_policy(
-        loaded,
-        expected_policy_sha256=first.policy_sha256,
-    )["policy_sha256"] == first.policy_sha256
+    assert (
+        verify_static_rht_q48_policy(
+            loaded,
+            expected_policy_sha256=first.policy_sha256,
+        )["policy_sha256"]
+        == first.policy_sha256
+    )
 
     path = tmp_path / "nested" / "q48-policy.json"
     save_static_rht_q48_policy(first, path)
@@ -464,6 +514,22 @@ def test_q468_policy_rejects_unsupported_runtime_contracts(
         replace(_tiny_policy(), method_id=STATIC_Q48_COMPARATOR_METHOD)
 
 
+@pytest.mark.parametrize(
+    "method_id",
+    [
+        STATIC_Q468_MSE_METHOD,
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+        STATIC_Q468_UNIFORM_Q4_METHOD,
+        STATIC_Q468_UNIFORM_Q8_METHOD,
+    ],
+)
+def test_reserved_q468_comparator_methods_cannot_identify_q48_policy(
+    method_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="Q468 method cannot identify a Q48 policy"):
+        replace(_tiny_q48_policy(), method_id=method_id)
+
+
 def test_pool_offsets_are_canonical_prefix_indices_within_each_pool() -> None:
     policy = _tiny_policy()
     codes = policy.precision_codes().reshape(-1)
@@ -523,8 +589,7 @@ def test_tiny_static_pack_owns_exact_bytes_without_persistent_fp32() -> None:
     assert packed.resident_bytes == 47
     assert packed.ledger.exact_budget_eligible is True
     assert (
-        packed.policy.packed_precision_codes.data_ptr()
-        != policy.packed_precision_codes.data_ptr()
+        packed.policy.packed_precision_codes.data_ptr() != policy.packed_precision_codes.data_ptr()
     )
     assert packed.policy.pool_offsets.data_ptr() != policy.pool_offsets.data_ptr()
     assert all(
@@ -656,9 +721,9 @@ def test_pool_offsets_independently_reconstruct_q468_and_q48_payloads() -> None:
         (q468, observed_q468_codes, expected_q468_scales),
         (q48, observed_q48_codes, expected_q48_scales),
     ):
-        manually_dequantized = integer_codes.to(torch.float32) * scales.to(
-            torch.float32
-        ).unsqueeze(1)
+        manually_dequantized = integer_codes.to(torch.float32) * scales.to(torch.float32).unsqueeze(
+            1
+        )
         manually_restored = right_rht_decode(
             manually_dequantized.reshape(1, 1, 4, 8),
             layer_index=0,
@@ -689,9 +754,7 @@ def test_q48_packed_state_rejects_alias_hidden_fp32_and_bad_payload() -> None:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA device is unavailable")
 def test_static_q468_and_q48_reference_codecs_round_trip_on_cuda() -> None:
     generator = torch.Generator(device="cuda").manual_seed(2339)
-    source = {
-        0: torch.randn((1, 1, 4, 8), generator=generator, device="cuda")
-    }
+    source = {0: torch.randn((1, 1, 4, 8), generator=generator, device="cuda")}
 
     q468 = pack_static_rht_q468(source, _tiny_policy())
     q48 = pack_static_rht_q48(source, _tiny_q48_policy())
@@ -753,6 +816,101 @@ def test_real_geometry_primary_policy_has_exact_k_counts_and_uint16_offsets() ->
         replace(policy, model_id="Qwen/other-model")
 
 
+@pytest.mark.parametrize(
+    "method_id",
+    [
+        STATIC_Q468_MSE_METHOD,
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    ],
+)
+def test_official_k29334_comparator_policy_round_trip_and_strict_budget(
+    method_id: str,
+) -> None:
+    geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    row = torch.arange(geometry.total_rows, dtype=torch.float64)
+    policy = build_static_rht_q468_policy(
+        (((17 * row + 13) % 1009) / 1009).reshape(geometry.layers, -1),
+        (((29 * row + 7) % 1013) / 1013).reshape(geometry.layers, -1),
+        (((43 * row + 3) % 1019) / 1019).reshape(geometry.layers, -1),
+        geometry=geometry,
+        marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+        method_id=method_id,
+        calibration_manifest_sha256=MANIFEST_SHA256,
+        **BINDINGS,
+    )
+
+    serialized = serialize_static_rht_q468_policy(policy)
+    restored = deserialize_static_rht_q468_policy(serialized)
+    ledger = restored.evidence_dict()["ledger"]
+
+    assert restored.method_id == method_id
+    assert restored.marginal_steps == FROZEN_STATIC_Q468_PRIMARY_STEPS
+    assert restored.policy_sha256 == policy.policy_sha256
+    assert serialize_static_rht_q468_policy(restored) == serialized
+    assert ledger["resident_bytes"] == 3_454_664
+    assert ledger["target_resident_bytes"] == 3_454_664
+    assert ledger["budget_delta_bytes"] == 0
+    assert ledger["exact_budget_eligible"] is True
+
+    with pytest.raises(ValueError, match="wrong exact-K budget"):
+        replace(policy, marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS - 1)
+
+
+@pytest.mark.parametrize(
+    ("method_id", "marginal_steps", "expected_code", "expected_resident"),
+    [
+        (
+            STATIC_Q468_UNIFORM_Q4_METHOD,
+            FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS,
+            0,
+            2_515_968,
+        ),
+        (
+            STATIC_Q468_UNIFORM_Q8_METHOD,
+            FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS,
+            2,
+            4_875_264,
+        ),
+    ],
+)
+def test_official_uniform_rht_anchor_policy_uses_same_q468_physical_codec(
+    method_id: str,
+    marginal_steps: int,
+    expected_code: int,
+    expected_resident: int,
+) -> None:
+    geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    row = torch.arange(geometry.total_rows, dtype=torch.float64).reshape(1, -1)
+    policy = build_static_rht_q468_policy(
+        row + 3.0,
+        row + 2.0,
+        row + 1.0,
+        geometry=geometry,
+        marginal_steps=marginal_steps,
+        method_id=method_id,
+        calibration_manifest_sha256=MANIFEST_SHA256,
+        **BINDINGS,
+    )
+
+    assert torch.all(policy.precision_codes() == expected_code).item()
+    assert policy.evidence_dict()["ledger"]["resident_bytes"] == expected_resident
+    assert policy.codec_revision == "rht-q468-pools-u16-offsets-v1"
+    restored = deserialize_static_rht_q468_policy(serialize_static_rht_q468_policy(policy))
+    assert restored.policy_sha256 == policy.policy_sha256
+
+    wrong_steps = 1 if marginal_steps == 0 else marginal_steps - 1
+    with pytest.raises(ValueError, match="wrong exact-K budget"):
+        replace(policy, marginal_steps=wrong_steps)
+    with pytest.raises(ValueError, match="frozen geometry"):
+        replace(
+            policy,
+            geometry=replace(
+                geometry,
+                target_resident_bytes=geometry.target_resident_bytes + 8,
+            ),
+        )
+
+
 def test_real_q468_policy_has_a_physical_exact_3454664_byte_state() -> None:
     """Construct every real Q4/Q6/Q8 pool without allocating dense model state."""
 
@@ -774,12 +932,8 @@ def test_real_q468_policy_has_a_physical_exact_3454664_byte_state() -> None:
     q4_count, q6_count, q8_count = policy.pool_counts
     packed = StaticPackedRhtQ468State(
         policy=policy,
-        int4_payload=torch.zeros(
-            (q4_count, geometry.value_width * 4 // 8), dtype=torch.uint8
-        ),
-        int6_payload=torch.zeros(
-            (q6_count, geometry.value_width * 6 // 8), dtype=torch.uint8
-        ),
+        int4_payload=torch.zeros((q4_count, geometry.value_width * 4 // 8), dtype=torch.uint8),
+        int6_payload=torch.zeros((q6_count, geometry.value_width * 6 // 8), dtype=torch.uint8),
         int8_payload=torch.zeros((q8_count, geometry.value_width), dtype=torch.int8),
         scales=torch.ones(geometry.total_rows, dtype=torch.float16),
         padding=torch.zeros(8, dtype=torch.uint8),
@@ -788,9 +942,7 @@ def test_real_q468_policy_has_a_physical_exact_3454664_byte_state() -> None:
     evidence = verify_static_packed_rht_q468(packed)
     assert q4_count + q6_count + q8_count == 36_864
     assert (
-        packed.int4_payload.numel()
-        + packed.int6_payload.numel()
-        + packed.int8_payload.numel()
+        packed.int4_payload.numel() + packed.int6_payload.numel() + packed.int8_payload.numel()
         == 3_297_984
     )
     assert policy.packed_precision_codes.numel() == 9_216

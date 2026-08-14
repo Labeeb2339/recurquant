@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
+from types import MethodType, ModuleType
 from typing import Any, Final
 
 import torch
@@ -29,14 +29,15 @@ from .experiment013_calibration_api import (
     AdapterConstructionContext,
     AuthenticatedModelFiles,
     AuthenticatedSequence,
+    FisherStepObservation,
     StepObservation,
 )
 
-ADAPTER_REVISION: Final = "experiment-013-qwen35-live-adapter-v1"
+ADAPTER_REVISION: Final = "experiment-013-qwen35-live-adapter-v2"
 ADAPTER_SOURCE_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 CAPTURE_MODULE_NAME: Final = "_recurquant_experiment013_capture_for_live_adapter"
-SOURCE_MANIFEST_SCHEMA: Final = "recurquant.experiment013.source-manifest.v1"
+SOURCE_MANIFEST_SCHEMA: Final = "recurquant.experiment013.source-manifest.v2"
 
 MODEL_ID: Final = "Qwen/Qwen3.5-0.8B-Base"
 MODEL_REVISION: Final = "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68"
@@ -601,6 +602,114 @@ class _MissingType:
 
 _Missing = _MissingType()
 
+_CACHE_LAYER_SNAPSHOT_ATTRIBUTES: Final = (
+    "keys",
+    "values",
+    "conv_states",
+    "recurrent_states",
+    "is_conv_states_initialized",
+    "is_recurrent_states_initialized",
+    "has_previous_state",
+    "conv_kernel_size",
+    "is_initialized",
+    "device",
+    "dtype",
+    "record_past",
+)
+_CACHE_OBJECT_SNAPSHOT_ATTRIBUTES: Final = ("sequence_length", "_seen_tokens")
+
+
+@dataclass(slots=True)
+class _CacheSnapshot:
+    layers: list[dict[str, tuple[bool, object]]]
+    cache_attributes: dict[str, tuple[bool, object]]
+
+
+def _snapshot_cache(cache: object) -> _CacheSnapshot:
+    """Retain enough warm-cache state to roll back one failed H=1 step."""
+
+    layers = getattr(cache, "layers", None)
+    if layers is None or not hasattr(layers, "__iter__"):
+        raise Experiment013AdapterError("DynamicCache does not expose iterable layers")
+    layer_snapshots: list[dict[str, tuple[bool, object]]] = []
+    for layer in layers:
+        snapshot: dict[str, tuple[bool, object]] = {}
+        for name in _CACHE_LAYER_SNAPSHOT_ATTRIBUTES:
+            if not hasattr(layer, name):
+                snapshot[name] = (False, None)
+                continue
+            value = getattr(layer, name)
+            if name in ("conv_states", "recurrent_states") and isinstance(value, dict):
+                copied = {
+                    state_index: item.detach().clone() if isinstance(item, torch.Tensor) else item
+                    for state_index, item in value.items()
+                }
+            elif name in ("keys", "values") and isinstance(value, torch.Tensor):
+                # Attention cache updates replace these tensors rather than
+                # mutating the previous objects, so a detached reference is a
+                # sufficient rollback point without copying the full history.
+                copied = value.detach()
+            elif isinstance(value, dict):
+                copied = dict(value)
+            else:
+                copied = value
+            snapshot[name] = (True, copied)
+        layer_snapshots.append(snapshot)
+    cache_attributes = {
+        name: (hasattr(cache, name), getattr(cache, name, None))
+        for name in _CACHE_OBJECT_SNAPSHOT_ATTRIBUTES
+    }
+    return _CacheSnapshot(layers=layer_snapshots, cache_attributes=cache_attributes)
+
+
+def _restore_cache(cache: object, snapshot: _CacheSnapshot) -> None:
+    layers = getattr(cache, "layers", None)
+    if layers is None or len(layers) != len(snapshot.layers):
+        raise RuntimeError("cannot roll back a DynamicCache whose layer count changed")
+    for layer, attributes in zip(layers, snapshot.layers, strict=True):
+        for name, (existed, value) in attributes.items():
+            if existed:
+                setattr(layer, name, value)
+            elif hasattr(layer, name):
+                delattr(layer, name)
+    for name, (existed, value) in snapshot.cache_attributes.items():
+        if existed:
+            setattr(cache, name, value)
+        elif hasattr(cache, name):
+            delattr(cache, name)
+
+
+def _clone_inference_cache_tensors(cache: object) -> None:
+    """Replace inference tensors before autograd may need to save them."""
+
+    for layer in getattr(cache, "layers", ()):
+        for name in ("keys", "values"):
+            value = getattr(layer, name, None)
+            if isinstance(value, torch.Tensor) and value.is_inference():
+                setattr(layer, name, value.detach().clone())
+        for name in ("conv_states", "recurrent_states"):
+            values = getattr(layer, name, None)
+            if isinstance(values, dict):
+                for state_index, value in tuple(values.items()):
+                    if isinstance(value, torch.Tensor) and value.is_inference():
+                        values[state_index] = value.detach().clone()
+
+
+def _detach_cache_tensors(cache: object) -> None:
+    """Release the one-step graph while retaining the successful trajectory."""
+
+    for layer in getattr(cache, "layers", ()):
+        for name in ("keys", "values"):
+            value = getattr(layer, name, None)
+            if isinstance(value, torch.Tensor):
+                setattr(layer, name, value.detach())
+        for name in ("conv_states", "recurrent_states"):
+            values = getattr(layer, name, None)
+            if isinstance(values, dict):
+                for state_index, value in tuple(values.items()):
+                    if isinstance(value, torch.Tensor):
+                        values[state_index] = value.detach()
+
 
 @dataclass(slots=True)
 class _SequenceState:
@@ -638,6 +747,7 @@ class Experiment013Qwen35Adapter:
         self._model_loading_diagnostic_counts: dict[str, int] | None = None
         self._sequence: _SequenceState | None = None
         self._sequence_failed = False
+        self._fisher_step_count = 0
 
     def _prepare_materialization(self) -> None:
         if self._materialization_attempted:
@@ -1022,6 +1132,296 @@ class Experiment013Qwen35Adapter:
         finally:
             observer.deactivate(context_token)
 
+    def step_token_with_fisher(
+        self,
+        model: object,
+        *,
+        token_id: int,
+        position: int,
+        target_token_id: int,
+        capture_state: bool,
+    ) -> FisherStepObservation:
+        """Advance one warm token and differentiate its next-token NLL to ``S_b``.
+
+        If ``position == b + 1``, the warm cache contains ``S_b``.  This method
+        consumes ``x_(b+1)`` and scores the resulting logits against
+        ``x_(b+2)``.  Successful calls retain the numerically advanced cache but
+        detach its tensors; failed calls restore the pre-step cache snapshot.
+        """
+
+        self._require_loaded_model(model)
+        sequence = self._sequence
+        observer = self._observer
+        device = self._model_device
+        if sequence is None or observer is None or device is None or self._sequence_failed:
+            raise Experiment013AdapterError("no healthy calibration sequence is active")
+        token = _require_non_negative_int(token_id, context="token_id")
+        target = _require_non_negative_int(target_token_id, context="target_token_id")
+        current = _require_non_negative_int(position, context="position")
+        if not isinstance(capture_state, bool):
+            raise TypeError("capture_state must be bool")
+        if current != sequence.next_position or current >= sequence.token_count:
+            raise Experiment013AdapterError(
+                "adapter token position is not the next causal position"
+            )
+        if current == 0:
+            raise Experiment013AdapterError("H=1 Fisher calibration requires a warm S_b cache")
+        if current + 1 >= sequence.token_count:
+            raise Experiment013AdapterError(
+                "H=1 Fisher calibration requires an authenticated x_(b+2) target"
+            )
+        if getattr(model, "training", True):
+            raise Experiment013AdapterError(
+                "Qwen3.5 model entered training mode during calibration"
+            )
+        if self._cache_length(sequence.cache) != current:
+            raise Experiment013AdapterError("DynamicCache length drifted before H=1 forward")
+
+        parameters_method = getattr(model, "parameters", None)
+        if not callable(parameters_method):
+            raise Experiment013AdapterError("Qwen3.5 model does not expose parameters")
+        parameters = tuple(parameters_method())
+        if not parameters or any(parameter.requires_grad for parameter in parameters):
+            raise Experiment013AdapterError("H=1 Fisher calibration requires frozen parameters")
+        if any(parameter.grad is not None for parameter in parameters):
+            raise Experiment013AdapterError("model parameters must not have pre-existing gradients")
+
+        cache_dictionary = getattr(sequence.cache, "__dict__", None)
+        if not isinstance(cache_dictionary, dict):
+            raise Experiment013AdapterError(
+                "DynamicCache does not support an instance-scoped functional update"
+            )
+        original_update = getattr(sequence.cache, "update_recurrent_state", None)
+        if not callable(original_update):
+            raise Experiment013AdapterError("DynamicCache lacks update_recurrent_state")
+        had_update_attribute = "update_recurrent_state" in cache_dictionary
+        original_update_attribute = cache_dictionary.get("update_recurrent_state")
+        snapshot = _snapshot_cache(sequence.cache)
+        leaves: dict[int, torch.Tensor] = {}
+        source_snapshots: dict[int, torch.Tensor] = {}
+        capture = _StepCapture(cache=sequence.cache, position=current, receipts={})
+        context_token: Token[_StepCapture | None] | None = None
+        update_installed = False
+        step_succeeded = False
+
+        def differentiable_update(
+            cache: object,
+            recurrent_states: torch.Tensor,
+            layer_idx: int,
+            state_idx: int = 0,
+            **update_kwargs: Any,
+        ) -> torch.Tensor:
+            if layer_idx not in leaves:
+                return original_update(
+                    recurrent_states,
+                    layer_idx,
+                    state_idx=state_idx,
+                    **update_kwargs,
+                )
+            if state_idx != 0:
+                raise Experiment013AdapterError(
+                    "Qwen3.5 H=1 Fisher calibration supports recurrent state_idx=0 only"
+                )
+            layers = getattr(cache, "layers", None)
+            if layers is None or layer_idx >= len(layers):
+                raise Experiment013AdapterError("DynamicCache recurrent layer disappeared")
+            layer = layers[layer_idx]
+            recurrent = getattr(layer, "recurrent_states", None)
+            initialized = getattr(layer, "is_recurrent_states_initialized", None)
+            if not isinstance(recurrent, dict) or not isinstance(initialized, dict):
+                raise Experiment013AdapterError(
+                    "DynamicCache recurrent-state storage differs from Transformers 5.14.1"
+                )
+            recurrent[state_idx] = recurrent_states
+            initialized[state_idx] = True
+            return recurrent_states
+
+        try:
+            with torch.inference_mode(False), torch.enable_grad():
+                _clone_inference_cache_tensors(sequence.cache)
+                for layer_index in RECURRENT_LAYER_INDICES:
+                    state = observer._cache_state(sequence.cache, layer_index)
+                    if (
+                        state is None
+                        or tuple(state.shape) != STATE_SHAPE
+                        or state.dtype != torch.float32
+                        or state.device != device
+                        or not torch.isfinite(state).all().item()
+                    ):
+                        raise Experiment013AdapterError(
+                            f"warm DynamicCache state differs at layer {layer_index}"
+                        )
+                    source_snapshot = state.detach().clone()
+                    leaf = source_snapshot.clone().requires_grad_(True)
+                    sequence.cache.layers[layer_index].recurrent_states[0] = leaf
+                    leaves[layer_index] = leaf
+                    source_snapshots[layer_index] = source_snapshot
+
+                sequence.cache.update_recurrent_state = MethodType(  # type: ignore[method-assign]
+                    differentiable_update,
+                    sequence.cache,
+                )
+                update_installed = True
+                context_token = observer.activate(capture)
+                input_ids = torch.tensor([[token]], dtype=torch.long, device=device)
+                position_ids = torch.tensor([[current]], dtype=torch.long, device=device)
+                output = model(
+                    input_ids=input_ids,
+                    position_ids=position_ids,
+                    past_key_values=sequence.cache,
+                    use_cache=True,
+                    logits_to_keep=1,
+                )
+                if getattr(output, "past_key_values", None) is not sequence.cache:
+                    raise Experiment013AdapterError(
+                        "Qwen3.5 returned a different DynamicCache object"
+                    )
+                if self._cache_length(sequence.cache) != current + 1:
+                    raise Experiment013AdapterError(
+                        "DynamicCache did not advance by exactly one token"
+                    )
+                logits = getattr(output, "logits", None)
+                if (
+                    not isinstance(logits, torch.Tensor)
+                    or logits.ndim != 3
+                    or tuple(logits.shape[:2]) != (1, 1)
+                    or logits.shape[-1] <= target
+                    or not torch.isfinite(logits).all().item()
+                ):
+                    raise Experiment013AdapterError(
+                        "Qwen3.5 output does not expose finite one-token target logits"
+                    )
+                target_tensor = torch.tensor([target], dtype=torch.long, device=device)
+                target_nll = torch.nn.functional.cross_entropy(
+                    logits[:, -1, :].to(torch.float32),
+                    target_tensor,
+                )
+                if not torch.isfinite(target_nll).item():
+                    raise Experiment013AdapterError("H=1 target-token NLL became non-finite")
+                gradients = torch.autograd.grad(
+                    target_nll,
+                    tuple(leaves[index] for index in RECURRENT_LAYER_INDICES),
+                    retain_graph=False,
+                    create_graph=False,
+                    allow_unused=False,
+                )
+
+            if tuple(capture.receipts) != RECURRENT_LAYER_INDICES:
+                raise Experiment013AdapterError(
+                    "H=1 forward did not produce one ordered receipt for every recurrent layer"
+                )
+            queries: list[torch.Tensor] = []
+            states: list[torch.Tensor] = []
+            cache_matches: list[torch.Tensor] = []
+            for layer_index in RECURRENT_LAYER_INDICES:
+                receipt = capture.receipts[layer_index]
+                cached = observer._cache_state(sequence.cache, layer_index)
+                if (
+                    cached is None
+                    or tuple(cached.shape) != STATE_SHAPE
+                    or cached.dtype != torch.float32
+                    or cached.device != receipt.final_state.device
+                ):
+                    raise Experiment013AdapterError(
+                        f"DynamicCache state geometry differs at layer {layer_index}"
+                    )
+                cache_matches.append(torch.eq(cached, receipt.final_state).all())
+                queries.append(receipt.query[0, 0].detach())
+                if capture_state:
+                    states.append(cached[0].detach())
+            match_values = torch.stack(cache_matches).detach().to(device="cpu").tolist()
+            mismatched = [
+                layer_index
+                for layer_index, matches in zip(
+                    RECURRENT_LAYER_INDICES,
+                    match_values,
+                    strict=True,
+                )
+                if not matches
+            ]
+            if mismatched:
+                raise Experiment013AdapterError(
+                    f"DynamicCache state differs from kernel output at layers {mismatched}"
+                )
+            for layer_index, gradient in zip(
+                RECURRENT_LAYER_INDICES,
+                gradients,
+                strict=True,
+            ):
+                if (
+                    tuple(gradient.shape) != STATE_SHAPE
+                    or gradient.dtype != torch.float32
+                    or gradient.device != device
+                    or not torch.isfinite(gradient).all().item()
+                ):
+                    raise Experiment013AdapterError(
+                        f"H=1 state gradient differs at layer {layer_index}"
+                    )
+                if not torch.equal(
+                    leaves[layer_index].detach(),
+                    source_snapshots[layer_index],
+                ):
+                    raise Experiment013AdapterError(
+                        f"H=1 recurrent kernel mutated source state at layer {layer_index}"
+                    )
+            if any(
+                parameter.requires_grad or parameter.grad is not None for parameter in parameters
+            ):
+                raise Experiment013AdapterError(
+                    "H=1 calibration changed or populated model parameter gradients"
+                )
+
+            step_observation = StepObservation(
+                position=current,
+                token_id=token,
+                layer_indices=RECURRENT_LAYER_INDICES,
+                recurrence_query=torch.stack(queries, dim=0).contiguous(),
+                recurrent_state=(
+                    torch.stack(states, dim=0).contiguous() if capture_state else None
+                ),
+                successful_kernel_calls_per_layer=(1,) * len(RECURRENT_LAYER_INDICES),
+            )
+            result = FisherStepObservation(
+                boundary_position=current - 1,
+                input_position=current,
+                target_position=current + 1,
+                input_token_id=token,
+                target_token_id=target,
+                step_observation=step_observation,
+                source_recurrent_state=torch.stack(
+                    [source_snapshots[index][0] for index in RECURRENT_LAYER_INDICES],
+                    dim=0,
+                ).contiguous(),
+                source_state_gradient=torch.stack(
+                    [gradient[0].detach() for gradient in gradients],
+                    dim=0,
+                ).contiguous(),
+                target_nll=float(target_nll.detach().item()),
+            )
+            # Detachment is part of the successful state transition.  If it
+            # fails, the outer exception path invalidates the sequence and the
+            # finally block restores the complete pre-step snapshot.
+            _detach_cache_tensors(sequence.cache)
+            sequence.next_position += 1
+            self._fisher_step_count += 1
+            step_succeeded = True
+            return result
+        except BaseException:
+            self._sequence_failed = True
+            raise
+        finally:
+            try:
+                if not step_succeeded:
+                    _restore_cache(sequence.cache, snapshot)
+            finally:
+                if update_installed:
+                    if had_update_attribute:
+                        cache_dictionary["update_recurrent_state"] = original_update_attribute
+                    else:
+                        cache_dictionary.pop("update_recurrent_state", None)
+                if context_token is not None:
+                    observer.deactivate(context_token)
+
     def end_sequence(self, model: object, record: Mapping[str, object]) -> None:
         self._require_loaded_model(model)
         del record
@@ -1048,6 +1448,7 @@ class Experiment013Qwen35Adapter:
             "adapter_revision": ADAPTER_REVISION,
             "capture_input_sha256": self._capture_input_sha256,
             "device": None if self._model_device is None else str(self._model_device),
+            "fisher_step_count": self._fisher_step_count,
             "kernel_backend": "transformers_pure_torch_gated_delta_rule",
             "materialization_attempted": self._materialization_attempted,
             "materialized_sequence_count": (

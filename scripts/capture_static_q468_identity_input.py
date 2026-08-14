@@ -60,10 +60,11 @@ else:
         sys.modules.pop(_RESOLVER_MODULE_NAME, None)
         raise
 
-CAPTURE_VERSION: Final = 4
+CAPTURE_VERSION: Final = 5
 RUNTIME_AUTHENTICATION_CONTEXT_FIELDS: Final = frozenset(
     {
         "base_runtime_root",
+        "git_executable",
         "staged_interpreter",
         "package_runtime_roots",
         "package_import_paths",
@@ -167,6 +168,7 @@ RULER_GENERATOR_TOKENS: Final = {
 RULER_NIAH_CONFIGS: Final = frozenset(
     {"niah_multiquery", "niah_multikey_2", "niah_single_1", "niah_multivalue"}
 )
+_STAGE_A_MATERIALIZATION_AUTHENTICATION_SEAL: Final = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,64 +363,64 @@ RULER_EXPECTED_TOKENIZER_ASSETS: Final = {
 # and task-specific flags, without trusting claims embedded in the receipt set.
 RULER_COMMAND_MANIFEST_SHA256_BY_FILENAME: Final = {
     "aggregation__cwe__l2048__s12340.json": (
-        "de342cdbdfd2876e9a63d1201f00ebf1ab539ba030311dd4d6b8c9e7539cc38b"
+        "2b0bf4952b9fd1f4447947ff0e6257da3a32552ec28bf850b7d992761a90c76c"
     ),
     "aggregation__cwe__l4096__s12340.json": (
-        "dba911e2ccd64251688a34c23974c14b38f9b6f56cee1dabff92b772e4da9684"
+        "47e06031fdeea0041e007526e18b0f68902b8e248fb6a4325ac0ca1f3e179071"
     ),
     "aggregation__fwe__l2048__s12339.json": (
-        "60396cfcf9a5528fd6c2f9be4bf8727adde8f3794fae478962c6535abb950eb3"
+        "39f939a6cd7041a7922f2a3f87c5c1af047e948040ae39969468934993dfca54"
     ),
     "aggregation__fwe__l4096__s12339.json": (
-        "b33f0f12630b8b94db46fd2c7ba9cfcef3097d6161e28d6fec6d332548e3d9af"
+        "d4e47efd8b709a6e27d5969128d2869bea3a99e1093606e89f31720ccb650448"
     ),
     "aggregation__fwe__l4096__s2339.json": (
-        "747d0a4b3af13a91a0aed560023bd5da11546e06eb6471ee9d964612f3cf64cc"
+        "b889115e728fe5eb1e59c3a6f276d464969ae696011d8bfb99a1330bf5ced6f4"
     ),
     "multi_hop_tracing__vt__l2048__s12339.json": (
-        "edd4e2e387bd48bd7fe26211d9bd6fa56e23d187b33dba2ceb522d211b853888"
+        "c362d4c629dd96a94ac01eb24d3eb92b8cae0adaffec49dc8de931a881a68335"
     ),
     "multi_hop_tracing__vt__l2048__s12340.json": (
-        "ab2cc8b7b60fa459ea9b592ad890e37b39991bbe61163426daa39152970f1c92"
+        "82bd4e0157a8ac52ad1f7ab1c001bce38a73a584e7a557aeffb4d8672f75556a"
     ),
     "multi_hop_tracing__vt__l4096__s12339.json": (
-        "15f9b2c1e1d79ebb466e771febddc0640ee4e3b21894591df70f0f2b7b750bec"
+        "0b039028f6888c790979c521d679b334ea512b41fc0bbf021a7037afefddf0f4"
     ),
     "multi_hop_tracing__vt__l4096__s12340.json": (
-        "612759085fdf165a665281e43bcec060d86e6e0b900e8f3ab25bc9d4d3aa5eac"
+        "d2a5b85b5bd563374a492f45f4578e6f6e04c6addf7c8c62d7f34fd5ab2e0035"
     ),
     "multi_hop_tracing__vt__l4096__s2339.json": (
-        "5a5ebdf3ab054a825bc9e18176a8513f28964a555536e5a2138dd71a4a53a042"
+        "ed61a589b8c288a7499d8a26ff1dc91af4418b3ac5f61eef7e4f77c7c3c2741a"
     ),
     "question_answering__qa_1__l2048__s12339.json": (
-        "574119d0a8fe4d8ec4518c2665a5ecbc9dc0f0d97c040c7e07cfc7c7a3b6e59e"
+        "c5d7533b7aa53ff7a6e0efc67af88947cfc5c1c76672024dd7daf0e6ad4a4018"
     ),
     "question_answering__qa_1__l4096__s12339.json": (
-        "c9da9b5c0a2b4a8e691a4df84ca1f23bcf8d4427bc6b29e940c065715e31b3a2"
+        "e57351321e38e98129a7784915333ac08079dcc01a80724e1dc78d068f8101ff"
     ),
     "question_answering__qa_1__l4096__s2339.json": (
-        "fd5935bc5ba0da67015995fb08df1288d33b81cc0b4f29b0fbb5b40f8e43a690"
+        "77b57f21537d318c7100055f1198823f68ebfc4c0deccbe528e881f952e08239"
     ),
     "question_answering__qa_2__l2048__s12340.json": (
-        "16f9804bdd9705a068dafa3746936501f8d01120930f180a81511e02eba50e3b"
+        "c210afae817638883b1b07da358fc726c7d12575a55772078ddb9091443b595c"
     ),
     "question_answering__qa_2__l4096__s12340.json": (
-        "abe15545a61b50fc06ad77d9262cffdbfe8480f84ff468e30cf038678736a591"
+        "a25b93adc8b8f0e4bb6f9faeaa319f58942349ec9c7c8c163f376883353982d3"
     ),
     "retrieval__niah_multikey_2__l2048__s12340.json": (
-        "f12039ecaf89bbf7fe7180255ad36aa304148d84f2fdae551648e04c5d25c428"
+        "bc71b720edfa491e5fe0cad882cd0e361829f3c10ed4781b66a71c28b9075731"
     ),
     "retrieval__niah_multiquery__l2048__s12339.json": (
-        "099c511108e1b8d4431d03b530b772298e510b6dbefb6d9ff2f51b72b059641d"
+        "2d57d83f619d8e462beb67ac629badde65b661bbbc771ff39e5cfdb9c9eaa97f"
     ),
     "retrieval__niah_multiquery__l4096__s2339.json": (
-        "f36ead6ac85202ae799598dc2d9086442686aed2cc918951cc46166ad3780918"
+        "481c41baed008fc121049ca0b43308c79f3e85839c0e941ea8eb8d7294a0037c"
     ),
     "retrieval__niah_multivalue__l4096__s12340.json": (
-        "03cd0aa9b7e2d16d23ab157a6138cfbf344fd884863cb32723f31131de8ecde2"
+        "252be364c6fbc93f21e004f71b38468da195f9acd0aeaf2d0357e85ddfe6c1c8"
     ),
     "retrieval__niah_single_1__l4096__s12339.json": (
-        "4edd45298317225a7f6cd3ae22c93f05b33d47902b62d2dea7425bd7d86d19c2"
+        "aa7d34fb3a5176fccaa58a925635c667fcfb0fea92dbf6ba3d900316faa68e60"
     ),
 }
 
@@ -569,6 +571,7 @@ class TokenizerMaterial:
 @dataclass(frozen=True, slots=True)
 class _RuntimeAuthenticationContext:
     base_runtime_root: Path
+    git_executable: Path
     staged_interpreter: Path
     package_runtime_roots: Mapping[str, Path]
     package_import_paths: Mapping[str, str]
@@ -646,6 +649,8 @@ class MaterializedCalibrationSequence:
             or record.get("prompt_token_ids_sha256") != _token_hash(self.prompt_token_ids)
             or record.get("target_token_ids_sha256") != _token_hash(self.target_token_ids)
             or record.get("sequence_token_ids_sha256") != _token_hash(sequence_ids)
+            or record.get("fisher_boundary")
+            != resolver.build_fisher_boundary_contract(sequence_ids)
             or record.get("sequence_length") != len(sequence_ids)
             or span.get("prefill_start") != 0
             or span.get("prefill_stop") != len(self.prompt_token_ids)
@@ -748,6 +753,247 @@ class CalibrationIdentityMaterialization:
                 "target_token_ids_sha256": _token_hash(sequence.target_token_ids),
                 "sequence_token_ids_sha256": _token_hash(sequence.sequence_token_ids),
                 "sequence_length": len(sequence.sequence_token_ids),
+            }
+            for sequence in self.sequences
+        ]
+        return sha256_bytes(canonical_json_bytes(commitments))
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializedStageASequence:
+    """One authenticated Stage-A identity record and its exact token sequence.
+
+    The record is the content-redacted capture projection authenticated by a
+    promoted resolver-v5 Stage-A artifact.  Raw source rows, formatted prompts,
+    targets, and receipt bodies are never retained on this object.
+    """
+
+    _identity_record_bytes: bytes = dataclass_field(repr=False)
+    prompt_token_ids: tuple[int, ...] = dataclass_field(repr=False)
+    target_token_ids: tuple[int, ...] = dataclass_field(repr=False)
+    _authentication_seal: object = dataclass_field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._authentication_seal is not _STAGE_A_MATERIALIZATION_AUTHENTICATION_SEAL:
+            raise ValueError(
+                "Stage-A sequences may be created only by authenticated v5 materialization"
+            )
+        record = _strict_json(
+            self._identity_record_bytes,
+            context="materialized Stage-A identity record",
+        )
+        if canonical_json_bytes(record) != self._identity_record_bytes:
+            raise ValueError("materialized Stage-A identity record is not canonical")
+        expected_fields = set(resolver.IDENTITY_RECORD_PAYLOAD_FIELDS) | {"identity_record_sha256"}
+        if set(record) != expected_fields:
+            raise ValueError("materialized Stage-A identity record fields drifted")
+        if not isinstance(self.prompt_token_ids, tuple) or not isinstance(
+            self.target_token_ids, tuple
+        ):
+            raise TypeError("materialized Stage-A token IDs must be tuples")
+        for side, token_ids in (
+            ("prompt", self.prompt_token_ids),
+            ("target", self.target_token_ids),
+        ):
+            if any(
+                isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
+                for token_id in token_ids
+            ):
+                raise ValueError(
+                    f"materialized Stage-A {side} token IDs must be non-negative integers"
+                )
+        if not self.prompt_token_ids:
+            raise ValueError("materialized Stage-A prompt cannot be empty")
+        if len(self.target_token_ids) < 2:
+            raise ValueError("materialized Stage-A target must contain at least two tokens")
+
+        for name in (
+            "source_content_sha256",
+            "formatted_content_sha256",
+            "prompt_token_ids_sha256",
+            "target_token_ids_sha256",
+            "sequence_token_ids_sha256",
+            "tokenizer_manifest_sha256",
+            "anchor_manifest_sha256",
+            "identity_record_sha256",
+        ):
+            _require_sha256(record.get(name), context=f"materialized Stage-A {name}")
+        receipt_hash = record.get("generator_receipt_sha256")
+        if receipt_hash is not None:
+            _require_sha256(
+                receipt_hash,
+                context="materialized Stage-A generator receipt",
+            )
+
+        sequence_ids = self.sequence_token_ids
+        span = record.get("token_span")
+        if not isinstance(span, Mapping) or set(span) != resolver.TOKEN_SPAN_FIELDS:
+            raise ValueError("materialized Stage-A identity token span is malformed")
+        expected_span = {
+            "prefill_start": 0,
+            "prefill_stop": len(self.prompt_token_ids),
+            "scored_start": len(self.prompt_token_ids),
+            "scored_stop": len(sequence_ids),
+            "cache_exposed_start": len(self.prompt_token_ids) + 1,
+            "cache_exposed_stop": len(sequence_ids),
+        }
+        if dict(span) != expected_span:
+            raise ValueError("materialized Stage-A full token span differs from its tokens")
+        continuation_count = expected_span["scored_stop"] - expected_span["scored_start"]
+        exposed_count = expected_span["cache_exposed_stop"] - expected_span["cache_exposed_start"]
+        if continuation_count != len(self.target_token_ids) or exposed_count != (
+            continuation_count - 1
+        ):
+            raise ValueError("materialized Stage-A cache-exposed transition count drifted")
+
+        family = record.get("family")
+        if family == "pg19":
+            if len(self.prompt_token_ids) != 4_096 or len(self.target_token_ids) != 128:
+                raise ValueError("materialized Stage-A PG19 must contain 4096+128 tokens")
+            if exposed_count != 127:
+                raise ValueError("materialized Stage-A PG19 must expose 127 transitions")
+        elif family == "ruler":
+            if record.get("configured_length") != 4_096:
+                raise ValueError("materialized Stage-A RULER length must be configured at 4096")
+        elif family == "humaneval_plus":
+            if len(self.target_token_ids) > 128:
+                raise ValueError("materialized Stage-A HumanEval+ target exceeds 128 tokens")
+        else:
+            raise ValueError("materialized Stage-A identity family is not in the frozen inventory")
+
+        if (
+            record.get("identity_record_sha256") != resolver.identity_record_sha256(record)
+            or record.get("prompt_token_ids_sha256") != _token_hash(self.prompt_token_ids)
+            or record.get("target_token_ids_sha256") != _token_hash(self.target_token_ids)
+            or record.get("sequence_token_ids_sha256") != _token_hash(sequence_ids)
+            or record.get("sequence_length") != len(sequence_ids)
+            or record.get("anchor_manifest_sha256")
+            != _anchor_manifest_hash(
+                canonical_id=str(record.get("canonical_id")),
+                sequence_ids=sequence_ids,
+                token_span=expected_span,
+            )
+            or record.get("fisher_boundary")
+            != resolver.build_fisher_boundary_contract(sequence_ids)
+        ):
+            raise ValueError("materialized Stage-A tokens differ from their identity record")
+
+        forbidden = {
+            "answer_prefix",
+            "canonical_solution",
+            "code",
+            "formatted_payload",
+            "input",
+            "outputs",
+            "prompt",
+            "source_payload",
+            "text",
+        }
+        if forbidden & set(record):
+            raise ValueError("materialized Stage-A identity record contains forbidden raw content")
+
+    @property
+    def identity_record(self) -> dict[str, Any]:
+        """Return a fresh content-redacted copy of the authenticated record."""
+
+        return _strict_json(
+            self._identity_record_bytes,
+            context="materialized Stage-A identity record",
+        )
+
+    @property
+    def identity_record_sha256(self) -> str:
+        return str(self.identity_record["identity_record_sha256"])
+
+    @property
+    def sequence_token_ids(self) -> tuple[int, ...]:
+        return self.prompt_token_ids + self.target_token_ids
+
+    @property
+    def cache_exposed_transition_count(self) -> int:
+        return len(self.target_token_ids) - 1
+
+
+@dataclass(frozen=True, slots=True)
+class StageAIdentityMaterialization:
+    """Twelve content-redacted sequences authenticated by a frozen v5 identity."""
+
+    sequences: tuple[MaterializedStageASequence, ...]
+    tokenizer_manifest_sha256: str
+    capture_input_sha256: str
+    frozen_identity_file_sha256: str
+    frozen_identity_canonical_evidence_sha256: str
+    calibration_binding_file_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sequences, tuple) or len(self.sequences) != 12:
+            raise ValueError("Stage-A materialization must contain exactly 12 sequences")
+        tokenizer_hash = _require_sha256(
+            self.tokenizer_manifest_sha256,
+            context="Stage-A materialization tokenizer manifest",
+        )
+        for name, value in (
+            ("capture input", self.capture_input_sha256),
+            ("frozen identity file", self.frozen_identity_file_sha256),
+            (
+                "frozen identity canonical evidence",
+                self.frozen_identity_canonical_evidence_sha256,
+            ),
+            ("calibration binding file", self.calibration_binding_file_sha256),
+        ):
+            _require_sha256(value, context=f"Stage-A materialization {name}")
+
+        records = [sequence.identity_record for sequence in self.sequences]
+        expected_order = [
+            (family, rank) for family in ("pg19", "ruler", "humaneval_plus") for rank in range(4)
+        ]
+        identities = [sequence.identity_record_sha256 for sequence in self.sequences]
+        if len(set(identities)) != len(identities):
+            raise ValueError("Stage-A materialization contains duplicate identities")
+        actual_order = [
+            (str(record["family"]), int(record["selection_rank"])) for record in records
+        ]
+        if actual_order != expected_order:
+            raise ValueError("Stage-A materialization is not ordered by family then rank")
+        if any(record["tokenizer_manifest_sha256"] != tokenizer_hash for record in records):
+            raise ValueError("Stage-A materialization tokenizer commitments differ")
+        if records != sorted(records, key=resolver._record_sort_key):
+            raise ValueError("Stage-A materialization records are not in canonical order")
+
+    @property
+    def identity_records(self) -> tuple[dict[str, Any], ...]:
+        """Return fresh content-redacted record copies in frozen identity order."""
+
+        return tuple(sequence.identity_record for sequence in self.sequences)
+
+    @property
+    def by_identity_record_sha256(self) -> Mapping[str, MaterializedStageASequence]:
+        """Return an immutable digest lookup for the twelve frozen records."""
+
+        return MappingProxyType(
+            {sequence.identity_record_sha256: sequence for sequence in self.sequences}
+        )
+
+    def lookup(self, identity_record_sha256: str) -> MaterializedStageASequence:
+        digest = _require_sha256(
+            identity_record_sha256,
+            context="Stage-A materialization identity lookup",
+        )
+        try:
+            return self.by_identity_record_sha256[digest]
+        except KeyError as error:
+            raise KeyError(f"unknown Stage-A identity record: {digest}") from error
+
+    @property
+    def token_sequence_manifest_sha256(self) -> str:
+        commitments = [
+            {
+                "identity_record_sha256": sequence.identity_record_sha256,
+                "prompt_token_ids_sha256": _token_hash(sequence.prompt_token_ids),
+                "target_token_ids_sha256": _token_hash(sequence.target_token_ids),
+                "sequence_token_ids_sha256": _token_hash(sequence.sequence_token_ids),
+                "sequence_length": len(sequence.sequence_token_ids),
+                "cache_exposed_transition_count": sequence.cache_exposed_transition_count,
             }
             for sequence in self.sequences
         ]
@@ -967,6 +1213,7 @@ def _base_record(
             sequence_ids=sequence_ids,
             token_span=token_span,
         ),
+        "fisher_boundary": resolver.build_fisher_boundary_contract(sequence_ids),
     }
     if token_sink is not None:
         key = (family, canonical_id)
@@ -1619,9 +1866,8 @@ def _replay_ruler_task_invariants(
         or not input_text.endswith(invariant.input_suffix)
     ):
         raise ValueError(f"RULER {config} input task markers drifted")
-    if (
-        not answer_prefix.startswith(invariant.answer_prefix_marker)
-        or not answer_prefix.endswith(invariant.answer_prefix_suffix)
+    if not answer_prefix.startswith(invariant.answer_prefix_marker) or not answer_prefix.endswith(
+        invariant.answer_prefix_suffix
     ):
         raise ValueError(f"RULER {config} answer-prefix boundaries drifted")
     if (
@@ -1664,9 +1910,7 @@ def _verify_ruler_raw_row(
     } | ({"token_position_answer"} if niah else set())
     if set(row) != expected_fields:
         raise ValueError("RULER raw validation fields drifted")
-    row_length = _require_int(
-        row["length"], context="RULER raw validation length", minimum=1
-    )
+    row_length = _require_int(row["length"], context="RULER raw validation length", minimum=1)
     row_length_with_template = _require_int(
         row["length_w_model_temp"],
         context="RULER raw validation length_w_model_temp",
@@ -1718,9 +1962,7 @@ def _verify_ruler_raw_row(
         index = input_text.find(first_output)
         if index < 0 or row_index != index:
             raise ValueError("RULER NIAH raw answer position drifted")
-        expected_position = len(
-            _encode(tokenizer, input_text[:index], add_special_tokens=False)
-        )
+        expected_position = len(_encode(tokenizer, input_text[:index], add_special_tokens=False))
         token_position = _require_int(
             row["token_position_answer"],
             context="RULER raw validation token_position_answer",
@@ -1995,10 +2237,11 @@ def _normalize_auxiliary_files(value: object, *, context: str) -> list[dict[str,
 
 
 def _ruler_canonical_id(*, category: str, config: str, configured_length: int, seed: int) -> str:
-    return (
-        f"{RULER_SEQUENCE_NAMESPACE}:"
-        f"{resolver.RULER_REVISION}:{category}:{config}:"
-        f"length={configured_length}:seed={seed}:sample=0"
+    return resolver.ruler_canonical_id(
+        category=category,
+        config=config,
+        configured_length=configured_length,
+        seed=seed,
     )
 
 
@@ -2359,9 +2602,16 @@ def _normalize_runtime_authentication_context(
         context="runtime_authentication_context",
     )
     base_runtime_root = value["base_runtime_root"]
+    git_executable = value["git_executable"]
     staged_interpreter = value["staged_interpreter"]
-    if not isinstance(base_runtime_root, Path) or not isinstance(staged_interpreter, Path):
-        raise ValueError("runtime authentication roots and interpreter must be Path values")
+    if (
+        not isinstance(base_runtime_root, Path)
+        or not isinstance(git_executable, Path)
+        or not isinstance(staged_interpreter, Path)
+    ):
+        raise ValueError(
+            "runtime authentication roots, Git executable, and interpreter must be Path values"
+        )
     raw_roots = value["package_runtime_roots"]
     raw_import_paths = value["package_import_paths"]
     if not isinstance(raw_roots, Mapping) or not raw_roots:
@@ -2394,6 +2644,7 @@ def _normalize_runtime_authentication_context(
         raise ValueError("package runtime-root and import-path names differ")
     return _RuntimeAuthenticationContext(
         base_runtime_root=base_runtime_root,
+        git_executable=git_executable,
         staged_interpreter=staged_interpreter,
         package_runtime_roots=MappingProxyType(dict(sorted(roots.items()))),
         package_import_paths=MappingProxyType(dict(sorted(import_paths.items()))),
@@ -2465,8 +2716,7 @@ def _decode_execution_binding_artifacts(
         != PARQUET_MATERIALIZATION_MANIFEST_PATH.resolve(strict=True)
         or experiment013_parquet.EXPERIMENT013_PARQUET_MANIFEST_SHA256
         != resolver.PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
-        or sha256_bytes(parquet_bytes)
-        != resolver.PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
+        or sha256_bytes(parquet_bytes) != resolver.PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
         or parquet_bytes != parquet_path.read_bytes()
     ):
         raise ValueError("Parquet materialization manifest file identity drifted")
@@ -2528,9 +2778,7 @@ def _validate_runtime_context_for_manifest(
     context: _RuntimeAuthenticationContext,
     runtime_manifest: Any,
 ) -> None:
-    expected_import_paths = {
-        item.name: item.import_path for item in runtime_manifest.package_roots
-    }
+    expected_import_paths = {item.name: item.import_path for item in runtime_manifest.package_roots}
     if dict(context.package_import_paths) != expected_import_paths:
         raise ValueError("runtime package import paths differ from the frozen manifest")
     if set(context.package_runtime_roots) != set(expected_import_paths):
@@ -2552,6 +2800,7 @@ def _authenticate_execution_binding_artifacts(
     artifacts: Mapping[str, bytes],
     *,
     runtime_context: _RuntimeAuthenticationContext,
+    model_file_manifest_attestation: bytes | None = None,
     previous: _AuthenticatedExecutionBindings | None = None,
 ) -> _AuthenticatedExecutionBindings:
     """Reauthenticate source, runtime, model metadata, and Parquet at point of use."""
@@ -2572,6 +2821,7 @@ def _authenticate_execution_binding_artifacts(
         verified_source = decoded.source_module.verify_experiment013_source_manifest(
             decoded.source_manifest,
             repo_root=REPOSITORY_ROOT,
+            git_executable=runtime_context.git_executable,
         )
         if verified_source != dict(decoded.source_manifest):
             raise RuntimeError("repository source verifier returned a different manifest")
@@ -2590,17 +2840,24 @@ def _authenticate_execution_binding_artifacts(
             base_runtime_root=runtime_context.base_runtime_root,
             package_roots=runtime_context.package_runtime_roots,
             interpreter_path=runtime_context.staged_interpreter,
+            git_executable_path=runtime_context.git_executable,
         )
         if (
             authenticated_runtime.manifest_file_sha256
             != decoded.bindings["calibration_runtime_manifest_file_sha256"]
         ):
             raise RuntimeError("runtime authenticator returned a different manifest identity")
-        live_model_manifest = runner.capture_model_file_manifest_from_hub(
-            resolver.PRIMARY_MODEL_ID,
-            resolver.PRIMARY_MODEL_REVISION,
-            transformers_version=resolver.TRANSFORMERS_VERSION,
-        )
+        if model_file_manifest_attestation is None:
+            live_model_manifest = runner.capture_model_file_manifest_from_hub(
+                resolver.PRIMARY_MODEL_ID,
+                resolver.PRIMARY_MODEL_REVISION,
+                transformers_version=resolver.TRANSFORMERS_VERSION,
+                token=False,
+            )
+        else:
+            if not isinstance(model_file_manifest_attestation, bytes):
+                raise TypeError("model file manifest attestation must be bytes")
+            live_model_manifest = model_file_manifest_attestation
         if live_model_manifest != artifacts["model_file_manifest_file_sha256"]:
             raise ValueError("pinned model Hub metadata differs from the frozen manifest")
         return _AuthenticatedExecutionBindings(
@@ -2629,7 +2886,7 @@ def _capture_identity_input_with_tokens(
     """Run the sole capture flow, optionally retaining formatter token IDs."""
 
     if phase in resolver.PROTECTED_STAGES:
-        raise PermissionError(f"{phase} is protected; capture v4 refuses it before source access")
+        raise PermissionError(f"{phase} is protected; capture v5 refuses it before source access")
     if phase not in resolver.ALLOWED_PHASES:
         raise ValueError(f"unsupported identity phase: {phase!r}")
     if phase == "stage_a" and calibration_binding is None:
@@ -2642,17 +2899,25 @@ def _capture_identity_input_with_tokens(
         if runtime_provider is None or not callable(runtime_provider):
             raise ValueError("capture requires an explicit sealed runtime authentication context")
         runtime_authentication_context = runtime_provider()
-    runtime_context = _normalize_runtime_authentication_context(
-        runtime_authentication_context
-    )
+    runtime_context = _normalize_runtime_authentication_context(runtime_authentication_context)
     if execution_binding_artifacts is None:
         fixture_provider = getattr(source, "execution_binding_artifacts", None)
         if fixture_provider is None or not callable(fixture_provider):
             raise ValueError("capture requires all four verified execution-binding artifacts")
         execution_binding_artifacts = fixture_provider()
+    model_attestation_provider = getattr(source, "model_file_manifest_attestation", None)
+    model_attestation = (
+        model_attestation_provider()
+        if model_attestation_provider is not None and callable(model_attestation_provider)
+        else None
+    )
+    authentication_kwargs: dict[str, bytes] = {}
+    if model_attestation is not None:
+        authentication_kwargs["model_file_manifest_attestation"] = model_attestation
     authentication = _authenticate_execution_binding_artifacts(
         execution_binding_artifacts,
         runtime_context=runtime_context,
+        **authentication_kwargs,
     )
     try:
         before = _validate_heads(source.source_heads(), context="pre-capture")
@@ -2695,6 +2960,7 @@ def _capture_identity_input_with_tokens(
             execution_binding_artifacts,
             runtime_context=runtime_context,
             previous=authentication,
+            **authentication_kwargs,
         )
 
         result: dict[str, Any] = {
@@ -2799,6 +3065,112 @@ def materialize_calibration_identity_sequences(
     )
 
 
+def materialize_stage_a_identity_sequences(
+    *,
+    source: CaptureSource,
+    frozen_stage_a_identity_artifact: bytes,
+    calibration_binding_artifact: bytes,
+    expected_frozen_stage_a_identity_file_sha256: str | None = None,
+    execution_binding_artifacts: Mapping[str, bytes] | None = None,
+    runtime_authentication_context: Mapping[str, object] | None = None,
+) -> StageAIdentityMaterialization:
+    """Authenticate and materialize the exact twelve frozen Stage-A sequences.
+
+    The promoted resolver-v5 artifact and its complete calibration binding are
+    authenticated before any data source is touched.  The canonical capture is
+    then replayed once with token retention, and every content-redacted record
+    must equal the corresponding authenticated frozen record byte for byte.
+    Candidate-only, unpromoted, altered, missing, duplicate, or reordered
+    identity inputs therefore cannot enter Stage-A evaluation through this API.
+    """
+
+    if not isinstance(frozen_stage_a_identity_artifact, bytes):
+        raise TypeError("frozen Stage-A identity artifact must be bytes")
+    if not isinstance(calibration_binding_artifact, bytes):
+        raise TypeError("Stage-A calibration binding artifact must be bytes")
+    if (
+        CAPTURE_VERSION != 5
+        or resolver.RESOLVER_VERSION != 5
+        or resolver.INPUT_SCHEMA != "recurquant.experiment013.identity-input.v5"
+        or resolver.FROZEN_SCHEMA != "recurquant.experiment013.identity-frozen.v5"
+    ):
+        raise RuntimeError("Stage-A materialization requires the resolver-v5 identity contract")
+
+    frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
+        frozen_stage_a_identity_artifact,
+        calibration_binding_artifact=calibration_binding_artifact,
+        expected_file_sha256=expected_frozen_stage_a_identity_file_sha256,
+    )
+    result, token_sink = _capture_identity_input_with_tokens(
+        phase="stage_a",
+        source=source,
+        calibration_binding=calibration_binding_artifact,
+        execution_binding_artifacts=execution_binding_artifacts,
+        runtime_authentication_context=runtime_authentication_context,
+        collect_tokens=True,
+    )
+    if result.get("schema") != resolver.INPUT_SCHEMA or result.get("phase") != "stage_a":
+        raise RuntimeError("Stage-A capture did not return the resolver-v5 input contract")
+
+    replayed_candidate = resolver.build_candidate(
+        result,
+        expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
+        calibration_binding_artifact=calibration_binding_artifact,
+    )
+    frozen_document = _strict_json(
+        frozen_stage_a_identity_artifact,
+        context="authenticated frozen Stage-A identity artifact",
+    )
+    frozen_promotion = frozen_document["evidence"]["promotion"]
+    if (
+        sha256_bytes(canonical_json_bytes(replayed_candidate))
+        != frozen_promotion["candidate_file_sha256"]
+    ):
+        raise ValueError("Stage-A capture lineage differs from the authenticated identity")
+
+    frozen_records = tuple(
+        {name: record[name] for name in resolver.RECORD_FIELDS} for record in frozen.records
+    )
+    captured_records = tuple(result["records"])
+    if canonical_json_bytes(captured_records) != canonical_json_bytes(frozen_records):
+        raise ValueError("materialized Stage-A records differ from the authenticated identity")
+    if len(captured_records) != 12:
+        raise ValueError("authenticated Stage-A identity must contain exactly 12 records")
+
+    sequences: list[MaterializedStageASequence] = []
+    remaining = dict(token_sink)
+    for record in frozen_records:
+        key = (str(record["family"]), str(record["canonical_id"]))
+        try:
+            prompt_ids, target_ids = remaining.pop(key)
+        except KeyError as error:
+            raise RuntimeError(
+                f"missing materialized Stage-A tokens for {key[0]}/{key[1]}"
+            ) from error
+        sequences.append(
+            MaterializedStageASequence(
+                _identity_record_bytes=canonical_json_bytes(record),
+                prompt_token_ids=prompt_ids,
+                target_token_ids=target_ids,
+                _authentication_seal=_STAGE_A_MATERIALIZATION_AUTHENTICATION_SEAL,
+            )
+        )
+    if remaining:
+        raise RuntimeError("Stage-A token sink contains identities absent from frozen capture")
+
+    tokenizer_manifest_sha256 = sha256_bytes(canonical_json_bytes(result["tokenizer"]["files"]))
+    if tokenizer_manifest_sha256 != frozen.tokenizer_manifest_sha256:
+        raise ValueError("Stage-A tokenizer differs from the authenticated identity")
+    return StageAIdentityMaterialization(
+        sequences=tuple(sequences),
+        tokenizer_manifest_sha256=tokenizer_manifest_sha256,
+        capture_input_sha256=sha256_bytes(canonical_json_bytes(result)),
+        frozen_identity_file_sha256=frozen.file_sha256,
+        frozen_identity_canonical_evidence_sha256=frozen.canonical_evidence_sha256,
+        calibration_binding_file_sha256=sha256_bytes(calibration_binding_artifact),
+    )
+
+
 def atomic_write_no_overwrite(path: Path, payload: bytes) -> None:
     """Atomically publish *payload* while refusing an existing destination."""
 
@@ -2855,24 +3227,35 @@ class LiveCaptureSource:
             from huggingface_hub import HfApi
         except ModuleNotFoundError as error:  # pragma: no cover - dependency guard
             raise RuntimeError("live capture requires huggingface-hub") from error
-        api = HfApi()
+        api = HfApi(token=False, endpoint="https://huggingface.co")
         return {
             "primary_model": str(
                 api.model_info(
-                    resolver.PRIMARY_MODEL_ID, revision=resolver.PRIMARY_MODEL_REVISION
+                    resolver.PRIMARY_MODEL_ID,
+                    revision=resolver.PRIMARY_MODEL_REVISION,
+                    token=False,
                 ).sha
             ),
             "mbpp": str(
-                api.dataset_info(resolver.MBPP_DATASET_ID, revision=resolver.MBPP_REVISION).sha
+                api.dataset_info(
+                    resolver.MBPP_DATASET_ID,
+                    revision=resolver.MBPP_REVISION,
+                    token=False,
+                ).sha
             ),
             "pg19": str(
-                api.dataset_info(resolver.PG19_DATASET_ID, revision=resolver.PG19_REVISION).sha
+                api.dataset_info(
+                    resolver.PG19_DATASET_ID,
+                    revision=resolver.PG19_REVISION,
+                    token=False,
+                ).sha
             ),
             "ruler": self._github_revision(resolver.RULER_SOURCE_ID, resolver.RULER_REVISION),
             "humaneval_plus": str(
                 api.dataset_info(
                     resolver.HUMANEVAL_PLUS_DATASET_ID,
                     revision=resolver.HUMANEVAL_PLUS_REVISION,
+                    token=False,
                 ).sha
             ),
             "evalplus": self._github_revision(
@@ -2886,9 +3269,13 @@ class LiveCaptureSource:
             from transformers import AutoTokenizer
         except ModuleNotFoundError as error:  # pragma: no cover - dependency guard
             raise RuntimeError("live capture requires huggingface-hub and Transformers") from error
-        api = HfApi()
+        api = HfApi(token=False, endpoint="https://huggingface.co")
         available = set(
-            api.list_repo_files(resolver.PRIMARY_MODEL_ID, revision=resolver.PRIMARY_MODEL_REVISION)
+            api.list_repo_files(
+                resolver.PRIMARY_MODEL_ID,
+                revision=resolver.PRIMARY_MODEL_REVISION,
+                token=False,
+            )
         )
         selected = [name for name in TOKENIZER_ASSET_NAMES if name in available]
         if "tokenizer.json" not in selected or "tokenizer_config.json" not in selected:
@@ -2902,6 +3289,8 @@ class LiveCaptureSource:
                     filename=name,
                     revision=resolver.PRIMARY_MODEL_REVISION,
                     cache_dir=self.cache_dir,
+                    token=False,
+                    endpoint="https://huggingface.co",
                 )
             )
             for name in selected
@@ -2920,6 +3309,7 @@ class LiveCaptureSource:
                 isolated,
                 local_files_only=True,
                 trust_remote_code=False,
+                token=False,
             )
             isolated_inventory = {
                 path.relative_to(isolated).as_posix()
@@ -2947,6 +3337,7 @@ class LiveCaptureSource:
             revision=resolver.MBPP_REVISION,
             split="train",
             streaming=True,
+            token=False,
         )
         return tuple(dict(row) for row in rows)
 
@@ -3075,6 +3466,1282 @@ class LiveCaptureSource:
         return row
 
 
+STAGE_A_INPUT_BUNDLE_SCHEMA: Final = "recurquant.experiment013.stage-a-input-bundle.v1"
+STAGE_A_INPUT_BUNDLE_FILENAME: Final = "stage-a-input-bundle.json"
+STAGE_A_INPUT_BUNDLE_PROFILE: Final = "opaque-byte-copy-no-semantic-decode-v1"
+_STAGE_A_INPUT_BUNDLE_AUTHENTICATION_SEAL: Final = object()
+_STAGE_A_OFFLINE_ENVIRONMENT: Final = {
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+}
+_STAGE_A_FORBIDDEN_CREDENTIAL_ENVIRONMENT: Final = frozenset(
+    {
+        "GITHUB_TOKEN",
+        "HF_API_TOKEN",
+        "HF_TOKEN",
+        "HUGGINGFACE_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+    }
+)
+_STAGE_A_INPUT_BUNDLE_MANIFEST_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "phase",
+        "capture_version",
+        "staging_profile",
+        "frozen_identity_file_sha256",
+        "calibration_binding_file_sha256",
+        "execution_bindings",
+        "source_heads",
+        "model_hub_manifest_file_sha256",
+        "parquet_hub_snapshots",
+        "objects",
+    }
+)
+_STAGE_A_INPUT_BUNDLE_OBJECT_FIELDS: Final = frozenset(
+    {
+        "role",
+        "source_id",
+        "revision",
+        "logical_path",
+        "relative_path",
+        "sha256",
+        "size_bytes",
+        "git_blob_oid",
+        "lfs_sha256",
+    }
+)
+_STAGE_A_INPUT_BUNDLE_ROLES: Final = frozenset(
+    {
+        "model_hub_manifest",
+        "tokenizer",
+        "parquet",
+        "ruler_generator",
+        "ruler_generation_manifest",
+        "ruler_receipt",
+    }
+)
+_WINDOWS_REPARSE_POINT: Final = 0x400
+
+
+def _bundle_is_link_or_reparse(path: Path) -> bool:
+    try:
+        status = path.lstat()
+    except OSError as error:
+        raise ValueError("cannot authenticate Stage-A bundle path status") from error
+    return path.is_symlink() or bool(
+        int(getattr(status, "st_file_attributes", 0)) & _WINDOWS_REPARSE_POINT
+    )
+
+
+def _bundle_safe_relative_path(value: object, *, context: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{context} must be a non-empty canonical relative path")
+    if any(character in value for character in ("\\", "\0", "\n", "\r", ":")):
+        raise ValueError(f"{context} is unsafe")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"{context} is not a canonical relative path")
+    return value
+
+
+def _bundle_safe_directory(path: Path, *, create: bool) -> Path:
+    absolute = Path(os.path.abspath(path))
+    if not absolute.is_absolute() or not absolute.anchor:
+        raise ValueError("Stage-A input bundle directory must be absolute")
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        if not os.path.lexists(current):
+            if not create:
+                raise FileNotFoundError(f"Stage-A input bundle directory is absent: {current}")
+            current.mkdir()
+        if _bundle_is_link_or_reparse(current) or not current.is_dir():
+            raise ValueError("Stage-A input bundle path traverses a link or non-directory")
+    return absolute
+
+
+def _bundle_stable_file_bytes(path: Path, *, context: str) -> bytes:
+    absolute = Path(os.path.abspath(path))
+    if _bundle_is_link_or_reparse(absolute) or not absolute.is_file():
+        raise ValueError(f"{context} must be a regular non-link file")
+    before = absolute.stat()
+    payload = absolute.read_bytes()
+    after = absolute.stat()
+    identity_before = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    identity_after = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if identity_before != identity_after or len(payload) != before.st_size:
+        raise ValueError(f"{context} changed while it was read")
+    return payload
+
+
+def _bundle_stable_descendant_bytes(
+    root: Path,
+    relative_path: str,
+    *,
+    context: str,
+) -> bytes:
+    """Read one bundle file while authenticating every lexical path component."""
+
+    safe_relative = _bundle_safe_relative_path(relative_path, context=f"{context} path")
+    absolute_root = _bundle_safe_directory(root, create=False)
+    components = PurePosixPath(safe_relative).parts
+    current = absolute_root
+    for index, component in enumerate(components):
+        current /= component
+        if _bundle_is_link_or_reparse(current):
+            raise ValueError(f"{context} path traverses a link or reparse point")
+        if index < len(components) - 1:
+            if not current.is_dir():
+                raise ValueError(f"{context} parent is not a directory")
+        elif not current.is_file():
+            raise ValueError(f"{context} is not a regular file")
+    payload = _bundle_stable_file_bytes(current, context=context)
+    # Rewalk after the read so a swapped parent cannot silently survive the
+    # point-of-use authentication boundary.
+    repeated = absolute_root
+    for index, component in enumerate(components):
+        repeated /= component
+        if _bundle_is_link_or_reparse(repeated):
+            raise ValueError(f"{context} path changed to a link or reparse point")
+        if index < len(components) - 1:
+            if not repeated.is_dir():
+                raise ValueError(f"{context} parent changed during authentication")
+        elif not repeated.is_file():
+            raise ValueError(f"{context} changed during authentication")
+    return payload
+
+
+def _bundle_deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _bundle_deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_bundle_deep_freeze(item) for item in value)
+    return value
+
+
+def _require_stage_a_offline_environment() -> None:
+    inherited = {name.upper(): value for name, value in os.environ.items()}
+    if any(
+        inherited.get(name) != expected for name, expected in _STAGE_A_OFFLINE_ENVIRONMENT.items()
+    ):
+        raise RuntimeError("offline Stage-A capture requires all frozen offline-mode flags")
+    present_credentials = sorted(_STAGE_A_FORBIDDEN_CREDENTIAL_ENVIRONMENT & set(inherited))
+    if present_credentials:
+        raise RuntimeError(
+            "offline Stage-A capture environment contains forbidden credential variables: "
+            + ", ".join(present_credentials)
+        )
+
+
+def _bundle_directory_entries(path: Path, *, context: str) -> dict[str, Path]:
+    if _bundle_is_link_or_reparse(path) or not path.is_dir():
+        raise ValueError(f"{context} must be a non-link directory")
+    try:
+        entries = tuple(path.iterdir())
+    except OSError as error:
+        raise ValueError(f"cannot enumerate {context}") from error
+    names = [entry.name for entry in entries]
+    if len({name.casefold() for name in names}) != len(names):
+        raise ValueError(f"{context} contains case-colliding names")
+    return {entry.name: entry for entry in entries}
+
+
+def _bundle_authenticate_filesystem_inventory(root: Path, *, digests: set[str]) -> None:
+    """Reject anything outside the exact manifest-plus-content-addressed tree."""
+
+    absolute_root = _bundle_safe_directory(root, create=False)
+    root_entries = _bundle_directory_entries(absolute_root, context="Stage-A input bundle root")
+    if set(root_entries) != {STAGE_A_INPUT_BUNDLE_FILENAME, "objects"}:
+        raise ValueError("Stage-A input bundle root filesystem inventory drifted")
+    manifest_path = root_entries[STAGE_A_INPUT_BUNDLE_FILENAME]
+    if _bundle_is_link_or_reparse(manifest_path) or not manifest_path.is_file():
+        raise ValueError("Stage-A input bundle manifest must be a regular non-link file")
+    object_root = root_entries["objects"]
+    object_entries = _bundle_directory_entries(
+        object_root,
+        context="Stage-A input bundle object directory",
+    )
+    if set(object_entries) != digests:
+        raise ValueError("Stage-A input bundle object filesystem inventory drifted")
+    for digest, path in object_entries.items():
+        _require_sha256(digest, context="Stage-A input bundle object filename")
+        if _bundle_is_link_or_reparse(path) or not path.is_file():
+            raise ValueError("Stage-A input bundle object must be a regular non-link file")
+
+
+def _bundle_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _bundle_cache_payload_bytes(cache_dir: Path, returned_path: object, *, context: str) -> bytes:
+    if not isinstance(returned_path, (str, os.PathLike)):
+        raise ValueError(f"{context} downloader returned no filesystem path")
+    cache = _bundle_safe_directory(cache_dir, create=True).resolve(strict=True)
+    returned = Path(os.path.abspath(returned_path))
+    if not _bundle_path_within(returned, cache):
+        raise ValueError(f"{context} downloader returned a path outside the explicit cache")
+    try:
+        resolved = returned.resolve(strict=True)
+        resolved.relative_to(cache)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"{context} cache pointer escapes the explicit cache") from error
+    candidate = cache
+    for component in resolved.relative_to(cache).parts:
+        candidate /= component
+        if _bundle_is_link_or_reparse(candidate):
+            raise ValueError(f"{context} resolved cache path traverses a link or reparse point")
+    return _bundle_stable_file_bytes(resolved, context=context)
+
+
+def _bundle_object_key(record: Mapping[str, Any]) -> tuple[str, str]:
+    return str(record["role"]), str(record["logical_path"])
+
+
+def _bundle_lfs_pointer_bytes(*, sha256: str, size_bytes: int) -> bytes:
+    digest = _require_sha256(sha256, context="Stage-A bundle LFS pointer SHA-256")
+    size = _require_int(size_bytes, context="Stage-A bundle LFS pointer size", minimum=1)
+    return (
+        f"version https://git-lfs.github.com/spec/v1\noid sha256:{digest}\nsize {size}\n"
+    ).encode("ascii")
+
+
+def _bundle_expected_object_record(
+    *,
+    role: str,
+    source_id: str,
+    revision: str,
+    logical_path: str,
+    payload: bytes,
+    git_blob_oid: str | None = None,
+    lfs_sha256: str | None = None,
+) -> dict[str, Any]:
+    digest = sha256_bytes(payload)
+    return {
+        "role": role,
+        "source_id": source_id,
+        "revision": revision,
+        "logical_path": logical_path,
+        "relative_path": f"objects/{digest}",
+        "sha256": digest,
+        "size_bytes": len(payload),
+        "git_blob_oid": git_blob_oid,
+        "lfs_sha256": lfs_sha256,
+    }
+
+
+def _bundle_add_object(
+    staging_root: Path,
+    records: list[dict[str, Any]],
+    *,
+    role: str,
+    source_id: str,
+    revision: str,
+    logical_path: str,
+    payload: bytes,
+    git_blob_oid: str | None = None,
+    lfs_sha256: str | None = None,
+) -> None:
+    if role not in _STAGE_A_INPUT_BUNDLE_ROLES:
+        raise ValueError("Stage-A input bundle object role is unsupported")
+    _bundle_safe_relative_path(logical_path, context=f"{role} logical path")
+    if not isinstance(payload, bytes) or not payload:
+        raise ValueError(f"{role} object {logical_path!r} must contain bytes")
+    digest = sha256_bytes(payload)
+    if lfs_sha256 is not None and digest != _require_sha256(
+        lfs_sha256, context=f"{role} {logical_path} LFS SHA-256"
+    ):
+        raise ValueError(f"{role} object {logical_path!r} differs from its LFS identity")
+    if git_blob_oid is not None:
+        if not isinstance(git_blob_oid, str) or re.fullmatch(r"[0-9a-f]{40}", git_blob_oid) is None:
+            raise ValueError(f"{role} object {logical_path!r} has an invalid Git blob OID")
+        git_payload = (
+            _bundle_lfs_pointer_bytes(sha256=digest, size_bytes=len(payload))
+            if lfs_sha256 is not None
+            else payload
+        )
+        if _git_blob_sha1(git_payload) != git_blob_oid:
+            raise ValueError(f"{role} object {logical_path!r} differs from its Git blob")
+    relative_path = f"objects/{digest}"
+    destination = staging_root / PurePosixPath(relative_path)
+    destination.parent.mkdir(exist_ok=True)
+    if destination.exists():
+        if _bundle_stable_file_bytes(destination, context="deduplicated bundle object") != payload:
+            raise ValueError("content-addressed Stage-A bundle object collided")
+    else:
+        destination.write_bytes(payload)
+    record = {
+        "role": role,
+        "source_id": source_id,
+        "revision": revision,
+        "logical_path": logical_path,
+        "relative_path": relative_path,
+        "sha256": digest,
+        "size_bytes": len(payload),
+        "git_blob_oid": git_blob_oid,
+        "lfs_sha256": lfs_sha256,
+    }
+    if _bundle_object_key(record) in {_bundle_object_key(item) for item in records}:
+        raise ValueError(f"duplicate Stage-A bundle object identity: {role}/{logical_path}")
+    records.append(record)
+
+
+def _bundle_public_github_revision(
+    repo_id: str,
+    revision: str,
+    *,
+    opener: Any,
+) -> str:
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo_id}/commits/{urllib.parse.quote(revision, safe='')}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "RecurQuant-Experiment-013-stage-a-stager",
+        },
+    )
+    try:
+        with opener(request, timeout=30) as response:
+            value = json.load(response)
+    except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot resolve public GitHub revision for {repo_id}") from error
+    resolved = _require_string(value.get("sha"), context=f"{repo_id} public revision")
+    if resolved != revision:
+        raise ValueError(f"GitHub returned a different object for pinned {repo_id} revision")
+    return resolved
+
+
+def _bundle_public_source_heads(*, api: Any, opener: Any) -> dict[str, str]:
+    return _validate_heads(
+        {
+            "primary_model": str(
+                api.model_info(
+                    resolver.PRIMARY_MODEL_ID,
+                    revision=resolver.PRIMARY_MODEL_REVISION,
+                    token=False,
+                ).sha
+            ),
+            "mbpp": str(
+                api.dataset_info(
+                    resolver.MBPP_DATASET_ID,
+                    revision=resolver.MBPP_REVISION,
+                    token=False,
+                ).sha
+            ),
+            "pg19": str(
+                api.dataset_info(
+                    resolver.PG19_DATASET_ID,
+                    revision=resolver.PG19_REVISION,
+                    token=False,
+                ).sha
+            ),
+            "ruler": _bundle_public_github_revision(
+                resolver.RULER_SOURCE_ID,
+                resolver.RULER_REVISION,
+                opener=opener,
+            ),
+            "humaneval_plus": str(
+                api.dataset_info(
+                    resolver.HUMANEVAL_PLUS_DATASET_ID,
+                    revision=resolver.HUMANEVAL_PLUS_REVISION,
+                    token=False,
+                ).sha
+            ),
+            "evalplus": _bundle_public_github_revision(
+                resolver.EVALPLUS_SOURCE_ID,
+                resolver.EVALPLUS_SOURCE_REVISION,
+                opener=opener,
+            ),
+        },
+        context="opaque Stage-A staging",
+    )
+
+
+def _bundle_tokenizer_files(frozen_identity_bytes: bytes) -> dict[str, dict[str, Any]]:
+    document = _strict_json(frozen_identity_bytes, context="frozen Stage-A identity")
+    evidence = document.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise ValueError("frozen Stage-A identity evidence is unavailable")
+    tokenizer = evidence.get("tokenizer")
+    if not isinstance(tokenizer, Mapping):
+        raise ValueError("frozen Stage-A tokenizer contract is unavailable")
+    raw_files = tokenizer.get("files")
+    if not isinstance(raw_files, list):
+        raise ValueError("frozen Stage-A tokenizer files are unavailable")
+    result: dict[str, dict[str, Any]] = {}
+    for index, raw in enumerate(raw_files):
+        if not isinstance(raw, Mapping) or set(raw) != {"name", "sha256", "size_bytes"}:
+            raise ValueError(f"frozen Stage-A tokenizer files[{index}] is malformed")
+        name = _bundle_safe_relative_path(raw["name"], context="tokenizer file name")
+        if PurePosixPath(name).name != name or name in result:
+            raise ValueError("frozen Stage-A tokenizer file inventory is unsafe or duplicated")
+        digest = _require_sha256(raw["sha256"], context=f"tokenizer {name} SHA-256")
+        size = _require_int(raw["size_bytes"], context=f"tokenizer {name} size", minimum=1)
+        result[name] = {"name": name, "sha256": digest, "size_bytes": size}
+    expected = {
+        name: {"name": name, "size_bytes": size, "sha256": digest}
+        for name, (size, digest) in RULER_EXPECTED_TOKENIZER_ASSETS.items()
+    }
+    if result != expected:
+        raise ValueError("frozen Stage-A tokenizer inventory differs from the exact four-file set")
+    return result
+
+
+def _bundle_expected_parquet_files() -> tuple[tuple[Any, Any], ...]:
+    from recurquant import experiment013_parquet
+
+    manifest = experiment013_parquet.load_experiment013_parquet_manifest(
+        PARQUET_MATERIALIZATION_MANIFEST_PATH
+    )
+    selected: list[tuple[Any, Any]] = []
+    for dataset_key, logical_split in (("pg19", "validation"), ("humaneval_plus", "test")):
+        dataset = manifest.dataset(dataset_key)
+        files = tuple(file for file in dataset.files if file.logical_split == logical_split)
+        if len(files) != 1:
+            raise RuntimeError(
+                "Stage-A Parquet inventory must contain exactly two single-file splits"
+            )
+        selected.append((dataset, files[0]))
+    return tuple(selected)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedStageAInputBundle:
+    root: Path
+    manifest: Mapping[str, Any]
+    manifest_file_sha256: str
+    objects: Mapping[tuple[str, str], Mapping[str, Any]]
+    _authentication_seal: object = dataclass_field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._authentication_seal is not _STAGE_A_INPUT_BUNDLE_AUTHENTICATION_SEAL:
+            raise ValueError(
+                "Stage-A input bundles may be created only by the authenticated loader"
+            )
+
+    def object_bytes(self, role: str, logical_path: str) -> bytes:
+        try:
+            record = self.objects[(role, logical_path)]
+        except KeyError as error:
+            raise KeyError(f"unknown Stage-A input bundle object: {role}/{logical_path}") from error
+        payload = _bundle_stable_descendant_bytes(
+            self.root,
+            str(record["relative_path"]),
+            context=f"Stage-A bundle {role}/{logical_path}",
+        )
+        if len(payload) != record["size_bytes"] or sha256_bytes(payload) != record["sha256"]:
+            raise ValueError(f"Stage-A bundle object changed: {role}/{logical_path}")
+        return payload
+
+
+def authenticate_stage_a_input_bundle(
+    bundle_root: Path,
+    *,
+    frozen_stage_a_identity_artifact: bytes,
+    calibration_binding_artifact: bytes,
+    execution_binding_artifacts: Mapping[str, bytes],
+) -> AuthenticatedStageAInputBundle:
+    """Authenticate an opaque Stage-A byte bundle without decoding protected rows."""
+
+    if not isinstance(frozen_stage_a_identity_artifact, bytes):
+        raise TypeError("frozen Stage-A identity artifact must be bytes")
+    if not isinstance(calibration_binding_artifact, bytes):
+        raise TypeError("Stage-A calibration binding artifact must be bytes")
+    frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
+        frozen_stage_a_identity_artifact,
+        calibration_binding_artifact=calibration_binding_artifact,
+    )
+    expected_bindings = _validate_execution_binding_artifacts(execution_binding_artifacts)
+    if dict(frozen.execution_bindings) != expected_bindings:
+        raise ValueError("Stage-A input bundle execution bindings differ from the frozen identity")
+    root = _bundle_safe_directory(bundle_root, create=False)
+    raw_manifest = _bundle_stable_descendant_bytes(
+        root,
+        STAGE_A_INPUT_BUNDLE_FILENAME,
+        context="Stage-A input bundle manifest",
+    )
+    manifest = _strict_json(raw_manifest, context="Stage-A input bundle manifest")
+    if canonical_json_bytes(manifest) != raw_manifest:
+        raise ValueError("Stage-A input bundle manifest is not canonical JSON")
+    _require_exact_fields(
+        manifest,
+        _STAGE_A_INPUT_BUNDLE_MANIFEST_FIELDS,
+        context="Stage-A input bundle manifest",
+    )
+    if (
+        manifest["schema"] != STAGE_A_INPUT_BUNDLE_SCHEMA
+        or manifest["phase"] != "stage_a"
+        or manifest["capture_version"] != CAPTURE_VERSION
+        or manifest["staging_profile"] != STAGE_A_INPUT_BUNDLE_PROFILE
+        or manifest["frozen_identity_file_sha256"] != frozen.file_sha256
+        or manifest["calibration_binding_file_sha256"] != sha256_bytes(calibration_binding_artifact)
+        or manifest["execution_bindings"] != expected_bindings
+        or manifest["source_heads"] != EXPECTED_SOURCE_HEADS
+        or manifest["model_hub_manifest_file_sha256"]
+        != expected_bindings["model_file_manifest_file_sha256"]
+    ):
+        raise ValueError("Stage-A input bundle identity or staging contract drifted")
+    snapshots = manifest["parquet_hub_snapshots"]
+    if not isinstance(snapshots, list) or len(snapshots) != 2:
+        raise ValueError("Stage-A input bundle must bind two Parquet snapshots")
+    raw_objects = manifest["objects"]
+    if not isinstance(raw_objects, list) or not raw_objects:
+        raise ValueError("Stage-A input bundle contains no objects")
+    objects: dict[tuple[str, str], Mapping[str, Any]] = {}
+    normalized_records: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_objects):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"Stage-A input bundle objects[{index}] must be an object")
+        _require_exact_fields(
+            raw,
+            _STAGE_A_INPUT_BUNDLE_OBJECT_FIELDS,
+            context=f"Stage-A input bundle objects[{index}]",
+        )
+        role = _require_string(raw["role"], context=f"bundle objects[{index}].role")
+        if role not in _STAGE_A_INPUT_BUNDLE_ROLES:
+            raise ValueError("Stage-A input bundle contains an unknown object role")
+        source_id = _require_string(raw["source_id"], context=f"bundle objects[{index}].source_id")
+        revision = _require_string(raw["revision"], context=f"bundle objects[{index}].revision")
+        logical_path = _bundle_safe_relative_path(
+            raw["logical_path"], context=f"bundle objects[{index}].logical_path"
+        )
+        relative_path = _bundle_safe_relative_path(
+            raw["relative_path"], context=f"bundle objects[{index}].relative_path"
+        )
+        digest = _require_sha256(raw["sha256"], context=f"bundle objects[{index}].sha256")
+        size = _require_int(raw["size_bytes"], context=f"bundle objects[{index}].size", minimum=1)
+        if relative_path != f"objects/{digest}":
+            raise ValueError("Stage-A input bundle object is not content-addressed")
+        git_blob_oid = raw["git_blob_oid"]
+        if git_blob_oid is not None and (
+            not isinstance(git_blob_oid, str) or re.fullmatch(r"[0-9a-f]{40}", git_blob_oid) is None
+        ):
+            raise ValueError("Stage-A input bundle object Git blob OID is invalid")
+        lfs_sha256 = raw["lfs_sha256"]
+        if lfs_sha256 is not None:
+            _require_sha256(lfs_sha256, context="Stage-A input bundle object LFS SHA-256")
+        record = {
+            "role": role,
+            "source_id": source_id,
+            "revision": revision,
+            "logical_path": logical_path,
+            "relative_path": relative_path,
+            "sha256": digest,
+            "size_bytes": size,
+            "git_blob_oid": git_blob_oid,
+            "lfs_sha256": lfs_sha256,
+        }
+        key = _bundle_object_key(record)
+        if key in objects:
+            raise ValueError("Stage-A input bundle object identities are duplicated")
+        objects[key] = MappingProxyType(record)
+        normalized_records.append(record)
+    if normalized_records != sorted(
+        normalized_records,
+        key=lambda item: (item["role"], item["source_id"], item["logical_path"]),
+    ):
+        raise ValueError("Stage-A input bundle object inventory is not canonical")
+    object_digests = {str(record["sha256"]) for record in normalized_records}
+    _bundle_authenticate_filesystem_inventory(root, digests=object_digests)
+    bundle = AuthenticatedStageAInputBundle(
+        root=root,
+        manifest=_bundle_deep_freeze(manifest),
+        manifest_file_sha256=sha256_bytes(raw_manifest),
+        objects=_bundle_deep_freeze(objects),
+        _authentication_seal=_STAGE_A_INPUT_BUNDLE_AUTHENTICATION_SEAL,
+    )
+
+    expected_records: dict[tuple[str, str], dict[str, Any]] = {}
+    model_bytes = bundle.object_bytes("model_hub_manifest", "model-file-manifest.json")
+    if model_bytes != execution_binding_artifacts["model_file_manifest_file_sha256"]:
+        raise ValueError("Stage-A bundle model Hub attestation differs from the frozen manifest")
+    expected_records[("model_hub_manifest", "model-file-manifest.json")] = (
+        _bundle_expected_object_record(
+            role="model_hub_manifest",
+            source_id=resolver.PRIMARY_MODEL_ID,
+            revision=resolver.PRIMARY_MODEL_REVISION,
+            logical_path="model-file-manifest.json",
+            payload=model_bytes,
+        )
+    )
+    tokenizer_files = _bundle_tokenizer_files(frozen_stage_a_identity_artifact)
+    for name, expected in tokenizer_files.items():
+        payload = bundle.object_bytes("tokenizer", name)
+        if len(payload) != expected["size_bytes"] or sha256_bytes(payload) != expected["sha256"]:
+            raise ValueError(f"Stage-A bundle tokenizer object drifted: {name}")
+        expected_records[("tokenizer", name)] = _bundle_expected_object_record(
+            role="tokenizer",
+            source_id=resolver.PRIMARY_MODEL_ID,
+            revision=resolver.PRIMARY_MODEL_REVISION,
+            logical_path=name,
+            payload=payload,
+        )
+    for path, git_blob_oid in RULER_GENERATOR_GIT_BLOBS.items():
+        payload = bundle.object_bytes("ruler_generator", path)
+        if _git_blob_sha1(payload) != git_blob_oid:
+            raise ValueError(f"Stage-A bundle RULER generator object drifted: {path}")
+        expected_records[("ruler_generator", path)] = _bundle_expected_object_record(
+            role="ruler_generator",
+            source_id=resolver.RULER_SOURCE_ID,
+            revision=resolver.RULER_REVISION,
+            logical_path=path,
+            payload=payload,
+            git_blob_oid=git_blob_oid,
+        )
+    generation_manifest = bundle.object_bytes(
+        "ruler_generation_manifest",
+        "generation-manifest.json",
+    )
+    expected_records[("ruler_generation_manifest", "generation-manifest.json")] = (
+        _bundle_expected_object_record(
+            role="ruler_generation_manifest",
+            source_id=resolver.RULER_SOURCE_ID,
+            revision=resolver.RULER_REVISION,
+            logical_path="generation-manifest.json",
+            payload=generation_manifest,
+        )
+    )
+    for item in required_ruler_receipts():
+        filename = str(item["filename"])
+        payload = bundle.object_bytes("ruler_receipt", filename)
+        expected_records[("ruler_receipt", filename)] = _bundle_expected_object_record(
+            role="ruler_receipt",
+            source_id=resolver.RULER_SOURCE_ID,
+            revision=resolver.RULER_REVISION,
+            logical_path=filename,
+            payload=payload,
+        )
+    expected_snapshots: list[dict[str, Any]] = []
+    for dataset, file in _bundle_expected_parquet_files():
+        logical = f"{dataset.key}/{file.logical_split}/{file.immutable_path}"
+        payload = bundle.object_bytes("parquet", logical)
+        if (
+            len(payload) != file.size_bytes
+            or sha256_bytes(payload) != file.lfs_sha256
+            or _git_blob_sha1(
+                _bundle_lfs_pointer_bytes(
+                    sha256=file.lfs_sha256,
+                    size_bytes=file.size_bytes,
+                )
+            )
+            != file.git_blob_oid
+        ):
+            raise ValueError(f"Stage-A bundle Parquet object drifted: {logical}")
+        expected_records[("parquet", logical)] = _bundle_expected_object_record(
+            role="parquet",
+            source_id=dataset.dataset_id,
+            revision=dataset.conversion_revision,
+            logical_path=logical,
+            payload=payload,
+            git_blob_oid=file.git_blob_oid,
+            lfs_sha256=file.lfs_sha256,
+        )
+        expected_snapshots.append(
+            {
+                "dataset_key": dataset.key,
+                "dataset_id": dataset.dataset_id,
+                "source_revision": dataset.source_revision,
+                "conversion_revision": dataset.conversion_revision,
+                "files": [
+                    {
+                        "path": file.immutable_path,
+                        "git_blob_oid": file.git_blob_oid,
+                        "lfs_sha256": file.lfs_sha256,
+                        "size_bytes": file.size_bytes,
+                    }
+                ],
+            }
+        )
+    if snapshots != expected_snapshots:
+        raise ValueError("Stage-A input bundle Parquet Hub snapshots drifted")
+    if {key: dict(record) for key, record in objects.items()} != expected_records:
+        raise ValueError("Stage-A input bundle object records differ from the frozen semantics")
+    return bundle
+
+
+def stage_stage_a_input_bundle(
+    *,
+    bundle_root: Path,
+    cache_dir: Path,
+    ruler_receipt_dir: Path,
+    frozen_stage_a_identity_artifact: bytes,
+    calibration_binding_artifact: bytes,
+    execution_binding_artifacts: Mapping[str, bytes],
+    runtime_authentication_context: Mapping[str, object],
+) -> AuthenticatedStageAInputBundle:
+    """Stage exact public bytes without decoding any protected Stage-A content."""
+
+    destination = Path(os.path.abspath(bundle_root))
+    repository = REPOSITORY_ROOT.resolve(strict=True)
+    if _bundle_path_within(destination, repository):
+        raise ValueError("Stage-A input bundle must be outside the repository")
+    parent = _bundle_safe_directory(destination.parent, create=True)
+    cache = _bundle_safe_directory(cache_dir, create=True)
+    if _bundle_path_within(destination, cache) or _bundle_path_within(cache, destination):
+        raise ValueError("Stage-A input bundle and shared Hub cache must not be nested")
+    ruler_root = _bundle_safe_directory(ruler_receipt_dir, create=False)
+    frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
+        frozen_stage_a_identity_artifact,
+        calibration_binding_artifact=calibration_binding_artifact,
+    )
+    expected_execution_bindings = _validate_execution_binding_artifacts(execution_binding_artifacts)
+    if dict(frozen.execution_bindings) != expected_execution_bindings:
+        raise ValueError("opaque stager inputs differ from the frozen Stage-A identity")
+    tokenizer_files = _bundle_tokenizer_files(frozen_stage_a_identity_artifact)
+    runtime_context = _normalize_runtime_authentication_context(runtime_authentication_context)
+    authentication = _authenticate_execution_binding_artifacts(
+        execution_binding_artifacts,
+        runtime_context=runtime_context,
+    )
+    try:
+        if os.path.lexists(destination):
+            return authenticate_stage_a_input_bundle(
+                destination,
+                frozen_stage_a_identity_artifact=frozen_stage_a_identity_artifact,
+                calibration_binding_artifact=calibration_binding_artifact,
+                execution_binding_artifacts=execution_binding_artifacts,
+            )
+        try:
+            from huggingface_hub import HfApi, hf_hub_download
+        except ModuleNotFoundError as error:  # pragma: no cover - dependency guard
+            raise RuntimeError("opaque Stage-A staging requires huggingface-hub") from error
+        api = HfApi(endpoint="https://huggingface.co", token=False)
+        opener = urllib.request.urlopen
+        before = _bundle_public_source_heads(api=api, opener=opener)
+        staging_root = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=parent))
+        records: list[dict[str, Any]] = []
+        try:
+            _bundle_add_object(
+                staging_root,
+                records,
+                role="model_hub_manifest",
+                source_id=resolver.PRIMARY_MODEL_ID,
+                revision=resolver.PRIMARY_MODEL_REVISION,
+                logical_path="model-file-manifest.json",
+                payload=execution_binding_artifacts["model_file_manifest_file_sha256"],
+            )
+            for name, expected in sorted(tokenizer_files.items()):
+                returned = hf_hub_download(
+                    repo_id=resolver.PRIMARY_MODEL_ID,
+                    filename=name,
+                    repo_type="model",
+                    revision=resolver.PRIMARY_MODEL_REVISION,
+                    cache_dir=cache,
+                    token=False,
+                    endpoint="https://huggingface.co",
+                )
+                payload = _bundle_cache_payload_bytes(cache, returned, context=f"tokenizer {name}")
+                if (
+                    len(payload) != expected["size_bytes"]
+                    or sha256_bytes(payload) != expected["sha256"]
+                ):
+                    raise ValueError(f"downloaded tokenizer object drifted: {name}")
+                _bundle_add_object(
+                    staging_root,
+                    records,
+                    role="tokenizer",
+                    source_id=resolver.PRIMARY_MODEL_ID,
+                    revision=resolver.PRIMARY_MODEL_REVISION,
+                    logical_path=name,
+                    payload=payload,
+                )
+
+            parquet_snapshots: list[dict[str, Any]] = []
+            from recurquant import experiment013_parquet
+
+            metadata = experiment013_parquet.HuggingFaceHubMetadataBackend(token=False)
+            for dataset, file in _bundle_expected_parquet_files():
+                if (
+                    metadata.resolve_dataset_revision(
+                        repo_id=dataset.dataset_id,
+                        revision=dataset.source_revision,
+                    )
+                    != dataset.source_revision
+                ):
+                    raise ValueError("Stage-A Parquet source revision drifted during staging")
+                snapshot = metadata.snapshot_parquet_files(
+                    repo_id=dataset.dataset_id,
+                    revision=dataset.conversion_revision,
+                    paths=(file.immutable_path,),
+                )
+                observed = snapshot.files[0] if len(snapshot.files) == 1 else None
+                if (
+                    snapshot.commit_hash != dataset.conversion_revision
+                    or observed is None
+                    or observed.path != file.immutable_path
+                    or observed.git_blob_oid != file.git_blob_oid
+                    or observed.lfs_sha256 != file.lfs_sha256
+                    or observed.size_bytes != file.size_bytes
+                    or observed.lfs_size_bytes != file.lfs_size_bytes
+                    or observed.etag != file.lfs_sha256
+                ):
+                    raise ValueError("Stage-A Parquet Hub metadata drifted during staging")
+                returned = hf_hub_download(
+                    repo_id=dataset.dataset_id,
+                    filename=file.immutable_path,
+                    repo_type="dataset",
+                    revision=dataset.conversion_revision,
+                    cache_dir=cache,
+                    token=False,
+                    endpoint="https://huggingface.co",
+                )
+                payload = _bundle_cache_payload_bytes(
+                    cache,
+                    returned,
+                    context=f"Parquet {dataset.key}/{file.logical_split}",
+                )
+                if len(payload) != file.size_bytes or sha256_bytes(payload) != file.lfs_sha256:
+                    raise ValueError("downloaded Stage-A Parquet object differs from frozen LFS")
+                logical = f"{dataset.key}/{file.logical_split}/{file.immutable_path}"
+                _bundle_add_object(
+                    staging_root,
+                    records,
+                    role="parquet",
+                    source_id=dataset.dataset_id,
+                    revision=dataset.conversion_revision,
+                    logical_path=logical,
+                    payload=payload,
+                    git_blob_oid=file.git_blob_oid,
+                    lfs_sha256=file.lfs_sha256,
+                )
+                parquet_snapshots.append(
+                    {
+                        "dataset_key": dataset.key,
+                        "dataset_id": dataset.dataset_id,
+                        "source_revision": dataset.source_revision,
+                        "conversion_revision": dataset.conversion_revision,
+                        "files": [
+                            {
+                                "path": file.immutable_path,
+                                "git_blob_oid": file.git_blob_oid,
+                                "lfs_sha256": file.lfs_sha256,
+                                "size_bytes": file.size_bytes,
+                            }
+                        ],
+                    }
+                )
+
+            raw_base = (
+                "https://raw.githubusercontent.com/"
+                f"{resolver.RULER_SOURCE_ID}/{resolver.RULER_REVISION}/"
+            )
+            for path, git_blob_oid in sorted(RULER_GENERATOR_GIT_BLOBS.items()):
+                request = urllib.request.Request(
+                    raw_base + path,
+                    headers={"User-Agent": "RecurQuant-Experiment-013-stage-a-stager"},
+                )
+                try:
+                    with opener(request, timeout=30) as response:
+                        payload = response.read()
+                except (OSError, urllib.error.HTTPError) as error:
+                    raise RuntimeError(f"cannot stage pinned RULER source file {path}") from error
+                _bundle_add_object(
+                    staging_root,
+                    records,
+                    role="ruler_generator",
+                    source_id=resolver.RULER_SOURCE_ID,
+                    revision=resolver.RULER_REVISION,
+                    logical_path=path,
+                    payload=payload,
+                    git_blob_oid=git_blob_oid,
+                )
+            generation_manifest = _bundle_stable_file_bytes(
+                ruler_root / "generation-manifest.json",
+                context="RULER generation manifest for opaque staging",
+            )
+            _bundle_add_object(
+                staging_root,
+                records,
+                role="ruler_generation_manifest",
+                source_id=resolver.RULER_SOURCE_ID,
+                revision=resolver.RULER_REVISION,
+                logical_path="generation-manifest.json",
+                payload=generation_manifest,
+            )
+            for item in required_ruler_receipts():
+                filename = str(item["filename"])
+                payload = _bundle_stable_file_bytes(
+                    ruler_root / filename,
+                    context=f"RULER receipt {filename} for opaque staging",
+                )
+                _bundle_add_object(
+                    staging_root,
+                    records,
+                    role="ruler_receipt",
+                    source_id=resolver.RULER_SOURCE_ID,
+                    revision=resolver.RULER_REVISION,
+                    logical_path=filename,
+                    payload=payload,
+                )
+            after = _bundle_public_source_heads(api=api, opener=opener)
+            if after != before:
+                raise ValueError("public source heads changed during opaque Stage-A staging")
+            records.sort(key=lambda item: (item["role"], item["source_id"], item["logical_path"]))
+            manifest = {
+                "schema": STAGE_A_INPUT_BUNDLE_SCHEMA,
+                "phase": "stage_a",
+                "capture_version": CAPTURE_VERSION,
+                "staging_profile": STAGE_A_INPUT_BUNDLE_PROFILE,
+                "frozen_identity_file_sha256": frozen.file_sha256,
+                "calibration_binding_file_sha256": sha256_bytes(calibration_binding_artifact),
+                "execution_bindings": dict(frozen.execution_bindings),
+                "source_heads": before,
+                "model_hub_manifest_file_sha256": sha256_bytes(
+                    execution_binding_artifacts["model_file_manifest_file_sha256"]
+                ),
+                "parquet_hub_snapshots": parquet_snapshots,
+                "objects": records,
+            }
+            (staging_root / STAGE_A_INPUT_BUNDLE_FILENAME).write_bytes(
+                canonical_json_bytes(manifest)
+            )
+            authenticate_stage_a_input_bundle(
+                staging_root,
+                frozen_stage_a_identity_artifact=frozen_stage_a_identity_artifact,
+                calibration_binding_artifact=calibration_binding_artifact,
+                execution_binding_artifacts=execution_binding_artifacts,
+            )
+            lock_path = parent / f".{destination.name}.publish.lock"
+            lock_payload = canonical_json_bytes(
+                {
+                    "bundle_manifest_sha256": sha256_bytes(canonical_json_bytes(manifest)),
+                    "owner_nonce": os.urandom(32).hex(),
+                    "staging_directory": staging_root.name,
+                }
+            )
+            lock_owned = False
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                lock_owned = True
+            except FileExistsError as error:
+                raise FileExistsError(
+                    "Stage-A input bundle publication is already owned"
+                ) from error
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(lock_payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.rename(staging_root, destination)
+            finally:
+                if lock_owned and os.path.lexists(lock_path):
+                    observed_lock = _bundle_stable_file_bytes(
+                        lock_path,
+                        context="Stage-A input bundle publication lock",
+                    )
+                    if observed_lock != lock_payload:
+                        raise ValueError("Stage-A input bundle publication lock ownership changed")
+                    lock_path.unlink()
+                    if os.path.lexists(lock_path):
+                        raise ValueError(
+                            "Stage-A input bundle publication lock survived owned cleanup"
+                        )
+        except BaseException:
+            # The uniquely-owned temporary tree is intentionally retained for
+            # forensic inspection. It is never treated as an authenticated bundle.
+            raise
+        return authenticate_stage_a_input_bundle(
+            destination,
+            frozen_stage_a_identity_artifact=frozen_stage_a_identity_artifact,
+            calibration_binding_artifact=calibration_binding_artifact,
+            execution_binding_artifacts=execution_binding_artifacts,
+        )
+    finally:
+        if sys.modules.get(_CALIBRATION_RUNNER_MODULE_NAME) is authentication.runner:
+            sys.modules.pop(_CALIBRATION_RUNNER_MODULE_NAME, None)
+
+
+class _StagedParquetHubBackend:
+    def __init__(self, bundle: AuthenticatedStageAInputBundle) -> None:
+        from recurquant import experiment013_parquet
+
+        self._module = experiment013_parquet
+        self._snapshots = {
+            str(item["dataset_id"]): item for item in bundle.manifest["parquet_hub_snapshots"]
+        }
+
+    def resolve_dataset_revision(self, *, repo_id: str, revision: str) -> str:
+        snapshot = self._snapshots.get(repo_id)
+        if snapshot is None or snapshot["source_revision"] != revision:
+            raise ValueError("offline Parquet source revision is absent or different")
+        return revision
+
+    def snapshot_parquet_files(
+        self,
+        *,
+        repo_id: str,
+        revision: str,
+        paths: tuple[str, ...],
+    ) -> Any:
+        snapshot = self._snapshots.get(repo_id)
+        if snapshot is None or snapshot["conversion_revision"] != revision:
+            raise ValueError("offline Parquet conversion revision is absent or different")
+        files_by_path = {str(item["path"]): item for item in snapshot["files"]}
+        files = []
+        for path in paths:
+            item = files_by_path.get(path)
+            if item is None:
+                raise ValueError("offline Parquet snapshot omitted a requested path")
+            files.append(
+                self._module.HubFileMetadata(
+                    path=path,
+                    commit_hash=revision,
+                    size_bytes=int(item["size_bytes"]),
+                    git_blob_oid=str(item["git_blob_oid"]),
+                    lfs_sha256=str(item["lfs_sha256"]),
+                    lfs_size_bytes=int(item["size_bytes"]),
+                    etag=str(item["lfs_sha256"]),
+                )
+            )
+        return self._module.HubDatasetMetadata(commit_hash=revision, files=tuple(files))
+
+
+class _StagedParquetBackend:
+    def __init__(self, bundle: AuthenticatedStageAInputBundle) -> None:
+        self._bundle = bundle
+        self._uris: dict[str, str] = {}
+        for snapshot in bundle.manifest["parquet_hub_snapshots"]:
+            dataset_key = str(snapshot["dataset_key"])
+            dataset_id = str(snapshot["dataset_id"])
+            revision = str(snapshot["conversion_revision"])
+            for file in snapshot["files"]:
+                path = str(file["path"])
+                split = "validation" if dataset_key == "pg19" else "test"
+                logical = f"{dataset_key}/{split}/{path}"
+                self._uris[f"hf://datasets/{dataset_id}@{revision}/{path}"] = logical
+
+    def _parquet_file(self, uri: str) -> Any:
+        from io import BytesIO
+
+        import pyarrow.parquet as parquet
+
+        try:
+            logical_path = self._uris[uri]
+        except KeyError as error:
+            raise ValueError("offline Parquet URI is outside the staged inventory") from error
+        payload = self._bundle.object_bytes("parquet", logical_path)
+        return parquet.ParquetFile(BytesIO(payload))
+
+    def inspect(self, uri: str) -> Any:
+        from recurquant import experiment013_parquet
+
+        parquet_file = self._parquet_file(uri)
+        metadata = parquet_file.metadata
+        return experiment013_parquet.ParquetFileLayout(
+            row_group_rows=tuple(
+                metadata.row_group(index).num_rows for index in range(metadata.num_row_groups)
+            ),
+            columns=tuple(parquet_file.schema_arrow.names),
+        )
+
+    def read_row(
+        self,
+        uri: str,
+        *,
+        row_group_index: int,
+        row_index_in_group: int,
+        columns: tuple[str, ...],
+    ) -> Mapping[str, object]:
+        parquet_file = self._parquet_file(uri)
+        table = parquet_file.read_row_group(row_group_index, columns=list(columns))
+        rows = table.slice(row_index_in_group, 1).to_pylist()
+        if len(rows) != 1 or not isinstance(rows[0], Mapping):
+            raise ValueError("offline Parquet backend did not return exactly one row")
+        return rows[0]
+
+    def read_row_group_projection(
+        self,
+        uri: str,
+        *,
+        row_group_index: int,
+        columns: tuple[str, ...],
+    ) -> Sequence[Mapping[str, object]]:
+        return (
+            self._parquet_file(uri)
+            .read_row_group(
+                row_group_index,
+                columns=list(columns),
+            )
+            .to_pylist()
+        )
+
+
+class StagedCaptureSource:
+    """Strictly local CaptureSource backed by one authenticated opaque bundle."""
+
+    def __init__(self, bundle: AuthenticatedStageAInputBundle) -> None:
+        if not isinstance(bundle, AuthenticatedStageAInputBundle):
+            raise TypeError("StagedCaptureSource requires an authenticated Stage-A input bundle")
+        _require_stage_a_offline_environment()
+        self.bundle = bundle
+        self._hub = _StagedParquetHubBackend(bundle)
+        self._parquet = _StagedParquetBackend(bundle)
+
+    def model_file_manifest_attestation(self) -> bytes:
+        return self.bundle.object_bytes("model_hub_manifest", "model-file-manifest.json")
+
+    def source_heads(self) -> Mapping[str, str]:
+        return MappingProxyType(dict(self.bundle.manifest["source_heads"]))
+
+    def tokenizer_material(self) -> TokenizerMaterial:
+        try:
+            from transformers import AutoTokenizer
+        except ModuleNotFoundError as error:  # pragma: no cover - dependency guard
+            raise RuntimeError("offline Stage-A capture requires Transformers") from error
+        records = {
+            logical_path: record
+            for (role, logical_path), record in self.bundle.objects.items()
+            if role == "tokenizer"
+        }
+        files = {name: self.bundle.object_bytes("tokenizer", name) for name in sorted(records)}
+        with tempfile.TemporaryDirectory(prefix="recurquant-exp013-staged-tokenizer-") as temporary:
+            isolated = Path(temporary)
+            for name, payload in files.items():
+                (isolated / name).write_bytes(payload)
+            tokenizer = AutoTokenizer.from_pretrained(
+                isolated,
+                local_files_only=True,
+                trust_remote_code=False,
+                token=False,
+            )
+            inventory = {
+                path.relative_to(isolated).as_posix()
+                for path in isolated.rglob("*")
+                if path.is_file()
+            }
+            if inventory != set(files):
+                raise ValueError("offline tokenizer construction changed the staged inventory")
+        return TokenizerMaterial(
+            tokenizer=tokenizer,
+            tokenizer_class=tokenizer.__class__.__name__,
+            transformers_version=importlib.metadata.version("transformers"),
+            files=MappingProxyType(files),
+            model_weights_loaded=False,
+        )
+
+    def mbpp_train_rows(self) -> Sequence[Mapping[str, Any]]:
+        raise RuntimeError("Stage-A offline source forbids MBPP payload access")
+
+    def pg19_projection(self, split: str) -> Sequence[ProjectionRow]:
+        if split != "validation":
+            raise ValueError("Stage-A offline source permits only PG19 validation")
+        from recurquant import experiment013_parquet
+
+        projection = experiment013_parquet.project_experiment013_parquet_columns(
+            "pg19",
+            split,
+            columns=("url",),
+            expected_count=50,
+            hub_backend=self._hub,
+            parquet_backend=self._parquet,
+        )
+        return tuple(
+            ProjectionRow(
+                _require_string(row.values[0], context="PG19 validation url"),
+                row.global_offset,
+            )
+            for row in projection.rows
+        )
+
+    def pg19_row(self, split: str, *, offset: int, expected_url: str) -> Mapping[str, Any]:
+        if split != "validation":
+            raise ValueError("Stage-A offline source permits only PG19 validation")
+        from recurquant import experiment013_parquet
+
+        selected = experiment013_parquet.read_experiment013_parquet_row(
+            "pg19",
+            split,
+            offset,
+            columns=("url", "text"),
+            hub_backend=self._hub,
+            parquet_backend=self._parquet,
+        )
+        row = dict(selected.values)
+        if row.get("url") != expected_url:
+            raise ValueError("offline PG19 row URL differs from its projection")
+        return row
+
+    def ruler_generator_files(self) -> Mapping[str, bytes]:
+        return MappingProxyType(
+            {
+                path: self.bundle.object_bytes("ruler_generator", path)
+                for path in sorted(RULER_GENERATOR_GIT_BLOBS)
+            }
+        )
+
+    def ruler_generation_manifest_bytes(self) -> bytes:
+        return self.bundle.object_bytes("ruler_generation_manifest", "generation-manifest.json")
+
+    def ruler_receipt_bytes(
+        self,
+        *,
+        category: str,
+        config: str,
+        configured_length: int,
+        seed: int,
+    ) -> bytes:
+        filename = ruler_receipt_filename(
+            category=category,
+            config=config,
+            configured_length=configured_length,
+            seed=seed,
+        )
+        return self.bundle.object_bytes("ruler_receipt", filename)
+
+    def humaneval_projection(self) -> Sequence[ProjectionRow]:
+        from recurquant import experiment013_parquet
+
+        projection = experiment013_parquet.project_experiment013_parquet_columns(
+            "humaneval_plus",
+            "test",
+            columns=("task_id",),
+            expected_count=164,
+            hub_backend=self._hub,
+            parquet_backend=self._parquet,
+        )
+        return tuple(
+            ProjectionRow(
+                _require_string(row.values[0], context="HumanEval+ task_id"),
+                row.global_offset,
+            )
+            for row in projection.rows
+        )
+
+    def humaneval_row(self, *, offset: int, expected_task_id: str) -> Mapping[str, Any]:
+        from recurquant import experiment013_parquet
+
+        selected = experiment013_parquet.read_experiment013_parquet_row(
+            "humaneval_plus",
+            "test",
+            offset,
+            columns=("task_id", "prompt", "canonical_solution"),
+            hub_backend=self._hub,
+            parquet_backend=self._parquet,
+        )
+        row = dict(selected.values)
+        if row.get("task_id") != expected_task_id:
+            raise ValueError("offline HumanEval+ row differs from its projection")
+        return row
+
+
 def _parse_named_cli_values(
     values: Sequence[str],
     *,
@@ -3097,8 +4764,14 @@ def _parse_named_cli_values(
 
 
 def _runtime_context_from_cli(args: argparse.Namespace) -> _RuntimeAuthenticationContext:
-    if args.base_runtime_root is None or args.staged_interpreter is None:
-        raise ValueError("capture requires --base-runtime-root and --staged-interpreter")
+    if (
+        args.base_runtime_root is None
+        or args.git_executable is None
+        or args.staged_interpreter is None
+    ):
+        raise ValueError(
+            "capture requires --base-runtime-root, --git-executable, and --staged-interpreter"
+        )
     roots = _parse_named_cli_values(
         args.package_root,
         context="--package-root",
@@ -3112,6 +4785,7 @@ def _runtime_context_from_cli(args: argparse.Namespace) -> _RuntimeAuthenticatio
     return _normalize_runtime_authentication_context(
         {
             "base_runtime_root": args.base_runtime_root,
+            "git_executable": args.git_executable,
             "staged_interpreter": args.staged_interpreter,
             "package_runtime_roots": roots,
             "package_import_paths": import_paths,
@@ -3141,6 +4815,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-file-manifest", type=Path)
     parser.add_argument("--parquet-materialization-manifest", type=Path)
     parser.add_argument("--base-runtime-root", type=Path)
+    parser.add_argument("--git-executable", type=Path)
     parser.add_argument("--staged-interpreter", type=Path)
     parser.add_argument("--package-root", action="append", default=[])
     parser.add_argument("--package-import-path", action="append", default=[])
@@ -3151,7 +4826,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.phase in resolver.PROTECTED_STAGES:
         raise PermissionError(
-            f"{args.phase} is protected; capture v4 refuses it before file or source access"
+            f"{args.phase} is protected; capture v5 refuses it before file or source access"
         )
     if args.ruler_receipt_dir is None:
         raise ValueError("--ruler-receipt-dir is required")
@@ -3171,9 +4846,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "repository_source_manifest_file_sha256": args.repository_source_manifest,
         "calibration_runtime_manifest_file_sha256": args.calibration_runtime_manifest,
         "model_file_manifest_file_sha256": args.model_file_manifest,
-        "parquet_materialization_manifest_file_sha256": (
-            args.parquet_materialization_manifest
-        ),
+        "parquet_materialization_manifest_file_sha256": (args.parquet_materialization_manifest),
     }
     if any(path is None for path in binding_paths.values()):
         raise ValueError(
@@ -3195,6 +4868,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         execution_binding_artifacts=execution_binding_artifacts,
         runtime_authentication_context={
             "base_runtime_root": runtime_context.base_runtime_root,
+            "git_executable": runtime_context.git_executable,
             "staged_interpreter": runtime_context.staged_interpreter,
             "package_runtime_roots": runtime_context.package_runtime_roots,
             "package_import_paths": runtime_context.package_import_paths,

@@ -5,6 +5,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -488,6 +490,54 @@ def test_subprocess_environment_removes_python_injection(monkeypatch) -> None:
     assert "PYTHONPATH" not in env
     assert env["PYTHONNOUSERSITE"] == "1"
     assert env["TEST_MARKER"] == "bound"
+
+
+def test_ruler_checkout_uses_explicit_git_and_ignores_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ruler_root = tmp_path / "ruler"
+    ruler_root.mkdir()
+    authenticated_git = tmp_path / "toolchain" / "git.exe"
+    authenticated_git.parent.mkdir()
+    authenticated_git.write_bytes(b"authenticated Git fixture\n")
+    fake_path = tmp_path / "fake-path"
+    fake_path.mkdir()
+    (fake_path / "git.exe").write_bytes(b"must not execute\n")
+    monkeypatch.setenv("PATH", str(fake_path))
+    blob_data = b"authenticated blob\n"
+    blob_id = ruler._git_blob_sha1(blob_data)
+    observed: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[Any]:
+        observed.append(argv)
+        assert "PATH" not in {name.upper() for name in kwargs["env"]}  # type: ignore[index]
+        if argv[-2:] == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="a" * 40 + "\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout=blob_data, stderr=b"")
+
+    monkeypatch.setattr(ruler.subprocess, "run", fake_run)
+    monkeypatch.setattr(ruler, "_verify_task_specs_against_source", lambda **kwargs: None)
+    capture = SimpleNamespace(
+        resolver=SimpleNamespace(RULER_REVISION="a" * 40),
+        RULER_GENERATOR_GIT_BLOBS={
+            "scripts/synthetic.yaml": blob_id,
+            "scripts/data/synthetic/constants.py": blob_id,
+        },
+        _ruler_generator_manifest=lambda files: (),
+    )
+
+    checkout = ruler.verify_ruler_checkout(
+        ruler_root,
+        capture,
+        git_executable_path=authenticated_git,
+    )
+
+    assert checkout.source_files == {
+        "scripts/synthetic.yaml": blob_data,
+        "scripts/data/synthetic/constants.py": blob_data,
+    }
+    assert observed and all(command[0] == str(authenticated_git.resolve()) for command in observed)
 
 
 def test_isolated_stage_contains_only_verified_blob_and_corpus_bytes(tmp_path) -> None:

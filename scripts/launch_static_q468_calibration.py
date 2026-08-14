@@ -26,20 +26,21 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 3
-IDENTITY_SCHEMA: Final = 4
+RUNTIME_MANIFEST_SCHEMA: Final = 4
+IDENTITY_SCHEMA: Final = 5
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
+RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
+RUN_REPORT_SCHEMA: Final = 2
+FISHER_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
 _WINDOWS_REPARSE_POINT: Final = 0x400
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _SHA1_RE: Final = re.compile(r"[0-9a-f]{40}")
 _ROOT_NAME_RE: Final = re.compile(r"[a-z][a-z0-9-]{0,63}")
 _FORBIDDEN_SUFFIXES: Final = frozenset({".egg-link", ".pth", ".pyc", ".pyo", "._pth"})
 _FORBIDDEN_DIRECTORIES: Final = frozenset({"__pycache__"})
-_FORBIDDEN_FILENAMES: Final = frozenset(
-    {"pyvenv.cfg", "sitecustomize.py", "usercustomize.py"}
-)
+_FORBIDDEN_FILENAMES: Final = frozenset({"pyvenv.cfg", "sitecustomize.py", "usercustomize.py"})
 _WINDOWS_RESERVED_NAMES: Final = frozenset(
     {
         "aux",
@@ -87,6 +88,12 @@ _REQUIRED_RUNNER_OPTIONS: Final = frozenset(
         *_EXPECTED_BOUND_DIGEST_OPTIONS.values(),
     }
 )
+_SMOKE_PREREQUISITE_OPTIONS: Final = frozenset(
+    {
+        "--prior-fisher-h1-smoke-report",
+        "--prior-fisher-h1-smoke-complete-marker",
+    }
+)
 _SENSITIVE_MODULES: Final = frozenset(
     {
         "_virtualenv",
@@ -119,9 +126,7 @@ def _canonical_json_bytes(value: object) -> bytes:
 
 
 def _pretty_json_bytes(value: object) -> bytes:
-    return (json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n").encode(
-        "utf-8"
-    )
+    return (json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -201,7 +206,8 @@ def _canonical_relative_path(value: object, *, context: str) -> str:
         raise SealedLaunchError(f"{context} is not a safe POSIX path")
     path = PurePosixPath(value)
     if (
-        path.is_absolute()
+        value == "."
+        or path.is_absolute()
         or path.as_posix() != value
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
@@ -210,6 +216,15 @@ def _canonical_relative_path(value: object, *, context: str) -> str:
         if part.endswith((" ", ".")) or part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_NAMES:
             raise SealedLaunchError(f"{context} is unsafe on Windows")
     return value
+
+
+def _canonical_base_sys_path_entry(value: object, *, context: str) -> str:
+    # CPython's Windows runtime layout uses the exact ``.`` sentinel for the
+    # base-runtime root.  Keep that exception local to base_sys_path: every
+    # other manifest path must remain a non-dot canonical relative path.
+    if value == ".":
+        return "."
+    return _canonical_relative_path(value, context=context)
 
 
 def _root_name(value: object, *, context: str) -> str:
@@ -293,6 +308,37 @@ def _stable_file_record(path: Path, *, relative: str, context: str) -> dict[str,
     return {"path": relative, "sha256": digest.hexdigest(), "size_bytes": size}
 
 
+def _absolute_path_sha256(path: Path) -> str:
+    return _sha256_bytes(os.path.normcase(str(path.resolve(strict=True))).encode("utf-8"))
+
+
+def _authenticated_git_executable(path: Path) -> tuple[Path, dict[str, object]]:
+    try:
+        resolved = Path(path).resolve(strict=True)
+    except OSError as exc:
+        raise SealedLaunchError("Git executable is unavailable") from exc
+    if resolved.name.casefold() == "git.exe" and resolved.parent.name.casefold() == "cmd":
+        try:
+            resolved = (resolved.parent.parent / "mingw64" / "bin" / "git.exe").resolve(strict=True)
+        except OSError as exc:
+            raise SealedLaunchError(
+                "Git-for-Windows cmd shim has no canonical mingw64 executable"
+            ) from exc
+    current = Path(resolved.anchor)
+    for part in resolved.parts[1:]:
+        current /= part
+        if _is_link_or_reparse(current):
+            raise SealedLaunchError("Git executable traverses a link or reparse point")
+    record = _stable_file_record(resolved, relative=resolved.name, context="Git executable")
+    if int(record["size_bytes"]) <= 0:
+        raise SealedLaunchError("Git executable is empty")
+    return resolved, {
+        "absolute_path_sha256": _absolute_path_sha256(resolved),
+        "sha256": record["sha256"],
+        "size_bytes": record["size_bytes"],
+    }
+
+
 def _tree_files(root: Path, *, context: str) -> tuple[dict[str, object], ...]:
     root = _absolute_directory(root, context=f"{context} root")
     stack: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
@@ -354,6 +400,7 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
             "base_runtime_root",
             "base_sys_path",
             "distributions",
+            "git_executable",
             "interpreter",
             "launch_policy",
             "machine",
@@ -377,6 +424,25 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
         SEALED_LAUNCH_POLICY,
         context="runtime manifest launch policy",
     )
+
+    git_executable = root["git_executable"]
+    if not isinstance(git_executable, dict):
+        raise SealedLaunchError("runtime Git executable record must be an object")
+    _exact_fields(
+        git_executable,
+        {"absolute_path_sha256", "sha256", "size_bytes"},
+        context="runtime Git executable",
+    )
+    normalized_git_executable = {
+        "absolute_path_sha256": _sha256(
+            git_executable["absolute_path_sha256"],
+            context="runtime Git executable path SHA-256",
+        ),
+        "sha256": _sha256(git_executable["sha256"], context="runtime Git executable SHA-256"),
+        "size_bytes": _positive_int(
+            git_executable["size_bytes"], context="runtime Git executable size"
+        ),
+    }
 
     python_record = root["python"]
     if not isinstance(python_record, dict):
@@ -419,7 +485,7 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
     if not isinstance(raw_base_sys_path, list) or not raw_base_sys_path:
         raise SealedLaunchError("base sys.path must be a non-empty list")
     base_sys_path = [
-        _canonical_relative_path(item, context="base sys.path entry")
+        _canonical_base_sys_path_entry(item, context="base sys.path entry")
         for item in raw_base_sys_path
     ]
     if len({item.casefold() for item in base_sys_path}) != len(base_sys_path):
@@ -442,11 +508,7 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
             }
         )
     names = [item["name"] for item in package_roots]
-    if (
-        names != sorted(names)
-        or len(set(names)) != len(names)
-        or BASE_RUNTIME_ROOT_NAME in names
-    ):
+    if names != sorted(names) or len(set(names)) != len(names) or BASE_RUNTIME_ROOT_NAME in names:
         raise SealedLaunchError("package roots are not unique and sorted")
 
     raw_trees = root["runtime_trees"]
@@ -475,9 +537,7 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
                 {"path", "sha256", "size_bytes"},
                 context="runtime file record",
             )
-            relative = _canonical_relative_path(
-                raw_file["path"], context="runtime file path"
-            )
+            relative = _canonical_relative_path(raw_file["path"], context="runtime file path")
             if _forbidden_runtime_path(relative):
                 raise SealedLaunchError("runtime manifest contains a forbidden file")
             files.append(
@@ -509,9 +569,7 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
         "relative_path": interpreter_path,
         "root": interpreter["root"],
         "sha256": _sha256(interpreter["sha256"], context="runtime interpreter SHA-256"),
-        "size_bytes": _positive_int(
-            interpreter["size_bytes"], context="runtime interpreter size"
-        ),
+        "size_bytes": _positive_int(interpreter["size_bytes"], context="runtime interpreter size"),
     }
     if normalized_interpreter["root"] != BASE_RUNTIME_ROOT_NAME:
         raise SealedLaunchError("runtime interpreter is not in the base tree")
@@ -524,8 +582,10 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
     if base_files.get(interpreter_path) != expected_interpreter_file:
         raise SealedLaunchError("runtime interpreter differs from its base-tree record")
     for entry in base_sys_path:
-        present = entry in base_files or any(
-            str(path).startswith(f"{entry}/") for path in base_files
+        present = (
+            entry == "."
+            or entry in base_files
+            or any(str(path).startswith(f"{entry}/") for path in base_files)
         )
         optional_zip = re.fullmatch(r"python[0-9]+\.zip", entry) is not None
         if not present and not optional_zip:
@@ -562,8 +622,7 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
         if not isinstance(raw_files, list) or not raw_files:
             raise SealedLaunchError("runtime distribution has no RECORD files")
         files = [
-            _canonical_relative_path(item, context="distribution RECORD path")
-            for item in raw_files
+            _canonical_relative_path(item, context="distribution RECORD path") for item in raw_files
         ]
         if files != sorted(files) or len({item.casefold() for item in files}) != len(files):
             raise SealedLaunchError("distribution RECORD paths are not unique and sorted")
@@ -588,6 +647,7 @@ def _parse_runtime_manifest(data: bytes) -> dict[str, object]:
         "base_sys_path": base_sys_path,
         "distributions": distributions,
         "file_sha256": _sha256_bytes(data),
+        "git_executable": normalized_git_executable,
         "interpreter": normalized_interpreter,
         "machine": machine,
         "package_roots": package_roots,
@@ -717,8 +777,9 @@ def _verify_runtime(
     *,
     base_runtime_root: Path,
     package_roots: Mapping[str, Path],
+    git_executable_path: Path,
     require_current_process: bool,
-) -> tuple[Path, dict[str, Path], dict[str, str], Path]:
+) -> tuple[Path, dict[str, Path], dict[str, str], Path, Path]:
     base, packages, import_paths = _runtime_roots(
         base_runtime_root,
         package_roots,
@@ -732,6 +793,9 @@ def _verify_runtime(
             raise SealedLaunchError(f"runtime tree {name} differs from its frozen identity")
     if list(_distribution_inventory(packages, import_paths)) != manifest["distributions"]:
         raise SealedLaunchError("staged distribution identity differs from the runtime manifest")
+    git_executable, git_record = _authenticated_git_executable(git_executable_path)
+    if git_record != manifest["git_executable"]:
+        raise SealedLaunchError("Git executable differs from the runtime manifest")
     interpreter = _safe_join(
         base,
         str(manifest["interpreter"]["relative_path"]),  # type: ignore[index]
@@ -766,15 +830,16 @@ def _verify_runtime(
             or Path(sys.executable).resolve(strict=True) != interpreter
         ):
             raise SealedLaunchError("point-used Python or machine identity drifted")
-    return base, packages, import_paths, interpreter
+    return base, packages, import_paths, interpreter, git_executable
 
 
 def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
     result: dict[str, str] = {}
+    value_options = _REQUIRED_RUNNER_OPTIONS | _SMOKE_PREREQUISITE_OPTIONS
     index = 0
     while index < len(arguments):
         option = arguments[index]
-        if option in _REQUIRED_RUNNER_OPTIONS:
+        if option in value_options:
             if option in result or index + 1 >= len(arguments):
                 raise SealedLaunchError(f"runner option is duplicated or incomplete: {option}")
             raw_value = arguments[index + 1]
@@ -787,7 +852,51 @@ def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
     missing = sorted(_REQUIRED_RUNNER_OPTIONS - set(result))
     if missing:
         raise SealedLaunchError(f"runner arguments omit required sealed inputs: {missing}")
+    smoke_flag_count = sum(option == "--fisher-h1-smoke" for option in arguments)
+    if smoke_flag_count > 1:
+        raise SealedLaunchError("runner Fisher H=1 smoke flag is duplicated")
+    supplied_prerequisites = _SMOKE_PREREQUISITE_OPTIONS & set(result)
+    if smoke_flag_count == 1 and supplied_prerequisites:
+        raise SealedLaunchError("smoke mode forbids prior Fisher H=1 smoke prerequisites")
+    if smoke_flag_count == 0 and supplied_prerequisites != _SMOKE_PREREQUISITE_OPTIONS:
+        raise SealedLaunchError(
+            "full calibration requires both prior Fisher H=1 smoke prerequisite paths"
+        )
     return result
+
+
+def _verify_fisher_smoke_prerequisite_files(runner_options: Mapping[str, str]) -> None:
+    if "--prior-fisher-h1-smoke-report" not in runner_options:
+        return
+    try:
+        marker = Path(runner_options["--prior-fisher-h1-smoke-complete-marker"]).read_bytes()
+        report_bytes = Path(runner_options["--prior-fisher-h1-smoke-report"]).read_bytes()
+    except OSError as exc:
+        raise SealedLaunchError("prior Fisher H=1 smoke prerequisite is unavailable") from exc
+    if marker != FISHER_SMOKE_COMPLETE_BYTES:
+        raise SealedLaunchError("prior Fisher H=1 smoke completion marker drifted")
+    root = _strict_json(report_bytes, context="prior Fisher H=1 smoke report")
+    _exact_fields(
+        root,
+        {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
+        context="prior Fisher H=1 smoke report",
+    )
+    if _canonical_json_bytes(root) != report_bytes:
+        raise SealedLaunchError("prior Fisher H=1 smoke report is not canonical JSON")
+    evidence = root["evidence"]
+    if (
+        root["artifact_kind"] != RUN_REPORT_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != RUN_REPORT_SCHEMA
+        or not isinstance(evidence, dict)
+        or evidence.get("status") != "fisher_h1_smoke_passed"
+        or _sha256(
+            root["canonical_evidence_sha256"],
+            context="prior Fisher H=1 smoke evidence SHA-256",
+        )
+        != _sha256_bytes(_canonical_json_bytes(evidence))
+    ):
+        raise SealedLaunchError("prior Fisher H=1 smoke report authentication failed")
 
 
 def _parse_identity(data: bytes) -> dict[str, str]:
@@ -807,9 +916,7 @@ def _parse_identity(data: bytes) -> dict[str, str]:
         or evidence.get("promotion_required") is not False
     ):
         raise SealedLaunchError("frozen identity state or schema drifted")
-    claimed = _sha256(
-        root["canonical_evidence_sha256"], context="identity evidence SHA-256"
-    )
+    claimed = _sha256(root["canonical_evidence_sha256"], context="identity evidence SHA-256")
     if claimed != _sha256_bytes(_canonical_json_bytes(evidence)):
         raise SealedLaunchError("frozen identity evidence hash drifted")
     bindings = evidence.get("execution_bindings")
@@ -828,6 +935,7 @@ def _parse_source_manifest(data: bytes) -> dict[str, object]:
         root,
         {
             "canonical_manifest_sha256",
+            "git_executable",
             "object_format",
             "paths",
             "profile",
@@ -839,14 +947,22 @@ def _parse_source_manifest(data: bytes) -> dict[str, object]:
     )
     if _pretty_json_bytes(root) != data:
         raise SealedLaunchError("source manifest is not canonical JSON")
-    if root["schema"] != "recurquant.experiment013.source-manifest.v1":
+    if root["schema"] != "recurquant.experiment013.source-manifest.v2":
         raise SealedLaunchError("source manifest schema drifted")
-    if root["profile"] != "experiment-013-static-q468-frozen-source-v1":
+    if root["profile"] != "experiment-013-static-q468-frozen-source-v2":
         raise SealedLaunchError("source manifest profile drifted")
     if root["object_format"] != "sha1" or not isinstance(root["source_commit"], str):
         raise SealedLaunchError("source manifest Git identity drifted")
     if _SHA1_RE.fullmatch(str(root["source_commit"])) is None:
         raise SealedLaunchError("source manifest commit is invalid")
+    raw_git = root["git_executable"]
+    if not isinstance(raw_git, dict):
+        raise SealedLaunchError("source manifest Git executable record is missing")
+    _exact_fields(raw_git, {"sha256", "size_bytes"}, context="source Git executable")
+    git_executable = {
+        "sha256": _sha256(raw_git["sha256"], context="source Git executable SHA-256"),
+        "size_bytes": _positive_int(raw_git["size_bytes"], context="source Git executable size"),
+    }
     payload = dict(root)
     claimed = _sha256(payload.pop("canonical_manifest_sha256"), context="source self-hash")
     if claimed != _sha256_bytes(_pretty_json_bytes(payload)):
@@ -865,13 +981,13 @@ def _parse_source_manifest(data: bytes) -> dict[str, object]:
         )
         relative = _canonical_relative_path(raw_entry["path"], context="source path")
         for oid_field in ("git_blob_oid", "index_blob_oid", "worktree_blob_oid"):
-            if not isinstance(raw_entry[oid_field], str) or _SHA1_RE.fullmatch(
-                raw_entry[oid_field]
-            ) is None:
+            if (
+                not isinstance(raw_entry[oid_field], str)
+                or _SHA1_RE.fullmatch(raw_entry[oid_field]) is None
+            ):
                 raise SealedLaunchError("source Git object identity is invalid")
         git_object_ids = {
-            raw_entry[name]
-            for name in ("git_blob_oid", "index_blob_oid", "worktree_blob_oid")
+            raw_entry[name] for name in ("git_blob_oid", "index_blob_oid", "worktree_blob_oid")
         }
         if len(git_object_ids) != 1:
             raise SealedLaunchError("source Git object identities disagree")
@@ -888,7 +1004,11 @@ def _parse_source_manifest(data: bytes) -> dict[str, object]:
         raise SealedLaunchError("source path inventory is not unique and sorted")
     if RUNNER_SOURCE_PATH not in rendered:
         raise SealedLaunchError("source manifest omits the calibration runner")
-    return {"file_sha256": _sha256_bytes(data), "paths": paths}
+    return {
+        "file_sha256": _sha256_bytes(data),
+        "git_executable": git_executable,
+        "paths": paths,
+    }
 
 
 def _verify_source(source_manifest: Mapping[str, object], repository_root: Path) -> Path:
@@ -939,6 +1059,7 @@ def _verify_bound_artifacts(
         source_manifest,
         Path(runner_options["--repository-root"]),
     )
+    _verify_fisher_smoke_prerequisite_files(runner_options)
     return bindings, source_manifest, runner_path
 
 
@@ -952,13 +1073,69 @@ def _verify_empty_pycache(path: Path) -> Path:
     return root
 
 
-def _sealed_environment() -> dict[str, str]:
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if not key.upper().startswith("PYTHON")
-        and key.upper() not in {"VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT"}
+def _verify_empty_scratch(path: Path) -> Path:
+    root = _absolute_directory(path, context="sealed scratch directory")
+    try:
+        if any(os.scandir(root)):
+            raise SealedLaunchError("sealed scratch directory is not empty")
+    except OSError as exc:
+        raise SealedLaunchError("cannot enumerate sealed scratch directory") from exc
+    return root
+
+
+def _assert_scratch_tree_has_no_reparse(path: Path) -> None:
+    stack = [path]
+    while stack:
+        directory = stack.pop()
+        for entry in os.scandir(directory):
+            status = entry.stat(follow_symlinks=False)
+            if entry.is_symlink() or bool(
+                getattr(status, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
+            ):
+                raise SealedLaunchError("sealed scratch contains a link or reparse point")
+            if stat.S_ISDIR(status.st_mode):
+                stack.append(Path(entry.path))
+            elif not stat.S_ISREG(status.st_mode):
+                raise SealedLaunchError("sealed scratch contains a non-regular path")
+
+
+def _sealed_environment(*, scratch_directory: Path) -> dict[str, str]:
+    scratch = _absolute_directory(scratch_directory, context="sealed scratch directory")
+    inherited = {key.upper(): (key, value) for key, value in os.environ.items()}
+    environment = {
+        inherited[name][0]: inherited[name][1]
+        for name in (
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "PROCESSOR_ARCHITECTURE",
+            "PROCESSOR_ARCHITEW6432",
+        )
+        if name in inherited
     }
+    environment.update(
+        {
+            "LANG": "C",
+            "LC_ALL": "C",
+            "TEMP": str(scratch),
+            "TMP": str(scratch),
+            "TZ": "UTC",
+        }
+    )
+    return environment
+
+
+def _authenticated_stdin_loader(payload: bytes) -> str:
+    """Return a small ``-c`` loader bound to one exact stdin payload."""
+    digest = hashlib.sha256(payload).hexdigest()
+    size = len(payload)
+    return (
+        "import hashlib as _h,sys as _s\n"
+        f"_p=_s.stdin.buffer.read({size + 1})\n"
+        f"if len(_p)!={size} or _h.sha256(_p).hexdigest()!='{digest}':"
+        " raise RuntimeError('sealed bootstrap stdin authentication failed')\n"
+        "exec(compile(_p,'<recurquant-sealed-bootstrap>','exec',dont_inherit=True))"
+    )
 
 
 def _sealed_argv(
@@ -967,7 +1144,9 @@ def _sealed_argv(
     runtime_manifest: Path,
     base_runtime_root: Path,
     package_roots: Mapping[str, Path],
+    git_executable: Path,
     pycache_prefix: Path,
+    scratch_directory: Path,
     runner_arguments: Sequence[str],
 ) -> list[str]:
     serialized_roots = json.dumps(
@@ -986,11 +1165,13 @@ def _sealed_argv(
         "-X",
         "utf8",
         "-c",
-        SEALED_BOOTSTRAP,
+        SEALED_STDIN_LOADER,
         str(runtime_manifest),
         str(base_runtime_root),
         serialized_roots,
         str(pycache_prefix),
+        str(git_executable),
+        str(scratch_directory),
         *runner_arguments,
     ]
 
@@ -998,7 +1179,7 @@ def _sealed_argv(
 # This is intentionally standalone.  The child starts with no repository or
 # package path and cannot import this host module safely.  Keep its verification
 # semantics aligned with the host functions above and test both boundaries.
-SEALED_BOOTSTRAP: Final = r'''
+SEALED_BOOTSTRAP: Final = r"""
 import sys as _s
 _sensitive = {
     "site", "_virtualenv", "recurquant",
@@ -1076,6 +1257,11 @@ _expected_digest_options = {
     "parquet_materialization_manifest_file_sha256":
         "--expected-parquet-materialization-manifest-sha256",
 }
+_smoke_options = {
+    "--prior-fisher-h1-smoke-report",
+    "--prior-fisher-h1-smoke-complete-marker",
+}
+_smoke_marker = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
 
 def _fail(message):
     raise RuntimeError(message)
@@ -1138,7 +1324,7 @@ def _relative(value, context):
     if any(c in value for c in ("\\", "\0", "\n", "\r", ":")):
         _fail(context + " is not a safe POSIX path")
     path = _p.PurePosixPath(value)
-    if path.is_absolute() or path.as_posix() != value or any(
+    if value == "." or path.is_absolute() or path.as_posix() != value or any(
         part in {"", ".", ".."} for part in path.parts
     ):
         _fail(context + " is not a canonical relative path")
@@ -1146,6 +1332,11 @@ def _relative(value, context):
         if part.endswith((" ", ".")) or part.split(".", 1)[0].casefold() in _reserved:
             _fail(context + " is unsafe on Windows")
     return value
+
+def _base_path(value, context):
+    if value == ".":
+        return "."
+    return _relative(value, context)
 
 def _link(path):
     try:
@@ -1208,6 +1399,28 @@ def _file(path, relative, context):
         _fail(context + " changed during authentication")
     return {"path": relative, "sha256": digest.hexdigest(), "size_bytes": size}
 
+def _git(raw):
+    try:
+        path = _p.Path(raw).resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError("Git executable is unavailable") from error
+    if path.name.casefold() == "git.exe" and path.parent.name.casefold() == "cmd":
+        try:
+            path = (path.parent.parent / "mingw64" / "bin" / "git.exe").resolve(strict=True)
+        except OSError as error:
+            raise RuntimeError("Git-for-Windows cmd shim has no implementation") from error
+    current = _p.Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if _link(current):
+            _fail("Git executable traverses a link or reparse point")
+    record = _file(path, path.name, "Git executable")
+    if record["size_bytes"] <= 0:
+        _fail("Git executable is empty")
+    return path, {"absolute_path_sha256": _h.sha256(
+        _o.path.normcase(str(path)).encode("utf-8")
+    ).hexdigest(), "sha256": record["sha256"], "size_bytes": record["size_bytes"]}
+
 def _tree(root, context):
     root = _directory(root, context + " root")
     stack = [(root, ())]
@@ -1249,11 +1462,12 @@ def _name(value):
 def _options(arguments):
     required = {"--frozen-identity", "--repository-root", *_binding_options.values(),
                 *_expected_digest_options.values()}
+    value_options = required | _smoke_options
     result = {}
     index = 0
     while index < len(arguments):
         item = arguments[index]
-        if item in required:
+        if item in value_options:
             if (
                 item in result
                 or index + 1 >= len(arguments)
@@ -1265,8 +1479,36 @@ def _options(arguments):
         else:
             index += 1
     if set(result) != required:
-        _fail("runner arguments omit required sealed inputs")
+        if not required.issubset(result):
+            _fail("runner arguments omit required sealed inputs")
+    smoke_count = sum(item == "--fisher-h1-smoke" for item in arguments)
+    if smoke_count > 1:
+        _fail("runner Fisher H=1 smoke flag is duplicated")
+    supplied = _smoke_options.intersection(result)
+    if smoke_count == 1 and supplied:
+        _fail("smoke mode forbids prior Fisher H=1 smoke prerequisites")
+    if smoke_count == 0 and supplied != _smoke_options:
+        _fail("full calibration requires prior Fisher H=1 smoke prerequisites")
     return result
+
+def _smoke(options):
+    if "--prior-fisher-h1-smoke-report" not in options:
+        return
+    if _p.Path(options["--prior-fisher-h1-smoke-complete-marker"]).read_bytes() != _smoke_marker:
+        _fail("prior Fisher H=1 smoke completion marker drifted")
+    data = _p.Path(options["--prior-fisher-h1-smoke-report"]).read_bytes()
+    root = _json(data, "prior Fisher H=1 smoke report")
+    _fields(root, {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
+            "prior Fisher H=1 smoke report")
+    evidence = root["evidence"]
+    if (_canonical(root) != data
+            or root["artifact_kind"] != "recurquant_experiment013_calibration_run"
+            or type(root["schema_version"]) is not int or root["schema_version"] != 2
+            or not isinstance(evidence, dict)
+            or evidence.get("status") != "fisher_h1_smoke_passed"
+            or _digest(root["canonical_evidence_sha256"], "smoke evidence hash")
+            != _h.sha256(_canonical(evidence)).hexdigest()):
+        _fail("prior Fisher H=1 smoke report authentication failed")
 
 def _identity(data):
     root = _json(data, "frozen identity")
@@ -1275,7 +1517,7 @@ def _identity(data):
         _fail("frozen identity is not canonical JSON")
     evidence = root["evidence"]
     if (not isinstance(evidence, dict) or type(evidence.get("schema_version")) is not int
-            or evidence.get("schema_version") != 4
+            or evidence.get("schema_version") != 5
             or evidence.get("status") != "frozen" or evidence.get("phase") != "calibration"
             or evidence.get("identity_only") is not True
             or evidence.get("promotion_required") is not False):
@@ -1292,14 +1534,25 @@ def _identity(data):
 
 def _source(data):
     root = _json(data, "source manifest")
-    _fields(root, {"canonical_manifest_sha256", "object_format", "paths", "profile",
-                   "repository_binding", "schema", "source_commit"}, "source manifest")
+    _fields(root, {"canonical_manifest_sha256", "git_executable", "object_format",
+                   "paths", "profile", "repository_binding", "schema",
+                   "source_commit"}, "source manifest")
     if _pretty(root) != data:
         _fail("source manifest is not canonical JSON")
     payload = dict(root)
     claimed = _digest(payload.pop("canonical_manifest_sha256"), "source self-hash")
     if claimed != _h.sha256(_pretty(payload)).hexdigest():
         _fail("source manifest self-hash drifted")
+    if (root["schema"] != "recurquant.experiment013.source-manifest.v2"
+            or root["profile"] != "experiment-013-static-q468-frozen-source-v2"
+            or root["object_format"] != "sha1"):
+        _fail("source manifest profile drifted")
+    git = root["git_executable"]
+    if not isinstance(git, dict):
+        _fail("source Git executable record is invalid")
+    _fields(git, {"sha256", "size_bytes"}, "source Git executable")
+    git = {"sha256": _digest(git["sha256"], "source Git executable hash"),
+           "size_bytes": _positive(git["size_bytes"], "source Git executable size")}
     paths = []
     for entry in root["paths"]:
         _fields(entry, {"git_blob_oid", "index_blob_oid", "mode", "path", "raw_sha256",
@@ -1309,7 +1562,8 @@ def _source(data):
     rendered = [item["path"] for item in paths]
     if rendered != sorted(rendered) or "scripts/run_static_q468_calibration.py" not in rendered:
         _fail("source path inventory drifted")
-    return {"file_sha256": _h.sha256(data).hexdigest(), "paths": paths}
+    return {"file_sha256": _h.sha256(data).hexdigest(), "git_executable": git,
+            "paths": paths}
 
 def _verify_source(manifest, root):
     root = _directory(root, "repository root")
@@ -1352,15 +1606,26 @@ def _distributions(packages, imports):
 def _manifest(data):
     root = _json(data, "runtime manifest")
     _fields(root, {"artifact_kind", "base_runtime_root", "base_sys_path", "distributions",
+                   "git_executable",
                    "interpreter", "launch_policy", "machine", "package_roots", "python",
                    "runtime_trees", "schema_version"}, "runtime manifest")
     if _canonical(root) != data or root["artifact_kind"] != (
         "recurquant_experiment013_calibration_runtime_manifest"
-    ) or type(root["schema_version"]) is not int or root["schema_version"] != 3:
+    ) or type(root["schema_version"]) is not int or root["schema_version"] != 4:
         _fail("runtime manifest identity or policy drifted")
     _typed(root["launch_policy"], _policy, "runtime launch policy")
     if root["base_runtime_root"] != "base-runtime":
         _fail("base runtime name drifted")
+
+    git = root["git_executable"]
+    if not isinstance(git, dict):
+        _fail("runtime Git executable record is invalid")
+    _fields(git, {"absolute_path_sha256", "sha256", "size_bytes"},
+            "runtime Git executable")
+    git = {"absolute_path_sha256": _digest(
+               git["absolute_path_sha256"], "runtime Git executable path hash"),
+           "sha256": _digest(git["sha256"], "runtime Git executable hash"),
+           "size_bytes": _positive(git["size_bytes"], "runtime Git executable size")}
 
     python = root["python"]
     if not isinstance(python, dict):
@@ -1406,7 +1671,7 @@ def _manifest(data):
     raw_base_paths = root["base_sys_path"]
     if not isinstance(raw_base_paths, list) or not raw_base_paths:
         _fail("base sys.path is invalid")
-    base_paths = [_relative(item, "base sys.path") for item in raw_base_paths]
+    base_paths = [_base_path(item, "base sys.path") for item in raw_base_paths]
     if len({item.casefold() for item in base_paths}) != len(base_paths):
         _fail("base sys.path entries collide")
 
@@ -1461,7 +1726,8 @@ def _manifest(data):
     if base_files.get(normalized_interpreter["relative_path"]) != expected_interpreter:
         _fail("runtime interpreter differs from the base tree")
     for entry in base_paths:
-        present = entry in base_files or any(path.startswith(entry + "/") for path in base_files)
+        present = (entry == "." or entry in base_files
+                   or any(path.startswith(entry + "/") for path in base_files))
         if not present and _re.fullmatch(r"python[0-9]+\.zip", entry) is None:
             _fail("base sys.path entry is absent from the base tree")
 
@@ -1504,11 +1770,12 @@ def _manifest(data):
 
     return {"base_sys_path": base_paths, "distributions": distributions,
             "file_sha256": _h.sha256(data).hexdigest(),
+            "git_executable": git,
             "interpreter": normalized_interpreter,
             "machine": machine, "package_roots": roots, "python": python,
             "runtime_trees": normalized_trees}
 
-def _verify_runtime(manifest, base_raw, package_raw, packages_appended=False):
+def _verify_runtime(manifest, base_raw, package_raw, git_raw, packages_appended=False):
     base = _directory(base_raw, "base runtime")
     declared = {item["name"]: item["import_path"] for item in manifest["package_roots"]}
     if set(package_raw) != set(declared):
@@ -1520,6 +1787,9 @@ def _verify_runtime(manifest, base_raw, package_raw, packages_appended=False):
             _fail("complete runtime tree identity drifted")
     if _distributions(packages, declared) != manifest["distributions"]:
         _fail("distribution RECORD identity drifted")
+    git, git_record = _git(git_raw)
+    if git_record != manifest["git_executable"]:
+        _fail("Git executable identity drifted")
     interpreter = _join(base, manifest["interpreter"]["relative_path"], "interpreter")
     if _file(
         interpreter,
@@ -1555,7 +1825,7 @@ def _verify_runtime(manifest, base_raw, package_raw, packages_appended=False):
         _o.path.normcase(_o.path.abspath(item)) for item in expected_path
     ]:
         _fail("authenticated sys.path differs from the frozen runtime")
-    return base, packages, declared, imports, interpreter
+    return base, packages, declared, imports, interpreter, git
 
 _runtime_path = _p.Path(_s.argv[1])
 _base_raw = _p.Path(_s.argv[2])
@@ -1568,8 +1838,30 @@ if any(_pycache.iterdir()) or _s.pycache_prefix is None or _p.Path(
     _s.pycache_prefix
 ).resolve(strict=True) != _pycache:
     _fail("sealed pycache prefix is not exact and empty")
-_runner_args = list(_s.argv[5:])
+_git_raw = _p.Path(_s.argv[5])
+_scratch = _directory(_s.argv[6], "sealed scratch directory")
+if any(_scratch.iterdir()):
+    _fail("sealed scratch directory is not initially empty")
+_environment = {key.upper(): value for key, value in _o.environ.items()}
+_required_environment = {"LANG", "LC_ALL", "TEMP", "TMP", "TZ"}
+_os_environment = {
+    "SYSTEMROOT", "WINDIR", "COMSPEC",
+    "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
+}
+_allowed_environment = _required_environment | _os_environment
+if (not _required_environment.issubset(_environment)
+        or not set(_environment).issubset(_allowed_environment)
+        or _environment["LANG"] != "C" or _environment["LC_ALL"] != "C"
+        or _environment["TZ"] != "UTC"
+        or _p.Path(_environment["TEMP"]).resolve(strict=True) != _scratch
+        or _p.Path(_environment["TMP"]).resolve(strict=True) != _scratch
+        or any(not value or "\0" in value or "\n" in value or "\r" in value
+               for key, value in _environment.items()
+               if key in _os_environment)):
+    _fail("sealed child environment differs from the minimal contract")
+_runner_args = list(_s.argv[7:])
 _runner_options = _options(_runner_args)
+_smoke(_runner_options)
 _runtime_bytes = _runtime_path.read_bytes()
 _runtime = _manifest(_runtime_bytes)
 _bindings = _identity(_p.Path(_runner_options["--frozen-identity"]).read_bytes())
@@ -1586,10 +1878,15 @@ if _runtime_path.resolve(strict=True) != _p.Path(
 _source_manifest = _source(
     _p.Path(_runner_options["--repository-source-manifest"]).read_bytes()
 )
+if _source_manifest["git_executable"] != {
+    "sha256": _runtime["git_executable"]["sha256"],
+    "size_bytes": _runtime["git_executable"]["size_bytes"],
+}:
+    _fail("source and runtime manifests bind different Git bytes")
 _repository_root = _p.Path(_runner_options["--repository-root"])
 _runner_path = _verify_source(_source_manifest, _repository_root)
-_base, _packages, _import_rel, _imports, _interpreter = _verify_runtime(
-    _runtime, _base_raw, _package_raw
+_base, _packages, _import_rel, _imports, _interpreter, _git_executable = _verify_runtime(
+    _runtime, _base_raw, _package_raw, _git_raw
 )
 _s.path.extend(_imports[name] for name in sorted(_imports))
 if _s.path != [str(_base / _p.PurePosixPath(item)) for item in _runtime["base_sys_path"]] + [
@@ -1625,19 +1922,27 @@ try:
             package_roots=_packages,
             package_import_paths=_import_rel,
             interpreter_path=_interpreter,
+            git_executable_path=_git_executable,
             pycache_prefix=_pycache,
         )
     finally:
         if any(_pycache.iterdir()):
             _fail("sealed pycache prefix changed during calibration")
+        if any(_scratch.iterdir()):
+            _fail("sealed scratch directory was not cleaned by the runner")
         _verify_source(_source_manifest, _repository_root)
-        _verify_runtime(_runtime, _base, _packages, packages_appended=True)
+        _verify_runtime(
+            _runtime, _base, _packages, _git_executable, packages_appended=True
+        )
 finally:
     _s.modules.pop("_recurquant_experiment013_sealed_runner", None)
 if not isinstance(_result, int) or isinstance(_result, bool):
     _fail("sealed_main returned a non-integer status")
 raise SystemExit(_result)
-'''.strip()
+""".strip()
+
+SEALED_BOOTSTRAP_BYTES: Final = SEALED_BOOTSTRAP.encode("utf-8")
+SEALED_STDIN_LOADER: Final = _authenticated_stdin_loader(SEALED_BOOTSTRAP_BYTES)
 
 
 def _split_host_and_runner_args(argv: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -1655,6 +1960,7 @@ def _split_host_and_runner_args(argv: Sequence[str]) -> tuple[list[str], list[st
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-runtime-root", required=True, type=Path)
+    parser.add_argument("--git-executable", required=True, type=Path)
     parser.add_argument("--package-root", required=True, action="append", type=_parse_package_root)
     parser.add_argument("--runtime-manifest", required=True, type=Path)
     return parser
@@ -1679,49 +1985,68 @@ def launch(argv: Sequence[str]) -> int:
         raise SealedLaunchError("runtime manifest is unavailable") from exc
     runtime_manifest = _parse_runtime_manifest(runtime_bytes)
     runner_options = _extract_runner_options(runner_arguments)
-    _verify_bound_artifacts(
+    _bindings, source_manifest, _runner_path = _verify_bound_artifacts(
         runner_options,
         runtime_manifest_path=args.runtime_manifest,
     )
-    base, packages, _import_paths, interpreter = _verify_runtime(
+    if source_manifest["git_executable"] != {
+        "sha256": runtime_manifest["git_executable"]["sha256"],
+        "size_bytes": runtime_manifest["git_executable"]["size_bytes"],
+    }:
+        raise SealedLaunchError("source and runtime manifests bind different Git bytes")
+    base, packages, _import_paths, interpreter, git_executable = _verify_runtime(
         runtime_manifest,
         base_runtime_root=args.base_runtime_root,
         package_roots=package_roots,
+        git_executable_path=args.git_executable,
         require_current_process=False,
     )
 
     pycache_parent = Path(tempfile.mkdtemp(prefix="recurquant-exp013-sealed-pycache-"))
     pycache = _verify_empty_pycache(pycache_parent)
+    scratch_parent = Path(tempfile.mkdtemp(prefix="recurquant-exp013-sealed-scratch-"))
+    scratch = _verify_empty_scratch(scratch_parent)
     try:
         command = _sealed_argv(
             interpreter=interpreter,
             runtime_manifest=args.runtime_manifest.resolve(strict=True),
             base_runtime_root=base,
             package_roots=packages,
+            git_executable=git_executable,
             pycache_prefix=pycache,
+            scratch_directory=scratch,
             runner_arguments=runner_arguments,
         )
         completed = subprocess.run(
             command,
             check=False,
             cwd=base,
-            env=_sealed_environment(),
+            env=_sealed_environment(scratch_directory=scratch),
+            input=SEALED_BOOTSTRAP_BYTES,
         )
         _verify_empty_pycache(pycache)
-        _verify_bound_artifacts(
+        _verify_empty_scratch(scratch)
+        _bindings, repeated_source, _runner_path = _verify_bound_artifacts(
             runner_options,
             runtime_manifest_path=args.runtime_manifest,
         )
+        if repeated_source["git_executable"] != source_manifest["git_executable"]:
+            raise SealedLaunchError("source Git executable binding changed during execution")
         _verify_runtime(
             runtime_manifest,
             base_runtime_root=base,
             package_roots=packages,
+            git_executable_path=git_executable,
             require_current_process=False,
         )
         return int(completed.returncode)
     finally:
         _verify_empty_pycache(pycache)
         shutil.rmtree(pycache, ignore_errors=False)
+        _assert_scratch_tree_has_no_reparse(scratch)
+        shutil.rmtree(scratch, ignore_errors=False)
+        if os.path.lexists(scratch):
+            raise SealedLaunchError("sealed scratch directory survived cleanup")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

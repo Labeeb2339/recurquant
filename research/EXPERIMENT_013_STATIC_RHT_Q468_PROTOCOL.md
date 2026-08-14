@@ -1,14 +1,22 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: amended and frozen before Experiment 013 identity resolution, policy fitting,
-> protected-set access, model-weight loading, or quality measurement.**
+> **Status: pre-freeze H0 candidate; not yet preregistered.**
 >
-> Upstream revisions are frozen below. Canonical row identities, token spans,
-> tokenizer-file hashes, and content hashes remain unresolved placeholders
-> until a separate identity candidate is resolved and explicitly promoted. An
-> identity candidate is not authorization to load model weights.
+> This working copy becomes the frozen Experiment 013 preregistration only when
+> its exact bytes and dependencies are committed in a clean source commit H0 and
+> that H0 is bound by the pre-access seal before identity resolution, policy
+> fitting, any protected materialization, model-weight loading, or quality
+> measurement. A dirty or unbound working copy is not a frozen protocol.
+>
+> The amendment history is retained below, but its rules remain candidate rules
+> until that H0 binding. Canonical row identities, token spans, tokenizer-file
+> hashes, and content hashes remain unresolved placeholders until a separate
+> identity candidate is resolved and explicitly promoted. An identity candidate
+> is not authorization to load model weights.
 
-Protocol frozen: 2026-08-02
+Protocol draft initiated: 2026-08-02
+
+Current pre-H0 candidate amended: 2026-08-14
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -81,11 +89,117 @@ These are canonical projection hashes, not quality results. A clean source
 commit, sealed calibration runtime, fresh v6 receipt batch, and promoted v4
 identity are still required before model access.
 
+Seventh pre-resolution audit amendment: 2026-08-02. An independent scientific
+and execution audit found four defects before any model-weight or quality
+access: the static/dynamic gate was step-matched rather than equal-resident;
+"quality oracle" overstated a local allocator; Stage C did not explicitly own
+the confirmation decision; and the named 2B checkpoint had no executable
+quality contract. It also found that the source verifier safely accepts an
+unchanged identity-only descendant of source commit H0, while the runner
+duplicated that policy with an incompatible raw `HEAD == H0` check. These are
+corrected below. Identity schemas must advance together to v5 to bind a causal
+one-step diagonal empirical-Fisher comparator and its boundary commitments.
+Every v4 candidate or identity is superseded. A new clean H0, sealed runtime,
+fresh receipts, v5 identity, and identity-bound model staging are required. No
+model weights, calibration scores, stability values, or quality results had
+been opened.
+
+Eighth pre-resolution audit amendment: 2026-08-02. The first runtime-preparation
+attempt correctly rejected a previously compiled environment because an
+installed distribution's RECORD inventory owned forbidden bytecode. A fresh
+no-compile environment passed that check, but its first preparation attempt
+stopped before publication when the staged interpreter legitimately reported
+the runtime root as `.` in `sys.path` and the generic relative-path validator
+indexed the sentinel as though it had path components. The runtime builder now
+accepts exactly `.` only in the base-`sys.path` contract; ordinary repository,
+runtime-file, interpreter, and import paths still reject it. The next
+no-overwrite preparation completed with 38 distributions, 831 base-runtime
+files, 20,201 package files, base paths `python311.zip`, `DLLs`, `Lib`, and `.`,
+and manifest file SHA-256
+`6cb19144bc373a38001f2349e8e3f9317a7809a41fd415457434bb2bc5cd74ee`.
+An isolated import smoke confirmed Python 3.11.15, Torch 2.13.0+cu130, CUDA
+13.0, BF16 support, Transformers 5.14.1, and PyArrow 25.0.0 on the RTX 5070.
+These facts establish runtime readiness only. No model weights, calibration
+scores, stability values, or quality results were opened.
+
+Ninth pre-resolution audit amendment: 2026-08-02. The Stage-A evaluator
+contract candidate was specified before the final H0 source capture and becomes
+frozen only through the clean H0 and pre-access binding described above. Its
+method order is
+exactly `fp32_reference`, `rht_q468_uniform_q4`, `rht_q468_uniform_q8`,
+`rht_q48_static_p14739`, `rht_q468_static_k27030`,
+`rht_q468_dynamic_k27030`, `rht_q468_static_mse_k29334`,
+`rht_q468_static_diag_empirical_fisher_h1_k29334`, and
+`rht_q468_static_k29334`. The two uniform anchors are deterministic Q468
+policies reconstructed from the authenticated candidate-score arrays at
+`K=0` and `K=73728`. Both use the same RHT, per-row FP16 scales, two-bit code
+stream, uint16 pool offsets, and packed Q4/Q6/Q8 pool implementation as the
+mixed policies. Their natural resident sizes are `2,515,968` and `4,875,264`
+bytes, respectively; they are descriptive lower- and upper-precision anchors,
+not equal-byte comparators and never decide passage.
+
+For every method and example, excess NLL is the ordinary mean over only the
+identity-bound cache-exposed transitions. Family values first average the four
+example means inside PG19, RULER, and HumanEval+, and the task macro is the
+unweighted mean of those three family values. Top-1 agreement uses the same
+example-then-family-then-three-family macro. Token micro is reported but never
+gates. `cvar95_kl` means the FP32 mean of the largest
+`max(1, ceil(0.05 * token_count))` finite per-token KL values, matching the
+reviewed `fidelity_summary` implementation.
+
+Each paired non-inferiority bootstrap independently resamples four examples
+with replacement inside each family, averages inside family, then averages the
+three family means equally. The generator is NumPy `PCG64`, initialized once
+with seed 2,339; it draws one `10000 x 4` integer-index matrix for each family
+in PG19, RULER, HumanEval+ order. The sample count is 10,000. The one-sided
+95th-percentile upper bound is the nearest-rank order
+statistic: sort the 10,000 replicate contrasts ascending and select zero-based
+index `ceil(0.95 * 10000) - 1 = 9499`, with no interpolation. The primary is
+checked separately against dynamic K27030, unweighted-MSE K29334, and diagonal
+empirical-Fisher H1 K29334 under the prespecified three conjunctive margins.
+Static K27030 remains diagnostic and cannot alter passage. "Beats Q48 on every
+Stage-A workload" means strictly lower family-mean excess NLL in each of PG19,
+RULER, and HumanEval+; equality in any family fails. No model weights, Stage-A
+rows, calibration scores, or quality results were opened before this amendment.
+
+Tenth pre-resolution audit amendment: 2026-08-02. Before the complete
+calibration, the sealed runner must execute `--fisher-h1-smoke` against exactly
+the first canonical record of the promoted calibration identity. It still
+materializes and authenticates the complete 160-record identity before model
+access, then loads the pinned model once and runs the selected record's full
+token sequence through the ordinary causal capture path. Fisher calls replace
+ordinary forwards at every identity-bound `B(T)` input position. Passage
+requires exact token, anchor, Fisher-boundary, kernel-receipt, and adapter
+Fisher-step counts; finite CPU-FP64 Q4/Q6/Q8 endpoint scores; frozen model
+parameters with no gradients; successful cache detachment; model/source/runtime
+reauthentication; and a clean close. The no-overwrite receipt records elapsed
+time, peak CUDA allocated and reserved bytes, device identity, token count,
+anchor count, and Fisher-boundary count. It publishes no score aggregate,
+policy, binding, stability value, or quality result and uses the distinct
+`FISHER_H1_SMOKE_COMPLETE` marker. A pass authorizes only attempting the full
+calibration. Failure stops the run; there is no automatic retry or weakened
+smoke input.
+
+Eleventh pre-H0 scientific amendment candidate: 2026-08-14. A read-only
+methodology audit found that an independent Stage-C HumanEval+ hash domain did
+not by itself guarantee disjointness from Stage A/B, and that the Stage-C
+bootstrap and relative-improvement gates were not yet executable-grade. The
+rules below now exclude and bind every Stage-A/B HumanEval+ ID before Stage-C
+selection; fail closed on any overlap; define the exact example, family, task,
+contrast, bootstrap, bound, effect-size, top-1, and multiplicity equations; and
+limit stability and fidelity language to what is actually tested. No protected
+identity or row content, model weights, calibration score, stability value, or
+quality result was opened, and no evaluator was run for this amendment. This
+working copy remains unpreregistered until its exact bytes are committed and
+bound as H0 before protected materialization.
+
 ## Question
 
-Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout retain the
-quality of an exact dynamic mixed-bit oracle while using one immutable code map
-that a packed GPU kernel can execute efficiently?
+Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
+prespecified cache-exposed teacher-forced target-NLL and top-1 non-inferiority
+gates against an online local-distortion allocator at the same complete
+recurrent-resident byte budget while using one immutable code map that a packed
+GPU kernel can execute efficiently?
 
 The candidate is:
 
@@ -108,7 +222,7 @@ revision dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68
 Transformers 5.14.1
 ```
 
-The conditional scale check is:
+The conditional scale resource probe is:
 
 ```text
 Qwen/Qwen3.5-2B-Base
@@ -116,16 +230,23 @@ revision b1485b2fa6dfa1287294f269f5fb618e03d52d7c
 Transformers 5.14.1
 ```
 
-The 2B check is authorized only if a cold-start language-model load measures no
-more than `7.5 GiB` peak device memory on the RTX 5070 8GB. Failure or inability
-to satisfy that gate is recorded as a resource stop; it cannot be replaced by
-an unreported offload configuration.
+The 2B checkpoint is feasibility-only in Experiment 013. The only authorized
+operation is an otherwise idle BF16/eager cold-start load with no prompt,
+generation, cache-quality measurement, or offload. Record both peak allocated
+and peak reserved device memory. A value above `7.5 GiB`, or inability to make
+the measurement, is a resource stop.
 
-Both checkpoints use batch one, eager evaluation, no sampling, BF16 model
+A passing cold start authorizes only a separately frozen, model-specific
+protocol defining geometry, complete byte budgets, calibration refit or transfer,
+identities, workloads, thresholds, and implementation. It contributes no
+quality, generalization, scaling, or confirmation evidence to Experiment 013.
+
+The primary 0.8B run uses batch one, eager evaluation, no sampling, BF16 model
 weights, and FP32 reference recurrent state. Model architecture, recurrent
 layer indices, state geometry, tokenizer class, tokenizer files, and every
 runtime package are identity-bound before weights are opened. A mismatch stops
-the run.
+the run. The 2B resource probe shares only the frozen BF16/eager load contract;
+it does not enter recurrent-state evaluation under this protocol.
 
 The metadata-only upstream identities are frozen without opening example
 contents:
@@ -176,10 +297,15 @@ use Q8 and the rest Q4. Its payload is `3,302,592` bytes, its one-bit code map
 is `4,608` bytes, and its scales, uint16 offsets, and eight alignment bytes
 make the same `3,454,664`-byte total.
 
-The `K27030` layout is a prespecified diagnostic budget used only to compare
-static and dynamic selection without conflating that comparison with the
-primary exact-byte contrast. Its physical allocation is reported exactly and
-is never rounded up to the primary budget.
+Static `K27030` is a prespecified selection-step diagnostic. Its payload is
+`3,224,256` bytes; scales, two-bit codes, and uint16 offsets add `73,728`,
+`9,216`, and `73,728` bytes, respectively, for `3,380,928` resident bytes with
+no alignment padding. It is never rounded up to the primary budget.
+
+The online `rht_q468_dynamic_k27030` baseline owns the same `K27030` payload,
+scales, and code bytes, plus `147,456` bytes of persistent FP32 query EMA and
+eight alignment bytes, for exactly `3,454,664` recurrent-resident bytes. It has
+the same complete resident budget as static `K29334`; static `K27030` does not.
 
 ## Calibration and static-policy freeze
 
@@ -343,10 +469,61 @@ lexicographically greatest flattened code vector, so the lower flat row gets
 higher precision first.
 
 No task loss, Stage-A value, Stage-B value, or Stage-C value participates in
-the code-map fit. The primary map uses `K29334`. The diagnostic static and
-dynamic layouts both use `K27030`. Once an identity and code map are committed,
-no seed, score, quota, tie rule, token span, group size, or bit budget may be
-changed under Experiment 013.
+the candidate's query-energy code-map fit. The primary map uses `K29334`. The
+diagnostic static and dynamic layouts both use `K27030`. Once an identity and
+code map are committed, no seed, score, quota, tie rule, token span, group size,
+or bit budget may be changed under Experiment 013.
+
+## Prespecified sensitivity comparators
+
+Two same-format `K29334` static maps separate the mixed-format question from the
+candidate's query-energy selector. Both use the identical RHT, Q4/Q6/Q8 codec,
+scales, codes, offsets, tie rule, and `3,454,664` resident-byte ledger.
+
+The unweighted comparator is `rht_q468_static_mse_k29334`. It replaces the
+query-energy factor by one and otherwise uses the same per-sequence and
+family-balanced reduction.
+
+The loss-sensitive comparator is
+`rht_q468_static_diag_empirical_fisher_h1_k29334`. It is an adapted diagonal
+empirical-Fisher baseline, not RateQuant itself and not an exact Fisher matrix
+or Hessian. Let `x[0:T]` denote one frozen token sequence and let `S_b` be the
+persistent FP32 recurrent state after consuming token `x_b`. Eligible stored
+boundaries are `b = 0, ..., T-3`, selected exactly as
+
+```text
+B(T) = frozen_anchor_positions(T - 2).
+```
+
+At boundary `b`, the measured recurrent step consumes `x_(b+1)`. Its logits
+`z_(b+1)` predict target `x_(b+2)`. The causal gradient is
+
+```text
+g_b = d CE(z_(b+1), x_(b+2)) / d S_b.
+```
+
+`z_b` is forbidden because it was produced before `S_b` was stored. For row
+`r`, transform both state and gradient into the codec basis:
+
+```text
+Z_b(r) = RHT(S_b(r))
+G_b(r) = RHT(g_b(r))
+risk_q(b,r) = 0.5 * sum_value(G_b(r)^2 * (Q_q(Z_b(r)) - Z_b(r))^2)
+```
+
+for `q` in `{4, 6, 8}`. Compute the risk in deterministic FP64 reduction order.
+Mean boundaries within sequence, then use the same MBPP/PG19/RULER and RULER
+category balancing as the candidate. Feed the three endpoint risks directly to
+the exact allocator at `K=29334` with the existing flattening and tie rule.
+There is no query-energy multiplication, gradient normalization, clipping,
+layer quota, protected-set loss, or post-result tuning.
+
+Identity v5 domain-separates and binds, for every calibration sequence, the
+horizon `H=1`, boundary positions, input positions, target positions, and their
+token-ID hashes. The implementation must prove one successful recurrent kernel
+call per layer, no model-parameter gradients, exact rollback on a failed Fisher
+step, and a fully detached continuing FP32 cache. A real RTX 5070 peak-memory
+and runtime smoke receipt is required before the complete calibration run.
 
 ## Policy-stability gates
 
@@ -363,6 +540,15 @@ split halves A and B. All three gates are conjunctive:
 Failure stops the static candidate. The map may not be stabilized by changing
 the data, metric, seed, threshold, or aggregation after the failure is known.
 
+These split-half gates apply only to the query-energy candidate map. The
+unweighted-MSE and diagonal empirical-Fisher maps are fixed comparator
+instantiations fitted on the complete calibration identity; Experiment 013 does
+not test their split-half stability. Therefore any Stage-A or Stage-C comparison
+is only against those exact frozen maps. It cannot establish that query-energy
+selection is generally more stable, robust, or effective than MSE or Fisher
+sensitivity. Such a selector-principle claim requires a new pre-access amendment
+with symmetric comparator-stability tests or a new experiment.
+
 ## Frozen evaluation identities
 
 Identity resolution is staged. A resolver may create only a quarantined
@@ -371,7 +557,7 @@ creates the identity that must be committed before model weights are loaded.
 Stage-B and Stage-C content is protected and requires separate authorization;
 ordinary resolver tests and dry runs must not read it.
 
-Identity schema v4 also binds four exact pre-model evidence files under
+Identity schema v5 also binds four exact pre-model evidence files under
 `execution_bindings`:
 
 ```text
@@ -391,9 +577,30 @@ promotion may the runner hash local model files and compare them with the
 frozen model manifest. A missing, malformed, or byte-different dependency
 stops before adapter data access or model loading.
 
+The source manifest binds implementation commit H0. Committing the promoted
+identity creates H1. H1 is authorized only when H0 is its Git ancestor, the
+authenticated source verifier proves every frozen source path has identical H0
+tree, H1/index, and worktree bytes, and the worktree is otherwise clean. Reports
+and policy artifacts continue to record H0 as implementation provenance; H1 is
+the identity authorization commit and may not be relabelled as source commit.
+
+Model payload staging begins only after the frozen identity is tracked with
+identical H1, index, and worktree bytes. The identity-bound stager downloads
+only the exact sorted root files in the frozen model manifest at the exact
+40-hex public Hub revision, using an external cache and no token. Returned cache
+paths are untrusted: every source must resolve inside that cache, then be
+stream-copied into a fresh sibling staging directory. Ordinary files are checked
+by Git blob OID and size; LFS payloads are checked by payload SHA-256 and size.
+The staged tree must have exact case-insensitive-unique inventory and contain no
+links, reparse points, cache metadata, marker, or extra file. Reauthenticate the
+identity, source, and manifest immediately before an atomic no-replace directory
+rename, then independently authenticate the published model root. Failure may
+clean only the owned staging directory; it never overwrites the output or
+deletes the shared Hub cache.
+
 Stage-A resolution additionally consumes one strictly decoded
-`experiment-013-stage-a-calibration-binding-v2` artifact. The resolved Stage-A
-identity binds these five dependency files directly, not merely semantic IDs
+`experiment-013-stage-a-calibration-binding-v3` artifact. The resolved Stage-A
+identity binds these eight dependency files directly, not merely semantic IDs
 copied from a caller:
 
 ```text
@@ -402,7 +609,24 @@ calibration_score_artifact_file_sha256
 split_half_stability_artifact_file_sha256
 static_k27030_policy_file_sha256
 static_k29334_policy_file_sha256
+comparator_score_artifact_file_sha256
+static_fisher_k29334_policy_file_sha256
+static_mse_k29334_policy_file_sha256
 ```
+
+The comparator-score dependency is one strict canonical artifact containing
+exactly the unweighted-MSE and diagonal empirical-Fisher H=1 aggregates, their
+selector-specific sequence manifests, and their exact K29334 allocations. It
+is combined only to keep the dependency inventory at eight files; the two
+profiles retain separate score hashes, position manifests, and policy
+bindings. A policy file without its matching embedded comparator scores is not
+verifiable and fails closed.
+
+The static Q4/Q8 comparator is deterministically reconstructed inside the
+authenticated Stage-A evaluator from the bound candidate score artifact at
+the frozen `P=14739` promotion count. A separately published convenience copy
+is not a ninth trusted dependency and may not be accepted without exact
+reconstruction equality.
 
 Changing any byte in any dependency requires a new binding artifact and a new
 Stage-A identity candidate.
@@ -443,12 +667,39 @@ content hashes, prompt-token hashes, target-token hashes, and half-open token
 spans must be committed before weights are opened. No example may be replaced
 because its result is inconvenient.
 
-The exact dynamic Q468 allocator is the Stage-A quality oracle. Static K27030
-must have an excess-NLL upper confidence bound no more than `0.01` nats/token
-above dynamic K27030. No Stage-A workload may have a static-candidate
-disadvantage above `0.015` nats/token. Static K29334 must beat exact-byte
-`rht_q48_static_p14739` on every Stage-A workload. If the multi-workload advantage
-does not reproduce, stop; do not proceed by reframing the oracle as optional.
+`rht_q468_dynamic_k27030` is the prespecified online local-distortion allocator
+baseline. "Exact" describes only its discrete `K27030` allocation under the
+frozen local objective and tie rule; it is not an oracle for sequence NLL,
+downstream accuracy, generation, or globally optimal recurrent trajectories.
+
+The primary equal-resident Stage-A contrast is static `K29334` versus dynamic
+`K27030`; both own exactly `3,454,664` recurrent-resident bytes. For paired
+example `e`, define
+
+```text
+d_e = excess_NLL(static_K29334, e) - excess_NLL(dynamic_K27030, e).
+```
+
+Using seed 2,339, perform 10,000 paired stratified bootstrap resamples by
+resampling examples with replacement inside PG19, RULER, and HumanEval+, then
+averaging the three family means equally. The one-sided 95% upper percentile
+bound for `d` must be no more than `0.010` nats/token; no family point estimate
+may exceed `0.015`; and static `K29334` top-1 agreement may trail dynamic
+`K27030` by at most `0.005`. All conditions are conjunctive.
+
+Static `K27030` versus dynamic `K27030` remains a selection-step-matched
+diagnostic and cannot decide the equal-resident adoption claim. Static `K29334`
+must also beat exact-byte `rht_q48_static_p14739` on every Stage-A workload. If
+either prespecified multi-workload contrast fails, stop rather than changing the
+baseline or budget after observing the result.
+
+The candidate must separately be non-inferior to each of
+`rht_q468_static_diag_empirical_fisher_h1_k29334` and
+`rht_q468_static_mse_k29334` under the same `0.010` upper-bound, `0.015`
+per-family, and `0.005` top-1 margins. These are selector comparisons at the
+same `K29334` format and byte ledger. If either comparator wins, the frozen
+query-energy candidate fails Experiment 013; the winning comparator may seed a
+new experiment but may not replace the candidate post hoc.
 
 ### Stage B: development
 
@@ -472,8 +723,151 @@ contains:
 - 32 SHA-ranked eligible PG19 test books;
 - all 52 combinations of the 13 exact RULER configs at configured length 4,096
   and seeds 3,339 through 3,342; and
-- the next 32 HumanEval+ canonical IDs under the separate Stage-C confirmation
-  hash domain.
+- 32 HumanEval+ canonical IDs selected from the exact eligible remainder by the
+  disjoint procedure below.
+
+Let `U_HE` be the exact 164-ID HumanEval+ canonical-ID projection bound by the
+immutable projection manifest. Rank `U_HE` under
+`recurquant.experiment013.humaneval-plus.stage-a-b.v1\0`, breaking a hash tie by
+canonical ID. Let `H_A` be ranks 0 through 3, `H_B` be ranks 4 through 31, and
+`H_AB = H_A union H_B`. Thus `H_AB` must contain exactly the 32 distinct IDs
+used by Stage A/B. Define the Stage-C eligible remainder before looking up any
+HumanEval+ row content:
+
+```text
+U_C = U_HE setminus H_AB
+```
+
+`U_C` must contain exactly 132 distinct IDs. Rank only `U_C`, never the complete
+`U_HE`, by lowercase SHA-256 of the UTF-8 domain-separated canonical ID under
+`recurquant.experiment013.humaneval-plus.stage-c.v1\0`, again breaking a hash
+tie by canonical ID. Let `H_C` be ranks 0 through 31 of that remainder.
+
+Before any Stage-C HumanEval+ row, prompt, canonical solution, token, or token
+span is requested or materialized, the Stage-C identity candidate must bind:
+
+1. the exact 164-ID projection-manifest hash;
+2. the 32-entry `H_AB` exclusion manifest ordered by Stage-A/B rank, including
+   each canonical ID, rank, and Stage-A/B selection hash, plus the canonical
+   SHA-256 of that complete manifest;
+3. the 132-entry `U_C` remainder manifest ordered by Stage-C remainder rank and
+   its canonical SHA-256; and
+4. the 32-entry `H_C` selection manifest ordered by Stage-C remainder rank,
+   including canonical ID, rank, and Stage-C selection hash, plus its canonical
+   SHA-256.
+
+The resolver must recompute all four objects from the authenticated ID-only
+projection and prove exact counts, distinctness, membership, ordering, hashes,
+`H_AB union U_C = U_HE`, `H_AB intersection U_C = empty`, and
+`H_AB intersection H_C = empty`. Any mismatch or overlap fails closed before
+content access. There is no fallback row, replacement, or reranking.
+
+Stage C alone decides confirmation. Stage-A and Stage-B observations may not be
+pooled into a Stage-C point estimate, confidence interval, method choice,
+comparator choice, effect threshold, or claim.
+
+The Stage-C family order is PG19, RULER, HumanEval+, with exact example counts
+`n_f = 32, 52, 32`. Within each family, examples use their authenticated
+identity-file order. For method `j`, example `e`, and its exact `m_e` finite
+cache-exposed transitions, define:
+
+```text
+x_(j,e) = (1 / m_e) * sum_t [NLL_(j,e,t) - NLL_(FP32,e,t)]
+a_(j,e) = top1_agreement_count_(j,e) / m_e
+X_(j,f) = (1 / n_f) * sum_(e in f) x_(j,e)
+A_(j,f) = (1 / n_f) * sum_(e in f) a_(j,e)
+X_j     = (1 / 3) * sum_f X_(j,f)
+A_j     = (1 / 3) * sum_f A_(j,f)
+```
+
+`top1_agreement_count_(j,e)` is the exact number of transitions for which
+method `j` and the matched FP32 reference have the same argmax token.
+`a_(j,e)`, `A_(j,f)`, and `A_j` are exact rational values derived from integer
+agreement and transition counts until the threshold comparison. Each method
+must contain exactly the same identity-bound transitions and FP32 reference NLL
+for an example. Missing, duplicate, reordered, non-finite, or reference-drifted
+rows fail closed. Examples are equal-weighted within family and the three family
+means are equal-weighted regardless of token or example counts. Token-micro NLL,
+mean KL, tail KL, and maximum KL are diagnostic only and never gate.
+
+All four primary contrasts use one shared deterministic bootstrap schedule.
+Initialize exactly one NumPy `Generator(PCG64(2339))`. In PG19, RULER,
+HumanEval+ order, call
+`integers(0, n_f, size=(10000, n_f), dtype=np.int64, endpoint=False)` once per
+family, producing matrices of shapes `10000 x 32`, `10000 x 52`, and
+`10000 x 32`. Reuse those same three matrices, without reinitialization or any
+additional random draw, for every contrast in this fixed order:
+
+1. `rht_q468_static_k29334` versus
+   `rht_q468_dynamic_k27030` non-inferiority;
+2. superiority to `rht_q48_static_p14739`;
+3. superiority to
+   `rht_q468_static_diag_empirical_fisher_h1_k29334`; and
+4. superiority to `rht_q468_static_mse_k29334`.
+
+For any example-level contrast vector `c_e`, bootstrap replicate `b` first
+averages the `n_f` indexed values inside each family, then averages the three
+bootstrap family means equally. Sort the 10,000 replicate task-macro contrasts
+ascending with a stable sort. The one-sided 98.75% upper percentile bound is
+zero-based element `ceil(0.9875 * 10000) - 1 = 9874`; the one-sided 98.75%
+lower percentile bound is zero-based element
+`ceil(0.0125 * 10000) - 1 = 124`. Both are nearest-rank order statistics with
+no interpolation.
+
+For candidate `p = rht_q468_static_k29334` and equal-resident dynamic baseline
+`d = rht_q468_dynamic_k27030`, define the non-inferiority contrast with positive
+values meaning that the candidate is worse:
+
+```text
+d_e = x_(p,e) - x_(d,e)
+D_f = X_(p,f) - X_(d,f)
+D   = X_p - X_d
+```
+
+The upper bound is computed from bootstrap replicates of `d_e`. This contrast
+passes only if that upper bound is at most `0.010` nats/token, every `D_f` is at
+most `0.015`, and the exact task-macro top-1 trail `A_d - A_p` is at most
+`0.005`. The bound threshold applies to the bootstrap bound; the family and
+top-1 thresholds apply to their observed Stage-C point estimates.
+
+For each superiority comparator `c` in the fixed Q48, Fisher, MSE order above,
+define positive values to mean that the candidate is better:
+
+```text
+g_(c,e) = x_(c,e) - x_(p,e)
+G_(c,f) = X_(c,f) - X_(p,f)
+G_c     = X_c - X_p
+R_c     = G_c / X_c
+```
+
+The lower bound is computed from bootstrap replicates of `g_(c,e)`. A
+superiority contrast passes only if all of the following conjunctive conditions
+hold: `X_c > 0`; observed point improvement `G_c >= 0.002` nats/token;
+observed relative point improvement `R_c >= 0.10`; the 98.75% lower bound is
+strictly greater than zero; every observed family point `G_(c,f) > 0`; and the
+exact task-macro top-1 trail `A_c - A_p <= 0.005`. `X_c` is the sole denominator
+of the 10% condition. If `X_c <= 0`, `R_c` is undefined and the contrast fails;
+there is no absolute value, epsilon, clipping, sign reversal, or alternate
+denominator. The `0.002` and `10%` thresholds apply to observed task-macro point
+estimates, not bootstrap bounds. Equality passes the inclusive `0.002`, `0.10`,
+and `0.005` checks but fails the strict lower-bound and every-family positivity
+checks.
+
+The dynamic non-inferiority contrast and three superiority contrasts are the
+four primary hypotheses. Each uses one one-sided alpha of `0.0125`, implemented
+by its 98.75% bound; Bonferroni therefore limits the family-wise alpha to
+`4 * 0.0125 = 0.05`. All four hypotheses and every associated deterministic
+effect-size, family-point, and top-1 gate must pass. These additional gates are
+not separate confidence claims. No post-result comparator selection, alpha
+reallocation, pooling, or strongest-comparator claim is permitted.
+
+Passing Stage C supports only teacher-forced cache-exposed target-NLL and FP32
+top-1-agreement statements for these exact frozen identities, spans, methods,
+checkpoint, and budgets. Because KL is diagnostic rather than gated, passage
+does not establish FP32 logit-distribution fidelity. It also does not establish
+free generation, generated-code execution or correctness, downstream task
+accuracy, selector-principle superiority, deployment, speed, novelty, or a
+breakthrough.
 
 The generated RULER IDs, auxiliary-source hashes, formatter hashes, actual
 lengths, and token spans remain unresolved until a separate protected identity
@@ -482,11 +876,24 @@ amendment is frozen. Stage C may not be partially previewed.
 ## Methods and measurements
 
 Every accepted quality run includes FP32 recurrent state, uniform RHT Q4 and
-Q8 anchors, `rht_q48_static_p14739`, static K27030, exact dynamic K27030, and
-`rht_q468_static_k29334`. A closest eligible published comparator is added only
-through a pre-result identity amendment with its exact implementation and byte
-accounting; an incompatible or unavailable comparator is documented rather
-than imitated under its name.
+Q8 anchors, `rht_q48_static_p14739`, static K27030, online dynamic K27030,
+`rht_q468_static_mse_k29334`,
+`rht_q468_static_diag_empirical_fisher_h1_k29334`, and
+`rht_q468_static_k29334`. A closest eligible published implementation is added
+only through a pre-result identity amendment with its exact implementation and
+byte accounting; an incompatible or unavailable implementation is documented
+rather than imitated under its name.
+
+[When Good Enough Is Optimal](https://arxiv.org/abs/2606.06034) already applies
+low-bit integer arithmetic to the chunkwise matrix-inversion path of Gated
+DeltaNet on Qwen3.5-family models. It targets multiplication-only inverse
+approximation and kernel overhead, not mixed-precision storage of the
+persistent recurrent state, but it means that low-bit Gated DeltaNet execution
+itself is not a novelty claim. [SAW-INT4](https://arxiv.org/abs/2604.19157)
+likewise demonstrates block-diagonal Hadamard rotation in a fused INT4 KV-cache
+path under serving constraints. Its cache object differs from the fixed-size
+Gated DeltaNet state, but it reinforces that rotation plus four-bit packing is
+prior art and that deployment evidence must come from an integrated kernel.
 
 Primary quality is task-macro aligned excess next-token NLL over only the
 identity-bound cache-exposed transitions relative to the matched FP32
@@ -495,12 +902,20 @@ tail KL, top-1 agreement, local codec SSE, trajectory error, result by workload
 family, resident bytes, transient bytes, peak HBM, and latency. Statistical
 intervals are paired task bootstraps with 10,000 resamples and seed 2,339.
 
-For the full evaluation, the candidate must improve on the strongest eligible
-comparator by both at least `10%` and at least `0.002` nats/token, with the
-paired 95% lower confidence bound above zero. The point improvement must be
-positive in each of PG19, RULER, and HumanEval+. Candidate top-1 agreement may
-trail by at most `0.005`. A non-positive comparator excess NLL makes the
-relative gate fail closed; it is not redefined.
+Stage-A resource fields are diagnostic rather than like-for-like deployment
+measurements. Per-transition latency and CUDA allocator peaks cover the scored
+one-token decode forward only; prefill latency and allocator peaks are reported
+separately per method. Logical recurrent-resident bytes exclude model weights,
+ordinary attention caches, allocator reservation, and temporary workspaces.
+The cache-reported workspace value is a cumulative high-water sum since the
+method began, including prefill, while CUDA reserved-byte peaks can retain
+allocator history and method order. None of these fields may substitute for
+the packed-native end-to-end deployment gate below.
+
+Stage-A results are a falsification screen, not confirmation or selector
+superiority evidence. Only the separately frozen Stage-C decision above can
+support those claims. A non-positive comparator excess NLL makes a relative
+superiority gate fail closed; it is not redefined.
 
 ## Packed-native deployment gate
 
@@ -524,6 +939,53 @@ driver, CUDA, kernel version, compiler flags, batch, prompt/decode lengths, and
 all raw repeats. The existing uniform-kernel microbenchmark is an isolated
 diagnostic only and cannot be used as end-to-end evidence.
 
+### Opaque pre-staging boundary
+
+The official Stage-A launcher uses two cold authenticated child processes.
+Before the one-run seal, a credential-stripped network child copies and hashes
+the exact pinned tokenizer, Parquet, RULER-generator, generation-manifest,
+receipt, and model-metadata bytes into a content-addressed bundle without
+decoding protected rows or receipt bodies. A new child then starts with
+`HF_HUB_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, and `TRANSFORMERS_OFFLINE=1`,
+authenticates that bundle, binds its manifest SHA-256 into the seal and durable
+evidence chain, and materializes Stage-A content only after reservation from
+the local bundle. A Python socket audit guard makes attempted network access in
+that offline child fatal.
+
+"Opaque" describes the authenticated program's procedure, not encryption or
+access control. The bundle necessarily contains raw Parquet and RULER bytes. A
+human who controls the filesystem could inspect them before the seal, so this
+is an honest-process one-run boundary rather than a claim of human blindness.
+Stronger blindness would require independent custody, encryption, and a
+post-seal key or data release outside this local evaluator.
+
+### One-run evidence boundary
+
+The Stage-A empty-diff seal commit, Git refs and reflogs, and the
+identity-scoped lock in the repository's Git common directory make accidental
+re-execution and ordinary local history changes detectable. They provide a
+durable honest-process audit trail on the machine where the run is performed;
+they are not a cryptographic proof that only one execution was ever possible.
+
+The source and runtime manifests authenticate the exact canonical Git
+executable bytes, file size, and normalized absolute-path digest used by the
+runner. They do not recursively authenticate Git-for-Windows loaded DLLs,
+helper executables, the Windows kernel, or the underlying operating system;
+those remain part of the external trusted computing base. Public Hub,
+GitHub, certificate, and TLS availability are also external, although every
+accepted revision, manifest, and downloaded object is checked against its
+frozen identity before protected execution. Reports must not describe this as
+cryptographic attestation of the complete OS or toolchain.
+
+A person with filesystem control can deliberately delete the lock and reflog,
+rewrite or remove refs, or start from a fresh clone. The pre-run seal also
+cannot authenticate a result that does not yet exist. Stronger public proof
+requires an external append-only anchor for the seal before protected access
+and a second external anchor or signature over the completed result bundle.
+External anchoring is outside this evaluator. Accordingly, reports must call
+the local controls one-run auditability or tamper evidence, never tamperproof
+or cryptographically non-bypassable enforcement.
+
 ## Advancement and claim boundary
 
 Every integrity, stability, quality, and deployment gate is conjunctive for an
@@ -533,9 +995,12 @@ supports only an implementation result.
 
 The prior-art boundary is narrow. [RateQuant](https://arxiv.org/abs/2605.06675v2)
 already fits calibration-based mixed-precision rate-distortion policies for KV
-caches. [Q-Mamba](https://aclanthology.org/2025.findings-acl.551/) quantizes
-Mamba state caches, while [Quamba2](https://arxiv.org/abs/2503.22879v4) provides
-quantized SSM deployment and kernels. [Gated DeltaNet-2](https://arxiv.org/abs/2605.22791v1)
+caches and makes loss-gradient sensitivity central. Its published KV
+head/token implementation is not a direct Gated DeltaNet matrix-row baseline,
+but the sensitivity principle transfers; the prespecified H1 comparator above
+tests it without claiming to be RateQuant. [Q-Mamba](https://aclanthology.org/2025.findings-acl.551/)
+quantizes Mamba state caches, while [Quamba2](https://arxiv.org/abs/2503.22879v4)
+provides quantized SSM deployment and kernels. [Gated DeltaNet-2](https://arxiv.org/abs/2605.22791v1)
 motivates the architecture family. Its official repository currently provides
 training code but no tagged release or pretrained checkpoint for the reported
 1.3B run. Therefore only a confirmed exact-byte static Q4/Q6/Q8 packed-native
@@ -543,11 +1008,13 @@ Gated DeltaNet path plus end-to-end adoption benefit could be differentiated;
 this protocol makes no novelty claim.
 
 Even a complete pass would establish only that the frozen static packed layout
-was useful on the pinned checkpoints, workloads, budgets, and hardware. It
+was useful on the pinned 0.8B checkpoint, workloads, budgets, and hardware. It
 would not establish that RHT, mixed precision, loss sensitivity, Q4/Q6/Q8,
 static allocation, or packed kernels are new. It would not make RecurQuant a
 new base model, prove generated-code correctness, eliminate contamination, or
 justify "breakthrough," "state of the art," "lossless," or universal language.
+It also would not prove a closed-loop StateLease controller; Experiment 013's
+map is immutable after calibration.
 
 Failure is a publishable result. Any change after a gate is observed creates a
 new experiment number with new protected data.

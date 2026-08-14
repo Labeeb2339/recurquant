@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import urllib.parse
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,22 +16,31 @@ from typing import Any
 import pytest
 import torch
 
+import recurquant.static_q468_calibration as calibration
+from recurquant import experiment013_source
 from recurquant.static_q468 import (
     FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
     FROZEN_STATIC_Q468_ABLATION_STEPS,
     FROZEN_STATIC_Q468_PRIMARY_STEPS,
     STATIC_Q468_ABLATION_METHOD,
+    STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    STATIC_Q468_MSE_METHOD,
     STATIC_Q468_PRIMARY_METHOD,
     build_static_rht_q468_policy,
     serialize_static_rht_q468_policy,
 )
 from recurquant.static_q468_calibration import (
+    FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
     FROZEN_SOURCE_TENSOR_CONTRACT,
+    FROZEN_UNWEIGHTED_MSE_PROFILE,
     CalibrationAggregate,
+    ComparatorAggregate,
     build_frozen_calibration_score_artifact,
+    build_frozen_comparator_score_artifact,
     build_frozen_split_half_stability_artifact,
     calibration_identity_record_manifest_sha256,
     deserialize_calibration_score_artifact,
+    deserialize_comparator_score_artifact,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +51,7 @@ capture = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = capture
 SPEC.loader.exec_module(capture)
 resolver = capture.resolver
+FIXTURE_GIT_EXECUTABLE = experiment013_source.authenticate_git_executable().path
 FIXTURE_BINDING_ARTIFACT = b"verified-fixture-binding-artifact"
 FIXTURE_EXECUTION_ARTIFACTS = {
     "repository_source_manifest_file_sha256": b"fixture-source-manifest",
@@ -53,9 +64,8 @@ FIXTURE_EXECUTION_ARTIFACTS = {
 FIXTURE_RUNTIME_CONTEXT = {
     "base_runtime_root": REPOSITORY_ROOT / "fixture-base-runtime",
     "staged_interpreter": REPOSITORY_ROOT / "fixture-base-runtime" / "python.exe",
-    "package_runtime_roots": {
-        "fixture-packages": REPOSITORY_ROOT / "fixture-packages"
-    },
+    "git_executable": FIXTURE_GIT_EXECUTABLE,
+    "package_runtime_roots": {"fixture-packages": REPOSITORY_ROOT / "fixture-packages"},
     "package_import_paths": {"fixture-packages": "Lib/site-packages"},
 }
 
@@ -244,6 +254,7 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
                 else {
                     "base_runtime_root": runtime_context.base_runtime_root,
                     "staged_interpreter": runtime_context.staged_interpreter,
+                    "git_executable": runtime_context.git_executable,
                     "package_runtime_roots": runtime_context.package_runtime_roots,
                     "package_import_paths": runtime_context.package_import_paths,
                 }
@@ -332,6 +343,7 @@ class FakeSource:
         return {
             "base_runtime_root": FIXTURE_RUNTIME_CONTEXT["base_runtime_root"],
             "staged_interpreter": FIXTURE_RUNTIME_CONTEXT["staged_interpreter"],
+            "git_executable": FIXTURE_RUNTIME_CONTEXT["git_executable"],
             "package_runtime_roots": dict(
                 FIXTURE_RUNTIME_CONTEXT["package_runtime_roots"]  # type: ignore[arg-type]
             ),
@@ -357,8 +369,12 @@ class FakeSource:
     def pg19_projection(self, split: str) -> tuple[Any, ...]:
         self.accesses.append(f"pg19_projection:{split}")
         count = 13_684 if split == "train" else 50
+        ebook_base = 100_000 if split == "train" else 200_000
         return tuple(
-            capture.ProjectionRow(f"https://pg19.example/{split}/{offset}", offset)
+            capture.ProjectionRow(
+                f"http://www.gutenberg.org/ebooks/{ebook_base + offset}",
+                offset,
+            )
             for offset in range(count)
         )
 
@@ -689,6 +705,26 @@ def _binding() -> bytes:
     return FIXTURE_BINDING_ARTIFACT
 
 
+def _frozen_stage_a_identity(source: FakeSource | None = None) -> bytes:
+    captured = capture.capture_identity_input(
+        phase="stage_a",
+        source=FakeSource() if source is None else source,
+        calibration_binding=_binding(),
+    )
+    candidate = resolver.build_candidate(
+        captured,
+        expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
+        calibration_binding_artifact=_binding(),
+    )
+    candidate_bytes = resolver.canonical_json_bytes(candidate)
+    frozen = resolver.promote_candidate(
+        candidate,
+        candidate_file_sha256=resolver.sha256_bytes(candidate_bytes),
+        calibration_binding_artifact=_binding(),
+    )
+    return resolver.canonical_json_bytes(frozen)
+
+
 def _frozen_aggregate(
     *,
     half: bool,
@@ -717,6 +753,34 @@ def _frozen_aggregate(
     )
 
 
+def _frozen_comparator_aggregate(
+    selector_profile: str,
+    *,
+    identity_manifest_sha256: str,
+) -> ComparatorAggregate:
+    rows = FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    row_axis = torch.arange(rows, dtype=torch.float64) / rows
+    offset = 0.0 if selector_profile == FROZEN_UNWEIGHTED_MSE_PROFILE else 0.125
+    provisional = ComparatorAggregate(
+        selector_profile=selector_profile,  # type: ignore[arg-type]
+        d4=4.0 + offset + row_axis,
+        d6=2.0 + offset + row_axis / 2,
+        d8=1.0 + offset + row_axis / 4,
+        family_sequence_counts=(("mbpp", 128), ("pg19", 16), ("ruler", 16)),
+        ruler_category_sequence_counts=tuple(
+            (category, 4) for category in calibration.RULER_CATEGORY_ORDER
+        ),
+        position_manifest_sha256=_hash(f"positions:{selector_profile}"),
+        sequence_score_manifest_sha256=_hash(f"sequences:{selector_profile}"),
+        identity_record_manifest_sha256=identity_manifest_sha256,
+        aggregate_scores_sha256="0" * 64,
+    )
+    return replace(
+        provisional,
+        aggregate_scores_sha256=calibration._comparator_aggregate_score_sha256(provisional),
+    )
+
+
 def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
     first = capture.capture_identity_input(phase="calibration", source=FakeSource())
     second = capture.capture_identity_input(phase="calibration", source=FakeSource())
@@ -726,6 +790,11 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
         first, expected_revisions=resolver.FROZEN_DATASET_REVISIONS
     )
     assert candidate["evidence"]["record_count"] == 160
+    assert capture.CAPTURE_VERSION == resolver.RESOLVER_VERSION == 5
+    assert first["schema"] == "recurquant.experiment013.identity-input.v5"
+    assert candidate["evidence"]["identity_schema"] == (
+        "recurquant.experiment013.identity-candidate.v5"
+    )
     counts = {
         family: sum(row["family"] == family for row in first["records"])
         for family in resolver.DATASET_KEYS
@@ -858,6 +927,9 @@ def test_public_calibration_materialization_is_the_exact_capture_with_tokens() -
         assert record["sequence_token_ids_sha256"] == capture._token_hash(
             sequence.sequence_token_ids
         )
+        assert record["fisher_boundary"] == resolver.build_fisher_boundary_contract(
+            sequence.sequence_token_ids
+        )
         assert record["sequence_length"] == len(sequence.sequence_token_ids)
         assert record["token_span"] == {
             "prefill_start": 0,
@@ -889,6 +961,44 @@ def test_public_calibration_materialization_returns_no_raw_content() -> None:
     assert b"auxiliary_files" not in record_bytes
     assert b"source_payload" not in record_bytes
     assert b"formatted_payload" not in record_bytes
+    assert b'"input_token_ids":' not in record_bytes
+    assert b'"target_token_ids":' not in record_bytes
+
+
+def test_materialized_sequence_recomputes_fisher_boundary_from_exact_tokens() -> None:
+    sequence = capture.materialize_calibration_identity_sequences(source=FakeSource()).sequences[0]
+    record = sequence.identity_record
+    record["fisher_boundary"]["input_token_ids_sha256"] = "0" * 64
+    record["fisher_boundary"]["fisher_boundary_sha256"] = resolver.fisher_boundary_sha256(
+        record["fisher_boundary"]
+    )
+    record["identity_record_sha256"] = resolver.identity_record_sha256(record)
+
+    with pytest.raises(ValueError, match="tokens differ from their identity record"):
+        capture.MaterializedCalibrationSequence(
+            _identity_record_bytes=capture.canonical_json_bytes(record),
+            prompt_token_ids=sequence.prompt_token_ids,
+            target_token_ids=sequence.target_token_ids,
+        )
+
+
+def test_capture_rejects_fisher_sequences_shorter_than_three_tokens() -> None:
+    with pytest.raises(ValueError, match="at least three tokens"):
+        capture._base_record(
+            phase="calibration",
+            family="pg19",
+            canonical_id="short-sequence",
+            config="default",
+            seed=None,
+            configured_length=None,
+            ruler_category=None,
+            generator_receipt_sha256=None,
+            source_payload={"source": "fixture"},
+            formatted_payload={"formatted": "fixture"},
+            prompt_ids=(1, 2),
+            target_ids=(),
+            tokenizer_manifest_sha256="a" * 64,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1040,12 +1150,56 @@ def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies() ->
             method_id=STATIC_Q468_PRIMARY_METHOD,
         )
     )
+    comparator_bytes = build_frozen_comparator_score_artifact(
+        _frozen_comparator_aggregate(
+            FROZEN_UNWEIGHTED_MSE_PROFILE,
+            identity_manifest_sha256=full_identity_manifest,
+        ),
+        _frozen_comparator_aggregate(
+            FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+            identity_manifest_sha256=full_identity_manifest,
+        ),
+        calibration_identity_sha256=identity.file_sha256,
+    )
+    comparators = deserialize_comparator_score_artifact(
+        comparator_bytes,
+        expected_calibration_identity_sha256=identity.file_sha256,
+    )
+
+    def comparator_policy_bytes(profile: str, method_id: str) -> bytes:
+        selector = comparators.selectors[profile]
+        return serialize_static_rht_q468_policy(
+            build_static_rht_q468_policy(
+                selector.aggregate.d4,
+                selector.aggregate.d6,
+                selector.aggregate.d8,
+                geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+                marginal_steps=FROZEN_STATIC_Q468_PRIMARY_STEPS,
+                calibration_manifest_sha256=(selector.aggregate.sequence_score_manifest_sha256),
+                identity_artifact_sha256=identity.file_sha256,
+                tokenizer_manifest_sha256=identity.tokenizer_manifest_sha256,
+                source_commit="f" * 40,
+                method_id=method_id,
+            )
+        )
+
+    mse_policy_bytes = comparator_policy_bytes(
+        FROZEN_UNWEIGHTED_MSE_PROFILE,
+        STATIC_Q468_MSE_METHOD,
+    )
+    fisher_policy_bytes = comparator_policy_bytes(
+        FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    )
     binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
         frozen_identity_artifact=identity_bytes,
         calibration_score_artifact=score_bytes,
         split_half_stability_artifact=split_bytes,
         static_k27030_policy_artifact=policy27030_bytes,
         static_k29334_policy_artifact=policy29334_bytes,
+        comparator_score_artifact=comparator_bytes,
+        static_fisher_k29334_policy_artifact=fisher_policy_bytes,
+        static_mse_k29334_policy_artifact=mse_policy_bytes,
     )
 
     verified = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
@@ -1057,6 +1211,9 @@ def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies() ->
         "split_half_stability_artifact_file_sha256": resolver.sha256_bytes(split_bytes),
         "static_k27030_policy_file_sha256": resolver.sha256_bytes(policy27030_bytes),
         "static_k29334_policy_file_sha256": resolver.sha256_bytes(policy29334_bytes),
+        "comparator_score_artifact_file_sha256": resolver.sha256_bytes(comparator_bytes),
+        "static_fisher_k29334_policy_file_sha256": resolver.sha256_bytes(fisher_policy_bytes),
+        "static_mse_k29334_policy_file_sha256": resolver.sha256_bytes(mse_policy_bytes),
     }
 
     tampered = json.loads(binding_bytes)
@@ -1111,6 +1268,280 @@ def test_stage_a_capture_uses_exact_schedules_and_token_caps() -> None:
         row["token_span"]["cache_exposed_stop"] - row["token_span"]["cache_exposed_start"] == 127
         for row in human_rows
     )
+
+
+def test_stage_a_materialization_authenticates_exact_inventory_tokens_and_spans() -> None:
+    frozen_bytes = _frozen_stage_a_identity()
+    frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
+        frozen_bytes,
+        calibration_binding_artifact=_binding(),
+    )
+    source = FakeSource()
+
+    materialized = capture.materialize_stage_a_identity_sequences(
+        source=source,
+        frozen_stage_a_identity_artifact=frozen_bytes,
+        calibration_binding_artifact=_binding(),
+        expected_frozen_stage_a_identity_file_sha256=resolver.sha256_bytes(frozen_bytes),
+    )
+
+    assert materialized.frozen_identity_file_sha256 == frozen.file_sha256
+    assert materialized.frozen_identity_canonical_evidence_sha256 == (
+        frozen.canonical_evidence_sha256
+    )
+    assert materialized.calibration_binding_file_sha256 == resolver.sha256_bytes(_binding())
+    assert len(materialized.sequences) == len(materialized.by_identity_record_sha256) == 12
+    assert [
+        (sequence.identity_record["family"], sequence.identity_record["selection_rank"])
+        for sequence in materialized.sequences
+    ] == [(family, rank) for family in ("pg19", "ruler", "humaneval_plus") for rank in range(4)]
+    assert capture.canonical_json_bytes(materialized.identity_records) == (
+        capture.canonical_json_bytes(
+            tuple(
+                {name: record[name] for name in resolver.RECORD_FIELDS} for record in frozen.records
+            )
+        )
+    )
+
+    for sequence in materialized.sequences:
+        record = sequence.identity_record
+        span = record["token_span"]
+        assert record["identity_record_sha256"] == resolver.identity_record_sha256(record)
+        assert record["prompt_token_ids_sha256"] == capture._token_hash(sequence.prompt_token_ids)
+        assert record["target_token_ids_sha256"] == capture._token_hash(sequence.target_token_ids)
+        assert record["sequence_token_ids_sha256"] == capture._token_hash(
+            sequence.sequence_token_ids
+        )
+        assert all(
+            len(record[field]) == 64
+            for field in (
+                "tokenizer_manifest_sha256",
+                "source_content_sha256",
+                "formatted_content_sha256",
+            )
+        )
+        assert span == {
+            "prefill_start": 0,
+            "prefill_stop": len(sequence.prompt_token_ids),
+            "scored_start": len(sequence.prompt_token_ids),
+            "scored_stop": len(sequence.sequence_token_ids),
+            "cache_exposed_start": len(sequence.prompt_token_ids) + 1,
+            "cache_exposed_stop": len(sequence.sequence_token_ids),
+        }
+        assert len(sequence.target_token_ids) >= 2
+        assert sequence.cache_exposed_transition_count == len(sequence.target_token_ids) - 1
+        assert materialized.lookup(sequence.identity_record_sha256) is sequence
+
+    pg19 = [
+        sequence
+        for sequence in materialized.sequences
+        if sequence.identity_record["family"] == "pg19"
+    ]
+    assert all(len(sequence.prompt_token_ids) == 4_096 for sequence in pg19)
+    assert all(len(sequence.target_token_ids) == 128 for sequence in pg19)
+    assert all(sequence.cache_exposed_transition_count == 127 for sequence in pg19)
+
+    ruler_inventory = {
+        (
+            sequence.identity_record["ruler_category"],
+            sequence.identity_record["config"],
+            sequence.identity_record["configured_length"],
+            sequence.identity_record["seed"],
+        )
+        for sequence in materialized.sequences
+        if sequence.identity_record["family"] == "ruler"
+    }
+    assert ruler_inventory == set(resolver.RULER_STAGE_A_SCHEDULE)
+    for sequence in materialized.sequences:
+        record = sequence.identity_record
+        if record["family"] != "ruler":
+            continue
+        receipt = source.ruler_receipt(
+            category=record["ruler_category"],
+            config=record["config"],
+            configured_length=record["configured_length"],
+            seed=record["seed"],
+        )
+        target, _semantics = capture._ruler_stage_a_target(
+            category=record["ruler_category"],
+            config=record["config"],
+            outputs=receipt["outputs"],
+        )
+        assert sequence.prompt_token_ids == tuple(
+            FakeTokenizer().encode(
+                receipt["input"] + receipt["answer_prefix"],
+                add_special_tokens=False,
+            )
+        )
+        assert sequence.target_token_ids == tuple(
+            FakeTokenizer().encode(target, add_special_tokens=False)
+        )
+
+    humaneval_projection = {row.canonical_id: row.offset for row in source.humaneval_projection()}
+    for sequence in materialized.sequences:
+        record = sequence.identity_record
+        if record["family"] != "humaneval_plus":
+            continue
+        row = source.humaneval_row(
+            offset=humaneval_projection[record["canonical_id"]],
+            expected_task_id=record["canonical_id"],
+        )
+        assert sequence.prompt_token_ids == tuple(
+            FakeTokenizer().encode(row["prompt"], add_special_tokens=True)
+        )
+        assert sequence.target_token_ids == tuple(
+            FakeTokenizer().encode(row["canonical_solution"], add_special_tokens=False)[:128]
+        )
+    assert all(
+        len(sequence.target_token_ids) <= 128
+        for sequence in materialized.sequences
+        if sequence.identity_record["family"] == "humaneval_plus"
+    )
+    assert len(materialized.token_sequence_manifest_sha256) == 64
+    assert source.head_calls == 2
+
+
+def test_stage_a_materialization_accepts_exact_two_token_target() -> None:
+    source = FakeSource()
+    source.receipt_mutator = lambda receipt: (
+        receipt.update({"outputs": ["xy"]})
+        if receipt["config"] == "qa_1" and receipt["seed"] == 2_339
+        else None
+    )
+    frozen_bytes = _frozen_stage_a_identity(source)
+
+    materialized = capture.materialize_stage_a_identity_sequences(
+        source=source,
+        frozen_stage_a_identity_artifact=frozen_bytes,
+        calibration_binding_artifact=_binding(),
+    )
+
+    qa = next(
+        sequence
+        for sequence in materialized.sequences
+        if sequence.identity_record["config"] == "qa_1"
+    )
+    assert len(qa.target_token_ids) == 2
+    assert qa.cache_exposed_transition_count == 1
+    assert qa.identity_record["token_span"]["cache_exposed_start"] == (
+        qa.identity_record["token_span"]["scored_start"] + 1
+    )
+
+
+def test_stage_a_materialization_rejects_candidate_and_drift_before_use() -> None:
+    captured = capture.capture_identity_input(
+        phase="stage_a",
+        source=FakeSource(),
+        calibration_binding=_binding(),
+    )
+    candidate = resolver.build_candidate(
+        captured,
+        expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
+        calibration_binding_artifact=_binding(),
+    )
+    source = FakeSource()
+    with pytest.raises(ValueError, match="frozen Stage-A identity"):
+        capture.materialize_stage_a_identity_sequences(
+            source=source,
+            frozen_stage_a_identity_artifact=resolver.canonical_json_bytes(candidate),
+            calibration_binding_artifact=_binding(),
+        )
+    assert source.accesses == []
+
+    frozen_bytes = _frozen_stage_a_identity()
+    changed = FakeSource()
+    original_humaneval_row = changed.humaneval_row
+
+    def changed_humaneval_row(*, offset: int, expected_task_id: str) -> dict[str, Any]:
+        row = original_humaneval_row(offset=offset, expected_task_id=expected_task_id)
+        row["canonical_solution"] += "\n# authenticated-content-drift"
+        return row
+
+    changed.humaneval_row = changed_humaneval_row  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="authenticated identity"):
+        capture.materialize_stage_a_identity_sequences(
+            source=changed,
+            frozen_stage_a_identity_artifact=frozen_bytes,
+            calibration_binding_artifact=_binding(),
+        )
+
+
+def test_stage_a_materialization_rejects_missing_duplicate_reordered_and_tampered() -> None:
+    frozen_bytes = _frozen_stage_a_identity()
+    materialized = capture.materialize_stage_a_identity_sequences(
+        source=FakeSource(),
+        frozen_stage_a_identity_artifact=frozen_bytes,
+        calibration_binding_artifact=_binding(),
+    )
+    common = {
+        "tokenizer_manifest_sha256": materialized.tokenizer_manifest_sha256,
+        "capture_input_sha256": materialized.capture_input_sha256,
+        "frozen_identity_file_sha256": materialized.frozen_identity_file_sha256,
+        "frozen_identity_canonical_evidence_sha256": (
+            materialized.frozen_identity_canonical_evidence_sha256
+        ),
+        "calibration_binding_file_sha256": materialized.calibration_binding_file_sha256,
+    }
+
+    with pytest.raises(ValueError, match="exactly 12"):
+        capture.StageAIdentityMaterialization(
+            sequences=materialized.sequences[:-1],
+            **common,
+        )
+    with pytest.raises(ValueError, match="duplicate identities"):
+        capture.StageAIdentityMaterialization(
+            sequences=materialized.sequences[:-1] + (materialized.sequences[0],),
+            **common,
+        )
+    with pytest.raises(ValueError, match="ordered by family then rank"):
+        capture.StageAIdentityMaterialization(
+            sequences=(materialized.sequences[1], materialized.sequences[0])
+            + materialized.sequences[2:],
+            **common,
+        )
+
+    sequence = materialized.sequences[0]
+    tampered_record = sequence.identity_record
+    tampered_record["target_token_ids_sha256"] = "0" * 64
+    tampered_record["identity_record_sha256"] = resolver.identity_record_sha256(tampered_record)
+    with pytest.raises(ValueError, match="only by authenticated v5 materialization"):
+        capture.MaterializedStageASequence(
+            _identity_record_bytes=capture.canonical_json_bytes(sequence.identity_record),
+            prompt_token_ids=sequence.prompt_token_ids,
+            target_token_ids=sequence.target_token_ids,
+            _authentication_seal=object(),
+        )
+    with pytest.raises(ValueError, match="tokens differ from their identity record"):
+        capture.MaterializedStageASequence(
+            _identity_record_bytes=capture.canonical_json_bytes(tampered_record),
+            prompt_token_ids=sequence.prompt_token_ids,
+            target_token_ids=sequence.target_token_ids,
+            _authentication_seal=capture._STAGE_A_MATERIALIZATION_AUTHENTICATION_SEAL,
+        )
+
+
+def test_stage_a_materialization_identity_records_are_content_redacted() -> None:
+    frozen_bytes = _frozen_stage_a_identity()
+    materialized = capture.materialize_stage_a_identity_sequences(
+        source=FakeSource(),
+        frozen_stage_a_identity_artifact=frozen_bytes,
+        calibration_binding_artifact=_binding(),
+    )
+    records = capture.canonical_json_bytes(materialized.identity_records)
+
+    for forbidden in (
+        b'"answer_prefix":',
+        b'"canonical_solution":',
+        b'"formatted_payload":',
+        b'"input":',
+        b'"outputs":',
+        b'"prompt":',
+        b'"source_payload":',
+        b'"text":',
+        b'"prompt_token_ids":',
+        b'"target_token_ids":',
+    ):
+        assert forbidden not in records
 
 
 def test_ruler_stage_a_target_includes_all_required_outputs_and_selects_one_qa_alternative() -> (
@@ -1189,9 +1620,7 @@ def test_ruler_receipt_required_output_cardinality_and_uniqueness_fail_closed() 
         ),
         (
             "vt",
-            lambda receipt: receipt.update(
-                {"outputs": ["ZZZZZ", *receipt["outputs"][1:]]}
-            ),
+            lambda receipt: receipt.update({"outputs": ["ZZZZZ", *receipt["outputs"][1:]]}),
             "required answer is absent",
         ),
     ],
@@ -1412,15 +1841,30 @@ def test_live_tokenizer_load_uses_only_authenticated_files_from_an_isolated_dire
     observed: dict[str, object] = {}
 
     class FakeApi:
+        def __init__(self, *, token: bool, endpoint: str) -> None:
+            assert token is False
+            assert endpoint == "https://huggingface.co"
+
         @staticmethod
-        def list_repo_files(_repo_id: str, *, revision: str) -> list[str]:
+        def list_repo_files(_repo_id: str, *, revision: str, token: bool) -> list[str]:
             assert revision == resolver.PRIMARY_MODEL_REVISION
+            assert token is False
             return [*expected, "tokenizer.model", "model.safetensors"]
 
-    def fake_download(*, repo_id: str, filename: str, revision: str, cache_dir: Path) -> str:
+    def fake_download(
+        *,
+        repo_id: str,
+        filename: str,
+        revision: str,
+        cache_dir: Path,
+        token: bool,
+        endpoint: str,
+    ) -> str:
         assert repo_id == resolver.PRIMARY_MODEL_ID
         assert revision == resolver.PRIMARY_MODEL_REVISION
         assert cache_dir == (tmp_path / "cache").resolve()
+        assert token is False
+        assert endpoint == "https://huggingface.co"
         return str(snapshot / filename)
 
     class IsolatedTokenizer:
@@ -1461,6 +1905,7 @@ def test_live_tokenizer_load_uses_only_authenticated_files_from_an_isolated_dire
     assert observed["path"] != snapshot
     assert observed["kwargs"] == {
         "local_files_only": True,
+        "token": False,
         "trust_remote_code": False,
     }
     assert not Path(observed["path"]).exists()
@@ -1607,6 +2052,10 @@ def test_execution_artifact_decoders_run_before_file_hash_binding(
         "profile": experiment013_source.EXPERIMENT013_SOURCE_MANIFEST_PROFILE,
         "object_format": "sha1",
         "source_commit": "a" * 40,
+        "git_executable": {
+            "sha256": capture.sha256_bytes(FIXTURE_GIT_EXECUTABLE.read_bytes()),
+            "size_bytes": FIXTURE_GIT_EXECUTABLE.stat().st_size,
+        },
         "repository_binding": {
             "schema": experiment013_source.EXPERIMENT013_REPOSITORY_BINDING_SCHEMA,
             "worktree_layout": "primary",
@@ -1683,6 +2132,7 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
         {
             "base_runtime_root": tmp_path / "runtime",
             "staged_interpreter": tmp_path / "runtime" / "python.exe",
+            "git_executable": FIXTURE_GIT_EXECUTABLE,
             "package_runtime_roots": {"packages": package_root},
             "package_import_paths": {"packages": "Lib/site-packages"},
         }
@@ -1693,15 +2143,19 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
         "model_file_manifest_file_sha256": b"model\n",
         "parquet_materialization_manifest_file_sha256": b"parquet\n",
     }
-    bindings = {
-        field: capture.sha256_bytes(data) for field, data in sorted(artifacts.items())
-    }
+    bindings = {field: capture.sha256_bytes(data) for field, data in sorted(artifacts.items())}
     source_manifest = {"paths": []}
 
     class SourceModule:
         @staticmethod
-        def verify_experiment013_source_manifest(manifest: Any, *, repo_root: Path) -> Any:
+        def verify_experiment013_source_manifest(
+            manifest: Any,
+            *,
+            repo_root: Path,
+            git_executable: Path,
+        ) -> Any:
             assert repo_root == REPOSITORY_ROOT
+            assert git_executable == FIXTURE_GIT_EXECUTABLE
             events.append("source")
             return dict(manifest)
 
@@ -1729,15 +2183,15 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
             base_runtime_root: Path,
             package_roots: Any,
             interpreter_path: Path,
+            git_executable_path: Path,
         ) -> Any:
             assert base_runtime_root == runtime_context.base_runtime_root
             assert package_roots == runtime_context.package_runtime_roots
             assert interpreter_path == runtime_context.staged_interpreter
+            assert git_executable_path == runtime_context.git_executable
             events.append("runtime")
             return SimpleNamespace(
-                manifest_file_sha256=bindings[
-                    "calibration_runtime_manifest_file_sha256"
-                ]
+                manifest_file_sha256=bindings["calibration_runtime_manifest_file_sha256"]
             )
 
         @staticmethod
@@ -1746,12 +2200,14 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
             revision: str,
             *,
             transformers_version: str,
+            token: bool,
         ) -> bytes:
             assert (model_id, revision, transformers_version) == (
                 resolver.PRIMARY_MODEL_ID,
                 resolver.PRIMARY_MODEL_REVISION,
                 resolver.TRANSFORMERS_VERSION,
             )
+            assert token is False
             events.append("model")
             return artifacts["model_file_manifest_file_sha256"]
 
@@ -1819,9 +2275,7 @@ def test_loaded_calibration_runner_source_is_bound_to_source_manifest() -> None:
         "paths": [
             {
                 "path": "scripts/run_static_q468_calibration.py",
-                "raw_sha256": capture.sha256_bytes(
-                    capture.CALIBRATION_RUNNER_PATH.read_bytes()
-                ),
+                "raw_sha256": capture.sha256_bytes(capture.CALIBRATION_RUNNER_PATH.read_bytes()),
             }
         ]
     }
@@ -1838,9 +2292,7 @@ def test_loaded_calibration_runner_source_is_bound_to_source_manifest() -> None:
         lambda context: context.update({"extra": Path("unused")}),
         lambda context: context.update({"base_runtime_root": "not-a-path"}),
         lambda context: context.update({"package_runtime_roots": {"packages": False}}),
-        lambda context: context.update(
-            {"package_import_paths": {"packages": "../site-packages"}}
-        ),
+        lambda context: context.update({"package_import_paths": {"packages": "../site-packages"}}),
         lambda context: context.update(
             {"package_import_paths": {"packages": "Lib\\site-packages"}}
         ),
@@ -1879,6 +2331,8 @@ def test_cli_requires_all_four_execution_artifact_files(tmp_path: Path) -> None:
                 str(tmp_path / "runtime"),
                 "--staged-interpreter",
                 str(tmp_path / "runtime" / "python.exe"),
+                "--git-executable",
+                str(FIXTURE_GIT_EXECUTABLE),
                 "--package-root",
                 f"packages={tmp_path / 'packages'}",
                 "--package-import-path",
@@ -1894,13 +2348,19 @@ def test_live_source_probes_only_the_frozen_objects(
     observed_urls: list[str] = []
 
     class FakeApi:
+        def __init__(self, *, token: bool, endpoint: str) -> None:
+            assert token is False
+            assert endpoint == "https://huggingface.co"
+
         @staticmethod
-        def model_info(repo_id: str, *, revision: str) -> Any:
+        def model_info(repo_id: str, *, revision: str, token: bool) -> Any:
+            assert token is False
             observed_hf.append(("model", repo_id, revision))
             return SimpleNamespace(sha=revision)
 
         @staticmethod
-        def dataset_info(repo_id: str, *, revision: str) -> Any:
+        def dataset_info(repo_id: str, *, revision: str, token: bool) -> Any:
+            assert token is False
             observed_hf.append(("dataset", repo_id, revision))
             return SimpleNamespace(sha=revision)
 
@@ -1947,3 +2407,412 @@ def test_required_ruler_receipt_inventory_is_exact_and_unique() -> None:
     assert sum(item["phase"] == "stage_a" for item in receipts) == 4
     assert receipts[0]["filename"] == ("retrieval__niah_multiquery__l2048__s12339.json")
     assert receipts[-1]["filename"] == ("question_answering__qa_1__l4096__s2339.json")
+
+
+def _parquet_bytes(columns: dict[str, list[str]]) -> bytes:
+    import pyarrow as arrow
+    import pyarrow.parquet as parquet
+
+    sink = arrow.BufferOutputStream()
+    parquet.write_table(arrow.table(columns), sink)
+    return sink.getvalue().to_pybytes()
+
+
+def _fixture_stage_a_input_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    from recurquant import experiment013_parquet
+
+    frozen_bytes = _frozen_stage_a_identity()
+    frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
+        frozen_bytes,
+        calibration_binding_artifact=_binding(),
+    )
+    parquet_payloads = {
+        "pg19": _parquet_bytes(
+            {
+                "url": [
+                    f"http://www.gutenberg.org/ebooks/{200_000 + index}" for index in range(50)
+                ],
+                "text": [f"fixture PG19 text {index}" for index in range(50)],
+            }
+        ),
+        "humaneval_plus": _parquet_bytes(
+            {
+                "task_id": [f"HumanEval/{index}" for index in range(164)],
+                "prompt": [f"def task_{index}(x):\n" for index in range(164)],
+                "canonical_solution": ["    return x\n" for _ in range(164)],
+            }
+        ),
+    }
+    selected: list[tuple[Any, Any]] = []
+    datasets: dict[str, Any] = {}
+    for dataset, file in capture._bundle_expected_parquet_files():
+        payload = parquet_payloads[dataset.key]
+        lfs_sha256 = capture.sha256_bytes(payload)
+        size_bytes = len(payload)
+        git_blob_oid = capture._git_blob_sha1(
+            capture._bundle_lfs_pointer_bytes(
+                sha256=lfs_sha256,
+                size_bytes=size_bytes,
+            )
+        )
+        fixture_file = replace(
+            file,
+            size_bytes=size_bytes,
+            git_blob_oid=git_blob_oid,
+            lfs_sha256=lfs_sha256,
+            lfs_size_bytes=size_bytes,
+        )
+        fixture_dataset = replace(
+            dataset,
+            selected_splits=(file.logical_split,),
+            files=(fixture_file,),
+        )
+        selected.append((fixture_dataset, fixture_file))
+        datasets[dataset.key] = fixture_dataset
+    frozen_selected = tuple(selected)
+    monkeypatch.setattr(
+        capture,
+        "_bundle_expected_parquet_files",
+        lambda: frozen_selected,
+    )
+    fixture_manifest = SimpleNamespace(dataset=lambda key: datasets[key])
+    monkeypatch.setattr(
+        experiment013_parquet,
+        "load_experiment013_parquet_manifest",
+        lambda *_args, **_kwargs: fixture_manifest,
+    )
+
+    bundle_root = tmp_path / "stage-a-input-bundle"
+    bundle_root.mkdir()
+    records: list[dict[str, Any]] = []
+    capture._bundle_add_object(
+        bundle_root,
+        records,
+        role="model_hub_manifest",
+        source_id=resolver.PRIMARY_MODEL_ID,
+        revision=resolver.PRIMARY_MODEL_REVISION,
+        logical_path="model-file-manifest.json",
+        payload=FIXTURE_EXECUTION_ARTIFACTS["model_file_manifest_file_sha256"],
+    )
+    tokenizer_payloads = {
+        "tokenizer.json": b"fixture-tokenizer",
+        "tokenizer_config.json": b"fixture-tokenizer-config",
+    }
+    assert set(tokenizer_payloads) == set(capture.RULER_EXPECTED_TOKENIZER_ASSETS)
+    for name, payload in sorted(tokenizer_payloads.items()):
+        capture._bundle_add_object(
+            bundle_root,
+            records,
+            role="tokenizer",
+            source_id=resolver.PRIMARY_MODEL_ID,
+            revision=resolver.PRIMARY_MODEL_REVISION,
+            logical_path=name,
+            payload=payload,
+        )
+    for path, payload in sorted(_fake_generator_files().items()):
+        capture._bundle_add_object(
+            bundle_root,
+            records,
+            role="ruler_generator",
+            source_id=resolver.RULER_SOURCE_ID,
+            revision=resolver.RULER_REVISION,
+            logical_path=path,
+            payload=payload,
+            git_blob_oid=capture.RULER_GENERATOR_GIT_BLOBS[path],
+        )
+    capture._bundle_add_object(
+        bundle_root,
+        records,
+        role="ruler_generation_manifest",
+        source_id=resolver.RULER_SOURCE_ID,
+        revision=resolver.RULER_REVISION,
+        logical_path="generation-manifest.json",
+        payload=b"fixture generation manifest bytes\n",
+    )
+    for item in capture.required_ruler_receipts():
+        filename = str(item["filename"])
+        capture._bundle_add_object(
+            bundle_root,
+            records,
+            role="ruler_receipt",
+            source_id=resolver.RULER_SOURCE_ID,
+            revision=resolver.RULER_REVISION,
+            logical_path=filename,
+            payload=f"fixture opaque receipt {filename}\n".encode(),
+        )
+    snapshots: list[dict[str, Any]] = []
+    parquet_logicals: dict[str, str] = {}
+    for dataset, file in frozen_selected:
+        logical = f"{dataset.key}/{file.logical_split}/{file.immutable_path}"
+        parquet_logicals[dataset.key] = logical
+        capture._bundle_add_object(
+            bundle_root,
+            records,
+            role="parquet",
+            source_id=dataset.dataset_id,
+            revision=dataset.conversion_revision,
+            logical_path=logical,
+            payload=parquet_payloads[dataset.key],
+            git_blob_oid=file.git_blob_oid,
+            lfs_sha256=file.lfs_sha256,
+        )
+        snapshots.append(
+            {
+                "dataset_key": dataset.key,
+                "dataset_id": dataset.dataset_id,
+                "source_revision": dataset.source_revision,
+                "conversion_revision": dataset.conversion_revision,
+                "files": [
+                    {
+                        "path": file.immutable_path,
+                        "git_blob_oid": file.git_blob_oid,
+                        "lfs_sha256": file.lfs_sha256,
+                        "size_bytes": file.size_bytes,
+                    }
+                ],
+            }
+        )
+    records.sort(key=lambda item: (item["role"], item["source_id"], item["logical_path"]))
+    manifest = {
+        "schema": capture.STAGE_A_INPUT_BUNDLE_SCHEMA,
+        "phase": "stage_a",
+        "capture_version": capture.CAPTURE_VERSION,
+        "staging_profile": capture.STAGE_A_INPUT_BUNDLE_PROFILE,
+        "frozen_identity_file_sha256": frozen.file_sha256,
+        "calibration_binding_file_sha256": capture.sha256_bytes(_binding()),
+        "execution_bindings": dict(frozen.execution_bindings),
+        "source_heads": dict(capture.EXPECTED_SOURCE_HEADS),
+        "model_hub_manifest_file_sha256": capture.sha256_bytes(
+            FIXTURE_EXECUTION_ARTIFACTS["model_file_manifest_file_sha256"]
+        ),
+        "parquet_hub_snapshots": snapshots,
+        "objects": records,
+    }
+    manifest_path = bundle_root / capture.STAGE_A_INPUT_BUNDLE_FILENAME
+    manifest_path.write_bytes(capture.canonical_json_bytes(manifest))
+    bundle = capture.authenticate_stage_a_input_bundle(
+        bundle_root,
+        frozen_stage_a_identity_artifact=frozen_bytes,
+        calibration_binding_artifact=_binding(),
+        execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+    )
+    return SimpleNamespace(
+        bundle=bundle,
+        root=bundle_root,
+        manifest_path=manifest_path,
+        frozen_bytes=frozen_bytes,
+        records=records,
+        selected=frozen_selected,
+        parquet_logicals=parquet_logicals,
+    )
+
+
+def _authenticate_fixture_bundle(fixture: SimpleNamespace) -> Any:
+    return capture.authenticate_stage_a_input_bundle(
+        fixture.root,
+        frozen_stage_a_identity_artifact=fixture.frozen_bytes,
+        calibration_binding_artifact=_binding(),
+        execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+    )
+
+
+def test_stage_a_bundle_authenticates_both_lfs_pointer_and_payload_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+
+    assert len(fixture.selected) == 2
+    for dataset, file in fixture.selected:
+        record = fixture.bundle.objects[("parquet", fixture.parquet_logicals[dataset.key])]
+        assert record["sha256"] == file.lfs_sha256
+        assert record["size_bytes"] == file.size_bytes
+        assert record["git_blob_oid"] == capture._git_blob_sha1(
+            capture._bundle_lfs_pointer_bytes(
+                sha256=file.lfs_sha256,
+                size_bytes=file.size_bytes,
+            )
+        )
+
+    collision_root = tmp_path / "bad-lfs"
+    collision_root.mkdir()
+    payload = b"valid LFS payload bytes\n"
+    with pytest.raises(ValueError, match="Git blob"):
+        capture._bundle_add_object(
+            collision_root,
+            [],
+            role="parquet",
+            source_id="fixture/dataset",
+            revision="a" * 40,
+            logical_path="default/test/0000.parquet",
+            payload=payload,
+            git_blob_oid="0" * 40,
+            lfs_sha256=capture.sha256_bytes(payload),
+        )
+
+
+def test_stage_a_bundle_rejects_object_tamper_and_extra_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    logical = fixture.parquet_logicals["pg19"]
+    record = fixture.bundle.objects[("parquet", logical)]
+    object_path = fixture.root / Path(str(record["relative_path"]))
+    object_path.write_bytes(object_path.read_bytes() + b"tampered")
+    with pytest.raises(ValueError, match="changed"):
+        _authenticate_fixture_bundle(fixture)
+
+
+@pytest.mark.parametrize("location", ("root", "objects"))
+def test_stage_a_bundle_rejects_extra_filesystem_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    parent = fixture.root if location == "root" else fixture.root / "objects"
+    (parent / "unexpected").write_bytes(b"unexpected\n")
+    with pytest.raises(ValueError, match="filesystem inventory drifted"):
+        _authenticate_fixture_bundle(fixture)
+
+
+def test_stage_a_bundle_rejects_forged_semantic_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    manifest = json.loads(fixture.manifest_path.read_bytes())
+    record = next(item for item in manifest["objects"] if item["role"] == "model_hub_manifest")
+    record["revision"] = "f" * 40
+    fixture.manifest_path.write_bytes(capture.canonical_json_bytes(manifest))
+
+    with pytest.raises(ValueError, match="frozen semantics"):
+        _authenticate_fixture_bundle(fixture)
+
+
+def test_stage_a_bundle_rejects_linked_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    record = next(iter(fixture.bundle.objects.values()))
+    object_path = fixture.root / Path(str(record["relative_path"]))
+    outside = tmp_path / "outside-object"
+    outside.write_bytes(object_path.read_bytes())
+    object_path.unlink()
+    try:
+        object_path.symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable: {type(error).__name__}")
+
+    with pytest.raises(ValueError, match="link|reparse"):
+        _authenticate_fixture_bundle(fixture)
+
+
+def test_stage_a_bundle_path_status_errors_fail_closed(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="cannot authenticate"):
+        capture._bundle_is_link_or_reparse(tmp_path / "absent")
+
+
+def test_existing_stage_a_bundle_still_requires_runtime_auth_and_isolation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    ruler_root = tmp_path / "receipts"
+    ruler_root.mkdir()
+
+    with pytest.raises(ValueError):
+        capture.stage_stage_a_input_bundle(
+            bundle_root=fixture.root,
+            cache_dir=tmp_path / "cache",
+            ruler_receipt_dir=ruler_root,
+            frozen_stage_a_identity_artifact=fixture.frozen_bytes,
+            calibration_binding_artifact=_binding(),
+            execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+            runtime_authentication_context={"invalid": "context"},
+        )
+    with pytest.raises(ValueError, match="must not be nested"):
+        capture.stage_stage_a_input_bundle(
+            bundle_root=fixture.root,
+            cache_dir=tmp_path,
+            ruler_receipt_dir=ruler_root,
+            frozen_stage_a_identity_artifact=fixture.frozen_bytes,
+            calibration_binding_artifact=_binding(),
+            execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+            runtime_authentication_context=FIXTURE_RUNTIME_CONTEXT,
+        )
+
+
+def test_staged_capture_source_is_offline_and_reads_only_authenticated_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    for name in capture._STAGE_A_FORBIDDEN_CREDENTIAL_ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in capture._STAGE_A_OFFLINE_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
+
+    def reject_network(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("offline staged capture attempted network access")
+
+    monkeypatch.setattr(capture.urllib.request, "urlopen", reject_network)
+    source = capture.StagedCaptureSource(fixture.bundle)
+    assert source.source_heads() == capture.EXPECTED_SOURCE_HEADS
+    assert set(source.ruler_generator_files()) == set(capture.RULER_GENERATOR_GIT_BLOBS)
+    assert len(source.pg19_projection("validation")) == 50
+    pg19 = source.pg19_row(
+        "validation",
+        offset=0,
+        expected_url="http://www.gutenberg.org/ebooks/200000",
+    )
+    assert pg19["text"] == "fixture PG19 text 0"
+    assert len(source.humaneval_projection()) == 164
+    humaneval = source.humaneval_row(offset=0, expected_task_id="HumanEval/0")
+    assert humaneval["canonical_solution"] == "    return x\n"
+
+    class FixtureAutoTokenizer:
+        @staticmethod
+        def from_pretrained(path: Path, **kwargs: Any) -> FakeTokenizer:
+            assert kwargs == {
+                "local_files_only": True,
+                "trust_remote_code": False,
+                "token": False,
+            }
+            assert {item.name for item in path.iterdir()} == set(
+                capture.RULER_EXPECTED_TOKENIZER_ASSETS
+            )
+            return FakeTokenizer()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(AutoTokenizer=FixtureAutoTokenizer),
+    )
+    tokenizer = source.tokenizer_material()
+    assert tokenizer.model_weights_loaded is False
+    assert set(tokenizer.files) == set(capture.RULER_EXPECTED_TOKENIZER_ASSETS)
+
+
+def test_staged_capture_source_rejects_missing_offline_flag_or_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    for name in capture._STAGE_A_FORBIDDEN_CREDENTIAL_ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in capture._STAGE_A_OFFLINE_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("HF_HUB_OFFLINE")
+    with pytest.raises(RuntimeError, match="offline-mode flags"):
+        capture.StagedCaptureSource(fixture.bundle)
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_TOKEN", "forbidden-fixture-token")
+    with pytest.raises(RuntimeError, match="forbidden credential"):
+        capture.StagedCaptureSource(fixture.bundle)

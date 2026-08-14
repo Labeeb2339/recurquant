@@ -30,7 +30,11 @@ from .static_q468 import (
     FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
     STATIC_Q48_COMPARATOR_METHOD,
     STATIC_Q468_ABLATION_METHOD,
+    STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+    STATIC_Q468_MSE_METHOD,
     STATIC_Q468_PRIMARY_METHOD,
+    STATIC_Q468_UNIFORM_Q4_METHOD,
+    STATIC_Q468_UNIFORM_Q8_METHOD,
     StaticPackedRhtQ48State,
     StaticPackedRhtQ468State,
     StaticRhtByteLedger,
@@ -55,11 +59,18 @@ StaticRhtPolicy: TypeAlias = StaticRhtQ468Policy | StaticRhtQ48Policy
 StaticPackedRhtState: TypeAlias = StaticPackedRhtQ468State | StaticPackedRhtQ48State
 StaticPolicyKind: TypeAlias = Literal["q468", "q48"]
 
-DYNAMIC_Q468_ORACLE_METHOD = "rht_q468_dynamic_k27030"
+DYNAMIC_Q468_BASELINE_METHOD = "rht_q468_dynamic_k27030"
+# Compatibility alias for callers using the pre-correction public name.  The
+# method is a dynamic comparison baseline, not an oracle for held-out quality.
+DYNAMIC_Q468_ORACLE_METHOD = DYNAMIC_Q468_BASELINE_METHOD
 FROZEN_STATIC_RUNTIME_METHODS = frozenset(
     (
         STATIC_Q468_PRIMARY_METHOD,
         STATIC_Q468_ABLATION_METHOD,
+        STATIC_Q468_MSE_METHOD,
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+        STATIC_Q468_UNIFORM_Q4_METHOD,
+        STATIC_Q468_UNIFORM_Q8_METHOD,
         STATIC_Q48_COMPARATOR_METHOD,
     )
 )
@@ -484,7 +495,7 @@ def create_qwen35_static_rht_cache(
     if not isinstance(policy, (StaticRhtQ468Policy, StaticRhtQ48Policy)):
         raise TypeError("policy must be a StaticRhtQ468Policy or StaticRhtQ48Policy")
     if policy.method_id not in FROZEN_STATIC_RUNTIME_METHODS:
-        raise ValueError("public Experiment 013 runtime accepts only the three frozen methods")
+        raise ValueError("public Experiment 013 runtime accepts only the seven frozen methods")
     if policy.geometry != FROZEN_QWEN35_STATIC_Q468_GEOMETRY:
         raise ValueError("frozen Experiment 013 method requires the frozen Qwen3.5 geometry")
     return StaticRhtQwen35Cache(
@@ -495,27 +506,44 @@ def create_qwen35_static_rht_cache(
     )
 
 
-def create_qwen35_dynamic_q468_oracle_cache(
+def create_qwen35_dynamic_q468_baseline_cache(
     model_or_config: object,
     *,
     record_evidence: bool = False,
 ) -> EqualByteQwen35Cache:
-    """Create the named exact dynamic K27030 quality oracle.
+    """Create the named dynamic K27030 comparison baseline.
 
     This is the existing global RHT Q4/Q6/Q8 allocator with its frozen 27,030
-    marginal steps and declared persistent query-energy EMA.  The wrapper adds
-    an experiment method identity; it does not change the codec.
+    marginal steps and declared persistent query-energy EMA.  The factory adds
+    an experiment method identity; it does not change the codec or claim an
+    oracle for held-out model quality.
     """
 
     _validate_transformers_compatibility()
     config = _validated_text_config(model_or_config)
     if FROZEN_QWEN35_EQUAL_BYTE_LAYOUT.multibit_marginal_steps != 27_030:
-        raise RuntimeError("dynamic Q468 oracle layout no longer has K27030")
+        raise RuntimeError("dynamic Q468 baseline layout no longer has K27030")
     cache = create_qwen35_equal_byte_cache(
         config,
         codec=RHT_Q4_Q6_Q8,
         layout=FROZEN_QWEN35_EQUAL_BYTE_LAYOUT,
         record_evidence=record_evidence,
     )
-    cache.method_id = DYNAMIC_Q468_ORACLE_METHOD  # type: ignore[attr-defined]
+    cache.method_id = DYNAMIC_Q468_BASELINE_METHOD  # type: ignore[attr-defined]
     return cache
+
+
+def create_qwen35_dynamic_q468_oracle_cache(
+    model_or_config: object,
+    *,
+    record_evidence: bool = False,
+) -> EqualByteQwen35Cache:
+    """Compatibility wrapper for the former dynamic-Q468 ``oracle`` name.
+
+    New code should use :func:`create_qwen35_dynamic_q468_baseline_cache`.
+    """
+
+    return create_qwen35_dynamic_q468_baseline_cache(
+        model_or_config,
+        record_evidence=record_evidence,
+    )

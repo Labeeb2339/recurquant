@@ -59,6 +59,10 @@ STATIC_Q48_CODEC_REVISION = "rht-q48-pools-u16-offsets-v1"
 
 STATIC_Q468_PRIMARY_METHOD = "rht_q468_static_k29334"
 STATIC_Q468_ABLATION_METHOD = "rht_q468_static_k27030"
+STATIC_Q468_MSE_METHOD = "rht_q468_static_mse_k29334"
+STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD = "rht_q468_static_diag_empirical_fisher_h1_k29334"
+STATIC_Q468_UNIFORM_Q4_METHOD = "rht_q468_uniform_q4"
+STATIC_Q468_UNIFORM_Q8_METHOD = "rht_q468_uniform_q8"
 STATIC_Q48_COMPARATOR_METHOD = "rht_q48_static_p14739"
 
 PRIMARY_MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
@@ -69,6 +73,8 @@ FROZEN_TRANSFORMERS_VERSION = "5.14.1"
 
 FROZEN_STATIC_Q468_PRIMARY_STEPS = 29_334
 FROZEN_STATIC_Q468_ABLATION_STEPS = 27_030
+FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS = 0
+FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS = 73_728
 FROZEN_STATIC_Q48_PROMOTIONS = 14_739
 FROZEN_STATELEASE_RESIDENT_BYTES = 3_454_664
 FROZEN_RECURRENT_LAYER_INDICES = (
@@ -386,7 +392,7 @@ def static_q48_byte_ledger(
 
 
 def frozen_static_byte_accounting() -> dict[str, dict[str, object]]:
-    """Return the three frozen Experiment 013 byte ledgers."""
+    """Return the seven frozen Experiment 013 static-policy byte ledgers."""
 
     geometry = FROZEN_QWEN35_STATIC_Q468_GEOMETRY
     return {
@@ -399,6 +405,26 @@ def frozen_static_byte_accounting() -> dict[str, dict[str, object]]:
             geometry,
             FROZEN_STATIC_Q468_ABLATION_STEPS,
             method_id=STATIC_Q468_ABLATION_METHOD,
+        ).evidence_dict(),
+        STATIC_Q468_MSE_METHOD: static_q468_byte_ledger(
+            geometry,
+            FROZEN_STATIC_Q468_PRIMARY_STEPS,
+            method_id=STATIC_Q468_MSE_METHOD,
+        ).evidence_dict(),
+        STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD: static_q468_byte_ledger(
+            geometry,
+            FROZEN_STATIC_Q468_PRIMARY_STEPS,
+            method_id=STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+        ).evidence_dict(),
+        STATIC_Q468_UNIFORM_Q4_METHOD: static_q468_byte_ledger(
+            geometry,
+            FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS,
+            method_id=STATIC_Q468_UNIFORM_Q4_METHOD,
+        ).evidence_dict(),
+        STATIC_Q468_UNIFORM_Q8_METHOD: static_q468_byte_ledger(
+            geometry,
+            FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS,
+            method_id=STATIC_Q468_UNIFORM_Q8_METHOD,
         ).evidence_dict(),
         STATIC_Q48_COMPARATOR_METHOD: static_q48_byte_ledger(
             geometry,
@@ -528,6 +554,10 @@ class StaticRhtQ468Policy:
         frozen_steps = {
             STATIC_Q468_PRIMARY_METHOD: FROZEN_STATIC_Q468_PRIMARY_STEPS,
             STATIC_Q468_ABLATION_METHOD: FROZEN_STATIC_Q468_ABLATION_STEPS,
+            STATIC_Q468_MSE_METHOD: FROZEN_STATIC_Q468_PRIMARY_STEPS,
+            STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD: (FROZEN_STATIC_Q468_PRIMARY_STEPS),
+            STATIC_Q468_UNIFORM_Q4_METHOD: FROZEN_STATIC_Q468_UNIFORM_Q4_STEPS,
+            STATIC_Q468_UNIFORM_Q8_METHOD: FROZEN_STATIC_Q468_UNIFORM_Q8_STEPS,
         }.get(self.method_id)
         if frozen_steps is not None:
             if self.geometry != FROZEN_QWEN35_STATIC_Q468_GEOMETRY:
@@ -542,6 +572,24 @@ class StaticRhtQ468Policy:
                 or self.transformers_version != FROZEN_TRANSFORMERS_VERSION
             ):
                 raise ValueError("reserved static Q468 method requires the frozen model identity")
+            if self.method_id in {
+                STATIC_Q468_PRIMARY_METHOD,
+                STATIC_Q468_MSE_METHOD,
+                STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+            }:
+                ledger = static_q468_byte_ledger(
+                    self.geometry,
+                    steps,
+                    method_id=self.method_id,
+                )
+                if (
+                    ledger.resident_bytes != FROZEN_STATELEASE_RESIDENT_BYTES
+                    or ledger.target_resident_bytes != FROZEN_STATELEASE_RESIDENT_BYTES
+                    or not ledger.exact_budget_eligible
+                ):
+                    raise ValueError(
+                        "reserved exact-budget static Q468 method has the wrong resident ledger"
+                    )
         if self.rht_seed != RHT_SEED:
             raise ValueError(f"rht_seed must equal the codec seed {RHT_SEED}")
 
@@ -650,19 +698,13 @@ class StaticRhtQ468Policy:
         digest.update(b"recurquant.static-q468-code-map.v1\0")
         digest.update(bytes.fromhex(self.geometry.geometry_sha256))
         digest.update(self.marginal_steps.to_bytes(8, "little", signed=False))
-        digest.update(
-            self.packed_precision_codes.detach().to("cpu").contiguous().numpy().tobytes()
-        )
+        digest.update(self.packed_precision_codes.detach().to("cpu").contiguous().numpy().tobytes())
         return digest.hexdigest()
 
     @property
     def pool_offsets_sha256(self) -> str:
         offsets = (
-            self.pool_offsets.detach()
-            .to("cpu")
-            .contiguous()
-            .numpy()
-            .astype("<u2", copy=False)
+            self.pool_offsets.detach().to("cpu").contiguous().numpy().astype("<u2", copy=False)
         )
         return _sha256_bytes(offsets.tobytes(order="C"))
 
@@ -1172,6 +1214,10 @@ class StaticRhtQ48Policy:
         if self.method_id in {
             STATIC_Q468_PRIMARY_METHOD,
             STATIC_Q468_ABLATION_METHOD,
+            STATIC_Q468_MSE_METHOD,
+            STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
+            STATIC_Q468_UNIFORM_Q4_METHOD,
+            STATIC_Q468_UNIFORM_Q8_METHOD,
         }:
             raise ValueError("reserved static Q468 method cannot identify a Q48 policy")
         if self.method_id == STATIC_Q48_COMPARATOR_METHOD:
@@ -1255,19 +1301,13 @@ class StaticRhtQ48Policy:
         digest.update(b"recurquant.static-q48-mask.v1\0")
         digest.update(bytes.fromhex(self.geometry.geometry_sha256))
         digest.update(self.promoted_rows.to_bytes(8, "little", signed=False))
-        digest.update(
-            self.packed_precision_mask.detach().to("cpu").contiguous().numpy().tobytes()
-        )
+        digest.update(self.packed_precision_mask.detach().to("cpu").contiguous().numpy().tobytes())
         return digest.hexdigest()
 
     @property
     def pool_offsets_sha256(self) -> str:
         offsets = (
-            self.pool_offsets.detach()
-            .to("cpu")
-            .contiguous()
-            .numpy()
-            .astype("<u2", copy=False)
+            self.pool_offsets.detach().to("cpu").contiguous().numpy().astype("<u2", copy=False)
         )
         return _sha256_bytes(offsets.tobytes(order="C"))
 
@@ -1904,9 +1944,7 @@ class StaticPackedRhtQ48State:
                 raise ValueError("low_payload contains the reserved symmetric INT4 code -8")
         if self.high_payload.numel() and (self.high_payload == -128).any().item():
             raise ValueError("high_payload contains the reserved symmetric INT8 code -128")
-        if self.scales.dtype != torch.float16 or tuple(self.scales.shape) != (
-            geometry.total_rows,
-        ):
+        if self.scales.dtype != torch.float16 or tuple(self.scales.shape) != (geometry.total_rows,):
             raise TypeError(
                 f"scales must have shape {(geometry.total_rows,)} and dtype torch.float16"
             )
