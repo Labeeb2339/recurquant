@@ -26,6 +26,7 @@ EXECUTION_BINDING_ARTIFACT_KEYS = frozenset(
 RUNTIME_AUTHENTICATION_CONTEXT_KEYS = frozenset(
     {
         "base_runtime_root",
+        "git_executable",
         "package_import_paths",
         "package_runtime_roots",
         "staged_interpreter",
@@ -70,6 +71,7 @@ def _normalize_runtime_authentication_context(
     if not isinstance(value, Mapping) or set(value) != RUNTIME_AUTHENTICATION_CONTEXT_KEYS:
         raise ValueError("runtime_authentication_context keys differ from the frozen API")
     base_root = _absolute_inert_path(value["base_runtime_root"], name="base_runtime_root")
+    git_executable = _absolute_inert_path(value["git_executable"], name="git_executable")
     interpreter = _absolute_inert_path(
         value["staged_interpreter"],
         name="staged_interpreter",
@@ -96,6 +98,7 @@ def _normalize_runtime_authentication_context(
     return MappingProxyType(
         {
             "base_runtime_root": base_root,
+            "git_executable": git_executable,
             "package_import_paths": MappingProxyType(import_paths),
             "package_runtime_roots": MappingProxyType(package_roots),
             "staged_interpreter": interpreter,

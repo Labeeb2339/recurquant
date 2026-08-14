@@ -3492,6 +3492,238 @@ def test_official_loader_rejects_generic_and_preloaded_adapters() -> None:
         sys.modules.pop(runner.CANONICAL_ADAPTER_MODULE, None)
 
 
+def test_runner_runtime_context_constructs_the_real_reviewed_adapter() -> None:
+    code = f"""
+import hashlib
+import importlib.util
+import sys
+from pathlib import Path
+
+repository_root = Path({str(SCRIPT.parents[1])!r})
+runner_path = repository_root / 'scripts' / 'run_static_q468_calibration.py'
+spec = importlib.util.spec_from_file_location('isolated_runner_context_integration', runner_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+def source_entry(relative_path):
+    payload = (repository_root / relative_path).read_bytes()
+    return {{'raw_sha256': hashlib.sha256(payload).hexdigest()}}
+
+calibration_api = module._load_exact_source_module(
+    module.CALIBRATION_API_MODULE,
+    module.CALIBRATION_API_PATH,
+    repository_root=repository_root,
+    entry=source_entry(module.CALIBRATION_API_PATH),
+)
+git_executable = repository_root / 'authenticated-tools' / 'git.exe'
+runtime_context = module.SealedRuntimeContext(
+    manifest_file_sha256='1' * 64,
+    base_runtime_root=repository_root / 'runtime' / 'base',
+    git_executable_path=git_executable,
+    package_roots={{
+        'calibration-packages': repository_root / 'runtime' / 'packages'
+    }},
+    package_import_paths={{'calibration-packages': 'Lib/site-packages'}},
+    pycache_prefix=repository_root / 'unopened-pycache',
+)
+context = module._adapter_construction_context(
+    calibration_api=calibration_api,
+    repository_root=repository_root,
+    model_root=repository_root / 'unopened-model',
+    cache_root=repository_root / 'unopened-cache',
+    ruler_root=repository_root / 'unopened-ruler',
+    repository_source_manifest_bytes=b'source',
+    calibration_runtime_manifest_bytes=b'runtime',
+    model_file_manifest_bytes=b'model',
+    parquet_materialization_manifest_bytes=b'parquet',
+    runtime_context=runtime_context,
+    interpreter_path=repository_root / 'runtime' / 'base' / 'python.exe',
+)
+assert set(context.runtime_authentication_context) == (
+    calibration_api.RUNTIME_AUTHENTICATION_CONTEXT_KEYS
+)
+adapter = module._load_adapter(
+    module.CANONICAL_ADAPTER_SPEC,
+    repository_root=repository_root,
+    source_entry=source_entry(module.CANONICAL_ADAPTER_PATH),
+    calibration_api=calibration_api,
+    context=context,
+)
+assert adapter._runtime_authentication_context['git_executable'] == git_executable
+assert adapter._runtime_authentication_context['package_runtime_roots'] == {{
+    'calibration-packages': repository_root / 'runtime' / 'packages'
+}}
+assert not (repository_root / 'unopened-model').exists()
+assert not (repository_root / 'unopened-cache').exists()
+assert not (repository_root / 'unopened-ruler').exists()
+assert not (repository_root / 'unopened-pycache').exists()
+"""
+    subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        cwd=SCRIPT.parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def test_runner_context_reaches_real_capture_authentication_before_data_access() -> None:
+    code = f"""
+import hashlib
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+repository_root = Path({str(SCRIPT.parents[1])!r})
+runner_path = repository_root / 'scripts' / 'run_static_q468_calibration.py'
+spec = importlib.util.spec_from_file_location('isolated_runner_capture_integration', runner_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+def source_entry(relative_path):
+    payload = (repository_root / relative_path).read_bytes()
+    return {{'raw_sha256': hashlib.sha256(payload).hexdigest()}}
+
+calibration_api = module._load_exact_source_module(
+    module.CALIBRATION_API_MODULE,
+    module.CALIBRATION_API_PATH,
+    repository_root=repository_root,
+    entry=source_entry(module.CALIBRATION_API_PATH),
+)
+capture_source_path = 'scripts/capture_static_q468_identity_input.py'
+capture_payload = (repository_root / capture_source_path).read_bytes()
+source_manifest_bytes = json.dumps(
+    {{
+        'paths': [
+            {{
+                'path': capture_source_path,
+                'raw_sha256': hashlib.sha256(capture_payload).hexdigest(),
+            }}
+        ],
+        'schema': 'recurquant.experiment013.source-manifest.v2',
+    }},
+    sort_keys=True,
+    separators=(',', ':'),
+).encode('utf-8')
+
+base_runtime_root = repository_root / 'unopened-boundary-runtime'
+package_runtime_root = repository_root / 'unopened-boundary-packages'
+git_executable = repository_root / 'unopened-boundary-tools' / 'git.exe'
+model_root = repository_root / 'unopened-boundary-model'
+cache_root = repository_root / 'unopened-boundary-cache'
+ruler_root = repository_root / 'unopened-boundary-ruler'
+pycache_root = repository_root / 'unopened-boundary-pycache'
+runtime_context = module.SealedRuntimeContext(
+    manifest_file_sha256='1' * 64,
+    base_runtime_root=base_runtime_root,
+    git_executable_path=git_executable,
+    package_roots={{'calibration-packages': package_runtime_root}},
+    package_import_paths={{'calibration-packages': 'Lib/site-packages'}},
+    pycache_prefix=pycache_root,
+)
+context = module._adapter_construction_context(
+    calibration_api=calibration_api,
+    repository_root=repository_root,
+    model_root=model_root,
+    cache_root=cache_root,
+    ruler_root=ruler_root,
+    repository_source_manifest_bytes=source_manifest_bytes,
+    calibration_runtime_manifest_bytes=b'runtime-manifest',
+    model_file_manifest_bytes=b'model-manifest',
+    parquet_materialization_manifest_bytes=b'parquet-manifest',
+    runtime_context=runtime_context,
+    interpreter_path=base_runtime_root / 'python.exe',
+)
+adapter = module._load_adapter(
+    module.CANONICAL_ADAPTER_SPEC,
+    repository_root=repository_root,
+    source_entry=source_entry(module.CANONICAL_ADAPTER_PATH),
+    calibration_api=calibration_api,
+    context=context,
+)
+adapter_module = sys.modules[module.CANONICAL_ADAPTER_MODULE]
+assert adapter_module.CAPTURE_SOURCE_PATH == capture_source_path
+assert adapter_module.SOURCE_MANIFEST_SCHEMA == (
+    'recurquant.experiment013.source-manifest.v2'
+)
+capture_binding = adapter_module._load_capture_module(
+    repository_root,
+    source_manifest_bytes,
+)
+
+observed = {{}}
+
+class CaptureAuthenticationBoundaryReached(RuntimeError):
+    pass
+
+def stop_before_artifact_hub_or_data_access(artifacts, *, runtime_context, **kwargs):
+    assert kwargs == {{}}
+    observed['artifacts'] = dict(artifacts)
+    observed['runtime_context_type'] = type(runtime_context).__name__
+    observed['base_runtime_root'] = runtime_context.base_runtime_root
+    observed['git_executable'] = runtime_context.git_executable
+    observed['staged_interpreter'] = runtime_context.staged_interpreter
+    observed['package_runtime_roots'] = dict(runtime_context.package_runtime_roots)
+    observed['package_import_paths'] = dict(runtime_context.package_import_paths)
+    raise CaptureAuthenticationBoundaryReached
+
+capture_binding.module._authenticate_execution_binding_artifacts = (
+    stop_before_artifact_hub_or_data_access
+)
+adapter_module._load_capture_module = lambda _root, _manifest: capture_binding
+
+try:
+    adapter.materialize_sequence({{'identity_record_sha256': '0' * 64}})
+except CaptureAuthenticationBoundaryReached:
+    pass
+else:
+    raise AssertionError('real capture authentication boundary was not reached')
+
+assert observed == {{
+    'artifacts': {{
+        'calibration_runtime_manifest_file_sha256': b'runtime-manifest',
+        'model_file_manifest_file_sha256': b'model-manifest',
+        'parquet_materialization_manifest_file_sha256': b'parquet-manifest',
+        'repository_source_manifest_file_sha256': source_manifest_bytes,
+    }},
+    'runtime_context_type': '_RuntimeAuthenticationContext',
+    'base_runtime_root': base_runtime_root,
+    'git_executable': git_executable,
+    'staged_interpreter': base_runtime_root / 'python.exe',
+    'package_runtime_roots': {{'calibration-packages': package_runtime_root}},
+    'package_import_paths': {{'calibration-packages': 'Lib/site-packages'}},
+}}
+assert adapter._execution_binding_artifacts is None
+assert adapter._runtime_authentication_context is None
+assert capture_binding.module._CALIBRATION_RUNNER_MODULE_NAME not in sys.modules
+assert {{'datasets', 'huggingface_hub', 'transformers'}}.isdisjoint(sys.modules)
+assert not any(
+    path.exists()
+    for path in (
+        base_runtime_root,
+        package_runtime_root,
+        git_executable.parent,
+        model_root,
+        cache_root,
+        ruler_root,
+        pycache_root,
+    )
+)
+"""
+    subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code],
+        cwd=SCRIPT.parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
 def test_default_services_do_not_eagerly_import_static_calibration_modules() -> None:
     code = f"""
 import importlib.util

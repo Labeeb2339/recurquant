@@ -56,7 +56,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v3"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v4"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -5486,6 +5486,43 @@ def _install_authenticated_recurquant_namespace(repository_root: Path) -> Module
     return package
 
 
+def _adapter_construction_context(
+    *,
+    calibration_api: ModuleType,
+    repository_root: Path,
+    model_root: Path,
+    cache_root: Path,
+    ruler_root: Path,
+    repository_source_manifest_bytes: bytes,
+    calibration_runtime_manifest_bytes: bytes,
+    model_file_manifest_bytes: bytes,
+    parquet_materialization_manifest_bytes: bytes,
+    runtime_context: SealedRuntimeContext,
+    interpreter_path: Path,
+) -> Any:
+    """Build the exact authenticated context consumed by the reviewed adapter."""
+
+    return calibration_api.AdapterConstructionContext(
+        repository_root=Path(repository_root),
+        model_root=Path(model_root),
+        cache_root=Path(cache_root),
+        ruler_root=Path(ruler_root),
+        execution_binding_artifacts={
+            "repository_source_manifest_bytes": bytes(repository_source_manifest_bytes),
+            "calibration_runtime_manifest_bytes": bytes(calibration_runtime_manifest_bytes),
+            "model_file_manifest_bytes": bytes(model_file_manifest_bytes),
+            "parquet_materialization_manifest_bytes": bytes(parquet_materialization_manifest_bytes),
+        },
+        runtime_authentication_context={
+            "base_runtime_root": runtime_context.base_runtime_root,
+            "git_executable": runtime_context.git_executable_path,
+            "staged_interpreter": Path(interpreter_path),
+            "package_runtime_roots": dict(runtime_context.package_roots),
+            "package_import_paths": dict(runtime_context.package_import_paths),
+        },
+    )
+
+
 def _load_adapter(
     specification: str,
     *,
@@ -5923,24 +5960,18 @@ def _official_main(
         raise CalibrationRunError("runtime authenticator returned a different manifest identity")
     model_manifest = parse_model_file_manifest(model_manifest_bytes)
     _model_contract_matches(identity, model_manifest)
-    context = _AUTHENTICATED_CALIBRATION_API.AdapterConstructionContext(
-        repository_root=Path(args.repository_root),
-        model_root=Path(args.model_root),
-        cache_root=Path(args.cache_root),
-        ruler_root=Path(args.ruler_root),
-        execution_binding_artifacts={
-            "repository_source_manifest_bytes": bytes(source_manifest_bytes),
-            "calibration_runtime_manifest_bytes": bytes(runtime_manifest_bytes),
-            "model_file_manifest_bytes": bytes(model_manifest_bytes),
-            "parquet_materialization_manifest_bytes": bytes(parquet_manifest_bytes),
-        },
-        runtime_authentication_context={
-            "base_runtime_root": runtime_context.base_runtime_root,
-            "git_executable": runtime_context.git_executable_path,
-            "staged_interpreter": Path(interpreter_path),
-            "package_runtime_roots": dict(runtime_context.package_roots),
-            "package_import_paths": dict(runtime_context.package_import_paths),
-        },
+    context = _adapter_construction_context(
+        calibration_api=_AUTHENTICATED_CALIBRATION_API,
+        repository_root=args.repository_root,
+        model_root=args.model_root,
+        cache_root=args.cache_root,
+        ruler_root=args.ruler_root,
+        repository_source_manifest_bytes=source_manifest_bytes,
+        calibration_runtime_manifest_bytes=runtime_manifest_bytes,
+        model_file_manifest_bytes=model_manifest_bytes,
+        parquet_materialization_manifest_bytes=parquet_manifest_bytes,
+        runtime_context=runtime_context,
+        interpreter_path=interpreter_path,
     )
     adapter = _load_adapter(
         args.adapter,

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from recurquant.experiment013_calibration_api import (
+    RUNTIME_AUTHENTICATION_CONTEXT_KEYS,
     AdapterConstructionContext,
     AuthenticatedModelFiles,
     AuthenticatedSequence,
@@ -32,6 +33,7 @@ def binding_artifacts() -> dict[str, bytes]:
 def runtime_context() -> dict[str, object]:
     return {
         "base_runtime_root": ROOT / "runtime" / "base",
+        "git_executable": ROOT / "tools" / "git.exe",
         "staged_interpreter": ROOT / "runtime" / "base" / "python.exe",
         "package_runtime_roots": {"calibration": ROOT / "runtime" / "packages"},
         "package_import_paths": {"calibration": "Lib/site-packages"},
@@ -62,6 +64,10 @@ def test_context_copy_normalizes_exact_binding_bytes() -> None:
 
 def test_context_normalizes_and_freezes_runtime_authentication_paths() -> None:
     source = runtime_context()
+    package_roots = source["package_runtime_roots"]
+    package_import_paths = source["package_import_paths"]
+    assert isinstance(package_roots, dict)
+    assert isinstance(package_import_paths, dict)
     context = AdapterConstructionContext(
         ROOT,
         ROOT,
@@ -70,17 +76,42 @@ def test_context_normalizes_and_freezes_runtime_authentication_paths() -> None:
         source,
         binding_artifacts(),
     )
+    source["git_executable"] = ROOT / "changed-git.exe"
     source["package_runtime_roots"] = {}
+    package_roots["calibration"] = ROOT / "changed-packages"
+    package_import_paths["calibration"] = "changed/site-packages"
+    assert set(context.runtime_authentication_context) == RUNTIME_AUTHENTICATION_CONTEXT_KEYS
     assert context.runtime_authentication_context["base_runtime_root"] == (
         ROOT / "runtime" / "base"
     )
+    assert context.runtime_authentication_context["git_executable"] == (ROOT / "tools" / "git.exe")
+    assert context.runtime_authentication_context["package_runtime_roots"] == {
+        "calibration": ROOT / "runtime" / "packages"
+    }
+    assert context.runtime_authentication_context["package_import_paths"] == {
+        "calibration": "Lib/site-packages"
+    }
     with pytest.raises(TypeError):
         context.runtime_authentication_context["new"] = ROOT  # type: ignore[index]
+    with pytest.raises(TypeError):
+        context.runtime_authentication_context["package_runtime_roots"]["new"] = ROOT  # type: ignore[index]
+    with pytest.raises(TypeError):
+        context.runtime_authentication_context["package_import_paths"]["new"] = "Lib"  # type: ignore[index]
 
     malformed = runtime_context()
     malformed["package_import_paths"] = {"calibration": "../site-packages"}
     with pytest.raises(ValueError, match="not canonical"):
         AdapterConstructionContext(ROOT, ROOT, ROOT, ROOT, malformed, binding_artifacts())
+
+    relative_git = runtime_context()
+    relative_git["git_executable"] = Path("git.exe")
+    with pytest.raises(ValueError, match="git_executable must be an absolute normalized Path"):
+        AdapterConstructionContext(ROOT, ROOT, ROOT, ROOT, relative_git, binding_artifacts())
+
+    missing_git = runtime_context()
+    missing_git.pop("git_executable")
+    with pytest.raises(ValueError, match="keys differ"):
+        AdapterConstructionContext(ROOT, ROOT, ROOT, ROOT, missing_git, binding_artifacts())
 
 
 def test_adapter_facing_values_have_one_stable_importable_identity() -> None:

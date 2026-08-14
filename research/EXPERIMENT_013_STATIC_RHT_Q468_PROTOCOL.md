@@ -1,24 +1,25 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: replacement-H0 candidate after a preserved pre-model authorization
-> failure; not yet re-preregistered.**
+> **Status: second replacement-H0 candidate after a preserved pre-model
+> sealed-smoke contract failure; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
 > clean source commit H0 and that H0 is bound before any further identity
-> resolution, policy fitting, protected materialization, model-weight loading,
-> or quality measurement. A dirty or unbound working copy is not a frozen
-> protocol.
+> resolution, model staging or loading, policy fitting, protected
+> materialization, or quality measurement. A dirty or unbound working copy is
+> not a frozen protocol.
 >
 > The amendment history is retained below, but its rules remain candidate rules
 > until that H0 binding. Prior identities, token spans, tokenizer-file hashes,
 > and content hashes remain preserved as superseded evidence under the disclosed
-> reuse rule; the replacement identity has not yet been resolved or promoted.
-> An identity candidate is not authorization to load model weights.
+> reuse rule; the next replacement identity has not yet been resolved or
+> promoted. An identity candidate is not authorization to stage or load model
+> weights.
 
 Protocol draft initiated: 2026-08-02
 
-Current replacement-H0 candidate amended: 2026-08-15
+Current second replacement-H0 candidate amended: 2026-08-15
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -321,6 +322,62 @@ contracts, and upstream revisions; only the H0/source-binding and consequent
 promotion-hash cascade may differ. Any inventory, byte, hash, version, or
 semantic-identity mismatch stops reuse and requires a separately preregistered
 fresh complete batch after the replacement H0.
+
+Fourteenth pre-resolution adapter-context amendment: 2026-08-15. Under source
+commit `85625a5c4e4d7c6d1b015c0f3cccffea5c3d71c3`, tag
+`experiment013-h0-85625a5`, and identity-only descendant
+`84edf4299e8a5b3af970f74f03abc099d3696904`, the identity-bound `stage-model`
+step published a local copy of the exact three-file pinned model. Its frozen
+identity file SHA-256 is
+`e401a3c18a002626da096ba6ba86aa5d297d16b5c8ab76711658ce730e5a5f77`.
+The first sealed `--fisher-h1-smoke` attempt then authenticated the sealed
+runtime, H0 source, the frozen identity bytes committed at H1, and all four
+bound manifest byte strings. It parsed and matched the public model-file
+metadata but failed deterministically
+while initializing `AdapterConstructionContext`: calibration-runner v3 supplied
+the inert absolute `git_executable` path that capture procedure v6 requires,
+while the authenticated calibration API's exact runtime-context key set omitted
+that key.
+
+The failed smoke did not reach reviewed-adapter loading or construction,
+calibration materialization, tokenizer, dataset, or RULER access, staged-model-
+root traversal or file hashing, model configuration or weight deserialization,
+CUDA or Fisher execution, or output-directory checking or publication. It
+created no smoke output or staging sibling and produced no smoke report,
+completion marker, score, policy, calibration binding, stability value, or
+quality result. The separately completed `stage-model` action did access and
+publish the model payload under H1; the failed smoke itself did not read that
+published model root. This is a downstream execution-contract defect, not an
+experimental result or infrastructure interruption. The H0, tag, H1, identity,
+and staged model root remain unchanged as superseded incident evidence and
+authorize no further official execution.
+
+Calibration-runner v4 aligns the authenticated API with capture v6's existing
+five-key runtime context. The API now accepts, validates, copies, and retains
+the absolute inert Git path while preserving exact-key rejection and recursive
+mapping immutability. Production `_official_main` and the regression share one
+context-construction helper; the regression loads the exact authenticated API
+and reviewed adapter and checks that construction creates none of its model,
+cache, RULER, or bytecode sentinel paths. A separate no-data boundary
+regression carries the same context through the real adapter into the
+manifest-bound capture module and stops before artifact decoding, Hub,
+tokenizer, or dataset access. No record selection, dataset revision, token
+span, Fisher boundary, quantization policy, metric, gate, model contract, or
+protected-stage rule changes.
+
+Runner revision advances from v3 to v4. Identity schema v5; capture and
+resolver procedure v6; adapter revision v2; RULER launcher v7, generation-
+manifest v2, and runtime-manifest v3; calibration runtime-manifest v4; source-
+manifest schema/profile v2; model-manifest v1; frozen-contract and model-
+staging-authorization stdout schemas v1; run-report v2; and Fisher-boundary and
+smoke-marker contracts v1 remain unchanged. A new clean H0, repository-source
+manifest, promoted calibration identity, H1, and identity-bound model
+publication are required. The exact authenticated RULER v7 batch, sealed
+runtime, public model metadata manifest, Parquet manifest, and shared Hub cache
+may be reused only after their existing byte, inventory, and semantic checks
+pass unchanged. The old H1 model root may be treated only as preserved incident
+evidence, not as the official model root for the next H1; a fresh no-overwrite
+root must be published by a newly authorized `stage-model` execution.
 
 ## Question
 
@@ -717,7 +774,7 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v3's identity view. It accepts no H1, model manifest, Hub, cache, or
+runner v4's identity view. It accepts no H1, model manifest, Hub, cache, or
 output argument. Its non-persisted canonical JSON stdout document uses artifact
 kind `recurquant_experiment013_frozen_identity_contract_verification`, schema
 version one, and binds the H0/source contract, portable Git identity, all four

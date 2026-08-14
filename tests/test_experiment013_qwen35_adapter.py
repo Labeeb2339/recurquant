@@ -37,6 +37,7 @@ def _context(tmp_path: Path) -> AdapterConstructionContext:
         ruler_root=tmp_path / "ruler-does-not-need-to-exist-at-construction",
         runtime_authentication_context={
             "base_runtime_root": tmp_path / "runtime" / "base",
+            "git_executable": tmp_path / "tools" / "git.exe",
             "staged_interpreter": tmp_path / "runtime" / "base" / "python.exe",
             "package_runtime_roots": {"calibration": tmp_path / "runtime" / "packages"},
             "package_import_paths": {"calibration": "Lib/site-packages"},
@@ -244,6 +245,7 @@ def test_canonical_materialization_runs_once_and_retains_only_tokens_and_hashes(
     assert materialization_references[0]() is None
     assert adapter._execution_binding_artifacts is None
     assert adapter._runtime_authentication_context is None
+    assert runtime_calls[0]["git_executable"] == (tmp_path / "tools" / "git.exe")
     assert runtime_calls[0]["staged_interpreter"] == (tmp_path / "runtime" / "base" / "python.exe")
     assert set(adapter._materialized_sequences or {}) == {_sha(index + 1) for index in range(160)}
     assert all(
