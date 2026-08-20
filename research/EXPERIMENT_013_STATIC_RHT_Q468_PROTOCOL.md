@@ -1,8 +1,9 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
 > **Status: fifth replacement-H0 candidate after a preserved pre-model,
-> pre-dataset-row Fisher-smoke failure caused by an ambiguous RULER directory
-> argument; not yet re-preregistered.**
+> pre-dataset-row Fisher-smoke failure exposed sealed-runtime mutation, a
+> missing calibration dependency, and an unresolved identity-capture runtime-
+> provenance gap; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -606,6 +607,340 @@ relative to the retired identity, only the five repository-source and
 promotion-hash cascade pointers listed above may differ. Any other identity
 difference stops the chain.
 
+Seventeenth pre-resolution sealed-runtime-containment, dependency, and
+identity-capture-provenance amendment: 2026-08-15. Source commit
+`3abaa502da47a0fa14f53e280868274f5ce17adf` passed its CI suite, but it was
+never tagged, no `artifacts/experiment013/h0-3abaa502da47` H0 directory or
+repository-source manifest was published, and no identity, H1, model staging,
+dataset replay, model access, or quality action was performed under it. An
+in-memory prospective source-manifest calculation is not an H0 artifact or an
+authorization. Commit `3abaa502da47a0fa14f53e280868274f5ce17adf` is therefore
+superseded as a pre-H0 candidate, not consumed or retired as an H0; there is no
+tag to move or delete. A clean descendant containing this amendment and the
+repairs below remains the fifth replacement-H0 candidate. Untagged draft
+commits do not increment the replacement-H0 count.
+
+A post-incident inventory found that the failed smoke described by the
+Sixteenth amendment mutated the authenticated calibration-runtime root
+`C:\tmp\recurquant-exp013-runtime-h0-19ef835-v4`. The sole unexpected entry
+was
+`base-runtime/~/.cache/huggingface/.agent_harnesses.json`, an ordinary file of
+exactly 5,698 bytes with SHA-256
+`df4bb03bf41e4ce850db5e7d20a9430e7bbdff173aa0941e39f0be5e8ade0906`;
+its creation and last-write timestamps were both
+`2026-08-14T22:11:10.9266419Z`, approximately eight seconds before the failure
+output. Against calibration runtime-manifest v4 file
+SHA-256
+`80ca233a29af4facbb334fd4fb51a4f6e9a3d6815465cb79b9f3db63ef668d6a`,
+the base-runtime inventory had exactly one extra file, no missing file, and no
+changed expected file: 832 actual files rather than the authenticated 831.
+The 20,201-file package inventory had no extra, missing, or changed entry.
+
+The exact mechanism is a deterministic Hugging Face Hub 1.26.0 metadata-cache
+side effect. That package defines `AGENT_HARNESSES_PATH` as
+`os.path.join(HF_HOME, ".agent_harnesses.json")`; absent an explicit `HF_HOME`,
+its default derives from `expanduser("~")/.cache/huggingface`. The retired
+sealed environment omitted `HOME`, `USERPROFILE`, `HOMEPATH`, and `HF_HOME`.
+Windows therefore preserved the literal `~`, while the child working directory
+was the authenticated `base-runtime` directory. The first
+`HfApi.model_info`/`list_repo_files` HTTP request-header construction invoked
+`detect_agent()`, fetched `/api/agent-harnesses`, and created the relative cache
+beneath `base-runtime/~`. This is an unpermitted public-metadata cache write,
+not evidence of malicious tampering, model-payload access, Fisher computation,
+or a quality result.
+
+The old post-run authentication sequence did not observe the mutation at its
+authoritative boundary. The child's primary RULER receipt-inventory exception
+prevented child-final runtime reauthentication, and the host then raised on
+nonempty scratch before reaching its own repeated runtime authentication. The
+runner-v6 exception-aggregation repair preserves these failures prospectively,
+but it cannot retroactively authenticate or rehabilitate the mutated root.
+The entire v4 runtime root and manifest hash above are permanently retired from
+official execution. Preserve them as incident evidence; deleting the extra
+file, copying a clean-looking subset, renaming the root, or recapturing it in
+place is forbidden and cannot authorize reuse.
+
+A separate dependency audit found a second deterministic pre-model blocker.
+The retired v4 runtime contains 38 distributions and omits `datasets`.
+After the corrected RULER preflight, official calibration materialization would
+reach `LiveCaptureSource.mbpp_train_rows`, fail while importing `datasets`, and
+stop before local model-root authentication or model configuration and weight
+access. `StagedCaptureSource` is Stage-A-only and explicitly forbids MBPP, so it
+is not a calibration fallback. The next runtime must instead be prepared in a
+fresh no-overwrite root with exactly 54 distributions: the prior 38-
+distribution set with `fsspec` changed from `2026.7.0` to `2026.2.0`, plus this
+exact 16-distribution closure:
+
+```text
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+attrs==26.1.0
+datasets==4.8.5
+dill==0.4.1
+frozenlist==1.8.0
+multidict==6.7.1
+multiprocess==0.70.19
+pandas==3.0.5
+propcache==0.5.2
+python-dateutil==2.9.0.post0
+six==1.17.0
+tzdata==2026.3
+xxhash==3.8.1
+yarl==1.24.5
+```
+
+No dependency substitution or resolver-selected version drift is permitted.
+This is deliberately a narrowed exercised-interface runtime, not a claim of
+wheel-metadata dependency completeness. Torch 2.13.0+cu130 declares
+`Requires-Dist: setuptools>=77.0.3`, while setuptools owns
+`distutils-precedence.pth` and the sealed runtime forbids every `.pth` startup
+hook. Setuptools therefore remains preparation-resolver-only and is not a 55th
+staged distribution. Before runtime preparation, `uv pip check` must pass in
+the source environment with that resolver-only setuptools present. In the
+staged no-data probe, every official critical module must import from its
+authenticated RECORD-owned path while `setuptools` and `pkg_resources` are
+both absent and unimportable. Any official path that needs either module is a
+hard stop requiring a new pre-access runtime amendment; it may not trigger an
+ad hoc install or weakened startup-hook rule. In particular, Hugging Face Hub
+remains 1.26.0, PyArrow remains 25.0.0, NumPy remains 2.4.6, Torch remains
+2.13.0+cu130, and Transformers remains 5.14.1. The fresh root must be
+independently captured and authenticated; its exact base and package
+inventories and runtime-manifest file hash do not exist until that preparation
+succeeds.
+
+Calibration runtime-manifest schema advances from v4 to v5 and calibration-
+runner revision advances from v6 to v7. Runtime-manifest v5 advances
+`bootstrap_mode` from `stdlib-only-exact-runner-v1` to
+`stdlib-only-exact-runner-and-capture-v2`, because the authenticated bootstrap
+now admits exactly the runner or the sealed calibration-identity capture
+entrypoint. It also adds exactly
+`cache_confinement_mode=private-scratch-plus-explicit-dataset-root-v1` and
+`child_cwd_mode=authenticated-launcher-owned-scratch-v1`; every other v4 launch
+policy field remains unchanged. Each sealed child
+must run with its current working directory equal to a newly created,
+verified-empty, identity-recorded launcher-owned scratch directory, never a
+base or package runtime root. The child inherits at most the existing five
+Windows operating-system variables `SYSTEMROOT`, `WINDIR`, `COMSPEC`,
+`PROCESSOR_ARCHITECTURE`, and `PROCESSOR_ARCHITEW6432`, when present, and binds
+the following controlled environment exactly:
+
+```text
+LANG=C
+LC_ALL=C
+TEMP=<scratch>
+TMP=<scratch>
+TZ=UTC
+HOME=<scratch>/private-home
+USERPROFILE=<scratch>/private-home
+XDG_CACHE_HOME=<scratch>/xdg-cache
+HF_HOME=<scratch>/huggingface
+HUGGINGFACE_HUB_CACHE=<scratch>/huggingface/hub
+HF_HUB_CACHE=<scratch>/huggingface/hub
+HUGGINGFACE_ASSETS_CACHE=<scratch>/huggingface/assets
+HF_ASSETS_CACHE=<scratch>/huggingface/assets
+HF_XET_CACHE=<scratch>/huggingface/xet
+HF_MODULES_CACHE=<scratch>/huggingface/modules
+HF_TOKEN_PATH=<scratch>/huggingface/token
+TRANSFORMERS_CACHE=<scratch>/transformers
+TORCH_HOME=<scratch>/torch
+PYTORCH_KERNEL_CACHE_PATH=<scratch>/torch/kernels
+TORCH_EXTENSIONS_DIR=<scratch>/torch/extensions
+TORCHINDUCTOR_CACHE_DIR=<scratch>/torch/inductor
+TRITON_CACHE_DIR=<scratch>/torch/triton
+HF_DATASETS_CACHE=<cache-root>/datasets
+HF_DATASETS_DOWNLOADED_DATASETS_PATH=<cache-root>/datasets/downloads
+HF_DATASETS_EXTRACTED_DATASETS_PATH=<cache-root>/datasets/downloads/extracted
+DISABLE_TELEMETRY=1
+DO_NOT_TRACK=1
+HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+HF_HUB_DISABLE_TELEMETRY=1
+HF_HUB_DISABLE_UPDATE_CHECK=1
+HF_HUB_DISABLE_XET=1
+```
+
+The official `--cache-root` is the sole permitted persistent calibration-
+dataset cache boundary. Before child creation it must be an absolute existing
+regular directory, not a filesystem root, with no linked or reparse ancestor
+or root, and disjoint in both nesting directions from every authenticated base
+and package runtime root and, after their creation, the launcher-owned scratch
+and bytecode roots. Alias, equality, or nesting in either direction fails. Its
+normalized component and root identities are fixed and must be unchanged after
+the child. All implicit home, Hub, assets, token, Xet, Transformers, Torch,
+Triton, and compiler caches remain within scratch. Scratch and the bytecode
+prefix must retain their recorded identities,
+contain no link, reparse point, or non-regular entry at cleanup, and be absent
+after identity-checked cleanup. A child exception or nonzero return remains
+primary; postcondition and cleanup defects are aggregated as secondary. An
+otherwise successful child fails closed on any residue or cleanup defect.
+
+The Stage-A launcher must use the same child-cwd, private-home, cache,
+telemetry, implicit-token, and Xet confinement for both cold children. Its
+offline child additionally retains `HF_HUB_OFFLINE=1`,
+`HF_DATASETS_OFFLINE=1`, and `TRANSFORMERS_OFFLINE=1` plus the fatal socket
+guard. Its permitted dataset cache is likewise rooted only below an explicitly
+validated `--cache-root`. Stage A may not retain path-only temporary cleanup:
+it must use the calibration launcher's fixed device/inode/type identity,
+no-link/no-reparse traversal, exact-owned-root removal, primary-failure
+preservation, aggregated secondary diagnostics, survival check, and partial-
+creation behavior for every launcher-owned scratch and bytecode root.
+
+Identity schema remains v5; capture and resolver procedure remains v6; adapter
+revision remains v2; and RULER launcher v7, generation-manifest v2, and RULER
+runtime-manifest v3 remain unchanged. The new external calibration-identity-
+capture-provenance receipt uses schema v1. Frozen-identity-contract and model-
+staging-authorization stdout schemas advance from v1 to v2 solely to bind that
+receipt's file SHA-256; model-staging-path stdout remains v1. This amendment
+authorizes no byte change to the capture/resolver v6 or RULER v7 procedures.
+Their exact source bytes may be retained only if the new source manifest
+authenticates them unchanged. The existing RULER v7 receipt batch and its 100
+raw producer files remain reusable only after complete replay authentication,
+exact 21-file receipt inventory, and generation-manifest file SHA-256
+`979f91848b6c0692160419c3e5e9ee555aa94d9e7add3092067f003ea0543e80`.
+The public model-metadata manifest file SHA-256
+`586d9c7e520f3bbd99ecef30663bf07d283eb14622475c58891becd8e033b05c`
+and immutable-Parquet materialization-manifest file SHA-256
+`ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c`
+may likewise be reused only after every existing point-of-use byte, inventory,
+path, version, and semantic check passes. The tokenizer contract and files are
+unchanged. None of these reuse permissions extends to the retired v4 runtime.
+
+The identity-capture runtime-provenance remediation audit remains open. The
+diagnosis is concrete: the existing capture path authenticates an external
+staged runtime manifest and context but never changes its interpreter or
+`sys.path`; its later Hugging Face Hub, Transformers, `datasets`, `fsspec`, and
+PyArrow imports resolve from the launching repository virtual environment.
+That host environment contains `datasets==4.8.5` and `fsspec==2026.2.0`, while
+the authenticated v4 runtime omitted `datasets` and bound
+`fsspec==2026.7.0`. Every prior identity capture therefore lacks authenticated
+live-import provenance. No claim that a prior identity was produced by the
+sealed v4 runtime is permitted.
+
+Runner v7 adds the sealed-only `capture-calibration-identity` command to close
+the implementation surface before H0. Its exact runner-side option profile is:
+
+```text
+--repository-root
+--source-commit
+--repository-source-manifest
+--expected-repository-source-manifest-sha256
+--runtime-manifest
+--expected-runtime-manifest-sha256
+--model-file-manifest
+--expected-model-file-manifest-sha256
+--parquet-materialization-manifest
+--expected-parquet-materialization-manifest-sha256
+--cache-root
+--ruler-receipt-dir
+--output
+--capture-provenance-receipt-output
+```
+
+Every option occurs exactly once, all path values are absolute, and capture
+and ordinary-calibration profiles cannot be mixed. The unsealed runner rejects
+this command. Its phase is hard-coded to calibration, and it exposes no phase,
+model-root, adapter, weight, CUDA, package-root, interpreter, or Git override.
+The outer authenticated launcher alone supplies the staged interpreter,
+package/import roots, and Git executable.
+
+The command must actually execute inside the freshly authenticated staged v5
+interpreter and package/import environment. Merely reading or authenticating
+the v5 manifest from a host virtual environment is insufficient. Before
+tokenizer or dataset content access, it proves its `sys.executable`, base
+`sys.path`, package roots, import paths, module origins, and exact 54-
+distribution inventory equal the authenticated v5 runtime. It exact-loads the
+unchanged H0 capture, resolver, source-verifier, and Parquet modules, performs
+the pure 21-file RULER precondition, fixes phase to calibration, and repeats
+source and runtime authentication after capture without any model-root, model-
+loading, CUDA, Fisher, or protected-stage access. Identity input and receipt
+paths are distinct, absent, no-overwrite destinations.
+
+Only after the identity input is durably published may the command publish a
+canonical receipt with artifact kind
+`recurquant_experiment013_calibration_identity_capture_provenance`, schema
+version one, capture version six, status
+`captured_under_authenticated_runtime`, runner v7, H0, phase calibration, the
+identity-input file SHA-256, all four execution bindings, and the exact H0
+capture-source path and SHA-256. It also binds exact sorted origin records for
+`datasets`, `fsspec`, `huggingface_hub`, `numpy`, `pyarrow`, `tokenizers`, and
+`transformers`; each record contains module, distribution, version, package
+root, relative path, file SHA-256, and size and must match both the v5 runtime
+inventory and distribution RECORD ownership. Its exact
+`excluded_runtime_modules` value is `["pkg_resources","setuptools"]`, and the
+sealed importer must prove both names remain absent and unimportable.
+
+The provenance receipt remains external to identity schema v5, so it creates
+no seventh permitted identity-pointer change. Before H1,
+`verify-frozen-identity-contract` requires
+`--capture-provenance-receipt`,
+`--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
+`--expected-runtime-manifest-sha256`; it authenticates the receipt against the
+identity-input hash, H0 source, four identity bindings, v5 runtime, capture
+source, critical origins, and exclusions. After H1,
+`verify-model-staging-authorization` requires the same four inputs and repeats
+the same gate. `stage-model` also requires them and invokes the shared
+authorization before download and again immediately before publication; any
+receipt, runtime, source, identity, or origin drift blocks publication.
+
+The capture and receipt implementation plus its regressions must pass before
+the next H0 is tagged; implementation bytes alone are not provenance evidence.
+Regressions must prove that only staged module origins are accepted; host-
+virtual-environment, cwd, user-site, private-home, preloaded-module, and
+`PYTHONPATH` shadows are rejected; missing `datasets`, wrong `fsspec`, or an
+excluded-module import fails before network or output; capture and calibration
+argument profiles cannot mix; wrong, missing, duplicate, relative, or
+mismatched artifact/cache/RULER/output arguments fail at their earliest safe
+boundary; source or runtime mutation prevents receipt publication; output or
+receipt custody drift fails; and model root, adapter, model loading, weight,
+CUDA, Fisher, Stage-B, and Stage-C surfaces remain structurally unreachable.
+
+The replacement chain restarts from a clean descendant containing this
+amendment, runner v7, runtime-v5 preparation and launch support, the exact
+dependency closure, both launcher-containment repairs, the identity-capture
+provenance repair, and their regressions. After clean CI, that descendant may
+be tagged as the fifth replacement H0 and receive a fresh repository-source
+manifest. Then, and only then, prepare the fresh no-overwrite 54-distribution
+runtime and capture its v5 manifest; replay-authenticate the reusable RULER v7
+batch; reauthenticate the unchanged model-metadata, Parquet, and tokenizer
+contracts; execute sealed capture inside the authenticated staged v5
+environment; and publish its new identity input and external provenance
+receipt. Resolve and promote a new identity, then pass the schema-v2 frozen-
+identity contract verifier with that exact receipt before committing only the
+identity as H1. Repeat staging-path preflight and schema-v2 model-staging
+authorization with the same receipt, then publish the same authenticated
+three-file model payload through a new no-overwrite `stage-model` execution
+into a fresh H1-bound model root. No prior receipt, H1, identity, or published
+model root may be rebound or adopted. Only after that complete chain may a new
+sealed Fisher H=1 smoke be attempted.
+
+Relative to retired identity file SHA-256
+`40c434d038879608093fc8f74b66893062e4f52a0e1db9d33b40ac9fa411be90`,
+exactly these six JSON pointers, comprising the prior five source/promotion
+cascade fields plus the new runtime-manifest binding, may differ:
+
+```text
+/canonical_evidence_sha256
+/evidence/execution_bindings/calibration_runtime_manifest_file_sha256
+/evidence/execution_bindings/repository_source_manifest_file_sha256
+/evidence/promotion/candidate_canonical_evidence_sha256
+/evidence/promotion/candidate_file_sha256
+/evidence/source_manifest_sha256
+```
+
+Any seventh changed JSON pointer stops the chain. All 160 records, content-
+manifest SHA-256
+`ee72483a8f8b4370c9e667e4287747e5bc358aeb0265a58167140f4e780a7b29`,
+split-assignment SHA-256
+`a42cf4b332cc8cf58b27709d7d261fc03a356b27ec1c9ccd56914d99e60c1797`,
+tokenizer file-manifest SHA-256
+`e48bffe3aeaf5436b23f349a4517ebc8c8f965cd60b9566014191a7e7938f2ef`,
+dataset revisions, selection, token IDs, spans, Fisher boundaries, model
+contract and revision, model-file manifest, Parquet manifest, quantization
+policies, metrics, gates, protected-stage rules, and every other scientific or
+content field remain byte-for-byte unchanged. This amendment repairs
+execution provenance and containment only. It is not a Fisher result, a
+quality result, an adoption result, or a breakthrough claim.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -822,8 +1157,8 @@ length receipt separately. Anchors use the actual processed token count only.
 The pinned upstream `prepare.py` constructs its child command as a multiline
 shell string. On Windows, an initial compatibility smoke test returned exit
 zero but emitted only a truncated 155-token row with no generated context or
-question. That row is rejected and is not evidence. Experiment 013 launcher v6
-invokes the pinned task generator directly with a no-shell argument vector.
+question. That row is rejected and is not evidence. Experiment 013 RULER
+launcher v7 invokes the pinned task generator directly with a no-shell argument vector.
 Every receipt must authenticate the RULER commit and source blobs, the exact
 launcher source,
 the isolated Python/package manifest, all tokenizer assets, all auxiliary
@@ -981,14 +1316,29 @@ parquet_materialization_manifest_file_sha256
 ```
 
 The source manifest authenticates the implementation, tests, protocol, and
-runner at point of use. The runtime manifest authenticates the Python and
-installed package-code inventory used by calibration. The model manifest is
-derived from immutable Hub repository/LFS metadata without downloading or
-opening weight payloads. The Parquet manifest authenticates the source and
-conversion commits plus the selected Parquet Git/LFS objects. Only after
-promotion may the runner hash local model files and compare them with the
-frozen model manifest. A missing, malformed, or byte-different dependency
-stops before adapter data access or model loading.
+runner at point of use. Calibration runtime-manifest v5 authenticates the
+Python and installed package-code inventory used by calibration plus the
+private-scratch child-cwd and cache-confinement launch policy defined by the
+Seventeenth amendment. The model manifest is derived from immutable Hub
+repository/LFS metadata without downloading or opening weight payloads. The
+Parquet manifest authenticates the source and conversion commits plus the
+selected Parquet Git/LFS objects. Only after promotion may the runner hash
+local model files and compare them with the frozen model manifest. A missing,
+malformed, or byte-different dependency stops before adapter data access or
+model loading.
+
+Identity capture is an official calibration-runtime action, not a host-side
+manifest inspection. The sole official entrypoint is the outer sealed launcher
+with runner command `capture-calibration-identity` and the exact option profile
+in the Seventeenth amendment; the ordinary unsealed runner rejects it. It must
+use the authenticated staged v5 interpreter with the exact authenticated base
+`sys.path`, package roots, import paths, and 54-distribution inventory. Those
+facts are checked in the capture process before tokenizer or dataset content
+access. A repository host virtual environment may coordinate preparation or
+tests, but may not execute the official capture or satisfy this provenance
+requirement merely by authenticating staged files. Success produces both the
+no-overwrite identity input and its separate canonical schema-v1 capture-
+provenance receipt. The receipt is custody evidence, not an identity field.
 
 The source manifest binds implementation commit H0. Committing the promoted
 identity creates H1. H1 is authorized only when H0 is its Git ancestor, the
@@ -1001,14 +1351,22 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v6's identity view. It accepts no H1, model manifest, Hub, cache, or
-output argument. Its non-persisted canonical JSON stdout document uses artifact
-kind `recurquant_experiment013_frozen_identity_contract_verification`, schema
-version one, and binds the H0/source contract, portable Git identity, all four
-execution bindings, complete identity/canonical/assignment hashes, public model
-and tokenizer contracts, and record count. The bytes that passed are then copied
-without modification as the sole H1 tree change; regeneration or hand editing
-after that preflight is forbidden.
+runner v7's identity view. It requires the exact receipt and runtime inputs
+`--capture-provenance-receipt`,
+`--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
+`--expected-runtime-manifest-sha256`. It accepts no H1, model manifest, Hub,
+cache, or output argument. Its non-persisted canonical JSON stdout document
+uses artifact kind
+`recurquant_experiment013_frozen_identity_contract_verification`, schema
+version two, and binds the H0/source contract, portable Git identity, all four
+execution bindings, complete identity/canonical/assignment hashes, public
+model and tokenizer contracts, record count, and authenticated
+`capture_provenance_receipt_file_sha256`. The receipt must bind the exact
+identity input from which the promoted bytes were resolved and must pass every
+runtime, source, capture-source, critical-origin, RECORD-ownership, and excluded-
+module check above. The bytes that passed are then copied without modification
+as the sole H1 tree change; regeneration or hand editing after that preflight
+is forbidden.
 
 After H1 and before model-staging authorization, run the read-only
 `verify-model-staging-paths` command twice against the exact intended
@@ -1032,15 +1390,21 @@ boundary does not consume H1.
 Only then may `verify-model-staging-authorization` invoke the same authorization
 path used by `stage-model` and reauthenticate the H1, index, and worktree
 identity bytes; H0 ancestry and unchanged source tree; the complete frozen
-identity and execution bindings; and the exact public model-metadata manifest.
-The command accepts no cache or output root, imports no Hub downloader,
-downloads no file, and creates no directory or artifact. Its canonical JSON
-stdout document, which the command does not persist, uses artifact kind
-`recurquant_experiment013_model_staging_authorization`, schema version one, and
+identity and execution bindings; the exact public model-metadata manifest; and
+the same capture-provenance receipt and runtime manifest accepted before H1.
+It requires `--capture-provenance-receipt`,
+`--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
+`--expected-runtime-manifest-sha256`. The command accepts no cache or output
+root, imports no Hub downloader, downloads no file, and creates no directory or
+artifact. Its canonical JSON stdout document, which the command does not
+persist, uses artifact kind
+`recurquant_experiment013_model_staging_authorization`, schema version two, and
 binds status, runner revision, frozen-identity hash, H1, H0, repository-source-
 manifest hash, model-manifest hash, public model ID/revision, Hub-tree-manifest
-hash, file count, and total bytes. Only successful path and authorization
-documents permit `stage-model` to be attempted with those same roots. A
+hash, file count, total bytes, and
+`capture_provenance_receipt_file_sha256`. Only successful path and
+authorization documents permit `stage-model` to be attempted with those same
+roots and receipt. A
 semantic or authentication mismatch retires that H1; it may not be hand-edited
 or weakened. An argument-parse or initial pure path-precondition failure does
 not consume H1 because authentication did not begin. A documented
@@ -1050,10 +1414,13 @@ payload access permits only an exact same-command retry under that H1.
 Model payload staging begins only after the frozen identity is tracked with
 identical H1, index, and worktree bytes. The identity-bound stager downloads
 only the exact sorted root files in the frozen model manifest at the exact
-40-hex public Hub revision, using an external cache and no token. Before Git or
-H1 authentication, immediately after authorization, and immediately before
-publication, the stager repeats the pure path validator and requires identical
-normalized roots and existing-component identities. The cache and output
+40-hex public Hub revision, using an external cache and no token. It requires
+the same receipt/runtime path and expected-SHA inputs as the standalone
+authorization, invokes that shared receipt-aware authorization before download,
+and repeats it immediately before publication. Before Git or H1 authentication,
+immediately after authorization, and immediately before publication, the
+stager repeats the pure path validator and requires identical normalized roots
+and existing-component identities. The cache and output
 parent may not be filesystem roots, and the absent output leaf must be the same
 canonical 1-through-128-character basename accepted by the preflight: an ASCII
 alphanumeric first character, only ASCII alphanumeric/dot/underscore/hyphen
@@ -1076,8 +1443,9 @@ directory. The retired `--ruler-root` spelling is invalid and has no legacy
 alias. After the outer sealed launcher has authenticated the source and runtime
 needed to establish the child, but before the sealed runner reads its runtime
 manifest or any frozen-identity, source-manifest, model-manifest, or Parquet-
-manifest byte, runner v6 performs the shallow pure directory precondition
-defined by the Sixteenth amendment and repeats it inside `_official_main`.
+manifest byte, runner v7 performs the shallow pure directory precondition
+defined by the Sixteenth amendment, retained by the Seventeenth amendment, and
+repeats it inside `_official_main`.
 Passing that precondition does not authenticate any receipt body; phase-scoped
 point-of-use verification remains mandatory.
 
@@ -1436,6 +1804,15 @@ evidence chain, and materializes Stage-A content only after reservation from
 the local bundle. A Python socket audit guard makes attempted network access in
 that offline child fatal.
 
+Both children use the authenticated staged v5 interpreter and package roots,
+run with a launcher-owned scratch directory as cwd, confine private home, Hub,
+assets, token, Xet, Transformers, Torch, Triton, and compiler caches to that
+scratch directory, and place only dataset caches below the validated explicit
+cache root. Their scratch and bytecode roots use the identity-bound cleanup and
+failure-aggregation contract in the Seventeenth amendment. The offline flags
+and socket guard strengthen the second child; they do not replace the common
+containment contract.
+
 "Opaque" describes the authenticated program's procedure, not encryption or
 access control. The bundle necessarily contains raw Parquet and RULER bytes. A
 human who controls the filesystem could inspect them before the seal, so this
@@ -1451,7 +1828,7 @@ re-execution and ordinary local history changes detectable. They provide a
 durable honest-process audit trail on the machine where the run is performed;
 they are not a cryptographic proof that only one execution was ever possible.
 
-The source and runtime manifests authenticate the exact canonical Git
+The source and calibration runtime-manifest v5 authenticate the exact canonical Git
 executable bytes, file size, and normalized absolute-path digest used by the
 runner. They do not recursively authenticate Git-for-Windows loaded DLLs,
 helper executables, the Windows kernel, or the underlying operating system;

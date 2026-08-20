@@ -341,6 +341,7 @@ def _embedded_bootstrap_fixture(tmp_path: Path) -> dict[str, Any]:
         "base": base,
         "bootstrap": launcher._stage_a_bootstrap(calibration).encode("utf-8"),
         "calibration": calibration,
+        "cache_root": repository,
         "interpreter": interpreter,
         "git_executable": git_executable,
         "identity_path": identity_path,
@@ -509,8 +510,12 @@ def test_embedded_bootstrap_reaches_runner_boundary_and_rejects_bound_tamper(
         return subprocess.run(
             command,
             check=False,
-            cwd=fixture["base"],
-            env=launcher._sealed_environment(scratch_directory=scratch, offline=offline),
+            cwd=scratch,
+            env=launcher._sealed_environment(
+                scratch_directory=scratch,
+                dataset_cache_root=fixture["cache_root"],
+                offline=offline,
+            ),
             capture_output=True,
             input=fixture["bootstrap"],
         )
@@ -522,7 +527,7 @@ def test_embedded_bootstrap_reaches_runner_boundary_and_rejects_bound_tamper(
     fixture["sentinel"].unlink()
     missing_offline = run_bootstrap(tmp_path / "pycache-missing-offline", offline=False)
     assert missing_offline.returncode != 37
-    assert b"mode-specific minimal contract" in missing_offline.stderr
+    assert b"private cache contract" in missing_offline.stderr
     assert not fixture["sentinel"].exists()
 
     fixture["model_path"].write_bytes(b"tampered\n")
@@ -538,6 +543,8 @@ def test_mode_specific_child_environments_strip_credentials_and_proxies(
 ) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
+    cache_root = tmp_path / "dataset-cache"
+    cache_root.mkdir()
     for name in (
         "GITHUB_TOKEN",
         "HF_TOKEN",
@@ -547,8 +554,16 @@ def test_mode_specific_child_environments_strip_credentials_and_proxies(
     ):
         monkeypatch.setenv(name, "must-not-cross-child-boundary")
 
-    networked = launcher._sealed_environment(scratch_directory=scratch, offline=False)
-    offline = launcher._sealed_environment(scratch_directory=scratch, offline=True)
+    networked = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=cache_root,
+        offline=False,
+    )
+    offline = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=cache_root,
+        offline=True,
+    )
 
     assert not {"HF_DATASETS_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"} & set(networked)
     assert {
@@ -559,6 +574,130 @@ def test_mode_specific_child_environments_strip_credentials_and_proxies(
     forbidden = {"GITHUB_TOKEN", "HF_TOKEN", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"}
     assert not forbidden & set(networked)
     assert not forbidden & set(offline)
+    assert networked["HOME"] == networked["USERPROFILE"] == str(scratch / "private-home")
+    assert networked["HF_DATASETS_CACHE"] == str(cache_root / "datasets")
+    assert networked["HF_HUB_DISABLE_UPDATE_CHECK"] == "1"
+    assert networked["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+    assert networked["HF_HUB_DISABLE_XET"] == "1"
+
+
+def test_stage_a_partial_temp_creation_cleans_first_owned_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calibration = _load_calibration_launcher("stage_a_partial_cleanup_test")
+    created: list[Path] = []
+
+    def mkdtemp(*, prefix: str) -> str:
+        if created:
+            raise OSError("second Stage-A temporary-root creation failed")
+        path = tmp_path / f"{prefix}first"
+        path.mkdir()
+        created.append(path)
+        return str(path)
+
+    monkeypatch.setattr(launcher.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+
+    with pytest.raises(OSError, match="second Stage-A temporary-root creation failed"):
+        launcher._run_sealed_child(
+            calibration_launcher=calibration,
+            bootstrap=b"raise SystemExit(0)",
+            runtime_manifest_path=tmp_path / "runtime.json",
+            runtime_manifest={},
+            interpreter=Path(sys.executable),
+            base_runtime_root=tmp_path,
+            package_roots={},
+            git_executable=tmp_path / "git.exe",
+            source={},
+            options={},
+            runner_arguments=["preflight"],
+            dataset_cache_root=tmp_path,
+            offline=True,
+        )
+
+    assert created and all(not path.exists() for path in created)
+
+
+def test_stage_a_nonzero_child_preserves_code_reauthenticates_and_cleans_residue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    helpers = _load_calibration_launcher("stage_a_residue_cleanup_test")
+    base = tmp_path / "base"
+    packages = tmp_path / "packages"
+    cache = tmp_path / "dataset-cache"
+    for path in (base, packages, cache):
+        path.mkdir()
+    runtime_path = tmp_path / "runtime.json"
+    runtime_path.write_bytes(b"runtime")
+    created: list[Path] = []
+    events: list[str] = []
+
+    def mkdtemp(*, prefix: str) -> str:
+        path = tmp_path / f"{prefix}{len(created)}"
+        path.mkdir()
+        created.append(path)
+        return str(path)
+
+    def run_child(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        _write(Path(command[13]) / "late.pyc", b"bytecode")
+        _write(Path(command[15]) / "private-home" / "late.cache", b"cache")
+        return SimpleNamespace(returncode=37)
+
+    calibration = SimpleNamespace(
+        _temporary_directory_identity=helpers._temporary_directory_identity,
+        _verify_empty_pycache=helpers._verify_empty_pycache,
+        _verify_empty_scratch=helpers._verify_empty_scratch,
+        _verified_dataset_cache_root=helpers._verified_dataset_cache_root,
+        _non_link_directory_identity_chain=helpers._non_link_directory_identity_chain,
+        _assert_owned_temporary_tree_has_no_reparse=(
+            helpers._assert_owned_temporary_tree_has_no_reparse
+        ),
+        _cleanup_owned_temporary_directory=helpers._cleanup_owned_temporary_directory,
+        _postcondition_error=helpers._postcondition_error,
+        _surface_secondary_failures=helpers._surface_secondary_failures,
+        _verify_runtime=lambda *args, **kwargs: events.append("runtime"),
+    )
+    monkeypatch.setattr(launcher.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(launcher.subprocess, "run", run_child)
+    monkeypatch.setattr(
+        launcher,
+        "_verify_bound_inputs",
+        lambda *args, **kwargs: (
+            events.append("bound")
+            or ({}, {"git_executable": {"sha256": "a", "size_bytes": 1}}, Path("runner"))
+        ),
+    )
+
+    result = launcher._run_sealed_child(
+        calibration_launcher=calibration,
+        bootstrap=b"raise SystemExit(0)",
+        runtime_manifest_path=runtime_path,
+        runtime_manifest={},
+        interpreter=Path(sys.executable),
+        base_runtime_root=base,
+        package_roots={"packages": packages},
+        git_executable=tmp_path / "git.exe",
+        source={"git_executable": {"sha256": "a", "size_bytes": 1}},
+        options={},
+        runner_arguments=["preflight"],
+        dataset_cache_root=cache,
+        offline=True,
+    )
+
+    assert result == 37
+    assert events == ["bound", "runtime"]
+    assert created and all(not path.exists() for path in created)
+    diagnostic = capsys.readouterr().err
+    assert "preserving child return code 37" in diagnostic
+    assert "Stage-A pycache postcondition" in diagnostic
+    assert "Stage-A scratch containment postcondition" in diagnostic
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="sealed runtime fixture is Windows-only")
@@ -620,8 +759,12 @@ def test_offline_child_fatally_rejects_socket_connect_before_runner_side_effect(
     completed = subprocess.run(
         command,
         check=False,
-        cwd=fixture["base"],
-        env=launcher._sealed_environment(scratch_directory=scratch, offline=True),
+        cwd=scratch,
+        env=launcher._sealed_environment(
+            scratch_directory=scratch,
+            dataset_cache_root=fixture["cache_root"],
+            offline=True,
+        ),
         capture_output=True,
         input=fixture["bootstrap"],
     )
@@ -683,6 +826,7 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
             or ({}, {"paths": [], "git_executable": source_git_record}, Path("runner"))
         ),
     )
+    calibration_helpers = _load_calibration_launcher("stage_a_launch_helper_test")
     fake_calibration = SimpleNamespace(
         _parse_runtime_manifest=lambda data: {"git_executable": git_record},
         _verify_runtime=lambda *args, **kwargs: (
@@ -692,8 +836,17 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
             Path(sys.executable),
             git_executable,
         ),
-        _verify_empty_scratch=lambda path: None,
-        _assert_scratch_tree_has_no_reparse=lambda path: None,
+        _verified_dataset_cache_root=calibration_helpers._verified_dataset_cache_root,
+        _non_link_directory_identity_chain=(calibration_helpers._non_link_directory_identity_chain),
+        _temporary_directory_identity=calibration_helpers._temporary_directory_identity,
+        _verify_empty_pycache=calibration_helpers._verify_empty_pycache,
+        _verify_empty_scratch=calibration_helpers._verify_empty_scratch,
+        _assert_owned_temporary_tree_has_no_reparse=(
+            calibration_helpers._assert_owned_temporary_tree_has_no_reparse
+        ),
+        _cleanup_owned_temporary_directory=(calibration_helpers._cleanup_owned_temporary_directory),
+        _postcondition_error=calibration_helpers._postcondition_error,
+        _surface_secondary_failures=calibration_helpers._surface_secondary_failures,
     )
     monkeypatch.setattr(launcher, "_load_calibration_launcher", lambda *args: fake_calibration)
     monkeypatch.setattr(launcher, "_stage_a_bootstrap", lambda module: "raise SystemExit(0)")
@@ -705,6 +858,7 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
         assert command[1:4] == ["-I", "-S", "-B"]
         assert command[9] == launcher._authenticated_stdin_loader(b"raise SystemExit(0)")
         assert kwargs["input"] == b"raise SystemExit(0)"
+        assert kwargs["cwd"] == Path(command[15])
         if command[16] == "prepare-inputs":
             assert "HF_HUB_OFFLINE" not in kwargs["env"]
         else:

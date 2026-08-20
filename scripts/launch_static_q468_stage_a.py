@@ -15,7 +15,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -414,56 +413,19 @@ def _options(arguments):
     _fields(bindings, set(_binding_options), "identity bindings")
     return {key: _digest(value, "identity binding") for key, value in bindings.items()}
 """
-    original_environment = (
+    environment_anchor = (
         "_environment = {key.upper(): value for key, value in _o.environ.items()}\n"
-        """_required_environment = {"LANG", "LC_ALL", "TEMP", "TMP", "TZ"}
-_os_environment = {
-    "SYSTEMROOT", "WINDIR", "COMSPEC",
-    "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
-}
-_allowed_environment = _required_environment | _os_environment
-if (not _required_environment.issubset(_environment)
-        or not set(_environment).issubset(_allowed_environment)
-        or _environment["LANG"] != "C" or _environment["LC_ALL"] != "C"
-        or _environment["TZ"] != "UTC"
-        or _p.Path(_environment["TEMP"]).resolve(strict=True) != _scratch
-        or _p.Path(_environment["TMP"]).resolve(strict=True) != _scratch
-        or any(not value or "\\0" in value or "\\n" in value or "\\r" in value
-               for key, value in _environment.items()
-               if key in _os_environment)):
-    _fail("sealed child environment differs from the minimal contract")"""
     )
-    stage_a_environment = (
-        "_environment = {key.upper(): value for key, value in _o.environ.items()}\n"
-        """_stage_a_mode = _s.argv[7] if len(_s.argv) > 7 else None
+    stage_a_environment = """_stage_a_mode = _runner_args[0] if _runner_args else None
 _stage_a_offline_values = {
     "HF_DATASETS_OFFLINE": "1",
     "HF_HUB_OFFLINE": "1",
     "TRANSFORMERS_OFFLINE": "1",
 }
 _stage_a_offline = _stage_a_mode != "prepare-inputs"
-_required_environment = {"LANG", "LC_ALL", "TEMP", "TMP", "TZ"} | (
-    set(_stage_a_offline_values) if _stage_a_offline else set()
-)
-_os_environment = {
-    "SYSTEMROOT", "WINDIR", "COMSPEC",
-    "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
-}
-_allowed_environment = _required_environment | _os_environment
-if (not _required_environment.issubset(_environment)
-        or not set(_environment).issubset(_allowed_environment)
-        or _environment["LANG"] != "C" or _environment["LC_ALL"] != "C"
-        or _environment["TZ"] != "UTC"
-        or _p.Path(_environment["TEMP"]).resolve(strict=True) != _scratch
-        or _p.Path(_environment["TMP"]).resolve(strict=True) != _scratch
-        or (any(_environment.get(name) != value
-                for name, value in _stage_a_offline_values.items())
-            if _stage_a_offline
-            else any(name in _environment for name in _stage_a_offline_values))
-        or any(not value or "\\0" in value or "\\n" in value or "\\r" in value
-               for key, value in _environment.items()
-               if key in _os_environment)):
-    _fail("sealed child environment differs from the mode-specific minimal contract")
+if _stage_a_offline:
+    _expected_environment.update(_stage_a_offline_values)
+_environment = {key.upper(): value for key, value in _o.environ.items()}
 if _stage_a_offline:
     _forbidden_network_events = {
         "socket.connect", "socket.connect_ex", "socket.getaddrinfo",
@@ -473,8 +435,8 @@ if _stage_a_offline:
     def _reject_network(event, _arguments):
         if event in _forbidden_network_events:
             raise RuntimeError("sealed offline Stage-A child forbids network access: " + event)
-    _s.addaudithook(_reject_network)"""
-    )
+    _s.addaudithook(_reject_network)
+"""
 
     def replace_exact(value: str, old: str, new: str, *, count: int) -> str:
         if value.count(old) != count:
@@ -520,7 +482,7 @@ if _stage_a_offline:
     )
     result = replace_exact(
         result,
-        original_environment,
+        environment_anchor,
         stage_a_environment,
         count=1,
     )
@@ -606,8 +568,25 @@ def _sealed_argv(
     ]
 
 
-def _sealed_environment(*, scratch_directory: Path, offline: bool) -> dict[str, str]:
+def _sealed_environment(
+    *,
+    scratch_directory: Path,
+    dataset_cache_root: Path,
+    offline: bool,
+) -> dict[str, str]:
     scratch = scratch_directory.resolve(strict=True)
+    cache = dataset_cache_root.resolve(strict=True)
+    private_home = scratch / "private-home"
+    xdg_cache = scratch / "xdg-cache"
+    hf_home = scratch / "huggingface"
+    hf_hub_cache = hf_home / "hub"
+    hf_assets_cache = hf_home / "assets"
+    hf_xet_cache = hf_home / "xet"
+    hf_modules_cache = hf_home / "modules"
+    hf_token_path = hf_home / "token"
+    transformers_cache = scratch / "transformers"
+    torch_home = scratch / "torch"
+    datasets_cache = cache / "datasets"
     inherited = {key.upper(): (key, value) for key, value in os.environ.items()}
     environment = {
         inherited[name][0]: inherited[name][1]
@@ -624,9 +603,35 @@ def _sealed_environment(*, scratch_directory: Path, offline: bool) -> dict[str, 
         {
             "LANG": "C",
             "LC_ALL": "C",
+            "HOME": str(private_home),
+            "USERPROFILE": str(private_home),
             "TEMP": str(scratch),
             "TMP": str(scratch),
             "TZ": "UTC",
+            "XDG_CACHE_HOME": str(xdg_cache),
+            "HF_HOME": str(hf_home),
+            "HUGGINGFACE_HUB_CACHE": str(hf_hub_cache),
+            "HF_HUB_CACHE": str(hf_hub_cache),
+            "HUGGINGFACE_ASSETS_CACHE": str(hf_assets_cache),
+            "HF_ASSETS_CACHE": str(hf_assets_cache),
+            "HF_XET_CACHE": str(hf_xet_cache),
+            "HF_MODULES_CACHE": str(hf_modules_cache),
+            "HF_TOKEN_PATH": str(hf_token_path),
+            "TRANSFORMERS_CACHE": str(transformers_cache),
+            "TORCH_HOME": str(torch_home),
+            "PYTORCH_KERNEL_CACHE_PATH": str(torch_home / "kernels"),
+            "TORCH_EXTENSIONS_DIR": str(torch_home / "extensions"),
+            "TORCHINDUCTOR_CACHE_DIR": str(torch_home / "inductor"),
+            "TRITON_CACHE_DIR": str(torch_home / "triton"),
+            "HF_DATASETS_CACHE": str(datasets_cache),
+            "HF_DATASETS_DOWNLOADED_DATASETS_PATH": str(datasets_cache / "downloads"),
+            "HF_DATASETS_EXTRACTED_DATASETS_PATH": str(datasets_cache / "downloads" / "extracted"),
+            "DISABLE_TELEMETRY": "1",
+            "DO_NOT_TRACK": "1",
+            "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "HF_HUB_DISABLE_UPDATE_CHECK": "1",
+            "HF_HUB_DISABLE_XET": "1",
         }
     )
     if offline:
@@ -693,14 +698,38 @@ def _run_sealed_child(
     source: Mapping[str, object],
     options: Mapping[str, str],
     runner_arguments: Sequence[str],
+    dataset_cache_root: Path,
     offline: bool,
 ) -> int:
-    pycache = Path(tempfile.mkdtemp(prefix="recurquant-exp013-stage-a-pycache-"))
-    scratch = Path(tempfile.mkdtemp(prefix="recurquant-exp013-stage-a-scratch-"))
-    if any(pycache.iterdir()):
-        raise SealedStageALaunchError("new Stage-A pycache directory is not empty")
-    calibration_launcher._verify_empty_scratch(scratch)
+    pycache: Path | None = None
+    scratch: Path | None = None
+    pycache_identity: tuple[int, int, int] | None = None
+    scratch_identity: tuple[int, int, int] | None = None
+    dataset_cache_identity: tuple[tuple[str, int, int, int], ...] | None = None
+    completed: subprocess.CompletedProcess[bytes] | None = None
+    primary_error: BaseException | None = None
+    secondary_failures: list[tuple[str, BaseException]] = []
     try:
+        pycache = Path(tempfile.mkdtemp(prefix="recurquant-exp013-stage-a-pycache-"))
+        pycache_identity = calibration_launcher._temporary_directory_identity(
+            pycache,
+            context="Stage-A pycache prefix",
+        )
+        calibration_launcher._verify_empty_pycache(pycache)
+        scratch = Path(tempfile.mkdtemp(prefix="recurquant-exp013-stage-a-scratch-"))
+        scratch_identity = calibration_launcher._temporary_directory_identity(
+            scratch,
+            context="Stage-A sealed scratch directory",
+        )
+        calibration_launcher._verify_empty_scratch(scratch)
+        confirmed_cache_root = calibration_launcher._verified_dataset_cache_root(
+            dataset_cache_root,
+            runtime_roots=(base_runtime_root, *package_roots.values(), pycache, scratch),
+        )
+        dataset_cache_identity = calibration_launcher._non_link_directory_identity_chain(
+            confirmed_cache_root,
+            context="dataset cache root",
+        )
         command = _sealed_argv(
             interpreter=interpreter,
             bootstrap=bootstrap,
@@ -715,37 +744,106 @@ def _run_sealed_child(
         completed = subprocess.run(
             command,
             check=False,
-            cwd=base_runtime_root,
-            env=_sealed_environment(scratch_directory=scratch, offline=offline),
+            cwd=scratch,
+            env=_sealed_environment(
+                scratch_directory=scratch,
+                dataset_cache_root=dataset_cache_root,
+                offline=offline,
+            ),
             input=bootstrap,
         )
-        if any(pycache.iterdir()):
-            raise SealedStageALaunchError("sealed Stage-A runner wrote bytecode")
-        calibration_launcher._verify_empty_scratch(scratch)
-        _bindings, repeated_source, _runner = _verify_bound_inputs(
-            options,
-            runtime_manifest_path=runtime_manifest_path,
-        )
-        if repeated_source["git_executable"] != source["git_executable"]:
-            raise SealedStageALaunchError(
-                "source Git executable binding changed during Stage-A execution"
+        try:
+            calibration_launcher._verify_empty_pycache(pycache)
+        except Exception as error:
+            secondary_failures.append(("Stage-A pycache postcondition", error))
+        try:
+            if (
+                calibration_launcher._temporary_directory_identity(
+                    scratch,
+                    context="Stage-A sealed scratch directory",
+                )
+                != scratch_identity
+            ):
+                raise SealedStageALaunchError(
+                    "Stage-A sealed scratch directory identity changed during execution"
+                )
+            calibration_launcher._assert_owned_temporary_tree_has_no_reparse(
+                scratch,
+                context="Stage-A sealed scratch directory",
             )
-        calibration_launcher._verify_runtime(
-            runtime_manifest,
-            base_runtime_root=base_runtime_root,
-            package_roots=package_roots,
-            git_executable_path=git_executable,
-            require_current_process=False,
-        )
+            calibration_launcher._verify_empty_scratch(scratch)
+        except Exception as error:
+            secondary_failures.append(("Stage-A scratch containment postcondition", error))
+        try:
+            repeated_cache_root = calibration_launcher._verified_dataset_cache_root(
+                dataset_cache_root,
+                runtime_roots=(base_runtime_root, *package_roots.values(), pycache, scratch),
+            )
+            if (
+                calibration_launcher._non_link_directory_identity_chain(
+                    repeated_cache_root,
+                    context="dataset cache root",
+                )
+                != dataset_cache_identity
+            ):
+                raise SealedStageALaunchError(
+                    "Stage-A dataset cache root identity changed during execution"
+                )
+        except Exception as error:
+            secondary_failures.append(("Stage-A dataset cache root reauthentication", error))
+        try:
+            _bindings, repeated_source, _runner = _verify_bound_inputs(
+                options,
+                runtime_manifest_path=runtime_manifest_path,
+            )
+            if repeated_source["git_executable"] != source["git_executable"]:
+                raise SealedStageALaunchError(
+                    "source Git executable binding changed during Stage-A execution"
+                )
+        except Exception as error:
+            secondary_failures.append(("Stage-A bound-input reauthentication", error))
+        try:
+            calibration_launcher._verify_runtime(
+                runtime_manifest,
+                base_runtime_root=base_runtime_root,
+                package_roots=package_roots,
+                git_executable_path=git_executable,
+                require_current_process=False,
+            )
+            calibration_launcher._verified_dataset_cache_root(
+                dataset_cache_root,
+                runtime_roots=(base_runtime_root, *package_roots.values()),
+            )
+        except Exception as error:
+            secondary_failures.append(("Stage-A runtime reauthentication", error))
+        if completed.returncode == 0 and secondary_failures:
+            failures = tuple(secondary_failures)
+            secondary_failures.clear()
+            raise calibration_launcher._postcondition_error(failures)
         return int(completed.returncode)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        if any(pycache.iterdir()):
-            raise SealedStageALaunchError("Stage-A pycache changed before cleanup")
-        shutil.rmtree(pycache, ignore_errors=False)
-        calibration_launcher._assert_scratch_tree_has_no_reparse(scratch)
-        shutil.rmtree(scratch, ignore_errors=False)
-        if os.path.lexists(scratch):
-            raise SealedStageALaunchError("Stage-A scratch survived cleanup")
+        for path, expected_identity, context in (
+            (scratch, scratch_identity, "Stage-A sealed scratch directory"),
+            (pycache, pycache_identity, "Stage-A pycache prefix"),
+        ):
+            if path is None or expected_identity is None:
+                continue
+            try:
+                calibration_launcher._cleanup_owned_temporary_directory(
+                    path,
+                    expected_identity=expected_identity,
+                    context=context,
+                )
+            except Exception as error:
+                secondary_failures.append((f"{context} cleanup", error))
+        calibration_launcher._surface_secondary_failures(
+            secondary_failures,
+            primary_error=primary_error,
+            child_returncode=None if completed is None else int(completed.returncode),
+        )
 
 
 def launch(argv: Sequence[str]) -> int:
@@ -785,6 +883,10 @@ def launch(argv: Sequence[str]) -> int:
                 require_current_process=False,
             )
         )
+        dataset_cache_root = calibration_launcher._verified_dataset_cache_root(
+            Path(options["--cache-root"]),
+            runtime_roots=(base, *packages.values()),
+        )
         bootstrap = _stage_a_bootstrap(calibration_launcher).encode("utf-8")
         runtime_manifest_path = args.runtime_manifest.resolve(strict=True)
         mode = runner_arguments[0]
@@ -805,6 +907,7 @@ def launch(argv: Sequence[str]) -> int:
                 source=source,
                 options=options,
                 runner_arguments=child_arguments,
+                dataset_cache_root=dataset_cache_root,
                 offline=offline,
             )
             if return_code != 0 or index == len(runs) - 1:

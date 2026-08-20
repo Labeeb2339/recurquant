@@ -46,8 +46,17 @@ IDENTITY_RESOLVER_PATH: Final = REPOSITORY_ROOT / "scripts" / "resolve_static_q4
 IDENTITY_RESOLVER_MODULE: Final = "recurquant_experiment013_identity_resolver"
 CALIBRATION_API_MODULE: Final = "recurquant.experiment013_calibration_api"
 CALIBRATION_API_PATH: Final = "src/recurquant/experiment013_calibration_api.py"
+CALIBRATION_REQUIREMENTS_PATH: Final = "requirements/experiment013-calibration.txt"
 SOURCE_VERIFIER_PATH: Final = "src/recurquant/experiment013_source.py"
 SOURCE_CAPTURE_MODULE: Final = "recurquant_experiment013_source_capture"
+CALIBRATION_IDENTITY_CAPTURE_MODULE: Final = "recurquant_experiment013_calibration_identity_capture"
+CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE: Final = (
+    "_recurquant_experiment013_calibration_runner_for_capture"
+)
+CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE: Final = "recurquant.experiment013_source"
+CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE: Final = "recurquant.experiment013_parquet"
+CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
+PARQUET_SOURCE_PATH: Final = "src/recurquant/experiment013_parquet.py"
 MODEL_STAGING_SOURCE_MODULE: Final = "recurquant_experiment013_source_for_model_staging"
 MODEL_STAGING_RESOLVER_MODULE: Final = "recurquant_experiment013_resolver_for_model_staging"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
@@ -56,7 +65,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v6"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v7"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -78,13 +87,20 @@ MODEL_FILE_SELECTION_PROFILE: Final = "qwen35-config-index-safetensors-v1"
 FROZEN_IDENTITY_CONTRACT_KIND: Final = (
     "recurquant_experiment013_frozen_identity_contract_verification"
 )
-FROZEN_IDENTITY_CONTRACT_SCHEMA: Final = 1
+FROZEN_IDENTITY_CONTRACT_SCHEMA: Final = 2
 MODEL_STAGING_AUTHORIZATION_KIND: Final = "recurquant_experiment013_model_staging_authorization"
-MODEL_STAGING_AUTHORIZATION_SCHEMA: Final = 1
+MODEL_STAGING_AUTHORIZATION_SCHEMA: Final = 2
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_calibration_identity_capture_provenance"
+)
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 1
+CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 6
+CALIBRATION_IDENTITY_INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
 MODEL_STAGING_PATHS_KIND: Final = "recurquant_experiment013_model_staging_paths_verification"
 MODEL_STAGING_PATHS_SCHEMA: Final = 1
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 4
+RUNTIME_MANIFEST_SCHEMA: Final = 5
+OFFICIAL_DATASETS_DISTRIBUTION_VERSION: Final = "4.8.5"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 2
 
@@ -150,6 +166,25 @@ RULER_RECEIPT_DIRECTORY_FILENAMES: Final = (
     "retrieval__niah_multivalue__l4096__s12340.json",
     "retrieval__niah_single_1__l4096__s12339.json",
 )
+CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS: Final = {
+    "datasets": "datasets",
+    "fsspec": "fsspec",
+    "huggingface_hub": "huggingface-hub",
+    "numpy": "numpy",
+    "pyarrow": "pyarrow",
+    "tokenizers": "tokenizers",
+    "transformers": "transformers",
+}
+CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES: Final = (
+    "recurquant.experiment013_calibration_api",
+    "recurquant.experiment013_qwen35_adapter",
+    "torch",
+    "transformers.modeling_utils",
+)
+CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES: Final = (
+    "pkg_resources",
+    "setuptools",
+)
 PREPARED_RUNTIME_MANIFEST_FILENAME: Final = "calibration-runtime-manifest.json"
 PREPARED_RUNTIME_COMPLETE_FILENAME: Final = "RUNTIME_PREPARED"
 DEFAULT_PACKAGE_RUNTIME_ROOT_NAME: Final = "calibration-packages"
@@ -165,7 +200,9 @@ _FORBIDDEN_RUNTIME_FILENAMES: Final = frozenset(
     {"pyvenv.cfg", "sitecustomize.py", "usercustomize.py"}
 )
 SEALED_LAUNCH_POLICY: Final = {
-    "bootstrap_mode": "stdlib-only-exact-runner-v1",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
+    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
+    "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
     "ignore_environment": 1,
     "isolated": 1,
@@ -510,10 +547,13 @@ def _bootstrap_source_manifest(
         _sha256(raw_entry["raw_sha256"], context=f"repository source {relative} SHA-256")
         entries[relative] = dict(raw_entry)
     required = {
+        CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
         RUNNER_SOURCE_PATH,
         IDENTITY_RESOLVER_SOURCE_PATH,
         SOURCE_VERIFIER_PATH,
+        PARQUET_SOURCE_PATH,
         CALIBRATION_API_PATH,
+        CALIBRATION_REQUIREMENTS_PATH,
     }
     if require_adapter:
         required.add(CANONICAL_ADAPTER_PATH)
@@ -799,6 +839,7 @@ class ModelStagingAuthorization:
     identity: FrozenCalibrationIdentity
     model_manifest: ModelFileManifest
     frozen_identity_file_sha256: str
+    capture_provenance_receipt_file_sha256: str
     identity_commit: str
     source_commit: str
 
@@ -808,6 +849,13 @@ class DirectoryComponentIdentity:
     device: int
     inode: int
     mode: int
+
+
+@dataclass(frozen=True, slots=True)
+class NewCaptureArtifactPath:
+    path: Path
+    parent: Path
+    parent_component_identities: tuple[DirectoryComponentIdentity, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1734,6 +1782,280 @@ def _authenticate_frozen_identity_source_contract(
     )
 
 
+def _source_manifest_entry_sha256(
+    source_manifest_bytes: bytes,
+    *,
+    relative_path: str,
+) -> str:
+    """Read one already-authenticated source entry without importing source code."""
+
+    manifest = _strict_json_bytes(
+        source_manifest_bytes,
+        context="repository source manifest for capture provenance",
+    )
+    raw_paths = manifest.get("paths")
+    if not isinstance(raw_paths, list):
+        raise CalibrationRunError("repository source manifest path inventory is missing")
+    matches = [
+        item for item in raw_paths if isinstance(item, dict) and item.get("path") == relative_path
+    ]
+    if len(matches) != 1:
+        raise CalibrationRunError(
+            f"repository source manifest does not bind exactly one {relative_path}"
+        )
+    return _sha256(
+        matches[0].get("raw_sha256"),
+        context=f"repository source {relative_path} SHA-256",
+    )
+
+
+def _authenticate_calibration_identity_capture_provenance(
+    *,
+    receipt_path: Path,
+    expected_receipt_sha256: str,
+    runtime_manifest_path: Path,
+    expected_runtime_manifest_sha256: str,
+    source_manifest_bytes: bytes,
+    expected_identity_input_sha256: str,
+    expected_bindings: BootstrapIdentityBindings,
+    expected_source_commit: str,
+) -> str:
+    """Authenticate the content-addressed sealed-capture custody receipt.
+
+    The receipt attests no general dependency closure.  It records and checks
+    only the fixed application import surface used by calibration identity
+    capture against the runtime-v5 tree and distribution RECORD inventories.
+    """
+
+    expected_receipt = _sha256(
+        expected_receipt_sha256,
+        context="expected calibration identity capture provenance receipt SHA-256",
+    )
+    receipt_bytes = _read_stable_regular_bytes(
+        receipt_path,
+        context="calibration identity capture provenance receipt",
+    )
+    actual_receipt = sha256_bytes(receipt_bytes)
+    if actual_receipt != expected_receipt:
+        raise CalibrationRunError(
+            "calibration identity capture provenance receipt differs from its explicit SHA-256"
+        )
+    root = _strict_json_bytes(
+        receipt_bytes,
+        context="calibration identity capture provenance receipt",
+    )
+    _exact_fields(
+        root,
+        {
+            "artifact_kind",
+            "capture_source",
+            "capture_version",
+            "critical_module_origins",
+            "excluded_runtime_modules",
+            "execution_bindings",
+            "identity_input_file_sha256",
+            "phase",
+            "runner_revision",
+            "schema_version",
+            "source_commit",
+            "status",
+        },
+        context="calibration identity capture provenance receipt",
+    )
+    if canonical_json_bytes(root) != receipt_bytes:
+        raise CalibrationRunError(
+            "calibration identity capture provenance receipt is not canonical JSON"
+        )
+    if (
+        root["artifact_kind"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+        or type(root["capture_version"]) is not int
+        or root["capture_version"] != CALIBRATION_IDENTITY_CAPTURE_VERSION
+        or root["runner_revision"] != RUNNER_REVISION
+        or root["phase"] != "calibration"
+        or root["status"] != "captured_under_authenticated_runtime"
+    ):
+        raise CalibrationRunError(
+            "calibration identity capture provenance receipt identity drifted"
+        )
+    if root["excluded_runtime_modules"] != list(CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES):
+        raise CalibrationRunError("capture provenance excluded-module policy drifted")
+    if _git_revision(root["source_commit"], context="capture provenance source commit") != (
+        _git_revision(expected_source_commit, context="expected capture provenance source commit")
+    ):
+        raise CalibrationRunError("capture provenance source commit differs from H0")
+    if _sha256(
+        root["identity_input_file_sha256"],
+        context="capture provenance identity input SHA-256",
+    ) != _sha256(
+        expected_identity_input_sha256,
+        context="expected capture provenance identity input SHA-256",
+    ):
+        raise CalibrationRunError("capture provenance binds a different identity input")
+
+    expected_binding_values = {
+        "calibration_runtime_manifest_file_sha256": expected_bindings.runtime_manifest_file_sha256,
+        "model_file_manifest_file_sha256": expected_bindings.model_file_manifest_file_sha256,
+        "parquet_materialization_manifest_file_sha256": (
+            expected_bindings.parquet_materialization_manifest_file_sha256
+        ),
+        "repository_source_manifest_file_sha256": (
+            expected_bindings.repository_source_manifest_file_sha256
+        ),
+    }
+    raw_bindings = root["execution_bindings"]
+    if not isinstance(raw_bindings, dict):
+        raise CalibrationRunError("capture provenance execution bindings are missing")
+    _exact_fields(
+        raw_bindings,
+        set(expected_binding_values),
+        context="capture provenance execution bindings",
+    )
+    normalized_bindings = {
+        name: _sha256(raw_bindings[name], context=f"capture provenance {name}")
+        for name in sorted(raw_bindings)
+    }
+    if normalized_bindings != expected_binding_values:
+        raise CalibrationRunError("capture provenance execution bindings differ from identity")
+    if (
+        sha256_bytes(source_manifest_bytes)
+        != expected_bindings.repository_source_manifest_file_sha256
+    ):
+        raise CalibrationRunError(
+            "repository source manifest for capture provenance differs from identity"
+        )
+
+    capture_source = root["capture_source"]
+    if not isinstance(capture_source, dict):
+        raise CalibrationRunError("capture provenance source record is missing")
+    _exact_fields(
+        capture_source,
+        {"path", "sha256"},
+        context="capture provenance source record",
+    )
+    if capture_source["path"] != CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH:
+        raise CalibrationRunError("capture provenance source path drifted")
+    expected_capture_source_sha256 = _source_manifest_entry_sha256(
+        source_manifest_bytes,
+        relative_path=CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+    )
+    if (
+        _sha256(
+            capture_source["sha256"],
+            context="capture provenance source SHA-256",
+        )
+        != expected_capture_source_sha256
+    ):
+        raise CalibrationRunError("capture provenance source differs from H0")
+
+    runtime_bytes = _read_stable_regular_bytes(
+        runtime_manifest_path,
+        context="calibration runtime manifest for capture provenance",
+    )
+    expected_runtime = _sha256(
+        expected_runtime_manifest_sha256,
+        context="expected runtime manifest SHA-256 for capture provenance",
+    )
+    actual_runtime = sha256_bytes(runtime_bytes)
+    if (
+        actual_runtime != expected_runtime
+        or actual_runtime != expected_bindings.runtime_manifest_file_sha256
+    ):
+        raise CalibrationRunError(
+            "capture provenance runtime manifest differs from identity/CLI binding"
+        )
+    runtime_manifest = parse_calibration_runtime_manifest(runtime_bytes)
+    tree_by_name = {
+        tree.name: {item.path: item for item in tree.files}
+        for tree in runtime_manifest.runtime_trees
+    }
+    distribution_by_name = {item.name: item for item in runtime_manifest.distributions}
+    import_path_by_root = {item.name: item.import_path for item in runtime_manifest.package_roots}
+
+    raw_origins = root["critical_module_origins"]
+    if not isinstance(raw_origins, list):
+        raise CalibrationRunError("capture provenance critical module origins are missing")
+    expected_modules = sorted(CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS)
+    if [item.get("module") if isinstance(item, dict) else None for item in raw_origins] != (
+        expected_modules
+    ):
+        raise CalibrationRunError(
+            "capture provenance critical module inventory is not exact and sorted"
+        )
+    for item in raw_origins:
+        assert isinstance(item, dict)
+        _exact_fields(
+            item,
+            {
+                "distribution",
+                "module",
+                "package_root",
+                "relative_path",
+                "sha256",
+                "size_bytes",
+                "version",
+            },
+            context="capture provenance critical module origin",
+        )
+        module_name = cast(str, item["module"])
+        distribution_name = CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS[module_name]
+        if item["distribution"] != distribution_name:
+            raise CalibrationRunError(
+                f"capture provenance distribution mapping drifted: {module_name}"
+            )
+        distribution = distribution_by_name.get(distribution_name)
+        if distribution is None:
+            raise CalibrationRunError(
+                f"capture provenance runtime omits distribution: {distribution_name}"
+            )
+        package_root = _runtime_root_name(
+            item["package_root"],
+            context=f"capture provenance {module_name} package root",
+        )
+        relative_path = _canonical_relative_path(
+            item["relative_path"],
+            context=f"capture provenance {module_name} relative path",
+        )
+        if package_root != distribution.package_root or item["version"] != distribution.version:
+            raise CalibrationRunError(
+                f"capture provenance distribution identity drifted: {module_name}"
+            )
+        import_path = import_path_by_root.get(package_root)
+        if import_path is None:
+            raise CalibrationRunError(
+                f"capture provenance package root is not importable: {module_name}"
+            )
+        try:
+            module_relative = PurePosixPath(relative_path).relative_to(PurePosixPath(import_path))
+        except ValueError as exc:
+            raise CalibrationRunError(
+                f"capture provenance module is outside its import root: {module_name}"
+            ) from exc
+        if not module_relative.parts or module_relative.parts[0] != module_name:
+            raise CalibrationRunError(f"capture provenance module path is shadowed: {module_name}")
+        if relative_path not in distribution.files:
+            raise CalibrationRunError(
+                f"capture provenance module lacks RECORD ownership: {module_name}"
+            )
+        runtime_file = tree_by_name.get(package_root, {}).get(relative_path)
+        if runtime_file is None or runtime_file != RuntimeFileRecord(
+            path=relative_path,
+            sha256=_sha256(
+                item["sha256"],
+                context=f"capture provenance {module_name} file SHA-256",
+            ),
+            size_bytes=_nonnegative_int(
+                item["size_bytes"],
+                context=f"capture provenance {module_name} file size",
+            ),
+        ):
+            raise CalibrationRunError(
+                f"capture provenance module differs from runtime inventory: {module_name}"
+            )
+    return actual_receipt
+
+
 def verify_frozen_identity_contract(
     *,
     git_executable_path: Path | None = None,
@@ -1742,6 +2064,10 @@ def verify_frozen_identity_contract(
     repository_root: Path,
     repository_source_manifest_path: Path,
     source_commit: str,
+    capture_provenance_receipt_path: Path,
+    expected_capture_provenance_receipt_sha256: str,
+    runtime_manifest_path: Path,
+    expected_runtime_manifest_sha256: str,
 ) -> dict[str, object]:
     """Verify a promoted identity against H0 without writes or model access."""
 
@@ -1756,10 +2082,25 @@ def verify_frozen_identity_contract(
     )
     identity = authorization.identity
     bindings = authorization.bindings
+    source_manifest_bytes = _read_stable_regular_bytes(
+        repository_source_manifest_path,
+        context="repository source manifest for capture provenance",
+    )
+    capture_provenance_sha256 = _authenticate_calibration_identity_capture_provenance(
+        receipt_path=capture_provenance_receipt_path,
+        expected_receipt_sha256=expected_capture_provenance_receipt_sha256,
+        runtime_manifest_path=runtime_manifest_path,
+        expected_runtime_manifest_sha256=expected_runtime_manifest_sha256,
+        source_manifest_bytes=source_manifest_bytes,
+        expected_identity_input_sha256=identity.identity_input_manifest_sha256,
+        expected_bindings=bindings,
+        expected_source_commit=authorization.source_commit,
+    )
     return {
         "artifact_kind": FROZEN_IDENTITY_CONTRACT_KIND,
         "assignment_sha256": identity.assignment_sha256,
         "canonical_evidence_sha256": identity.canonical_evidence_sha256,
+        "capture_provenance_receipt_file_sha256": capture_provenance_sha256,
         "execution_bindings": {
             "calibration_runtime_manifest_file_sha256": bindings.runtime_manifest_file_sha256,
             "model_file_manifest_file_sha256": bindings.model_file_manifest_file_sha256,
@@ -1799,6 +2140,10 @@ def _authenticate_model_staging_authorization(
     source_commit: str,
     model_file_manifest_path: Path,
     expected_model_file_manifest_sha256: str,
+    capture_provenance_receipt_path: Path,
+    expected_capture_provenance_receipt_sha256: str,
+    runtime_manifest_path: Path,
+    expected_runtime_manifest_sha256: str,
 ) -> ModelStagingAuthorization:
     """Authenticate promotion, committed provenance, source, and model metadata."""
 
@@ -1836,10 +2181,27 @@ def _authenticate_model_staging_authorization(
         )
     model_manifest = parse_model_file_manifest(model_manifest_bytes)
     _model_contract_matches(source_authorization.identity, model_manifest)
+    source_manifest_bytes = _read_stable_regular_bytes(
+        repository_source_manifest_path,
+        context="repository source manifest for capture provenance",
+    )
+    capture_provenance_sha256 = _authenticate_calibration_identity_capture_provenance(
+        receipt_path=capture_provenance_receipt_path,
+        expected_receipt_sha256=expected_capture_provenance_receipt_sha256,
+        runtime_manifest_path=runtime_manifest_path,
+        expected_runtime_manifest_sha256=expected_runtime_manifest_sha256,
+        source_manifest_bytes=source_manifest_bytes,
+        expected_identity_input_sha256=(
+            source_authorization.identity.identity_input_manifest_sha256
+        ),
+        expected_bindings=source_authorization.bindings,
+        expected_source_commit=source_authorization.source_commit,
+    )
     return ModelStagingAuthorization(
         identity=source_authorization.identity,
         model_manifest=model_manifest,
         frozen_identity_file_sha256=source_authorization.frozen_identity_file_sha256,
+        capture_provenance_receipt_file_sha256=capture_provenance_sha256,
         identity_commit=committed_at,
         source_commit=source_authorization.source_commit,
     )
@@ -1856,6 +2218,10 @@ def verify_identity_bound_model_staging_authorization(
     source_commit: str,
     model_file_manifest_path: Path,
     expected_model_file_manifest_sha256: str,
+    capture_provenance_receipt_path: Path,
+    expected_capture_provenance_receipt_sha256: str,
+    runtime_manifest_path: Path,
+    expected_runtime_manifest_sha256: str,
 ) -> dict[str, object]:
     """Verify model-staging authorization without accessing model payloads."""
 
@@ -1870,9 +2236,16 @@ def verify_identity_bound_model_staging_authorization(
         source_commit=source_commit,
         model_file_manifest_path=model_file_manifest_path,
         expected_model_file_manifest_sha256=expected_model_file_manifest_sha256,
+        capture_provenance_receipt_path=capture_provenance_receipt_path,
+        expected_capture_provenance_receipt_sha256=(expected_capture_provenance_receipt_sha256),
+        runtime_manifest_path=runtime_manifest_path,
+        expected_runtime_manifest_sha256=expected_runtime_manifest_sha256,
     )
     return {
         "artifact_kind": MODEL_STAGING_AUTHORIZATION_KIND,
+        "capture_provenance_receipt_file_sha256": (
+            authorization.capture_provenance_receipt_file_sha256
+        ),
         "file_count": len(authorization.model_manifest.files),
         "frozen_identity_file_sha256": authorization.frozen_identity_file_sha256,
         "hub_tree_manifest_sha256": authorization.model_manifest.hub_tree_manifest_sha256,
@@ -2321,6 +2694,10 @@ def stage_identity_bound_model(
     source_commit: str,
     model_file_manifest_path: Path,
     expected_model_file_manifest_sha256: str,
+    capture_provenance_receipt_path: Path,
+    expected_capture_provenance_receipt_sha256: str,
+    runtime_manifest_path: Path,
+    expected_runtime_manifest_sha256: str,
     expected_model_staging_path_contract_sha256: str,
     hub_cache_root: Path,
     output_root: Path,
@@ -2354,6 +2731,10 @@ def stage_identity_bound_model(
         source_commit=source_commit,
         model_file_manifest_path=model_file_manifest_path,
         expected_model_file_manifest_sha256=expected_model_file_manifest_sha256,
+        capture_provenance_receipt_path=capture_provenance_receipt_path,
+        expected_capture_provenance_receipt_sha256=(expected_capture_provenance_receipt_sha256),
+        runtime_manifest_path=runtime_manifest_path,
+        expected_runtime_manifest_sha256=expected_runtime_manifest_sha256,
     )
     confirmed_paths = _validate_model_staging_roots(
         repository_root=repository_root,
@@ -2403,6 +2784,10 @@ def stage_identity_bound_model(
             source_commit=source_commit,
             model_file_manifest_path=model_file_manifest_path,
             expected_model_file_manifest_sha256=expected_model_file_manifest_sha256,
+            capture_provenance_receipt_path=capture_provenance_receipt_path,
+            expected_capture_provenance_receipt_sha256=(expected_capture_provenance_receipt_sha256),
+            runtime_manifest_path=runtime_manifest_path,
+            expected_runtime_manifest_sha256=expected_runtime_manifest_sha256,
         )
         if repeated != authorization:
             raise CalibrationRunError("model-staging authorization changed before publication")
@@ -2440,6 +2825,9 @@ def stage_identity_bound_model(
             shutil.rmtree(staging, ignore_errors=False)
     _verify_exact_local_model_tree(destination, authorization.model_manifest)
     return {
+        "capture_provenance_receipt_file_sha256": (
+            authorization.capture_provenance_receipt_file_sha256
+        ),
         "file_count": len(authorization.model_manifest.files),
         "frozen_identity_file_sha256": authorization.frozen_identity_file_sha256,
         "identity_commit": authorization.identity_commit,
@@ -5318,10 +5706,23 @@ def authenticate_fisher_h1_smoke_prerequisite(
         raise CalibrationRunError(str(exc)) from exc
 
 
-def _atomic_publish_new(path: Path, payload: bytes) -> None:
+def _atomic_publish_new(
+    path: Path,
+    payload: bytes,
+    *,
+    capture_path_snapshot: NewCaptureArtifactPath | None = None,
+) -> None:
     if not isinstance(payload, bytes):
         raise TypeError("artifact payload must be bytes")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if capture_path_snapshot is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        if path != capture_path_snapshot.path:
+            raise CalibrationRunError("capture publication path differs from its snapshot")
+        _revalidate_new_capture_artifact_path(
+            capture_path_snapshot,
+            context="capture artifact",
+        )
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
@@ -5821,6 +6222,637 @@ def _install_authenticated_recurquant_namespace(repository_root: Path) -> Module
     return package
 
 
+_CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS: Final = frozenset(
+    {
+        "--cache-root",
+        "--capture-provenance-receipt-output",
+        "--expected-model-file-manifest-sha256",
+        "--expected-parquet-materialization-manifest-sha256",
+        "--expected-repository-source-manifest-sha256",
+        "--expected-runtime-manifest-sha256",
+        "--model-file-manifest",
+        "--output",
+        "--parquet-materialization-manifest",
+        "--repository-root",
+        "--repository-source-manifest",
+        "--ruler-receipt-dir",
+        "--runtime-manifest",
+        "--source-commit",
+    }
+)
+
+
+def _parse_calibration_identity_capture_arguments(
+    arguments: Sequence[str],
+) -> argparse.Namespace:
+    values = list(arguments)
+    if not values or values[0] != "capture-calibration-identity":
+        raise CalibrationRunError("sealed calibration identity capture command is missing")
+    remainder = values[1:]
+    if len(remainder) != 2 * len(_CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS):
+        raise CalibrationRunError(
+            "sealed calibration identity capture arguments are not an exact option profile"
+        )
+    parsed: dict[str, str] = {}
+    for index in range(0, len(remainder), 2):
+        option = remainder[index]
+        value = remainder[index + 1]
+        if (
+            option not in _CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS
+            or option in parsed
+            or value.startswith("--")
+            or not value
+        ):
+            raise CalibrationRunError(
+                "sealed calibration identity capture arguments are mixed, duplicated, or incomplete"
+            )
+        parsed[option] = value
+    if set(parsed) != set(_CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS):
+        raise CalibrationRunError("sealed calibration identity capture inputs are incomplete")
+    path_options = {
+        "--cache-root",
+        "--capture-provenance-receipt-output",
+        "--model-file-manifest",
+        "--output",
+        "--parquet-materialization-manifest",
+        "--repository-root",
+        "--repository-source-manifest",
+        "--ruler-receipt-dir",
+        "--runtime-manifest",
+    }
+    normalized: dict[str, object] = {}
+    for option, value in parsed.items():
+        name = option[2:].replace("-", "_")
+        if option in path_options:
+            path = Path(value)
+            if not path.is_absolute():
+                raise CalibrationRunError(
+                    f"sealed calibration identity capture requires an absolute {option}"
+                )
+            normalized[name] = path
+        else:
+            normalized[name] = value
+    return argparse.Namespace(**normalized)
+
+
+def _new_capture_artifact_path(path: Path, *, context: str) -> NewCaptureArtifactPath:
+    raw = Path(path)
+    if not raw.is_absolute():
+        raise CalibrationRunError(f"{context} must be absolute")
+    absolute = Path(os.path.abspath(raw))
+    if os.path.lexists(absolute):
+        raise FileExistsError(f"refusing to overwrite existing {context}: {absolute}")
+    parent, identities = _require_existing_regular_directory(
+        absolute.parent,
+        context=f"{context} parent",
+    )
+    return NewCaptureArtifactPath(
+        path=parent / absolute.name,
+        parent=parent,
+        parent_component_identities=identities,
+    )
+
+
+def _revalidate_new_capture_artifact_path(
+    snapshot: NewCaptureArtifactPath,
+    *,
+    context: str,
+) -> None:
+    parent, identities = _require_existing_regular_directory(
+        snapshot.parent,
+        context=f"{context} parent",
+    )
+    if parent != snapshot.parent or identities != snapshot.parent_component_identities:
+        raise CalibrationRunError(f"{context} parent changed before publication")
+    if os.path.lexists(snapshot.path):
+        raise FileExistsError(f"refusing to overwrite existing {context}: {snapshot.path}")
+
+
+def _runtime_module_origin_record(
+    *,
+    module_name: str,
+    origin_path: Path,
+    manifest: CalibrationRuntimeManifest,
+    runtime_context: SealedRuntimeContext,
+) -> dict[str, object]:
+    distribution_name = CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS[module_name]
+    distribution = next(
+        (item for item in manifest.distributions if item.name == distribution_name),
+        None,
+    )
+    if distribution is None:
+        raise CalibrationRunError(
+            f"calibration identity runtime omits critical distribution: {distribution_name}"
+        )
+    matches: list[tuple[str, str]] = []
+    for package_root, root in runtime_context.package_roots.items():
+        try:
+            relative = origin_path.resolve(strict=True).relative_to(root).as_posix()
+        except (OSError, ValueError):
+            continue
+        matches.append((package_root, relative))
+    if len(matches) != 1:
+        raise CalibrationRunError(
+            "critical module origin is outside or aliases authenticated package roots: "
+            f"{module_name}"
+        )
+    package_root, relative_path = matches[0]
+    if package_root != distribution.package_root:
+        raise CalibrationRunError(
+            f"critical module origin uses the wrong package root: {module_name}"
+        )
+    canonical_relative = _canonical_relative_path(
+        relative_path,
+        context=f"critical module {module_name} origin",
+    )
+    import_path = runtime_context.package_import_paths[package_root]
+    try:
+        module_relative = PurePosixPath(canonical_relative).relative_to(PurePosixPath(import_path))
+    except ValueError as exc:
+        raise CalibrationRunError(
+            f"critical module origin is outside its authenticated import root: {module_name}"
+        ) from exc
+    if not module_relative.parts or module_relative.parts[0] != module_name:
+        raise CalibrationRunError(f"critical module is shadowed: {module_name}")
+    if canonical_relative not in distribution.files:
+        raise CalibrationRunError(
+            f"critical module origin lacks distribution RECORD ownership: {module_name}"
+        )
+    tree = next(item for item in manifest.runtime_trees if item.name == package_root)
+    expected_file = next(
+        (item for item in tree.files if item.path == canonical_relative),
+        None,
+    )
+    if expected_file is None:
+        raise CalibrationRunError(
+            f"critical module origin is absent from the runtime tree: {module_name}"
+        )
+    authenticated_path = _assert_no_link_components(
+        runtime_context.package_roots[package_root],
+        PurePosixPath(canonical_relative),
+    )
+    if authenticated_path != origin_path.resolve(strict=True):
+        raise CalibrationRunError(f"critical module origin path changed: {module_name}")
+    digest, size = _stream_file_sha256(authenticated_path)
+    if digest != expected_file.sha256 or size != expected_file.size_bytes:
+        raise CalibrationRunError(
+            f"critical module origin differs from the runtime tree: {module_name}"
+        )
+    return {
+        "distribution": distribution.name,
+        "module": module_name,
+        "package_root": package_root,
+        "relative_path": canonical_relative,
+        "sha256": digest,
+        "size_bytes": size,
+        "version": distribution.version,
+    }
+
+
+def _preflight_calibration_identity_import_surface(
+    *,
+    manifest: CalibrationRuntimeManifest,
+    runtime_context: SealedRuntimeContext,
+) -> dict[str, Path]:
+    forbidden_loaded = sorted(
+        name
+        for name in sys.modules
+        if name.split(".", 1)[0]
+        in {
+            *CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS,
+            *CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES,
+        }
+    )
+    if forbidden_loaded:
+        raise CalibrationRunError(
+            f"calibration identity critical module was preloaded: {forbidden_loaded}"
+        )
+    distribution_names = {item.name for item in manifest.distributions}
+    if distribution_names.intersection(CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES):
+        raise CalibrationRunError(
+            "calibration identity runtime unexpectedly stages setuptools/pkg_resources"
+        )
+    for module_name in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES:
+        if importlib.util.find_spec(module_name) is not None:
+            raise CalibrationRunError(
+                f"excluded calibration identity module remains importable: {module_name}"
+            )
+    origins: dict[str, Path] = {}
+    for module_name in sorted(CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS):
+        specification = importlib.util.find_spec(module_name)
+        raw_origin = None if specification is None else specification.origin
+        if not isinstance(raw_origin, str) or raw_origin in {"built-in", "frozen"}:
+            raise CalibrationRunError(
+                f"critical calibration identity module is not importable: {module_name}"
+            )
+        origin = Path(raw_origin)
+        _runtime_module_origin_record(
+            module_name=module_name,
+            origin_path=origin,
+            manifest=manifest,
+            runtime_context=runtime_context,
+        )
+        origins[module_name] = origin.resolve(strict=True)
+    return origins
+
+
+def _capture_calibration_identity_module_origins(
+    *,
+    expected_origins: Mapping[str, Path],
+    manifest: CalibrationRuntimeManifest,
+    runtime_context: SealedRuntimeContext,
+) -> list[dict[str, object]]:
+    origins: list[dict[str, object]] = []
+    for module_name in sorted(CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS):
+        module = sys.modules.get(module_name)
+        raw_file = None if module is None else getattr(module, "__file__", None)
+        specification = None if module is None else getattr(module, "__spec__", None)
+        raw_origin = None if specification is None else specification.origin
+        if not isinstance(raw_file, str) or not isinstance(raw_origin, str):
+            raise CalibrationRunError(
+                f"critical calibration identity module was not loaded: {module_name}"
+            )
+        file_path = Path(raw_file).resolve(strict=True)
+        if (
+            file_path != Path(raw_origin).resolve(strict=True)
+            or file_path != expected_origins[module_name]
+        ):
+            raise CalibrationRunError(
+                f"critical calibration identity module origin changed: {module_name}"
+            )
+        origins.append(
+            _runtime_module_origin_record(
+                module_name=module_name,
+                origin_path=file_path,
+                manifest=manifest,
+                runtime_context=runtime_context,
+            )
+        )
+    return origins
+
+
+class _ExcludedCalibrationIdentityImportBlocker:
+    def __init__(self) -> None:
+        self.attempts: list[str] = []
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: object = None,
+        target: object = None,
+    ) -> None:
+        del path, target
+        if fullname.split(".", 1)[0] in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES:
+            self.attempts.append(fullname)
+            raise CalibrationRunError(f"capture attempted excluded runtime import: {fullname}")
+        return None
+
+
+def _assert_capture_forbidden_modules_absent() -> None:
+    loaded = sorted(
+        name
+        for name in sys.modules
+        if any(
+            name == prefix or name.startswith(f"{prefix}.")
+            for prefix in CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES
+        )
+    )
+    if loaded:
+        raise CalibrationRunError(
+            f"calibration identity capture crossed a model/CUDA surface: {loaded}"
+        )
+
+
+def _validate_calibration_identity_input_payload(
+    payload: bytes,
+    *,
+    expected_bindings: Mapping[str, str],
+) -> dict[str, object]:
+    root = _strict_json_bytes(payload, context="calibration identity input")
+    if canonical_json_bytes(root) != payload:
+        raise CalibrationRunError("calibration identity input is not canonical JSON")
+    if (
+        root.get("schema") != CALIBRATION_IDENTITY_INPUT_SCHEMA
+        or root.get("phase") != "calibration"
+        or root.get("model_weights_loaded") is not False
+        or "calibration_binding" in root
+        or root.get("execution_bindings") != dict(expected_bindings)
+    ):
+        raise CalibrationRunError("calibration identity input custody fields drifted")
+    return root
+
+
+def _sealed_capture_calibration_identity(
+    arguments: Sequence[str],
+    *,
+    manifest: CalibrationRuntimeManifest,
+    runtime_context: SealedRuntimeContext,
+    authenticated_runtime: AuthenticatedRuntime,
+    interpreter_path: Path,
+) -> int:
+    args = _parse_calibration_identity_capture_arguments(arguments)
+    ruler_receipt_dir = _verify_ruler_receipt_directory_precondition(args.ruler_receipt_dir)
+    output_snapshot = _new_capture_artifact_path(
+        args.output,
+        context="calibration identity output",
+    )
+    receipt_output_snapshot = _new_capture_artifact_path(
+        args.capture_provenance_receipt_output,
+        context="calibration identity capture provenance receipt",
+    )
+    output = output_snapshot.path
+    receipt_output = receipt_output_snapshot.path
+    if output == receipt_output:
+        raise CalibrationRunError("calibration identity output and receipt paths must differ")
+
+    artifact_paths = {
+        "repository_source_manifest_file_sha256": args.repository_source_manifest,
+        "calibration_runtime_manifest_file_sha256": args.runtime_manifest,
+        "model_file_manifest_file_sha256": args.model_file_manifest,
+        "parquet_materialization_manifest_file_sha256": (args.parquet_materialization_manifest),
+    }
+    expected_digests = {
+        "repository_source_manifest_file_sha256": args.expected_repository_source_manifest_sha256,
+        "calibration_runtime_manifest_file_sha256": args.expected_runtime_manifest_sha256,
+        "model_file_manifest_file_sha256": args.expected_model_file_manifest_sha256,
+        "parquet_materialization_manifest_file_sha256": (
+            args.expected_parquet_materialization_manifest_sha256
+        ),
+    }
+    artifact_bytes: dict[str, bytes] = {}
+    bindings: dict[str, str] = {}
+    for name in sorted(artifact_paths):
+        data = _read_stable_regular_bytes(
+            artifact_paths[name],
+            context=f"calibration identity capture {name}",
+        )
+        actual = sha256_bytes(data)
+        expected = _sha256(expected_digests[name], context=f"expected {name}")
+        if actual != expected:
+            raise CalibrationRunError(f"calibration identity capture {name} drifted")
+        artifact_bytes[name] = data
+        bindings[name] = actual
+
+    def reauthenticate_artifact_bytes() -> None:
+        for artifact_name in sorted(artifact_paths):
+            repeated_bytes = _read_stable_regular_bytes(
+                artifact_paths[artifact_name],
+                context=f"repeated calibration identity capture {artifact_name}",
+            )
+            if (
+                repeated_bytes != artifact_bytes[artifact_name]
+                or sha256_bytes(repeated_bytes) != bindings[artifact_name]
+            ):
+                raise CalibrationRunError(
+                    f"calibration identity capture artifact changed: {artifact_name}"
+                )
+
+    if bindings["calibration_runtime_manifest_file_sha256"] != manifest.file_sha256:
+        raise CalibrationRunError("capture runtime differs from the sealed launcher runtime")
+    if authenticated_runtime.manifest_file_sha256 != manifest.file_sha256:
+        raise CalibrationRunError("sealed runtime authentication context drifted")
+    parse_model_file_manifest(artifact_bytes["model_file_manifest_file_sha256"])
+
+    bootstrap_source = _bootstrap_source_manifest(
+        artifact_bytes["repository_source_manifest_file_sha256"],
+        repository_root=args.repository_root,
+        require_adapter=False,
+    )
+    requested_commit = _git_revision(args.source_commit, context="capture source commit")
+    if requested_commit != bootstrap_source.source_commit:
+        raise CalibrationRunError("capture source commit differs from source-manifest H0")
+    source_git = bootstrap_source.manifest["git_executable"]
+    runtime_git = _authenticate_git_executable(runtime_context.git_executable_path)
+    if source_git != {"sha256": runtime_git.sha256, "size_bytes": runtime_git.size_bytes}:
+        raise CalibrationRunError("capture source and runtime bind different Git bytes")
+    requirements_path = _assert_no_link_components(
+        Path(os.path.abspath(args.repository_root)),
+        PurePosixPath(CALIBRATION_REQUIREMENTS_PATH),
+    )
+    requirements_sha256, _requirements_size = _stream_file_sha256(requirements_path)
+    if requirements_sha256 != bootstrap_source.entries[CALIBRATION_REQUIREMENTS_PATH]["raw_sha256"]:
+        raise CalibrationRunError("calibration requirements changed before capture preflight")
+    _preflight_runtime_requirements(manifest, _parse_runtime_requirements(requirements_path))
+    expected_origins = _preflight_calibration_identity_import_surface(
+        manifest=manifest,
+        runtime_context=runtime_context,
+    )
+    _assert_capture_forbidden_modules_absent()
+
+    exact_module_names = (
+        "recurquant",
+        CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
+        CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+        IDENTITY_RESOLVER_MODULE,
+        CALIBRATION_IDENTITY_CAPTURE_MODULE,
+        CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
+    )
+    preloaded = sorted(name for name in exact_module_names if name in sys.modules)
+    if preloaded:
+        raise CalibrationRunError(f"calibration identity source module was preloaded: {preloaded}")
+    namespace: ModuleType | None = None
+    source_module: ModuleType | None = None
+    parquet_module: ModuleType | None = None
+    capture_module: ModuleType | None = None
+    blocker = _ExcludedCalibrationIdentityImportBlocker()
+    payload: bytes | None = None
+    origins: list[dict[str, object]] | None = None
+    try:
+        sys.meta_path.insert(0, blocker)
+        namespace = _install_authenticated_recurquant_namespace(args.repository_root)
+        source_module = _load_exact_source_module(
+            CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
+            SOURCE_VERIFIER_PATH,
+            repository_root=args.repository_root,
+            entry=bootstrap_source.entries[SOURCE_VERIFIER_PATH],
+        )
+        namespace.experiment013_source = source_module
+        parquet_module = _load_exact_source_module(
+            CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+            PARQUET_SOURCE_PATH,
+            repository_root=args.repository_root,
+            entry=bootstrap_source.entries[PARQUET_SOURCE_PATH],
+        )
+        namespace.experiment013_parquet = parquet_module
+        _load_exact_source_module(
+            IDENTITY_RESOLVER_MODULE,
+            IDENTITY_RESOLVER_SOURCE_PATH,
+            repository_root=args.repository_root,
+            entry=bootstrap_source.entries[IDENTITY_RESOLVER_SOURCE_PATH],
+        )
+        capture_module = _load_exact_source_module(
+            CALIBRATION_IDENTITY_CAPTURE_MODULE,
+            CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+            repository_root=args.repository_root,
+            entry=bootstrap_source.entries[CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH],
+        )
+        if getattr(capture_module, "CAPTURE_VERSION", None) != (
+            CALIBRATION_IDENTITY_CAPTURE_VERSION
+        ):
+            raise CalibrationRunError("calibration identity capture version drifted")
+        verified_source = source_module.verify_experiment013_source_manifest(
+            bootstrap_source.manifest,
+            repo_root=args.repository_root,
+            git_executable=runtime_context.git_executable_path,
+        )
+        if verified_source != bootstrap_source.manifest:
+            raise CalibrationRunError("capture source verifier returned different evidence")
+        live_source = capture_module.LiveCaptureSource(
+            cache_dir=args.cache_root,
+            ruler_receipt_dir=ruler_receipt_dir,
+        )
+        captured = capture_module.capture_identity_input(
+            phase="calibration",
+            source=live_source,
+            calibration_binding=None,
+            execution_binding_artifacts=artifact_bytes,
+            runtime_authentication_context={
+                "base_runtime_root": runtime_context.base_runtime_root,
+                "git_executable": runtime_context.git_executable_path,
+                "staged_interpreter": Path(interpreter_path),
+                "package_runtime_roots": dict(runtime_context.package_roots),
+                "package_import_paths": dict(runtime_context.package_import_paths),
+            },
+        )
+        if blocker.attempts:
+            raise CalibrationRunError(
+                f"capture attempted excluded runtime imports: {sorted(blocker.attempts)}"
+            )
+        if any(
+            name.split(".", 1)[0] in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
+            for name in sys.modules
+        ):
+            raise CalibrationRunError("capture left an excluded runtime module loaded")
+        _assert_capture_forbidden_modules_absent()
+        payload = canonical_json_bytes(captured)
+        _validate_calibration_identity_input_payload(payload, expected_bindings=bindings)
+        origins = _capture_calibration_identity_module_origins(
+            expected_origins=expected_origins,
+            manifest=manifest,
+            runtime_context=runtime_context,
+        )
+        reauthenticate_artifact_bytes()
+        capture_source_sha256, _capture_source_size = _stream_file_sha256(
+            Path(args.repository_root) / CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH
+        )
+        if (
+            capture_source_sha256
+            != bootstrap_source.entries[CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH]["raw_sha256"]
+        ):
+            raise CalibrationRunError("capture source changed during execution")
+        repeated_source = source_module.verify_experiment013_source_manifest(
+            bootstrap_source.manifest,
+            repo_root=args.repository_root,
+            git_executable=runtime_context.git_executable_path,
+        )
+        if repeated_source != bootstrap_source.manifest:
+            raise CalibrationRunError("repository source changed during identity capture")
+        authenticate_calibration_runtime(
+            manifest,
+            base_runtime_root=runtime_context.base_runtime_root,
+            package_roots=runtime_context.package_roots,
+            interpreter_path=interpreter_path,
+            git_executable_path=runtime_context.git_executable_path,
+        )
+        _revalidate_new_capture_artifact_path(
+            output_snapshot,
+            context="calibration identity output",
+        )
+        _atomic_publish_new(
+            output,
+            payload,
+            capture_path_snapshot=output_snapshot,
+        )
+        if _read_stable_regular_bytes(output, context="published calibration identity") != payload:
+            raise CalibrationRunError("published calibration identity bytes changed")
+        repeated_source = source_module.verify_experiment013_source_manifest(
+            bootstrap_source.manifest,
+            repo_root=args.repository_root,
+            git_executable=runtime_context.git_executable_path,
+        )
+        if repeated_source != bootstrap_source.manifest:
+            raise CalibrationRunError("repository source changed before receipt publication")
+        authenticate_calibration_runtime(
+            manifest,
+            base_runtime_root=runtime_context.base_runtime_root,
+            package_roots=runtime_context.package_roots,
+            interpreter_path=interpreter_path,
+            git_executable_path=runtime_context.git_executable_path,
+        )
+        if _read_stable_regular_bytes(output, context="published calibration identity") != payload:
+            raise CalibrationRunError("calibration identity changed before receipt publication")
+        reauthenticate_artifact_bytes()
+        if blocker.attempts or any(
+            name.split(".", 1)[0] in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
+            for name in sys.modules
+        ):
+            raise CalibrationRunError(
+                "excluded runtime module policy changed before receipt publication"
+            )
+        receipt = {
+            "artifact_kind": CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND,
+            "capture_source": {
+                "path": CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+                "sha256": capture_source_sha256,
+            },
+            "capture_version": CALIBRATION_IDENTITY_CAPTURE_VERSION,
+            "critical_module_origins": origins,
+            "excluded_runtime_modules": list(CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES),
+            "execution_bindings": bindings,
+            "identity_input_file_sha256": sha256_bytes(payload),
+            "phase": "calibration",
+            "runner_revision": RUNNER_REVISION,
+            "schema_version": CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
+            "source_commit": requested_commit,
+            "status": "captured_under_authenticated_runtime",
+        }
+        receipt_payload = canonical_json_bytes(receipt)
+        _revalidate_new_capture_artifact_path(
+            receipt_output_snapshot,
+            context="calibration identity capture provenance receipt",
+        )
+        _atomic_publish_new(
+            receipt_output,
+            receipt_payload,
+            capture_path_snapshot=receipt_output_snapshot,
+        )
+        if (
+            _read_stable_regular_bytes(
+                receipt_output,
+                context="published calibration identity capture provenance receipt",
+            )
+            != receipt_payload
+        ):
+            raise CalibrationRunError("published capture provenance receipt bytes changed")
+        print(
+            canonical_json_bytes(
+                {
+                    "capture_provenance_receipt_file_sha256": sha256_bytes(receipt_payload),
+                    "identity_input_file_sha256": sha256_bytes(payload),
+                    "runner_revision": RUNNER_REVISION,
+                    "status": "captured_calibration_identity_under_authenticated_runtime",
+                }
+            ).decode("utf-8"),
+            end="",
+        )
+        return 0
+    finally:
+        if blocker in sys.meta_path:
+            sys.meta_path.remove(blocker)
+        for name in tuple(sys.modules):
+            if name.split(".", 1)[0] in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES:
+                sys.modules.pop(name, None)
+        for name in (
+            CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
+            CALIBRATION_IDENTITY_CAPTURE_MODULE,
+            IDENTITY_RESOLVER_MODULE,
+            CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+            CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
+            "recurquant",
+        ):
+            sys.modules.pop(name, None)
+
+
 def _adapter_construction_context(
     *,
     calibration_api: ModuleType,
@@ -5985,6 +7017,13 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         parser.add_argument("--repository-root", required=True, type=Path)
         parser.add_argument("--repository-source-manifest", required=True, type=Path)
         parser.add_argument("--source-commit", required=True)
+        parser.add_argument("--capture-provenance-receipt", required=True, type=Path)
+        parser.add_argument(
+            "--expected-capture-provenance-receipt-sha256",
+            required=True,
+        )
+        parser.add_argument("--runtime-manifest", required=True, type=Path)
+        parser.add_argument("--expected-runtime-manifest-sha256", required=True)
     elif command == "verify-model-staging-paths":
         parser.add_argument("--repository-root", required=True, type=Path)
         parser.add_argument("--hub-cache-root", required=True, type=Path)
@@ -5999,6 +7038,13 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         parser.add_argument("--source-commit", required=True)
         parser.add_argument("--model-file-manifest", required=True, type=Path)
         parser.add_argument("--expected-model-file-manifest-sha256", required=True)
+        parser.add_argument("--capture-provenance-receipt", required=True, type=Path)
+        parser.add_argument(
+            "--expected-capture-provenance-receipt-sha256",
+            required=True,
+        )
+        parser.add_argument("--runtime-manifest", required=True, type=Path)
+        parser.add_argument("--expected-runtime-manifest-sha256", required=True)
         if command == "stage-model":
             parser.add_argument("--hub-cache-root", required=True, type=Path)
             parser.add_argument("--output-root", required=True, type=Path)
@@ -6044,6 +7090,12 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             source_commit=args.source_commit,
             model_file_manifest_path=args.model_file_manifest,
             expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
+            capture_provenance_receipt_path=args.capture_provenance_receipt,
+            expected_capture_provenance_receipt_sha256=(
+                args.expected_capture_provenance_receipt_sha256
+            ),
+            runtime_manifest_path=args.runtime_manifest,
+            expected_runtime_manifest_sha256=args.expected_runtime_manifest_sha256,
             expected_model_staging_path_contract_sha256=(
                 args.expected_model_staging_path_contract_sha256
             ),
@@ -6069,6 +7121,12 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             repository_root=args.repository_root,
             repository_source_manifest_path=args.repository_source_manifest,
             source_commit=args.source_commit,
+            capture_provenance_receipt_path=args.capture_provenance_receipt,
+            expected_capture_provenance_receipt_sha256=(
+                args.expected_capture_provenance_receipt_sha256
+            ),
+            runtime_manifest_path=args.runtime_manifest,
+            expected_runtime_manifest_sha256=args.expected_runtime_manifest_sha256,
         )
         print(canonical_json_bytes(details).decode("utf-8"), end="")
         return 0
@@ -6083,6 +7141,12 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             source_commit=args.source_commit,
             model_file_manifest_path=args.model_file_manifest,
             expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
+            capture_provenance_receipt_path=args.capture_provenance_receipt,
+            expected_capture_provenance_receipt_sha256=(
+                args.expected_capture_provenance_receipt_sha256
+            ),
+            runtime_manifest_path=args.runtime_manifest,
+            expected_runtime_manifest_sha256=args.expected_runtime_manifest_sha256,
         )
         print(canonical_json_bytes(details).decode("utf-8"), end="")
         return 0
@@ -6277,6 +7341,19 @@ def _official_main(
             "source and runtime manifests bind different Git executable bytes"
         )
 
+    requirements_path = _assert_no_link_components(
+        Path(os.path.abspath(args.repository_root)),
+        PurePosixPath(CALIBRATION_REQUIREMENTS_PATH),
+    )
+    requirements_sha256, _requirements_size = _stream_file_sha256(requirements_path)
+    if requirements_sha256 != bootstrap_source.entries[CALIBRATION_REQUIREMENTS_PATH]["raw_sha256"]:
+        raise CalibrationRunError("calibration requirements changed before runtime preflight")
+    runtime_manifest = parse_calibration_runtime_manifest(runtime_manifest_bytes)
+    _preflight_runtime_requirements(
+        runtime_manifest,
+        _parse_runtime_requirements(requirements_path),
+    )
+
     _AUTHENTICATED_CALIBRATION_API = _load_exact_source_module(
         CALIBRATION_API_MODULE,
         CALIBRATION_API_PATH,
@@ -6321,7 +7398,6 @@ def _official_main(
         raise CalibrationRunError(
             "verified source-manifest commit differs from requested frozen source commit"
         )
-    runtime_manifest = parse_calibration_runtime_manifest(runtime_manifest_bytes)
     authenticated_runtime = services.authenticate_runtime(runtime_manifest)
     if authenticated_runtime.manifest_file_sha256 != bindings.runtime_manifest_file_sha256:
         raise CalibrationRunError("runtime authenticator returned a different manifest identity")
@@ -6376,6 +7452,33 @@ def _official_main(
     return 0
 
 
+def _preflight_official_runtime_distributions(runtime: AuthenticatedRuntime) -> None:
+    """Fail before adapter or model access unless the frozen datasets wheel is present."""
+
+    if "datasets" in sys.modules:
+        raise CalibrationRunError("datasets was imported before the official runtime preflight")
+    distributions = dict(runtime.distributions)
+    if distributions.get("datasets") != OFFICIAL_DATASETS_DISTRIBUTION_VERSION:
+        raise CalibrationRunError(
+            "official calibration runtime requires exactly "
+            f"datasets=={OFFICIAL_DATASETS_DISTRIBUTION_VERSION}"
+        )
+
+
+def _preflight_runtime_requirements(
+    manifest: CalibrationRuntimeManifest,
+    requirements: Sequence[RuntimeRequirement],
+) -> None:
+    """Bind every authenticated runtime distribution to the source-frozen pins."""
+
+    expected = tuple((item.name, item.version) for item in requirements)
+    observed = tuple((item.name, item.version) for item in manifest.distributions)
+    if observed != expected:
+        raise CalibrationRunError(
+            "official runtime distributions differ from the source-bound calibration requirements"
+        )
+
+
 def sealed_main(
     argv: Sequence[str],
     *,
@@ -6389,10 +7492,15 @@ def sealed_main(
     """Run only after the stdlib bootstrap supplies explicit authenticated roots."""
 
     arguments = list(argv)
-    args = _parser().parse_args(arguments)
+    capture_mode = bool(arguments and arguments[0] == "capture-calibration-identity")
+    args = (
+        _parse_calibration_identity_capture_arguments(arguments)
+        if capture_mode
+        else _parser().parse_args(arguments)
+    )
     _verify_ruler_receipt_directory_precondition(args.ruler_receipt_dir)
     runtime_manifest_bytes = args.runtime_manifest.read_bytes()
-    manifest, runtime_context, _authenticated = _authenticate_sealed_runtime_context(
+    manifest, runtime_context, authenticated = _authenticate_sealed_runtime_context(
         runtime_manifest_bytes,
         base_runtime_root=base_runtime_root,
         package_roots=package_roots,
@@ -6406,10 +7514,21 @@ def sealed_main(
         context="expected runtime manifest SHA-256",
     ):
         raise CalibrationRunError("sealed runtime manifest differs from the CLI binding")
-    result = _official_main(
-        arguments,
-        runtime_context=runtime_context,
-        interpreter_path=Path(interpreter_path),
+    _preflight_official_runtime_distributions(authenticated)
+    result = (
+        _sealed_capture_calibration_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=Path(interpreter_path),
+        )
+        if capture_mode
+        else _official_main(
+            arguments,
+            runtime_context=runtime_context,
+            interpreter_path=Path(interpreter_path),
+        )
     )
     _verify_sealed_launch_state(
         runtime_context.pycache_prefix,

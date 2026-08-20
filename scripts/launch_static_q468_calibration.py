@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 4
+RUNTIME_MANIFEST_SCHEMA: Final = 5
 IDENTITY_SCHEMA: Final = 5
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
@@ -53,7 +53,9 @@ _WINDOWS_RESERVED_NAMES: Final = frozenset(
     }
 )
 SEALED_LAUNCH_POLICY: Final = {
-    "bootstrap_mode": "stdlib-only-exact-runner-v1",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
+    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
+    "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
     "ignore_environment": 1,
     "isolated": 1,
@@ -80,9 +82,27 @@ _EXPECTED_BOUND_DIGEST_OPTIONS: Final = {
         "--expected-parquet-materialization-manifest-sha256"
     ),
 }
+_CAPTURE_COMMAND: Final = "capture-calibration-identity"
+_CAPTURE_EXPECTED_BOUND_DIGEST_OPTIONS: Final = {
+    **_EXPECTED_BOUND_DIGEST_OPTIONS,
+    "repository_source_manifest_file_sha256": ("--expected-repository-source-manifest-sha256"),
+}
+_CAPTURE_REQUIRED_RUNNER_OPTIONS: Final = frozenset(
+    {
+        "--cache-root",
+        "--capture-provenance-receipt-output",
+        "--output",
+        "--repository-root",
+        "--ruler-receipt-dir",
+        "--source-commit",
+        *_BOUND_ARTIFACT_OPTIONS.values(),
+        *_CAPTURE_EXPECTED_BOUND_DIGEST_OPTIONS.values(),
+    }
+)
 _REQUIRED_RUNNER_OPTIONS: Final = frozenset(
     {
         "--frozen-identity",
+        "--cache-root",
         "--repository-root",
         "--ruler-receipt-dir",
         *_BOUND_ARTIFACT_OPTIONS.values(),
@@ -104,7 +124,19 @@ _SENSITIVE_MODULES: Final = frozenset(
         "recurquant.experiment013_calibration_api",
         "recurquant.experiment013_qwen35_adapter",
         "recurquant.experiment013_source",
+        "recurquant_experiment013_calibration_identity_capture",
+        "_recurquant_experiment013_calibration_runner_for_capture",
         "recurquant_experiment013_identity_resolver",
+        "datasets",
+        "fsspec",
+        "huggingface_hub",
+        "numpy",
+        "pkg_resources",
+        "pyarrow",
+        "setuptools",
+        "tokenizers",
+        "torch",
+        "transformers",
         "site",
     }
 )
@@ -308,6 +340,22 @@ def _stable_file_record(path: Path, *, relative: str, context: str) -> dict[str,
     ):
         raise SealedLaunchError(f"{context} changed while it was authenticated")
     return {"path": relative, "sha256": digest.hexdigest(), "size_bytes": size}
+
+
+def _stable_file_bytes(path: Path, *, context: str) -> bytes:
+    before = _stable_file_record(path, relative=path.name, context=context)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise SealedLaunchError(f"cannot read {context}") from exc
+    after = _stable_file_record(path, relative=path.name, context=context)
+    if (
+        before != after
+        or _sha256_bytes(data) != before["sha256"]
+        or len(data) != before["size_bytes"]
+    ):
+        raise SealedLaunchError(f"{context} changed while it was read")
+    return data
 
 
 def _absolute_path_sha256(path: Path) -> str:
@@ -836,6 +884,43 @@ def _verify_runtime(
 
 
 def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
+    if arguments and arguments[0] == _CAPTURE_COMMAND:
+        remainder = list(arguments[1:])
+        if len(remainder) != 2 * len(_CAPTURE_REQUIRED_RUNNER_OPTIONS):
+            raise SealedLaunchError(
+                "sealed calibration identity capture arguments are not an exact option profile"
+            )
+        capture_result: dict[str, str] = {}
+        for index in range(0, len(remainder), 2):
+            option = remainder[index]
+            value = remainder[index + 1]
+            if (
+                option not in _CAPTURE_REQUIRED_RUNNER_OPTIONS
+                or option in capture_result
+                or value.startswith("--")
+                or not value
+            ):
+                raise SealedLaunchError(
+                    "sealed calibration identity capture arguments are mixed, duplicated, "
+                    "or incomplete"
+                )
+            capture_result[option] = value
+        if set(capture_result) != set(_CAPTURE_REQUIRED_RUNNER_OPTIONS):
+            raise SealedLaunchError("sealed calibration identity capture inputs are incomplete")
+        for option in (
+            "--cache-root",
+            "--capture-provenance-receipt-output",
+            "--model-file-manifest",
+            "--output",
+            "--parquet-materialization-manifest",
+            "--repository-root",
+            "--repository-source-manifest",
+            "--ruler-receipt-dir",
+            "--runtime-manifest",
+        ):
+            if not Path(capture_result[option]).is_absolute():
+                raise SealedLaunchError(f"capture runner option must be absolute: {option}")
+        return capture_result
     result: dict[str, str] = {}
     value_options = _REQUIRED_RUNNER_OPTIONS | _SMOKE_PREREQUISITE_OPTIONS
     index = 0
@@ -1014,6 +1099,7 @@ def _parse_source_manifest(data: bytes) -> dict[str, object]:
         "file_sha256": _sha256_bytes(data),
         "git_executable": git_executable,
         "paths": paths,
+        "source_commit": str(root["source_commit"]),
     }
 
 
@@ -1037,6 +1123,43 @@ def _verify_bound_artifacts(
     *,
     runtime_manifest_path: Path,
 ) -> tuple[dict[str, str], dict[str, object], Path]:
+    capture_profile = "--capture-provenance-receipt-output" in runner_options
+    if capture_profile:
+        bindings: dict[str, str] = {}
+        for binding, option in _BOUND_ARTIFACT_OPTIONS.items():
+            artifact_path = Path(runner_options[option])
+            artifact_bytes = _stable_file_bytes(
+                artifact_path,
+                context=f"capture bound artifact {option}",
+            )
+            actual = _sha256_bytes(artifact_bytes)
+            expected_option = _CAPTURE_EXPECTED_BOUND_DIGEST_OPTIONS[binding]
+            expected = _sha256(
+                runner_options[expected_option],
+                context=f"capture runner option {expected_option}",
+            )
+            if actual != expected:
+                raise SealedLaunchError(f"capture artifact digest mismatch: {option}")
+            bindings[binding] = actual
+        try:
+            if runtime_manifest_path.resolve(strict=True) != Path(
+                runner_options["--runtime-manifest"]
+            ).resolve(strict=True):
+                raise SealedLaunchError("host and capture runtime-manifest paths differ")
+        except OSError as exc:
+            raise SealedLaunchError("capture runtime manifest path is unavailable") from exc
+        source_bytes = _stable_file_bytes(
+            Path(runner_options["--repository-source-manifest"]),
+            context="capture repository source manifest",
+        )
+        source_manifest = _parse_source_manifest(source_bytes)
+        if runner_options["--source-commit"] != source_manifest["source_commit"]:
+            raise SealedLaunchError("capture source commit differs from source-manifest H0")
+        runner_path = _verify_source(
+            source_manifest,
+            Path(runner_options["--repository-root"]),
+        )
+        return bindings, source_manifest, runner_path
     identity_path = Path(runner_options["--frozen-identity"])
     identity_bytes = identity_path.read_bytes()
     bindings = _parse_identity(identity_bytes)
@@ -1087,6 +1210,79 @@ def _verify_empty_scratch(path: Path) -> Path:
     except OSError as exc:
         raise SealedLaunchError("cannot enumerate sealed scratch directory") from exc
     return root
+
+
+def _verified_dataset_cache_root(
+    path: Path,
+    *,
+    runtime_roots: Sequence[Path],
+) -> Path:
+    """Authenticate the explicit writable data cache and keep it off runtime trees."""
+
+    raw = Path(path)
+    _non_link_directory_identity_chain(raw, context="dataset cache root")
+    root = _absolute_directory(raw, context="dataset cache root")
+    if root == Path(root.anchor):
+        raise SealedLaunchError("dataset cache root cannot be a filesystem root")
+    for runtime_root in runtime_roots:
+        authenticated_runtime_root = _absolute_directory(
+            runtime_root,
+            context="authenticated runtime root",
+        )
+        if root == authenticated_runtime_root:
+            raise SealedLaunchError("dataset cache root overlaps an authenticated runtime root")
+        try:
+            root.relative_to(authenticated_runtime_root)
+        except ValueError:
+            pass
+        else:
+            raise SealedLaunchError("dataset cache root overlaps an authenticated runtime root")
+        try:
+            authenticated_runtime_root.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            raise SealedLaunchError("dataset cache root overlaps an authenticated runtime root")
+    return root
+
+
+def _non_link_directory_identity_chain(
+    path: Path,
+    *,
+    context: str,
+) -> tuple[tuple[str, int, int, int], ...]:
+    """Return the ordered identity of every existing component without following links."""
+
+    raw = Path(path)
+    if not raw.is_absolute():
+        raise SealedLaunchError(f"{context} must be an absolute path")
+    candidate = Path(os.path.abspath(raw))
+    current = Path(candidate.anchor)
+    components = [current]
+    for part in candidate.parts[1:]:
+        current /= part
+        components.append(current)
+    identities: list[tuple[str, int, int, int]] = []
+    for component in components:
+        try:
+            status = component.lstat()
+        except OSError as exc:
+            raise SealedLaunchError(f"{context} component is unavailable") from exc
+        if component.is_symlink() or bool(
+            getattr(status, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
+        ):
+            raise SealedLaunchError(f"{context} traverses a link or reparse point")
+        if not stat.S_ISDIR(status.st_mode):
+            raise SealedLaunchError(f"{context} component is not a directory")
+        identities.append(
+            (
+                os.path.normcase(str(component)),
+                int(status.st_dev),
+                int(status.st_ino),
+                stat.S_IFMT(status.st_mode),
+            )
+        )
+    return tuple(identities)
 
 
 def _temporary_directory_identity(path: Path, *, context: str) -> tuple[int, int, int]:
@@ -1184,8 +1380,30 @@ def _surface_secondary_failures(
     raise _postcondition_error(failures)
 
 
-def _sealed_environment(*, scratch_directory: Path) -> dict[str, str]:
+def _sealed_environment(
+    *,
+    scratch_directory: Path,
+    dataset_cache_root: Path,
+) -> dict[str, str]:
     scratch = _absolute_directory(scratch_directory, context="sealed scratch directory")
+    cache = _verified_dataset_cache_root(dataset_cache_root, runtime_roots=())
+    private_home = scratch / "private-home"
+    xdg_cache = scratch / "xdg-cache"
+    hf_home = scratch / "huggingface"
+    hf_hub_cache = hf_home / "hub"
+    hf_assets_cache = hf_home / "assets"
+    hf_xet_cache = hf_home / "xet"
+    hf_modules_cache = hf_home / "modules"
+    hf_token_path = hf_home / "token"
+    transformers_cache = scratch / "transformers"
+    torch_home = scratch / "torch"
+    torch_kernel_cache = torch_home / "kernels"
+    torch_extensions = torch_home / "extensions"
+    torch_inductor = torch_home / "inductor"
+    triton_cache = torch_home / "triton"
+    datasets_cache = cache / "datasets"
+    datasets_downloads = datasets_cache / "downloads"
+    datasets_extracted = datasets_downloads / "extracted"
     inherited = {key.upper(): (key, value) for key, value in os.environ.items()}
     environment = {
         inherited[name][0]: inherited[name][1]
@@ -1202,9 +1420,35 @@ def _sealed_environment(*, scratch_directory: Path) -> dict[str, str]:
         {
             "LANG": "C",
             "LC_ALL": "C",
+            "HOME": str(private_home),
+            "USERPROFILE": str(private_home),
             "TEMP": str(scratch),
             "TMP": str(scratch),
             "TZ": "UTC",
+            "XDG_CACHE_HOME": str(xdg_cache),
+            "HF_HOME": str(hf_home),
+            "HUGGINGFACE_HUB_CACHE": str(hf_hub_cache),
+            "HF_HUB_CACHE": str(hf_hub_cache),
+            "HUGGINGFACE_ASSETS_CACHE": str(hf_assets_cache),
+            "HF_ASSETS_CACHE": str(hf_assets_cache),
+            "HF_XET_CACHE": str(hf_xet_cache),
+            "HF_MODULES_CACHE": str(hf_modules_cache),
+            "HF_TOKEN_PATH": str(hf_token_path),
+            "TRANSFORMERS_CACHE": str(transformers_cache),
+            "TORCH_HOME": str(torch_home),
+            "PYTORCH_KERNEL_CACHE_PATH": str(torch_kernel_cache),
+            "TORCH_EXTENSIONS_DIR": str(torch_extensions),
+            "TORCHINDUCTOR_CACHE_DIR": str(torch_inductor),
+            "TRITON_CACHE_DIR": str(triton_cache),
+            "HF_DATASETS_CACHE": str(datasets_cache),
+            "HF_DATASETS_DOWNLOADED_DATASETS_PATH": str(datasets_downloads),
+            "HF_DATASETS_EXTRACTED_DATASETS_PATH": str(datasets_extracted),
+            "DISABLE_TELEMETRY": "1",
+            "DO_NOT_TRACK": "1",
+            "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "HF_HUB_DISABLE_UPDATE_CHECK": "1",
+            "HF_HUB_DISABLE_XET": "1",
         }
     )
     return environment
@@ -1271,7 +1515,11 @@ _sensitive = {
     "recurquant.experiment013_calibration_api",
     "recurquant.experiment013_qwen35_adapter",
     "recurquant.experiment013_source",
+    "recurquant_experiment013_calibration_identity_capture",
+    "_recurquant_experiment013_calibration_runner_for_capture",
     "recurquant_experiment013_identity_resolver",
+    "datasets", "fsspec", "huggingface_hub", "numpy", "pkg_resources",
+    "pyarrow", "setuptools", "tokenizers", "torch", "transformers",
     "_recurquant_experiment013_sealed_runner",
 }
 if _sensitive.intersection(_s.modules):
@@ -1306,6 +1554,7 @@ import types as _types
 
 _rp = 0x400
 _sha = _re.compile(r"[0-9a-f]{64}")
+_sha1 = _re.compile(r"[0-9a-f]{40}")
 _root_re = _re.compile(r"[a-z][a-z0-9-]{0,63}")
 _bad_suffix = {".egg-link", ".pth", ".pyc", ".pyo", "._pth"}
 _bad_dir = {"__pycache__"}
@@ -1316,7 +1565,9 @@ _reserved = {
     *{"lpt" + str(i) for i in range(1, 10)},
 }
 _policy = {
-    "bootstrap_mode": "stdlib-only-exact-runner-v1",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
+    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
+    "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
     "ignore_environment": 1,
     "isolated": 1,
@@ -1341,6 +1592,16 @@ _expected_digest_options = {
     "model_file_manifest_file_sha256": "--expected-model-file-manifest-sha256",
     "parquet_materialization_manifest_file_sha256":
         "--expected-parquet-materialization-manifest-sha256",
+}
+_capture_expected_digest_options = dict(_expected_digest_options)
+_capture_expected_digest_options["repository_source_manifest_file_sha256"] = (
+    "--expected-repository-source-manifest-sha256"
+)
+_capture_command = "capture-calibration-identity"
+_capture_required = {
+    "--cache-root", "--capture-provenance-receipt-output", "--output",
+    "--repository-root", "--ruler-receipt-dir", "--source-commit",
+    *_binding_options.values(), *_capture_expected_digest_options.values(),
 }
 _smoke_options = {
     "--prior-fisher-h1-smoke-report",
@@ -1461,6 +1722,79 @@ def _directory(raw, context):
         _fail(context + " is not a directory")
     return result
 
+def _temporary_identity(path, context):
+    root = _directory(path, context)
+    try:
+        status = root.lstat()
+    except OSError as error:
+        raise RuntimeError("cannot identify " + context) from error
+    return (int(status.st_dev), int(status.st_ino), _stat.S_IFMT(status.st_mode))
+
+def _directory_chain(raw, context):
+    path = _p.Path(raw)
+    if not path.is_absolute():
+        _fail(context + " must be an absolute path")
+    candidate = _p.Path(_o.path.abspath(path))
+    current = _p.Path(candidate.anchor)
+    components = [current]
+    for part in candidate.parts[1:]:
+        current /= part
+        components.append(current)
+    identities = []
+    for component in components:
+        try:
+            status = component.lstat()
+        except OSError as error:
+            raise RuntimeError(context + " component is unavailable") from error
+        if component.is_symlink() or bool(
+                getattr(status, "st_file_attributes", 0) & _rp):
+            _fail(context + " traverses a link or reparse point")
+        if not _stat.S_ISDIR(status.st_mode):
+            _fail(context + " component is not a directory")
+        identities.append((_o.path.normcase(str(component)), int(status.st_dev),
+                           int(status.st_ino), _stat.S_IFMT(status.st_mode)))
+    return tuple(identities)
+
+def _assert_private_tree(path, context):
+    stack = [path]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = tuple(_o.scandir(directory))
+        except OSError as error:
+            raise RuntimeError("cannot enumerate " + context) from error
+        for entry in entries:
+            try:
+                status = entry.stat(follow_symlinks=False)
+            except OSError as error:
+                raise RuntimeError("cannot inspect " + context) from error
+            if entry.is_symlink() or bool(
+                    getattr(status, "st_file_attributes", 0) & _rp):
+                _fail(context + " contains a link or reparse point")
+            if _stat.S_ISDIR(status.st_mode):
+                stack.append(_p.Path(entry.path))
+            elif not _stat.S_ISREG(status.st_mode):
+                _fail(context + " contains a non-regular path")
+
+def _assert_isolated_cache(cache, runtime_roots):
+    if cache == _p.Path(cache.anchor):
+        _fail("dataset cache root cannot be a filesystem root")
+    for runtime in runtime_roots:
+        if cache == runtime:
+            _fail("dataset cache root overlaps an authenticated runtime root")
+        try:
+            cache.relative_to(runtime)
+        except ValueError:
+            pass
+        else:
+            _fail("dataset cache root overlaps an authenticated runtime root")
+        try:
+            runtime.relative_to(cache)
+        except ValueError:
+            pass
+        else:
+            _fail("dataset cache root overlaps an authenticated runtime root")
+
 def _join(root, relative, context, directory=False):
     path = root
     for part in _p.PurePosixPath(_relative(relative, context)).parts:
@@ -1502,6 +1836,15 @@ def _file(path, relative, context):
             or size != after.st_size or _link(path)):
         _fail(context + " changed during authentication")
     return {"path": relative, "sha256": digest.hexdigest(), "size_bytes": size}
+
+def _bytes(path, context):
+    before = _file(path, path.name, context)
+    data = path.read_bytes()
+    after = _file(path, path.name, context)
+    if (before != after or _h.sha256(data).hexdigest() != before["sha256"]
+            or len(data) != before["size_bytes"]):
+        _fail(context + " changed while it was read")
+    return data
 
 def _git(raw):
     try:
@@ -1564,8 +1907,35 @@ def _name(value):
     return result
 
 def _options(arguments):
-    required = {"--frozen-identity", "--repository-root", *_binding_options.values(),
-                *_expected_digest_options.values(), "--ruler-receipt-dir"}
+    if arguments and arguments[0] == _capture_command:
+        remainder = arguments[1:]
+        if len(remainder) != 2 * len(_capture_required):
+            _fail("sealed capture arguments are not an exact option profile")
+        captured = {}
+        for index in range(0, len(remainder), 2):
+            option = remainder[index]
+            value = remainder[index + 1]
+            if (option not in _capture_required or option in captured
+                    or not value or value.startswith("--")):
+                _fail("sealed capture arguments are mixed, duplicated, or incomplete")
+            captured[option] = value
+        if set(captured) != _capture_required:
+            _fail("sealed capture inputs are incomplete")
+        for option in {
+            "--cache-root", "--capture-provenance-receipt-output",
+            "--model-file-manifest", "--output",
+            "--parquet-materialization-manifest", "--repository-root",
+            "--repository-source-manifest", "--ruler-receipt-dir",
+            "--runtime-manifest",
+        }:
+            if not _p.Path(captured[option]).is_absolute():
+                _fail("sealed capture path is not absolute: " + option)
+        return captured
+    required = {
+        "--frozen-identity", "--cache-root", "--repository-root",
+        *_binding_options.values(), *_expected_digest_options.values(),
+        "--ruler-receipt-dir",
+    }
     value_options = required | _smoke_options
     result = {}
     index = 0
@@ -1652,7 +2022,9 @@ def _source(data):
         _fail("source manifest self-hash drifted")
     if (root["schema"] != "recurquant.experiment013.source-manifest.v2"
             or root["profile"] != "experiment-013-static-q468-frozen-source-v2"
-            or root["object_format"] != "sha1"):
+            or root["object_format"] != "sha1"
+            or not isinstance(root["source_commit"], str)
+            or _sha1.fullmatch(root["source_commit"]) is None):
         _fail("source manifest profile drifted")
     git = root["git_executable"]
     if not isinstance(git, dict):
@@ -1670,7 +2042,7 @@ def _source(data):
     if rendered != sorted(rendered) or "scripts/run_static_q468_calibration.py" not in rendered:
         _fail("source path inventory drifted")
     return {"file_sha256": _h.sha256(data).hexdigest(), "git_executable": git,
-            "paths": paths}
+            "paths": paths, "source_commit": root["source_commit"]}
 
 def _verify_source(manifest, root):
     root = _directory(root, "repository root")
@@ -1718,7 +2090,7 @@ def _manifest(data):
                    "runtime_trees", "schema_version"}, "runtime manifest")
     if _canonical(root) != data or root["artifact_kind"] != (
         "recurquant_experiment013_calibration_runtime_manifest"
-    ) or type(root["schema_version"]) is not int or root["schema_version"] != 4:
+    ) or type(root["schema_version"]) is not int or root["schema_version"] != 5:
         _fail("runtime manifest identity or policy drifted")
     _typed(root["launch_policy"], _policy, "runtime launch policy")
     if root["base_runtime_root"] != "base-runtime":
@@ -1949,42 +2321,100 @@ _git_raw = _p.Path(_s.argv[5])
 _scratch = _directory(_s.argv[6], "sealed scratch directory")
 if any(_scratch.iterdir()):
     _fail("sealed scratch directory is not initially empty")
+_scratch_identity = _temporary_identity(_scratch, "sealed scratch directory")
+if _p.Path.cwd().resolve(strict=True) != _scratch:
+    _fail("sealed child cwd differs from the launcher-owned scratch directory")
+_runner_args = list(_s.argv[7:])
+_runner_options = _options(_runner_args)
+_capture_profile = bool(_runner_args and _runner_args[0] == _capture_command)
+_cache_raw = _p.Path(_runner_options["--cache-root"])
+if not _cache_raw.is_absolute():
+    _fail("dataset cache root must be an absolute path")
+_cache_root = _directory(_cache_raw, "dataset cache root")
+_cache_identity = _directory_chain(_cache_raw, "dataset cache root")
+_private_home = _scratch / "private-home"
+_hf_home = _scratch / "huggingface"
+_torch_home = _scratch / "torch"
+_datasets_cache = _cache_root / "datasets"
+_expected_environment = {
+    "DISABLE_TELEMETRY": "1",
+    "DO_NOT_TRACK": "1",
+    "HF_ASSETS_CACHE": str(_hf_home / "assets"),
+    "HF_DATASETS_CACHE": str(_datasets_cache),
+    "HF_DATASETS_DOWNLOADED_DATASETS_PATH": str(_datasets_cache / "downloads"),
+    "HF_DATASETS_EXTRACTED_DATASETS_PATH": str(_datasets_cache / "downloads" / "extracted"),
+    "HF_HOME": str(_hf_home),
+    "HF_HUB_CACHE": str(_hf_home / "hub"),
+    "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "HF_HUB_DISABLE_UPDATE_CHECK": "1",
+    "HF_HUB_DISABLE_XET": "1",
+    "HF_MODULES_CACHE": str(_hf_home / "modules"),
+    "HF_TOKEN_PATH": str(_hf_home / "token"),
+    "HF_XET_CACHE": str(_hf_home / "xet"),
+    "HOME": str(_private_home),
+    "HUGGINGFACE_ASSETS_CACHE": str(_hf_home / "assets"),
+    "HUGGINGFACE_HUB_CACHE": str(_hf_home / "hub"),
+    "LANG": "C",
+    "LC_ALL": "C",
+    "PYTORCH_KERNEL_CACHE_PATH": str(_torch_home / "kernels"),
+    "TEMP": str(_scratch),
+    "TMP": str(_scratch),
+    "TORCH_EXTENSIONS_DIR": str(_torch_home / "extensions"),
+    "TORCH_HOME": str(_torch_home),
+    "TORCHINDUCTOR_CACHE_DIR": str(_torch_home / "inductor"),
+    "TRANSFORMERS_CACHE": str(_scratch / "transformers"),
+    "TRITON_CACHE_DIR": str(_torch_home / "triton"),
+    "TZ": "UTC",
+    "USERPROFILE": str(_private_home),
+    "XDG_CACHE_HOME": str(_scratch / "xdg-cache"),
+}
 _environment = {key.upper(): value for key, value in _o.environ.items()}
-_required_environment = {"LANG", "LC_ALL", "TEMP", "TMP", "TZ"}
 _os_environment = {
     "SYSTEMROOT", "WINDIR", "COMSPEC",
     "PROCESSOR_ARCHITECTURE", "PROCESSOR_ARCHITEW6432",
 }
-_allowed_environment = _required_environment | _os_environment
-if (not _required_environment.issubset(_environment)
-        or not set(_environment).issubset(_allowed_environment)
-        or _environment["LANG"] != "C" or _environment["LC_ALL"] != "C"
-        or _environment["TZ"] != "UTC"
-        or _p.Path(_environment["TEMP"]).resolve(strict=True) != _scratch
-        or _p.Path(_environment["TMP"]).resolve(strict=True) != _scratch
+_allowed_environment = set(_expected_environment) | _os_environment
+if (set(_environment) - _os_environment != set(_expected_environment)
+        or any(_environment.get(name) != value
+               for name, value in _expected_environment.items())
         or any(not value or "\0" in value or "\n" in value or "\r" in value
                for key, value in _environment.items()
                if key in _os_environment)):
-    _fail("sealed child environment differs from the minimal contract")
-_runner_args = list(_s.argv[7:])
-_runner_options = _options(_runner_args)
+    _fail("sealed child environment differs from the private cache contract")
 _smoke(_runner_options)
-_runtime_bytes = _runtime_path.read_bytes()
+_runtime_bytes = _bytes(_runtime_path, "runtime manifest")
 _runtime = _manifest(_runtime_bytes)
-_bindings = _identity(_p.Path(_runner_options["--frozen-identity"]).read_bytes())
-for _binding, _option in _binding_options.items():
-    if _h.sha256(_p.Path(_runner_options[_option]).read_bytes()).hexdigest() != _bindings[_binding]:
-        _fail("identity binding mismatch: " + _option)
-for _binding, _option in _expected_digest_options.items():
-    if _digest(_runner_options[_option], "runner digest binding") != _bindings[_binding]:
-        _fail("runner digest binding mismatch: " + _option)
+if _capture_profile:
+    _bindings = {}
+    for _binding, _option in _binding_options.items():
+        _artifact = _bytes(_p.Path(_runner_options[_option]), "capture bound artifact")
+        _actual = _h.sha256(_artifact).hexdigest()
+        _expected_option = _capture_expected_digest_options[_binding]
+        if _actual != _digest(_runner_options[_expected_option], "capture digest binding"):
+            _fail("capture artifact digest mismatch: " + _option)
+        _bindings[_binding] = _actual
+else:
+    _identity_path = _p.Path(_runner_options["--frozen-identity"])
+    _bindings = _identity(_bytes(_identity_path, "frozen identity"))
+    for _binding, _option in _binding_options.items():
+        if _h.sha256(_bytes(
+                _p.Path(_runner_options[_option]), "identity-bound artifact"
+        )).hexdigest() != _bindings[_binding]:
+            _fail("identity binding mismatch: " + _option)
+    for _binding, _option in _expected_digest_options.items():
+        if _digest(_runner_options[_option], "runner digest binding") != _bindings[_binding]:
+            _fail("runner digest binding mismatch: " + _option)
 if _runtime_path.resolve(strict=True) != _p.Path(
     _runner_options["--runtime-manifest"]
 ).resolve(strict=True):
     _fail("host and runner runtime manifests differ")
 _source_manifest = _source(
-    _p.Path(_runner_options["--repository-source-manifest"]).read_bytes()
+    _bytes(_p.Path(_runner_options["--repository-source-manifest"]), "source manifest")
 )
+if (_capture_profile
+        and _runner_options["--source-commit"] != _source_manifest["source_commit"]):
+    _fail("capture source commit differs from source-manifest H0")
 if _source_manifest["git_executable"] != {
     "sha256": _runtime["git_executable"]["sha256"],
     "size_bytes": _runtime["git_executable"]["size_bytes"],
@@ -1995,6 +2425,7 @@ _runner_path = _verify_source(_source_manifest, _repository_root)
 _base, _packages, _import_rel, _imports, _interpreter, _git_executable = _verify_runtime(
     _runtime, _base_raw, _package_raw, _git_raw
 )
+_assert_isolated_cache(_cache_root, [_base, *_packages.values(), _pycache, _scratch])
 _s.path.extend(_imports[name] for name in sorted(_imports))
 if _s.path != [str(_base / _p.PurePosixPath(item)) for item in _runtime["base_sys_path"]] + [
     _imports[name] for name in sorted(_imports)
@@ -2003,7 +2434,7 @@ if _s.path != [str(_base / _p.PurePosixPath(item)) for item in _runtime["base_sy
 if _sensitive.intersection(_s.modules):
     _fail("sensitive module appeared before exact runner load")
 _before = _file(_runner_path, "scripts/run_static_q468_calibration.py", "runner source")
-_payload = _runner_path.read_bytes()
+_payload = _bytes(_runner_path, "runner source")
 if _h.sha256(_payload).hexdigest() != _before["sha256"]:
     _fail("runner source changed before compile")
 _module = _types.ModuleType("_recurquant_experiment013_sealed_runner")
@@ -2044,10 +2475,23 @@ try:
         except Exception as error:
             _postcondition_failures.append(("pycache", error))
         try:
+            if _temporary_identity(
+                    _scratch, "sealed scratch directory") != _scratch_identity:
+                raise RuntimeError("sealed scratch directory identity changed")
+            _assert_private_tree(_scratch, "sealed scratch directory")
             if any(_scratch.iterdir()):
-                raise RuntimeError("sealed scratch directory was not cleaned by the runner")
+                raise RuntimeError("sealed scratch directory was not left empty")
         except Exception as error:
-            _postcondition_failures.append(("scratch", error))
+            _postcondition_failures.append(("scratch containment", error))
+        try:
+            if _directory_chain(
+                    _cache_root, "dataset cache root") != _cache_identity:
+                raise RuntimeError("dataset cache root identity changed")
+            _assert_isolated_cache(
+                _cache_root, [_base, *_packages.values(), _pycache, _scratch]
+            )
+        except Exception as error:
+            _postcondition_failures.append(("dataset cache root reauthentication", error))
         try:
             _verify_source(_source_manifest, _repository_root)
         except Exception as error:
@@ -2102,10 +2546,10 @@ def launch(argv: Sequence[str]) -> int:
             raise SealedLaunchError(f"duplicate or reserved package root: {name}")
         package_roots[name] = path
 
-    try:
-        runtime_bytes = args.runtime_manifest.read_bytes()
-    except OSError as exc:
-        raise SealedLaunchError("runtime manifest is unavailable") from exc
+    runtime_bytes = _stable_file_bytes(
+        args.runtime_manifest,
+        context="runtime manifest",
+    )
     runtime_manifest = _parse_runtime_manifest(runtime_bytes)
     runner_options = _extract_runner_options(runner_arguments)
     _bindings, source_manifest, _runner_path = _verify_bound_artifacts(
@@ -2123,6 +2567,14 @@ def launch(argv: Sequence[str]) -> int:
         package_roots=package_roots,
         git_executable_path=args.git_executable,
         require_current_process=False,
+    )
+    dataset_cache_root = _verified_dataset_cache_root(
+        Path(runner_options["--cache-root"]),
+        runtime_roots=(base, *packages.values()),
+    )
+    dataset_cache_identity = _non_link_directory_identity_chain(
+        dataset_cache_root,
+        context="dataset cache root",
     )
 
     pycache: Path | None = None
@@ -2142,6 +2594,10 @@ def launch(argv: Sequence[str]) -> int:
             context="sealed scratch directory",
         )
         scratch = _verify_empty_scratch(scratch)
+        _verified_dataset_cache_root(
+            dataset_cache_root,
+            runtime_roots=(base, *packages.values(), pycache, scratch),
+        )
         command = _sealed_argv(
             interpreter=interpreter,
             runtime_manifest=args.runtime_manifest.resolve(strict=True),
@@ -2155,8 +2611,11 @@ def launch(argv: Sequence[str]) -> int:
         completed = subprocess.run(
             command,
             check=False,
-            cwd=base,
-            env=_sealed_environment(scratch_directory=scratch),
+            cwd=scratch,
+            env=_sealed_environment(
+                scratch_directory=scratch,
+                dataset_cache_root=dataset_cache_root,
+            ),
             input=SEALED_BOOTSTRAP_BYTES,
         )
         try:
@@ -2164,9 +2623,38 @@ def launch(argv: Sequence[str]) -> int:
         except Exception as exc:
             secondary_failures.append(("pycache postcondition", exc))
         try:
+            if (
+                _temporary_directory_identity(
+                    scratch,
+                    context="sealed scratch directory",
+                )
+                != scratch_identity
+            ):
+                raise SealedLaunchError(
+                    "sealed scratch directory identity changed during execution"
+                )
+            _assert_owned_temporary_tree_has_no_reparse(
+                scratch,
+                context="sealed scratch directory",
+            )
             _verify_empty_scratch(scratch)
         except Exception as exc:
-            secondary_failures.append(("scratch postcondition", exc))
+            secondary_failures.append(("scratch containment postcondition", exc))
+        try:
+            repeated_cache_root = _verified_dataset_cache_root(
+                dataset_cache_root,
+                runtime_roots=(base, *packages.values(), pycache, scratch),
+            )
+            if (
+                _non_link_directory_identity_chain(
+                    repeated_cache_root,
+                    context="dataset cache root",
+                )
+                != dataset_cache_identity
+            ):
+                raise SealedLaunchError("dataset cache root identity changed during execution")
+        except Exception as exc:
+            secondary_failures.append(("dataset cache root reauthentication", exc))
         try:
             _bindings, repeated_source, _runner_path = _verify_bound_artifacts(
                 runner_options,

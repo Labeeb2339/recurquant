@@ -34,6 +34,8 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     base = tmp_path / "base"
     packages = tmp_path / "packages"
     repository = tmp_path / "repository"
+    cache_root = tmp_path / "dataset-cache"
+    cache_root.mkdir()
     artifacts = tmp_path / "artifacts"
     git_executable = _write(tmp_path / "toolchain" / "git.exe", b"fixture git executable\n")
     git_executable, git_record = launcher._authenticated_git_executable(git_executable)
@@ -162,6 +164,8 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         "--fisher-h1-smoke",
         "--frozen-identity",
         str(identity_path),
+        "--cache-root",
+        str(cache_root),
         "--repository-source-manifest",
         str(source_path),
         "--model-file-manifest",
@@ -196,6 +200,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     return {
         "base": base,
         "bindings": bindings,
+        "cache_root": cache_root,
         "git_executable": git_executable,
         "host_arguments": host_arguments,
         "model_path": model_path,
@@ -241,14 +246,17 @@ def _run_embedded_manifest_boundary(
         str(scratch),
         *fixture["runner_arguments"],
     ]
-    environment = launcher._sealed_environment(scratch_directory=scratch)
+    environment = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=fixture["cache_root"],
+    )
     if extra_environment:
         environment.update(extra_environment)
     return subprocess.run(
         command,
         check=False,
         capture_output=True,
-        cwd=fixture["base"],
+        cwd=scratch,
         env=environment,
         input=launcher.SEALED_BOOTSTRAP_BYTES,
     )
@@ -323,12 +331,16 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
     assert command[16:] == fixture["runner_arguments"]
     assert not Path(command[13]).exists()
     assert not Path(command[15]).exists()
-    assert cwd == fixture["base"].resolve(strict=True)
+    assert cwd == Path(command[15])
     assert all(not key.upper().startswith("PYTHON") for key in environment)
     assert "VIRTUAL_ENV" not in environment
     assert "VIRTUAL_ENV_PROMPT" not in environment
     assert "PATH" not in environment
     assert environment["TEMP"] == environment["TMP"] == command[15]
+    assert (
+        environment["HOME"] == environment["USERPROFILE"] == str(Path(command[15]) / "private-home")
+    )
+    assert environment["HF_DATASETS_CACHE"] == str(fixture["cache_root"] / "datasets")
     assert stdin_payload == launcher.SEALED_BOOTSTRAP_BYTES
 
 
@@ -356,7 +368,7 @@ def test_failed_child_return_code_survives_residue_and_owned_roots_are_cleaned(
     diagnostic = capsys.readouterr().err
     assert "sealed launcher secondary failure" in diagnostic
     assert "pycache postcondition" in diagnostic
-    assert "scratch postcondition" in diagnostic
+    assert "scratch containment postcondition" in diagnostic
     assert "preserving child return code 37" in diagnostic
 
 
@@ -383,7 +395,7 @@ def test_successful_child_residue_fails_closed_after_owned_roots_are_cleaned(
         launcher.launch(fixture["host_arguments"])
 
     assert "pycache postcondition" in str(caught.value)
-    assert "scratch postcondition" in str(caught.value)
+    assert "scratch containment postcondition" in str(caught.value)
     assert temporary_roots and all(not path.exists() for path in temporary_roots)
 
 
@@ -582,6 +594,8 @@ def test_sealed_environment_omits_auth_network_and_compute_modifiers(
 ) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
+    cache_root = tmp_path / "dataset-cache"
+    cache_root.mkdir()
     forbidden = {
         "HF_TOKEN": "secret",
         "HUGGING_FACE_HUB_TOKEN": "secret",
@@ -597,12 +611,89 @@ def test_sealed_environment_omits_auth_network_and_compute_modifiers(
     for name, value in forbidden.items():
         monkeypatch.setenv(name, value)
 
-    environment = launcher._sealed_environment(scratch_directory=scratch)
+    environment = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=cache_root,
+    )
 
     assert not set(forbidden).intersection({name.upper() for name in environment})
     assert environment["TEMP"] == environment["TMP"] == str(scratch.resolve(strict=True))
     assert environment["LANG"] == environment["LC_ALL"] == "C"
     assert environment["TZ"] == "UTC"
+    assert environment["HOME"] == environment["USERPROFILE"] == str(scratch / "private-home")
+    assert environment["HF_HOME"] == str(scratch / "huggingface")
+    assert environment["TORCH_HOME"] == str(scratch / "torch")
+    assert environment["HF_DATASETS_CACHE"] == str(cache_root / "datasets")
+    assert environment["HF_DATASETS_DOWNLOADED_DATASETS_PATH"] == str(
+        cache_root / "datasets" / "downloads"
+    )
+    assert environment["HF_DATASETS_EXTRACTED_DATASETS_PATH"] == str(
+        cache_root / "datasets" / "downloads" / "extracted"
+    )
+    assert {
+        "DISABLE_TELEMETRY": "1",
+        "DO_NOT_TRACK": "1",
+        "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+        "HF_HUB_DISABLE_UPDATE_CHECK": "1",
+        "HF_HUB_DISABLE_XET": "1",
+    }.items() <= environment.items()
+
+
+def test_private_home_prevents_literal_tilde_runtime_writes(tmp_path: Path) -> None:
+    scratch = tmp_path / "scratch"
+    cache_root = tmp_path / "dataset-cache"
+    scratch.mkdir()
+    cache_root.mkdir()
+    environment = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=cache_root,
+    )
+    code = (
+        "from pathlib import Path\n"
+        "home = Path('~').expanduser()\n"
+        "assert home.is_absolute()\n"
+        "target = home / '.cache' / 'huggingface' / '.agent_harnesses.json'\n"
+        "target.parent.mkdir(parents=True)\n"
+        "target.write_text('contained\\n', encoding='utf-8')\n"
+    )
+
+    subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", code],
+        check=True,
+        cwd=scratch,
+        env=environment,
+    )
+
+    assert (scratch / "private-home" / ".cache" / "huggingface" / ".agent_harnesses.json").is_file()
+    assert not (scratch / "~").exists()
+
+
+def test_dataset_cache_root_is_absolute_non_link_and_disjoint(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    nested_cache = runtime / "cache"
+    nested_cache.mkdir()
+    with pytest.raises(launcher.SealedLaunchError, match="absolute path"):
+        launcher._verified_dataset_cache_root(Path("relative-cache"), runtime_roots=(runtime,))
+    with pytest.raises(launcher.SealedLaunchError, match="overlaps"):
+        launcher._verified_dataset_cache_root(nested_cache, runtime_roots=(runtime,))
+    with pytest.raises(launcher.SealedLaunchError, match="overlaps"):
+        launcher._verified_dataset_cache_root(tmp_path, runtime_roots=(runtime,))
+
+
+def test_dataset_cache_root_rejects_redirected_ancestor(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    cache = target / "cache"
+    cache.mkdir(parents=True)
+    redirect = tmp_path / "redirect"
+    try:
+        redirect.symlink_to(target, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks are unavailable: {error}")
+
+    with pytest.raises(launcher.SealedLaunchError, match="link or reparse"):
+        launcher._verified_dataset_cache_root(redirect / "cache", runtime_roots=())
 
 
 def test_embedded_bootstrap_rejects_an_extra_credential_variable(tmp_path: Path) -> None:
@@ -615,7 +706,7 @@ def test_embedded_bootstrap_rejects_an_extra_credential_variable(tmp_path: Path)
     )
 
     assert completed.returncode != 0
-    assert b"sealed child environment differs from the minimal contract" in completed.stderr
+    assert b"sealed child environment differs from the private cache contract" in completed.stderr
 
 
 def test_help_does_not_require_the_runner_separator(capsys: pytest.CaptureFixture[str]) -> None:
