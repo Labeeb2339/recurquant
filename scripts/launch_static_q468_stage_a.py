@@ -41,7 +41,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _BOUND_ARTIFACT_OPTIONS: Final = {
@@ -691,7 +691,7 @@ def _stage_a_receipt(options, bindings):
             or type(root.get("schema_version")) is not int or root.get("schema_version") != 1
             or type(root.get("capture_version")) is not int or root.get("capture_version") != 6
             or root.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v10"
+            != "experiment-013-static-q468-calibration-runner-v11"
             or root.get("phase") != "stage_a"
             or root.get("status")
             != "captured_under_authenticated_runtime_and_launcher_finalized"
@@ -1255,37 +1255,75 @@ def launch(argv: Sequence[str]) -> int:
                 require_current_process=False,
             )
         )
-        dataset_cache_root = calibration_launcher._verified_dataset_cache_root(
-            Path(options["--cache-root"]),
-            runtime_roots=(base, *packages.values()),
-        )
-        bootstrap = _stage_a_bootstrap(calibration_launcher).encode("utf-8")
-        runtime_manifest_path = args.runtime_manifest.resolve(strict=True)
-        mode = runner_arguments[0]
-        runs: list[tuple[list[str], bool]] = []
-        if mode in {"execute", "preflight"}:
-            runs.append((["prepare-inputs", *runner_arguments[1:]], False))
-        runs.append((list(runner_arguments), mode != "prepare-inputs"))
-        for index, (child_arguments, offline) in enumerate(runs):
-            return_code = _run_sealed_child(
-                calibration_launcher=calibration_launcher,
-                bootstrap=bootstrap,
-                runtime_manifest_path=runtime_manifest_path,
-                runtime_manifest_bytes=runtime_bytes,
-                runtime_manifest=runtime_manifest,
-                interpreter=interpreter,
+        with calibration_launcher._acquire_executable_custody(
+            interpreter=interpreter,
+            git_executable=git_executable,
+            runtime_manifest=runtime_manifest,
+        ) as executable_custody:
+            (
+                held_bindings,
+                held_source,
+                held_runner,
+                held_runtime_bytes,
+            ) = _verify_bound_inputs(options, runtime_manifest_path=args.runtime_manifest)
+            if (
+                held_bindings != _bindings
+                or held_source != source
+                or held_runner != _runner
+                or held_runtime_bytes != runtime_bytes
+            ):
+                raise SealedStageALaunchError(
+                    "Stage-A inputs changed after executable custody acquisition"
+                )
+            held_runtime_manifest = calibration_launcher._parse_runtime_manifest(held_runtime_bytes)
+            if held_runtime_manifest != runtime_manifest:
+                raise SealedStageALaunchError(
+                    "Stage-A runtime changed after executable custody acquisition"
+                )
+            held_runtime = calibration_launcher._verify_runtime(
+                held_runtime_manifest,
                 base_runtime_root=base,
                 package_roots=packages,
-                git_executable=git_executable,
-                source=source,
-                options=options,
-                runner_arguments=child_arguments,
-                dataset_cache_root=dataset_cache_root,
-                offline=offline,
+                git_executable_path=git_executable,
+                require_current_process=False,
             )
-            if return_code != 0 or index == len(runs) - 1:
-                return return_code
-        raise AssertionError("Stage-A child execution schedule was empty")
+            if held_runtime != (base, packages, _import_paths, interpreter, git_executable):
+                raise SealedStageALaunchError(
+                    "Stage-A runtime paths changed after executable custody acquisition"
+                )
+            executable_custody.verify()
+            dataset_cache_root = calibration_launcher._verified_dataset_cache_root(
+                Path(options["--cache-root"]),
+                runtime_roots=(base, *packages.values()),
+            )
+            bootstrap = _stage_a_bootstrap(calibration_launcher).encode("utf-8")
+            runtime_manifest_path = args.runtime_manifest.resolve(strict=True)
+            mode = runner_arguments[0]
+            runs: list[tuple[list[str], bool]] = []
+            if mode in {"execute", "preflight"}:
+                runs.append((["prepare-inputs", *runner_arguments[1:]], False))
+            runs.append((list(runner_arguments), mode != "prepare-inputs"))
+            for index, (child_arguments, offline) in enumerate(runs):
+                return_code = _run_sealed_child(
+                    calibration_launcher=calibration_launcher,
+                    bootstrap=bootstrap,
+                    runtime_manifest_path=runtime_manifest_path,
+                    runtime_manifest_bytes=runtime_bytes,
+                    runtime_manifest=runtime_manifest,
+                    interpreter=interpreter,
+                    base_runtime_root=base,
+                    package_roots=packages,
+                    git_executable=git_executable,
+                    source=source,
+                    options=options,
+                    runner_arguments=child_arguments,
+                    dataset_cache_root=dataset_cache_root,
+                    offline=offline,
+                )
+                if return_code != 0 or index == len(runs) - 1:
+                    executable_custody.verify()
+                    return return_code
+            raise AssertionError("Stage-A child execution schedule was empty")
     finally:
         sys.modules.pop(CALIBRATION_LAUNCHER_MODULE_NAME, None)
 

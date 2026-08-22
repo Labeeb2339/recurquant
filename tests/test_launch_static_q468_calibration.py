@@ -5,7 +5,9 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 import platform
+import shutil
 import struct
 import subprocess
 import sys
@@ -535,21 +537,38 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
     monkeypatch.setenv("PATH", str(tmp_path / "fake-path"))
     events: list[str] = []
     commands: list[tuple[list[str], Path, dict[str, str], bytes]] = []
+    original_git_bytes = fixture["git_executable"].read_bytes()
     verify_bound = launcher._verify_bound_artifacts
     verify_runtime = launcher._verify_runtime
     verify_pycache = launcher._verify_empty_pycache
+    cleanup_temporary = launcher._cleanup_owned_temporary_directory
+
+    def assert_git_locked() -> None:
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                fixture["git_executable"].write_bytes(b"mutated outside custody\n")
 
     def bound_wrapper(*args: Any, **kwargs: Any) -> Any:
         events.append("bound")
+        if events.count("bound") >= 2:
+            assert_git_locked()
         return verify_bound(*args, **kwargs)
 
     def runtime_wrapper(*args: Any, **kwargs: Any) -> Any:
         events.append("runtime")
+        if events.count("runtime") >= 2:
+            assert_git_locked()
         return verify_runtime(*args, **kwargs)
 
     def pycache_wrapper(*args: Any, **kwargs: Any) -> Any:
         events.append("pycache")
+        assert_git_locked()
         return verify_pycache(*args, **kwargs)
+
+    def cleanup_wrapper(*args: Any, **kwargs: Any) -> Any:
+        events.append("cleanup")
+        assert_git_locked()
+        return cleanup_temporary(*args, **kwargs)
 
     def run_wrapper(
         command: list[str],
@@ -561,16 +580,20 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
     ) -> subprocess.CompletedProcess[str]:
         events.append("run")
         assert check is False
+        assert_git_locked()
         commands.append((command, cwd, env, input))
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(launcher, "_verify_bound_artifacts", bound_wrapper)
     monkeypatch.setattr(launcher, "_verify_runtime", runtime_wrapper)
     monkeypatch.setattr(launcher, "_verify_empty_pycache", pycache_wrapper)
+    monkeypatch.setattr(launcher, "_cleanup_owned_temporary_directory", cleanup_wrapper)
     monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
 
     assert launcher.launch(fixture["host_arguments"]) == 0
     assert events == [
+        "bound",
+        "runtime",
         "bound",
         "runtime",
         "pycache",
@@ -578,6 +601,8 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
         "pycache",
         "bound",
         "runtime",
+        "cleanup",
+        "cleanup",
     ]
     assert len(commands) == 1
     command, cwd, environment, stdin_payload = commands[0]
@@ -605,6 +630,236 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
     )
     assert environment["HF_DATASETS_CACHE"] == str(fixture["cache_root"] / "datasets")
     assert stdin_payload == launcher.SEALED_BOOTSTRAP_BYTES
+    fixture["git_executable"].write_bytes(original_git_bytes)
+    assert fixture["git_executable"].read_bytes() == original_git_bytes
+
+
+def test_executable_custody_holds_authenticated_files_until_release(tmp_path: Path) -> None:
+    python_path = Path(sys.executable).resolve(strict=True)
+    git_path = _write(tmp_path / "toolchain" / "git.exe", b"fixture Git executable\n")
+    python_record = launcher._stable_file_record(
+        python_path,
+        relative=python_path.name,
+        context="test Python executable",
+    )
+    git_path, git_record = launcher._authenticated_git_executable(git_path)
+    runtime = {
+        "git_executable": git_record,
+        "interpreter": {
+            "relative_path": python_path.name,
+            "root": launcher.BASE_RUNTIME_ROOT_NAME,
+            "sha256": python_record["sha256"],
+            "size_bytes": python_record["size_bytes"],
+        },
+        "machine": {"system": platform.system()},
+    }
+    original_git = git_path.read_bytes()
+    replacement = _write(git_path.with_name("replacement.exe"), b"replacement\n")
+    moved = git_path.with_name("moved.exe")
+
+    with launcher._acquire_executable_custody(
+        interpreter=python_path,
+        git_executable=git_path,
+        runtime_manifest=runtime,
+    ) as custody:
+        custody.verify()
+        assert custody.record["mode"] == launcher.EXECUTABLE_CUSTODY_MODE
+        assert custody.record["protocol_eligible"] is (os.name == "nt")
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                git_path.write_bytes(b"mutated while held\n")
+            with pytest.raises(OSError):
+                git_path.unlink()
+            with pytest.raises(OSError):
+                git_path.rename(moved)
+            with pytest.raises(OSError):
+                os.replace(replacement, git_path)
+            completed = subprocess.run(
+                [str(python_path), "-I", "-S", "-B", "-c", "print('custody-ok')"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert completed.stdout == "custody-ok\n"
+
+        custody.close()
+        with pytest.raises(launcher.SealedLaunchError, match="released"):
+            custody.verify()
+
+    if os.name == "nt":
+        git_path.rename(moved)
+        moved.rename(git_path)
+        os.replace(replacement, git_path)
+        assert git_path.read_bytes() == b"replacement\n"
+        git_path.unlink()
+    git_path.write_bytes(original_git)
+    assert git_path.read_bytes() == original_git
+
+
+def test_executable_custody_allows_authenticated_python_and_git_launches() -> None:
+    git_candidate = shutil.which("git")
+    assert git_candidate is not None
+    python_path = Path(sys.executable).resolve(strict=True)
+    git_path, git_record = launcher._authenticated_git_executable(Path(git_candidate))
+    python_record = launcher._stable_file_record(
+        python_path,
+        relative=python_path.name,
+        context="test Python executable",
+    )
+    runtime = {
+        "git_executable": git_record,
+        "interpreter": {
+            "relative_path": python_path.name,
+            "root": launcher.BASE_RUNTIME_ROOT_NAME,
+            "sha256": python_record["sha256"],
+            "size_bytes": python_record["size_bytes"],
+        },
+        "machine": {"system": platform.system()},
+    }
+
+    with launcher._acquire_executable_custody(
+        interpreter=python_path,
+        git_executable=git_path,
+        runtime_manifest=runtime,
+    ) as custody:
+        python_result = subprocess.run(
+            [str(python_path), "-I", "-S", "-B", "-c", "print('custody-python-ok')"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        git_result = subprocess.run(
+            [str(git_path), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        custody.verify()
+
+    assert python_result.stdout == "custody-python-ok\n"
+    assert git_result.stdout.startswith("git version ")
+
+
+def test_executable_custody_rejects_an_empty_unacquired_handle_set() -> None:
+    custody = launcher._HeldExecutableCustody(entries=())
+
+    with pytest.raises(
+        launcher.SealedLaunchError,
+        match="does not contain the authenticated Python and Git roles",
+    ):
+        custody.verify()
+
+
+def test_executable_custody_rejects_dead_handles_even_for_exact_roles(tmp_path: Path) -> None:
+    python_path = Path(sys.executable).resolve(strict=True)
+    git_path = _write(tmp_path / "toolchain" / "git.exe", b"fixture Git executable\n")
+    python_record = launcher._stable_file_record(
+        python_path,
+        relative=python_path.name,
+        context="test Python executable",
+    )
+    git_path, git_record = launcher._authenticated_git_executable(git_path)
+    runtime = {
+        "git_executable": git_record,
+        "interpreter": {
+            "relative_path": python_path.name,
+            "root": launcher.BASE_RUNTIME_ROOT_NAME,
+            "sha256": python_record["sha256"],
+            "size_bytes": python_record["size_bytes"],
+        },
+        "machine": {"system": platform.system()},
+    }
+
+    with launcher._acquire_executable_custody(
+        interpreter=python_path,
+        git_executable=git_path,
+        runtime_manifest=runtime,
+    ) as custody:
+        if os.name == "nt":
+            forged = launcher._HeldExecutableCustody(
+                entries=custody._entries,
+                windows_handles=(0, 0),
+            )
+            error_match = "Windows executable custody handle"
+        else:
+            forged = launcher._HeldExecutableCustody(
+                entries=custody._entries,
+                posix_descriptors=(-1, -1),
+            )
+            error_match = "POSIX custody descriptor"
+        with pytest.raises(launcher.SealedLaunchError, match=error_match):
+            forged.verify()
+
+
+def test_executable_custody_entry_failure_releases_all_handles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_path = Path(sys.executable).resolve(strict=True)
+    git_path = _write(tmp_path / "toolchain" / "git.exe", b"fixture Git executable\n")
+    python_record = launcher._stable_file_record(
+        python_path,
+        relative=python_path.name,
+        context="test Python executable",
+    )
+    git_path, git_record = launcher._authenticated_git_executable(git_path)
+    runtime = {
+        "git_executable": git_record,
+        "interpreter": {
+            "relative_path": python_path.name,
+            "root": launcher.BASE_RUNTIME_ROOT_NAME,
+            "sha256": python_record["sha256"],
+            "size_bytes": python_record["size_bytes"],
+        },
+        "machine": {"system": platform.system()},
+    }
+    custody = launcher._acquire_executable_custody(
+        interpreter=python_path,
+        git_executable=git_path,
+        runtime_manifest=runtime,
+    )
+
+    def fail_entry_verification() -> None:
+        raise launcher.SealedLaunchError("forced custody entry failure")
+
+    monkeypatch.setattr(custody, "verify", fail_entry_verification)
+    with pytest.raises(launcher.SealedLaunchError, match="forced custody entry failure"):
+        custody.__enter__()
+
+    assert custody._closed is True
+    git_path.write_bytes(b"write proves entry-failure handles were released\n")
+
+
+def test_executable_custody_releases_partial_handles_after_git_path_mismatch(
+    tmp_path: Path,
+) -> None:
+    python_path = Path(sys.executable).resolve(strict=True)
+    git_path = _write(tmp_path / "toolchain" / "git.exe", b"fixture Git executable\n")
+    python_record = launcher._stable_file_record(
+        python_path,
+        relative=python_path.name,
+        context="test Python executable",
+    )
+    git_path, git_record = launcher._authenticated_git_executable(git_path)
+    runtime = {
+        "git_executable": {**git_record, "absolute_path_sha256": "0" * 64},
+        "interpreter": {
+            "relative_path": python_path.name,
+            "root": launcher.BASE_RUNTIME_ROOT_NAME,
+            "sha256": python_record["sha256"],
+            "size_bytes": python_record["size_bytes"],
+        },
+        "machine": {"system": platform.system()},
+    }
+
+    with pytest.raises(launcher.SealedLaunchError, match="path differs"):
+        launcher._acquire_executable_custody(
+            interpreter=python_path,
+            git_executable=git_path,
+            runtime_manifest=runtime,
+        )
+
+    git_path.write_bytes(b"write proves partial handles were released\n")
 
 
 def test_capture_candidate_authenticates_exact_source_runtime_and_bindings(
@@ -794,6 +1049,9 @@ def test_capture_receipt_is_published_only_after_postconditions_and_cleanup(
         assert temporary_roots and all(not path.exists() for path in temporary_roots)
         assert fixture["identity_output"].read_bytes() == identity_bytes
         assert not fixture["receipt_output"].exists()
+        if os.name == "nt":
+            with pytest.raises(OSError):
+                fixture["git_executable"].write_bytes(b"mutated during publication\n")
         original_publish(snapshot, payload)
 
     monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)

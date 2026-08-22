@@ -1042,7 +1042,24 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
         parsed_runtime_bytes.append(data)
         return {"git_executable": git_record}
 
+    class FakeExecutableCustody:
+        active = False
+
+        def __enter__(self) -> FakeExecutableCustody:
+            self.active = True
+            return self
+
+        def __exit__(self, *_args: Any) -> bool:
+            self.active = False
+            return False
+
+        def verify(self) -> None:
+            assert self.active
+            return None
+
+    fake_custody = FakeExecutableCustody()
     fake_calibration = SimpleNamespace(
+        _acquire_executable_custody=lambda **_kwargs: fake_custody,
         _parse_runtime_manifest=parse_runtime_manifest,
         _verify_runtime=lambda *args, **kwargs: (
             base,
@@ -1068,6 +1085,7 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
     child_modes: list[str] = []
 
     def fake_run(command: list[str], **kwargs: Any) -> Any:
+        assert fake_custody.active
         calls.append("subprocess")
         child_modes.append(command[16])
         assert command[1:4] == ["-I", "-S", "-B"]
@@ -1096,7 +1114,15 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
         ]
     )
     assert result == 0
-    assert calls == ["verify", "subprocess", "verify", "subprocess", "verify"]
+    assert fake_custody.active is False
+    assert calls == [
+        "verify",
+        "verify",
+        "subprocess",
+        "verify",
+        "subprocess",
+        "verify",
+    ]
     assert child_modes == ["prepare-inputs", "preflight"]
-    assert parsed_runtime_bytes == [authenticated_runtime_bytes]
+    assert parsed_runtime_bytes == [authenticated_runtime_bytes, authenticated_runtime_bytes]
     assert runtime_path.read_bytes() == swapped_runtime_bytes

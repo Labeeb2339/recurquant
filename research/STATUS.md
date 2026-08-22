@@ -2,7 +2,7 @@
 
 ## v0.3 experimental track
 
-Last updated: 2026-08-02
+Last updated: 2026-08-23
 
 Experiment 005 stopped before holdout after its frozen real-storage-boundary
 sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
@@ -114,6 +114,22 @@ Checkpoint/replay and Gated DeltaNet `(u, k, g)` buffering are established
 prior art through Nemotron 3 Ultra and ReplaySSM. Even a future protocol pass
 would not by itself support a first, novelty, speed, deployment,
 state-of-the-art, or breakthrough claim.
+
+Experiment 013 is a separate, still-unexecuted static RHT-Q468 comparison. Its
+pre-H0 candidate now requires Windows-held launch handles for the exact staged
+Python and canonical Git executables, a second authentication pass while those
+handles are live, runtime-manifest schema v6, calibration runner v11, and
+Stage-A runner v5. The policy blocks new data-write and delete/rename opens for
+those two executable paths while the sealed child chain and launcher-side
+finalization run. It does not attest Python/Git DLLs, the Windows loader, the
+kernel, or privileged host administration.
+
+No live Experiment 013 calibration, Stage-A result, quality result, or H0-bound
+artifact is committed here. The exact source revision must pass focused, full,
+and CI verification and receive its H0 tag before a fresh runtime/source chain,
+model staging, Fisher smoke, calibration, or Stage-A execution is authorized.
+See
+[`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
 packer and an exact dynamic-programming allocator. Its corrected two-bit

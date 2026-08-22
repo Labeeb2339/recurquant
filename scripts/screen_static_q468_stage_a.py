@@ -46,7 +46,7 @@ RESOLVER_SOURCE_PATH: Final = "scripts/resolve_static_q468_identity.py"
 SOURCE_MODULE_PATH: Final = "src/recurquant/experiment013_source.py"
 STAGE_A_GATE_MODULE_PATH: Final = "src/recurquant/experiment013_stage_a.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v4"
+RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v5"
 ATTEMPT_SCHEMA: Final = "recurquant.experiment013.stage-a-attempt.v3"
 IDENTITY_ATTEMPT_LOCK_SCHEMA: Final = "recurquant.experiment013.stage-a-identity-attempt-lock.v4"
 IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
@@ -91,7 +91,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
 ONE_RUN_MARKER: Final = "RecurQuant-One-Run: experiment013-stage-a-v1"
 CLAIM_BOUNDARY: Final = (
     "Stage A is a falsification screen only. Passage is not confirmation, selector "

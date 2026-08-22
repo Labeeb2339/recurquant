@@ -66,7 +66,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -112,7 +112,7 @@ STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibratio
 MODEL_STAGING_PATHS_KIND: Final = "recurquant_experiment013_model_staging_paths_verification"
 MODEL_STAGING_PATHS_SCHEMA: Final = 1
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 5
+RUNTIME_MANIFEST_SCHEMA: Final = 6
 OFFICIAL_DATASETS_DISTRIBUTION_VERSION: Final = "4.8.5"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 3
@@ -258,6 +258,7 @@ SEALED_LAUNCH_POLICY: Final = {
     "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
+    "executable_custody_mode": "platform-held-launch-handles-v1",
     "ignore_environment": 1,
     "isolated": 1,
     "no_site": 1,

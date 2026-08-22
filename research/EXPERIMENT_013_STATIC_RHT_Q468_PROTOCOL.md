@@ -1,8 +1,8 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound fifth replacement-H0 candidate. Calibration runner v10 now
-> gives calibration and Stage-A identity capture separate sealed profiles;
-> Stage-A runner v4 carries the finalized receipt through the one-run custody
+> **Status: unbound fifth replacement-H0 candidate. Calibration runner v11 and
+> runtime-manifest v6 now bind held executable custody around every sealed
+> launch; Stage-A runner v5 carries the finalized receipt through the one-run custody
 > chain. No replacement H0, identity recapture, protected execution, or quality
 > result has been authorized; not yet re-preregistered.**
 >
@@ -1243,6 +1243,52 @@ chain, live identity capture, promotion, model staging, calibration, Stage-A
 execution, protected read, quality result, deployment claim, novelty claim, or
 breakthrough claim.
 
+Twenty-third pre-H0 executable-launch-custody amendment candidate: 2026-08-23.
+The preceding exact-byte loaders still left a final path-launch interval for
+the authenticated staged Python executable and canonical Git-for-Windows
+executable. On the evaluated Windows host, calibration launcher v11 now opens
+both exact regular non-reparse files with `CreateFileW`, `GENERIC_READ`, and
+only `FILE_SHARE_READ`. The handles are non-inheritable and remain open across
+a second complete runtime/source/binding authentication, child creation, every
+sealed child, postconditions, owned-root cleanup, capture-receipt publication,
+and the final host reauthentication. While each handle is held, probes that
+request data/append-write or delete/rename access must fail with sharing
+violation or an already stronger ACL denial. Attribute-only access is outside
+the share-mode claim. File identity, size, attributes, and SHA-256 are rechecked
+under custody, and `GetFileInformationByHandle` must bind each still-live
+handle to the authenticated volume, file index, and size. A missing, dead, or
+substituted handle, early release, byte or path-identity drift, or successful
+conflicting open fails closed. Entry-verification failure releases every handle
+before surfacing the failure.
+
+Stage-A launcher v5 uses the same exact-byte-loaded calibration-launcher
+primitive and holds one custody pair across both its network preparation child
+and offline execution child. This protects the two executable path endpoints
+named by the preceding amendment; it does not recursively attest Git DLLs,
+Python DLLs, the Windows loader, the kernel, or privileged host administration.
+Those components remain in the disclosed external trusted computing base.
+
+Calibration runtime-manifest schema advances from v5 to v6 and adds exactly
+`executable_custody_mode=platform-held-launch-handles-v1` to the sealed launch
+policy. Calibration runner revision advances from v10 to v11 and Stage-A
+runner revision advances from v4 to v5. Every downstream identity and result
+already binds the exact runtime-manifest file, so the custody mode is recorded
+without adding an outcome field or changing a scientific identity. The
+per-process raw handles, their kernel identities, and acquisition outcome are
+enforced in memory and are not serialized into downstream artifacts; the
+artifacts attest the required custody policy, not a replayable OS handle. On
+POSIX, the same source holds read descriptors only so the cross-platform unit
+suite can exercise lifecycle and cleanup; such a run is explicitly ineligible
+for Experiment 013 protocol evidence. The frozen live runtime remains Windows.
+
+No prior runtime manifest is schema-v6 eligible. The next H0 must receive green
+focused, full, and CI verification for these exact bytes before tagging. Only
+after that H0 exists may a fresh no-overwrite runtime be prepared, the source
+manifest be captured, or an identity be recaptured. This working copy does not
+authorize protected data access, model staging/loading, Fisher smoke,
+calibration, Stage-A execution, quality publication, deployment, novelty, or a
+breakthrough claim.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -1618,7 +1664,7 @@ parquet_materialization_manifest_file_sha256
 ```
 
 The source manifest authenticates the implementation, tests, protocol, and
-runner at point of use. Calibration runtime-manifest v5 authenticates the
+runner at point of use. Calibration runtime-manifest v6 authenticates the
 Python and installed package-code inventory used by calibration plus the
 private-scratch child-cwd and cache-confinement launch policy defined by the
 Seventeenth amendment. The model manifest is derived from immutable Hub
@@ -1633,8 +1679,9 @@ Identity capture is an official calibration-runtime action, not a host-side
 manifest inspection. The sole official entrypoint is the outer sealed launcher
 with runner command `capture-calibration-identity` and the exact option profile
 in the Seventeenth amendment; the ordinary unsealed runner rejects it. It must
-use the authenticated staged v5 interpreter with the exact authenticated base
-`sys.path`, package roots, import paths, and 54-distribution inventory. Those
+use the authenticated staged interpreter bound by runtime-manifest v6, with the
+exact authenticated base `sys.path`, package roots, import paths, and
+54-distribution inventory. Those
 facts are checked in the capture process before tokenizer or dataset content
 access. A repository host virtual environment may coordinate preparation or
 tests, but may not execute the official capture or satisfy this provenance
@@ -1654,7 +1701,7 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v9's identity view. It requires the exact receipt and runtime inputs
+runner v11's identity view. It requires the exact receipt and runtime inputs
 `--capture-provenance-receipt`,
 `--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
 `--expected-runtime-manifest-sha256`. It accepts no H1, model manifest, Hub,
@@ -2112,8 +2159,9 @@ evidence chain, and materializes Stage-A content only after reservation from
 the local bundle. A Python socket audit guard makes attempted network access in
 that offline child fatal.
 
-Both children use the authenticated staged v5 interpreter and package roots,
-run with a launcher-owned scratch directory as cwd, confine private home, Hub,
+Both children use the authenticated staged interpreter and package roots bound
+by runtime-manifest v6, run with a launcher-owned scratch directory as cwd,
+confine private home, Hub,
 assets, token, Xet, Transformers, Torch, Triton, and compiler caches to that
 scratch directory, and place only dataset caches below the validated explicit
 cache root. Their scratch and bytecode roots use the identity-bound cleanup and
@@ -2136,7 +2184,7 @@ re-execution and ordinary local history changes detectable. They provide a
 durable honest-process audit trail on the machine where the run is performed;
 they are not a cryptographic proof that only one execution was ever possible.
 
-The source and calibration runtime-manifest v5 authenticate the exact canonical Git
+The source and calibration runtime-manifest v6 authenticate the exact canonical Git
 executable bytes, file size, and normalized absolute-path digest used by the
 runner. They do not recursively authenticate Git-for-Windows loaded DLLs,
 helper executables, the Windows kernel, or the underlying operating system;

@@ -333,7 +333,7 @@ STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 3
-CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
+CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
 CALIBRATION_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
@@ -384,7 +384,7 @@ CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES: Final = frozenset(
 )
 
 CALIBRATION_RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-CALIBRATION_RUNTIME_MANIFEST_SCHEMA_VERSION: Final = 5
+CALIBRATION_RUNTIME_MANIFEST_SCHEMA_VERSION: Final = 6
 CALIBRATION_MODEL_FILE_MANIFEST_KIND: Final = "recurquant_experiment013_model_file_manifest"
 CALIBRATION_MODEL_FILE_MANIFEST_SCHEMA_VERSION: Final = 1
 CALIBRATION_MODEL_FILE_MANIFEST_DERIVATION: Final = "huggingface-hub-pinned-tree-lfs-v1"
@@ -446,6 +446,7 @@ CALIBRATION_SEALED_LAUNCH_POLICY: Final = MappingProxyType(
         "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
         "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
         "dont_write_bytecode": 1,
+        "executable_custody_mode": "platform-held-launch-handles-v1",
         "ignore_environment": 1,
         "isolated": 1,
         "no_site": 1,
@@ -2068,7 +2069,7 @@ class StageACalibrationBindingArtifact:
 
 @dataclass(frozen=True, slots=True)
 class StageACalibrationAuthorizationArtifact:
-    """Verified authorization over one finalized runner-v10 calibration chain."""
+    """Verified authorization over one finalized runner-v11 calibration chain."""
 
     binding: Mapping[str, str]
     calibration_dependencies: Mapping[str, bytes]
@@ -4277,7 +4278,7 @@ def build_stage_a_calibration_authorization_artifact(
     repository_source_manifest: bytes,
     static_q48_policy_artifact: bytes,
 ) -> bytes:
-    """Authorize Stage A only after the complete runner-v10 chain is finalized."""
+    """Authorize Stage A only after the complete runner-v11 chain is finalized."""
 
     dependencies = {
         "calibration_complete_marker": calibration_complete_marker,

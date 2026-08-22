@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import ctypes
 import hashlib
 import importlib.metadata
 import json
@@ -28,13 +29,13 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 5
+RUNTIME_MANIFEST_SCHEMA: Final = 6
 IDENTITY_SCHEMA: Final = 5
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 3
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
@@ -95,11 +96,13 @@ _WINDOWS_RESERVED_NAMES: Final = frozenset(
         *(f"lpt{index}" for index in range(1, 10)),
     }
 )
+EXECUTABLE_CUSTODY_MODE: Final = "platform-held-launch-handles-v1"
 SEALED_LAUNCH_POLICY: Final = {
     "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
     "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
+    "executable_custody_mode": EXECUTABLE_CUSTODY_MODE,
     "ignore_environment": 1,
     "isolated": 1,
     "no_site": 1,
@@ -699,6 +702,380 @@ def _atomic_publish_capture_receipt(
 
 def _absolute_path_sha256(path: Path) -> str:
     return _sha256_bytes(os.path.normcase(str(path.resolve(strict=True))).encode("utf-8"))
+
+
+class _WindowsFileTime(ctypes.Structure):
+    _fields_ = [
+        ("low", ctypes.c_uint32),
+        ("high", ctypes.c_uint32),
+    ]
+
+
+class _WindowsByHandleFileInformation(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", ctypes.c_uint32),
+        ("creation_time", _WindowsFileTime),
+        ("last_access_time", _WindowsFileTime),
+        ("last_write_time", _WindowsFileTime),
+        ("volume_serial_number", ctypes.c_uint32),
+        ("file_size_high", ctypes.c_uint32),
+        ("file_size_low", ctypes.c_uint32),
+        ("number_of_links", ctypes.c_uint32),
+        ("file_index_high", ctypes.c_uint32),
+        ("file_index_low", ctypes.c_uint32),
+    ]
+
+
+def _windows_handle_identity(handle: int) -> dict[str, int]:
+    """Return the kernel identity of a live Windows custody handle."""
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetFileInformationByHandle.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_WindowsByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = ctypes.c_int
+    information = _WindowsByHandleFileInformation()
+    ctypes.set_last_error(0)
+    if not kernel32.GetFileInformationByHandle(ctypes.c_void_p(handle), ctypes.byref(information)):
+        raise SealedLaunchError("cannot query live Windows executable custody handle") from (
+            ctypes.WinError(ctypes.get_last_error())
+        )
+    return {
+        "file_attributes": int(information.file_attributes),
+        "file_index": (int(information.file_index_high) << 32) | int(information.file_index_low),
+        "size_bytes": (int(information.file_size_high) << 32) | int(information.file_size_low),
+        "volume_serial_number": int(information.volume_serial_number),
+    }
+
+
+class _HeldExecutableCustody:
+    """Hold authenticated launch executables stable until the child chain returns.
+
+    On Windows the underlying handles permit only additional readers, so new
+    data/append-write and delete/rename opens are rejected by the kernel while
+    custody is active. POSIX descriptors keep the exact inode alive for
+    portability tests; a non-Windows runtime is never protocol-eligible
+    Experiment 013 evidence.
+    """
+
+    def __init__(
+        self,
+        *,
+        entries: tuple[dict[str, object], ...],
+        windows_handles: tuple[int, ...] = (),
+        posix_descriptors: tuple[int, ...] = (),
+    ) -> None:
+        self._entries = entries
+        self._windows_handles = list(windows_handles)
+        self._posix_descriptors = list(posix_descriptors)
+        self._closed = False
+
+    @property
+    def record(self) -> dict[str, object]:
+        return {
+            "entries": [
+                {key: value for key, value in entry.items() if key not in {"path", "path_identity"}}
+                for entry in self._entries
+            ],
+            "mode": EXECUTABLE_CUSTODY_MODE,
+            "protocol_eligible": os.name == "nt",
+        }
+
+    def verify(self) -> None:
+        if self._closed:
+            raise SealedLaunchError("executable custody was released before launch completion")
+        roles = tuple(entry.get("role") for entry in self._entries)
+        expected_roles = ("staged Python executable", "Git executable")
+        if roles != expected_roles:
+            raise SealedLaunchError(
+                "executable custody does not contain the authenticated Python and Git roles"
+            )
+        if os.name == "nt":
+            if len(self._windows_handles) != len(expected_roles) or self._posix_descriptors:
+                raise SealedLaunchError("Windows executable custody handle set is incomplete")
+        elif len(self._posix_descriptors) != len(expected_roles) or self._windows_handles:
+            raise SealedLaunchError("POSIX executable custody descriptor set is incomplete")
+        for index, entry in enumerate(self._entries):
+            path = entry["path"]
+            assert isinstance(path, Path)
+            context = str(entry["role"])
+            try:
+                status = path.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise SealedLaunchError(
+                    f"{context} changed while executable custody was held"
+                ) from exc
+            current_identity = (
+                int(status.st_dev),
+                int(status.st_ino),
+                int(status.st_size),
+                stat.S_IFMT(status.st_mode),
+            )
+            if current_identity != entry["path_identity"]:
+                raise SealedLaunchError(f"{context} identity changed while custody was held")
+            if os.name == "nt":
+                held_identity = _windows_handle_identity(self._windows_handles[index])
+                if held_identity != entry.get("handle_identity"):
+                    raise SealedLaunchError(f"{context} custody handle identity changed")
+                if (
+                    held_identity["volume_serial_number"] != int(status.st_dev)
+                    or held_identity["file_index"] != int(status.st_ino)
+                    or held_identity["size_bytes"] != int(status.st_size)
+                    or held_identity["file_attributes"] & 0x410
+                ):
+                    raise SealedLaunchError(
+                        f"{context} custody handle is not bound to the authenticated file"
+                    )
+            else:
+                try:
+                    held_status = os.fstat(self._posix_descriptors[index])
+                except OSError as exc:
+                    raise SealedLaunchError(
+                        f"{context} POSIX custody descriptor is not live"
+                    ) from exc
+                held_identity = (
+                    int(held_status.st_dev),
+                    int(held_status.st_ino),
+                    int(held_status.st_size),
+                    stat.S_IFMT(held_status.st_mode),
+                )
+                if held_identity != current_identity:
+                    raise SealedLaunchError(
+                        f"{context} POSIX custody descriptor is not bound to the path"
+                    )
+            record = _stable_file_record(path, relative=path.name, context=context)
+            if record["sha256"] != entry["sha256"] or record["size_bytes"] != entry["size_bytes"]:
+                raise SealedLaunchError(f"{context} bytes changed while custody was held")
+            if os.name == "nt":
+                write_error = _windows_conflicting_open_error(path, desired_access=0x40000000)
+                delete_error = _windows_conflicting_open_error(path, desired_access=0x00010000)
+                if write_error not in {5, 32} or delete_error not in {5, 32}:
+                    raise SealedLaunchError(
+                        f"{context} custody does not block data-write and delete access"
+                    )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        failures: list[OSError] = []
+        if os.name == "nt":
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle.restype = ctypes.c_int
+            for handle in reversed(self._windows_handles):
+                if not kernel32.CloseHandle(ctypes.c_void_p(handle)):
+                    failures.append(ctypes.WinError(ctypes.get_last_error()))
+        else:
+            for descriptor in reversed(self._posix_descriptors):
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    failures.append(exc)
+        self._windows_handles.clear()
+        self._posix_descriptors.clear()
+        self._closed = True
+        if failures:
+            raise SealedLaunchError(
+                "failed to release authenticated executable custody"
+            ) from failures[0]
+
+    def __enter__(self) -> _HeldExecutableCustody:
+        try:
+            self.verify()
+        except BaseException as primary_error:
+            try:
+                self.close()
+            except BaseException as close_error:
+                raise BaseExceptionGroup(
+                    "executable custody release failed after entry verification failed",
+                    [primary_error, close_error],
+                ) from None
+            raise
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        try:
+            self.close()
+        except BaseException as close_error:
+            if exc is None:
+                raise
+            assert isinstance(exc, BaseException)
+            raise BaseExceptionGroup(
+                "executable custody release failed after a primary launch failure",
+                [exc, close_error],
+            ) from None
+        return False
+
+
+def _windows_open_custody_handle(path: Path) -> int:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    ctypes.set_last_error(0)
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x80000000,  # GENERIC_READ
+        0x00000001,  # FILE_SHARE_READ; deny data-write and delete/rename sharing
+        None,
+        3,  # OPEN_EXISTING
+        0x00000080 | 0x00200000,  # FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle in {None, invalid}:
+        raise SealedLaunchError("cannot acquire Windows executable custody") from ctypes.WinError(
+            ctypes.get_last_error()
+        )
+    return int(handle)
+
+
+def _windows_conflicting_open_error(path: Path, *, desired_access: int) -> int:
+    """Return the error proving a conflicting data-write/delete open was blocked."""
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    ctypes.set_last_error(0)
+    handle = kernel32.CreateFileW(
+        str(path),
+        desired_access,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00000080 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle not in {None, invalid}:
+        kernel32.CloseHandle(handle)
+        return 0
+    return int(ctypes.get_last_error())
+
+
+def _acquire_executable_custody(
+    *,
+    interpreter: Path,
+    git_executable: Path,
+    runtime_manifest: Mapping[str, object],
+) -> _HeldExecutableCustody:
+    """Acquire and verify the platform launch handles bound by runtime schema v6."""
+
+    machine = runtime_manifest.get("machine")
+    if not isinstance(machine, dict) or not isinstance(machine.get("system"), str):
+        raise SealedLaunchError("runtime machine identity is unavailable for custody")
+    if (os.name == "nt") != (machine["system"] == "Windows"):
+        raise SealedLaunchError("host and runtime platforms differ for executable custody")
+
+    expected = {
+        "staged Python executable": runtime_manifest["interpreter"],
+        "Git executable": runtime_manifest["git_executable"],
+    }
+    paths = {
+        "staged Python executable": interpreter,
+        "Git executable": git_executable,
+    }
+    windows_handles: list[int] = []
+    posix_descriptors: list[int] = []
+    entries: list[dict[str, object]] = []
+    try:
+        for role in ("staged Python executable", "Git executable"):
+            path = paths[role].resolve(strict=True)
+            if _is_link_or_reparse(path):
+                raise SealedLaunchError(f"{role} is a link or reparse point")
+            if os.name == "nt":
+                windows_handles.append(_windows_open_custody_handle(path))
+            else:
+                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                posix_descriptors.append(os.open(path, flags))
+            status = path.stat(follow_symlinks=False)
+            handle_identity: dict[str, int] | None = None
+            if os.name == "nt":
+                handle_identity = _windows_handle_identity(windows_handles[-1])
+                if (
+                    handle_identity["volume_serial_number"] != int(status.st_dev)
+                    or handle_identity["file_index"] != int(status.st_ino)
+                    or handle_identity["size_bytes"] != int(status.st_size)
+                    or handle_identity["file_attributes"] & 0x410
+                ):
+                    raise SealedLaunchError(
+                        f"{role} custody handle is not bound to the authenticated file"
+                    )
+            record = _stable_file_record(path, relative=path.name, context=role)
+            expected_record = expected[role]
+            if not isinstance(expected_record, dict):
+                raise SealedLaunchError(f"runtime {role} record is missing")
+            if record["sha256"] != expected_record.get("sha256") or record[
+                "size_bytes"
+            ] != expected_record.get("size_bytes"):
+                raise SealedLaunchError(f"{role} differs from the runtime manifest")
+            if role == "Git executable" and _absolute_path_sha256(path) != expected_record.get(
+                "absolute_path_sha256"
+            ):
+                raise SealedLaunchError("Git executable path differs from the runtime manifest")
+            entry: dict[str, object] = {
+                "path": path,
+                "path_identity": (
+                    int(status.st_dev),
+                    int(status.st_ino),
+                    int(status.st_size),
+                    stat.S_IFMT(status.st_mode),
+                ),
+                "role": role,
+                "sha256": record["sha256"],
+                "size_bytes": record["size_bytes"],
+            }
+            if os.name == "nt":
+                assert handle_identity is not None
+                entry["handle_identity"] = handle_identity
+                write_error = _windows_conflicting_open_error(path, desired_access=0x40000000)
+                delete_error = _windows_conflicting_open_error(path, desired_access=0x00010000)
+                if write_error not in {5, 32} or delete_error not in {5, 32}:
+                    raise SealedLaunchError(
+                        f"{role} custody failed to block data-write and delete access"
+                    )
+                entry["delete_open_block_error"] = delete_error
+                entry["write_open_block_error"] = write_error
+            entries.append(entry)
+        custody = _HeldExecutableCustody(
+            entries=tuple(entries),
+            windows_handles=tuple(windows_handles),
+            posix_descriptors=tuple(posix_descriptors),
+        )
+        custody.verify()
+        return custody
+    except BaseException as primary_error:
+        partial = _HeldExecutableCustody(
+            entries=tuple(entries),
+            windows_handles=tuple(windows_handles),
+            posix_descriptors=tuple(posix_descriptors),
+        )
+        try:
+            partial.close()
+        except BaseException as close_error:
+            raise BaseExceptionGroup(
+                "partial executable custody release failed after acquisition failed",
+                [primary_error, close_error],
+            ) from None
+        raise
 
 
 def _authenticated_git_executable(path: Path) -> tuple[Path, dict[str, object]]:
@@ -2208,6 +2585,7 @@ _policy = {
     "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
+    "executable_custody_mode": "platform-held-launch-handles-v1",
     "ignore_environment": 1,
     "isolated": 1,
     "no_site": 1,
@@ -2646,7 +3024,7 @@ def _smoke(options):
             or type(receipt_root["capture_version"]) is not int
             or receipt_root["capture_version"] != 6
             or receipt_root["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v10"
+            != "experiment-013-static-q468-calibration-runner-v11"
             or receipt_root["phase"] != "calibration"
             or receipt_root["publication_contract"]
             != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
@@ -2669,7 +3047,7 @@ def _smoke(options):
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
             or evidence.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v10"
+            != "experiment-013-static-q468-calibration-runner-v11"
             or evidence.get("prerequisites") != {
                 "capture_provenance_receipt_file_sha256": receipt_sha256,
                 "fisher_h1_smoke_report_file_sha256": None,
@@ -2781,7 +3159,7 @@ def _manifest(data):
                    "runtime_trees", "schema_version"}, "runtime manifest")
     if _canonical(root) != data or root["artifact_kind"] != (
         "recurquant_experiment013_calibration_runtime_manifest"
-    ) or type(root["schema_version"]) is not int or root["schema_version"] != 5:
+    ) or type(root["schema_version"]) is not int or root["schema_version"] != 6:
         _fail("runtime manifest identity or policy drifted")
     _typed(root["launch_policy"], _policy, "runtime launch policy")
     if root["base_runtime_root"] != "base-runtime":
@@ -3235,7 +3613,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def launch(argv: Sequence[str]) -> int:
+def _launch_with_custody(
+    argv: Sequence[str],
+    *,
+    _executable_custody: _HeldExecutableCustody | None = None,
+) -> int:
     if list(argv) in (["-h"], ["--help"]):
         _parser().print_help()
         print("\nAppend -- followed by the exact run_static_q468_calibration.py arguments.")
@@ -3282,6 +3664,16 @@ def launch(argv: Sequence[str]) -> int:
         git_executable_path=args.git_executable,
         require_current_process=False,
     )
+    if _executable_custody is None:
+        with _acquire_executable_custody(
+            interpreter=interpreter,
+            git_executable=git_executable,
+            runtime_manifest=runtime_manifest,
+        ) as custody:
+            result = _launch_with_custody(argv, _executable_custody=custody)
+            custody.verify()
+            return result
+    _executable_custody.verify()
     dataset_cache_root = _verified_dataset_cache_root(
         Path(runner_options["--cache-root"]),
         runtime_roots=(base, *packages.values()),
@@ -3603,6 +3995,12 @@ def launch(argv: Sequence[str]) -> int:
             end="",
         )
     return child_returncode
+
+
+def launch(argv: Sequence[str]) -> int:
+    """Run through the sole public entry point, which always acquires custody."""
+
+    return _launch_with_custody(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
