@@ -180,12 +180,14 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         "parquet_materialization_manifest_file_sha256": _sha256(parquet_path.read_bytes()),
         "repository_source_manifest_file_sha256": _sha256(source_path.read_bytes()),
     }
+    identity_input_bytes = launcher._canonical_json_bytes({"identity_input": "fixture"})
     evidence = {
         "execution_bindings": bindings,
         "identity_only": True,
         "phase": "calibration",
         "promotion_required": False,
         "schema_version": launcher.IDENTITY_SCHEMA,
+        "source_manifest_sha256": _sha256(identity_input_bytes),
         "status": "frozen",
     }
     identity = {
@@ -196,10 +198,29 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         artifacts / "identity.json",
         launcher._canonical_json_bytes(identity),
     )
+    receipt_bytes = _capture_candidate(
+        {
+            "bindings": bindings,
+            "runtime_manifest": runtime,
+            "source_manifest": {
+                "paths": [
+                    {"path": item["path"], "raw_sha256": item["raw_sha256"]}
+                    for item in source["paths"]
+                ],
+                "source_commit": source["source_commit"],
+            },
+        },
+        identity_input_bytes,
+    )
+    receipt_path = _write(artifacts / "capture-provenance.json", receipt_bytes)
     runner_arguments = [
         "--fisher-h1-smoke",
         "--frozen-identity",
         str(identity_path),
+        "--capture-provenance-receipt",
+        str(receipt_path),
+        "--expected-capture-provenance-receipt-sha256",
+        _sha256(receipt_bytes),
         "--cache-root",
         str(cache_root),
         "--repository-source-manifest",
@@ -218,6 +239,8 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         bindings["calibration_runtime_manifest_file_sha256"],
         "--repository-root",
         str(repository),
+        "--source-commit",
+        source["source_commit"],
         "--ruler-receipt-dir",
         str(ruler_receipt_dir),
     ]
@@ -239,10 +262,13 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         "cache_root": cache_root,
         "git_executable": git_executable,
         "host_arguments": host_arguments,
+        "identity_input_bytes": identity_input_bytes,
         "model_path": model_path,
         "packages": packages,
         "parquet_path": parquet_path,
         "repository": repository,
+        "capture_provenance_receipt_bytes": receipt_bytes,
+        "capture_provenance_receipt_path": receipt_path,
         "ruler_receipt_dir": ruler_receipt_dir,
         "runner_arguments": runner_arguments,
         "runtime_manifest": runtime,
@@ -1215,6 +1241,84 @@ def test_help_does_not_require_the_runner_separator(capsys: pytest.CaptureFixtur
     assert "exact run_static_q468_calibration.py arguments" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--capture-provenance-receipt",
+        "--expected-capture-provenance-receipt-sha256",
+    ],
+)
+def test_launch_requires_finalized_capture_provenance_before_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    arguments = list(fixture["host_arguments"])
+    option_index = arguments.index(option)
+    del arguments[option_index : option_index + 2]
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="omit required sealed inputs"):
+        launcher.launch(arguments)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", 1),
+        ("runner_revision", "experiment-013-static-q468-calibration-runner-v8"),
+        ("status", "captured_under_authenticated_runtime"),
+        ("source_commit", "b" * 40),
+    ],
+)
+def test_launch_rejects_nonfinal_capture_provenance_before_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    receipt = json.loads(fixture["capture_provenance_receipt_bytes"])
+    receipt[field] = value
+    receipt_bytes = launcher._canonical_json_bytes(receipt)
+    fixture["capture_provenance_receipt_path"].write_bytes(receipt_bytes)
+    arguments = list(fixture["host_arguments"])
+    expected_index = arguments.index("--expected-capture-provenance-receipt-sha256") + 1
+    arguments[expected_index] = _sha256(receipt_bytes)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="finalized envelope drifted"):
+        launcher.launch(arguments)
+
+
+def test_embedded_bootstrap_requires_exact_finalized_capture_provenance_digest(
+    tmp_path: Path,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    expected_index = (
+        fixture["runner_arguments"].index("--expected-capture-provenance-receipt-sha256") + 1
+    )
+    fixture["runner_arguments"][expected_index] = "0" * 64
+
+    completed = _run_embedded_manifest_boundary(
+        fixture,
+        pycache=tmp_path / "provenance-digest-pycache",
+    )
+
+    assert completed.returncode != 0
+    assert b"capture provenance receipt differs from its explicit SHA-256" in completed.stderr
+    assert b"point-used interpreter path drifted" not in completed.stderr
+
+
 def test_full_launch_requires_both_prior_fisher_smoke_paths_before_subprocess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1236,7 +1340,16 @@ def test_full_launch_authenticates_prior_fisher_smoke_report_and_marker(
     tmp_path: Path,
 ) -> None:
     fixture = _sealed_fixture(tmp_path)
-    evidence = {"status": "fisher_h1_smoke_passed"}
+    evidence = {
+        "prerequisites": {
+            "capture_provenance_receipt_file_sha256": _sha256(
+                fixture["capture_provenance_receipt_bytes"]
+            ),
+            "fisher_h1_smoke_report_file_sha256": None,
+        },
+        "runner_revision": launcher.RUNNER_REVISION,
+        "status": "fisher_h1_smoke_passed",
+    }
     report = launcher._canonical_json_bytes(
         {
             "artifact_kind": launcher.RUN_REPORT_KIND,
@@ -1268,8 +1381,51 @@ def test_full_launch_authenticates_prior_fisher_smoke_report_and_marker(
     )
 
 
+def test_full_launch_rejects_rehashed_smoke_bound_to_another_capture_receipt(
+    tmp_path: Path,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    evidence = {
+        "prerequisites": {
+            "capture_provenance_receipt_file_sha256": "0" * 64,
+            "fisher_h1_smoke_report_file_sha256": None,
+        },
+        "runner_revision": launcher.RUNNER_REVISION,
+        "status": "fisher_h1_smoke_passed",
+    }
+    report = launcher._canonical_json_bytes(
+        {
+            "artifact_kind": launcher.RUN_REPORT_KIND,
+            "canonical_evidence_sha256": _sha256(launcher._canonical_json_bytes(evidence)),
+            "evidence": evidence,
+            "schema_version": launcher.RUN_REPORT_SCHEMA,
+        }
+    )
+    report_path = _write(tmp_path / "wrong-smoke" / "report.json", report)
+    marker_path = _write(
+        tmp_path / "wrong-smoke" / "FISHER_H1_SMOKE_COMPLETE",
+        launcher.FISHER_SMOKE_COMPLETE_BYTES,
+    )
+    runner_arguments = list(fixture["runner_arguments"])
+    runner_arguments.remove("--fisher-h1-smoke")
+    runner_arguments.extend(
+        [
+            "--prior-fisher-h1-smoke-report",
+            str(report_path),
+            "--prior-fisher-h1-smoke-complete-marker",
+            str(marker_path),
+        ]
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="authentication failed"):
+        launcher._verify_bound_artifacts(
+            launcher._extract_runner_options(runner_arguments),
+            runtime_manifest_path=fixture["runtime_path"],
+        )
+
+
 def test_embedded_bootstrap_authenticates_smoke_prerequisite_before_runner_load() -> None:
-    assert "_smoke(_runner_options)" in launcher.SEALED_BOOTSTRAP
+    assert "if not _capture_profile:\n    _smoke(_runner_options)" in launcher.SEALED_BOOTSTRAP
     assert "full calibration requires prior Fisher H=1 smoke prerequisites" in (
         launcher.SEALED_BOOTSTRAP
     )

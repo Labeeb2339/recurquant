@@ -32,9 +32,9 @@ BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v8"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v9"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
-RUN_REPORT_SCHEMA: Final = 2
+RUN_REPORT_SCHEMA: Final = 3
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
@@ -127,10 +127,13 @@ _CAPTURE_REQUIRED_RUNNER_OPTIONS: Final = frozenset(
 )
 _REQUIRED_RUNNER_OPTIONS: Final = frozenset(
     {
+        "--capture-provenance-receipt",
+        "--expected-capture-provenance-receipt-sha256",
         "--frozen-identity",
         "--cache-root",
         "--repository-root",
         "--ruler-receipt-dir",
+        "--source-commit",
         *_BOUND_ARTIFACT_OPTIONS.values(),
         *_EXPECTED_BOUND_DIGEST_OPTIONS.values(),
     }
@@ -1095,10 +1098,64 @@ def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
         raise SealedLaunchError(
             "full calibration requires both prior Fisher H=1 smoke prerequisite paths"
         )
+    if not Path(result["--capture-provenance-receipt"]).is_absolute():
+        raise SealedLaunchError("capture provenance receipt path must be absolute")
     return result
 
 
+def _verify_capture_provenance_envelope(runner_options: Mapping[str, str]) -> str:
+    receipt_bytes = _stable_file_bytes(
+        Path(runner_options["--capture-provenance-receipt"]),
+        context="capture provenance receipt",
+    )
+    actual = _sha256_bytes(receipt_bytes)
+    expected = _sha256(
+        runner_options["--expected-capture-provenance-receipt-sha256"],
+        context="expected capture provenance receipt SHA-256",
+    )
+    if actual != expected:
+        raise SealedLaunchError("capture provenance receipt differs from its explicit SHA-256")
+    root = _strict_json(receipt_bytes, context="capture provenance receipt")
+    _exact_fields(
+        root,
+        {
+            "artifact_kind",
+            "capture_source",
+            "capture_version",
+            "critical_module_origins",
+            "excluded_runtime_modules",
+            "execution_bindings",
+            "identity_input_file_sha256",
+            "phase",
+            "publication_contract",
+            "runner_revision",
+            "schema_version",
+            "source_commit",
+            "status",
+        },
+        context="capture provenance receipt",
+    )
+    if _canonical_json_bytes(root) != receipt_bytes:
+        raise SealedLaunchError("capture provenance receipt is not canonical JSON")
+    if (
+        root["artifact_kind"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+        or type(root["capture_version"]) is not int
+        or root["capture_version"] != CALIBRATION_IDENTITY_CAPTURE_VERSION
+        or root["runner_revision"] != RUNNER_REVISION
+        or root["phase"] != "calibration"
+        or root["publication_contract"]
+        != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+        or root["status"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
+        or root["source_commit"] != runner_options["--source-commit"]
+    ):
+        raise SealedLaunchError("capture provenance receipt finalized envelope drifted")
+    return actual
+
+
 def _verify_fisher_smoke_prerequisite_files(runner_options: Mapping[str, str]) -> None:
+    capture_provenance_sha256 = _verify_capture_provenance_envelope(runner_options)
     if "--prior-fisher-h1-smoke-report" not in runner_options:
         return
     try:
@@ -1123,6 +1180,12 @@ def _verify_fisher_smoke_prerequisite_files(runner_options: Mapping[str, str]) -
         or root["schema_version"] != RUN_REPORT_SCHEMA
         or not isinstance(evidence, dict)
         or evidence.get("status") != "fisher_h1_smoke_passed"
+        or evidence.get("runner_revision") != RUNNER_REVISION
+        or evidence.get("prerequisites")
+        != {
+            "capture_provenance_receipt_file_sha256": capture_provenance_sha256,
+            "fisher_h1_smoke_report_file_sha256": None,
+        }
         or _sha256(
             root["canonical_evidence_sha256"],
             context="prior Fisher H=1 smoke evidence SHA-256",
@@ -1495,6 +1558,8 @@ def _verify_bound_artifacts(
         raise SealedLaunchError("runtime manifest path is unavailable") from exc
     source_bytes = Path(runner_options["--repository-source-manifest"]).read_bytes()
     source_manifest = _parse_source_manifest(source_bytes)
+    if runner_options["--source-commit"] != source_manifest["source_commit"]:
+        raise SealedLaunchError("runner source commit differs from source-manifest H0")
     runner_path = _verify_source(
         source_manifest,
         Path(runner_options["--repository-root"]),
@@ -2243,7 +2308,9 @@ def _options(arguments):
                 _fail("sealed capture path is not absolute: " + option)
         return captured
     required = {
-        "--frozen-identity", "--cache-root", "--repository-root",
+        "--capture-provenance-receipt",
+        "--expected-capture-provenance-receipt-sha256",
+        "--frozen-identity", "--cache-root", "--repository-root", "--source-commit",
         *_binding_options.values(), *_expected_digest_options.values(),
         "--ruler-receipt-dir",
     }
@@ -2277,9 +2344,44 @@ def _options(arguments):
         _fail("smoke mode forbids prior Fisher H=1 smoke prerequisites")
     if smoke_count == 0 and supplied != _smoke_options:
         _fail("full calibration requires prior Fisher H=1 smoke prerequisites")
+    if not _p.Path(result["--capture-provenance-receipt"]).is_absolute():
+        _fail("capture provenance receipt path must be absolute")
     return result
 
 def _smoke(options):
+    receipt = _bytes(
+        _p.Path(options["--capture-provenance-receipt"]),
+        "capture provenance receipt",
+    )
+    receipt_sha256 = _h.sha256(receipt).hexdigest()
+    if receipt_sha256 != _digest(
+            options["--expected-capture-provenance-receipt-sha256"],
+            "capture provenance receipt SHA-256"):
+        _fail("capture provenance receipt differs from its explicit SHA-256")
+    receipt_root = _json(receipt, "capture provenance receipt")
+    _fields(receipt_root, {
+        "artifact_kind", "capture_source", "capture_version",
+        "critical_module_origins", "excluded_runtime_modules",
+        "execution_bindings", "identity_input_file_sha256", "phase",
+        "publication_contract", "runner_revision", "schema_version",
+        "source_commit", "status",
+    }, "capture provenance receipt")
+    if (_canonical(receipt_root) != receipt
+            or receipt_root["artifact_kind"]
+            != "recurquant_experiment013_calibration_identity_capture_provenance"
+            or type(receipt_root["schema_version"]) is not int
+            or receipt_root["schema_version"] != 2
+            or type(receipt_root["capture_version"]) is not int
+            or receipt_root["capture_version"] != 6
+            or receipt_root["runner_revision"]
+            != "experiment-013-static-q468-calibration-runner-v9"
+            or receipt_root["phase"] != "calibration"
+            or receipt_root["publication_contract"]
+            != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
+            or receipt_root["status"]
+            != "captured_under_authenticated_runtime_and_launcher_finalized"
+            or receipt_root["source_commit"] != options["--source-commit"]):
+        _fail("capture provenance receipt finalized envelope drifted")
     if "--prior-fisher-h1-smoke-report" not in options:
         return
     if _p.Path(options["--prior-fisher-h1-smoke-complete-marker"]).read_bytes() != _smoke_marker:
@@ -2291,9 +2393,15 @@ def _smoke(options):
     evidence = root["evidence"]
     if (_canonical(root) != data
             or root["artifact_kind"] != "recurquant_experiment013_calibration_run"
-            or type(root["schema_version"]) is not int or root["schema_version"] != 2
+            or type(root["schema_version"]) is not int or root["schema_version"] != 3
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
+            or evidence.get("runner_revision")
+            != "experiment-013-static-q468-calibration-runner-v9"
+            or evidence.get("prerequisites") != {
+                "capture_provenance_receipt_file_sha256": receipt_sha256,
+                "fisher_h1_smoke_report_file_sha256": None,
+            }
             or _digest(root["canonical_evidence_sha256"], "smoke evidence hash")
             != _h.sha256(_canonical(evidence)).hexdigest()):
         _fail("prior Fisher H=1 smoke report authentication failed")
@@ -2693,7 +2801,8 @@ if (set(_environment) - _os_environment != set(_expected_environment)
                for key, value in _environment.items()
                if key in _os_environment)):
     _fail("sealed child environment differs from the private cache contract")
-_smoke(_runner_options)
+if not _capture_profile:
+    _smoke(_runner_options)
 _runtime_bytes = _bytes(_runtime_path, "runtime manifest")
 _runtime = _manifest(_runtime_bytes)
 if _capture_profile:
@@ -2723,9 +2832,8 @@ if _runtime_path.resolve(strict=True) != _p.Path(
 _source_manifest = _source(
     _bytes(_p.Path(_runner_options["--repository-source-manifest"]), "source manifest")
 )
-if (_capture_profile
-        and _runner_options["--source-commit"] != _source_manifest["source_commit"]):
-    _fail("capture source commit differs from source-manifest H0")
+if _runner_options["--source-commit"] != _source_manifest["source_commit"]:
+    _fail("runner source commit differs from source-manifest H0")
 if _source_manifest["git_executable"] != {
     "sha256": _runtime["git_executable"]["sha256"],
     "size_bytes": _runtime["git_executable"]["size_bytes"],

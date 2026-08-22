@@ -452,6 +452,8 @@ def test_bootstrap_derivation_switches_schema_phase_runner_and_keeps_isolation()
     assert "scripts/run_static_q468_calibration.py" not in bootstrap
     assert "_stage_a_options" in bootstrap
     assert "--stage-a-calibration-binding" in bootstrap
+    assert '"--capture-provenance-receipt",' not in bootstrap
+    assert '"--expected-capture-provenance-receipt-sha256",' not in bootstrap
     assert "--fisher-h1-smoke" not in bootstrap
     assert "--prior-fisher-h1-smoke-report" not in bootstrap
     assert "full calibration" not in bootstrap

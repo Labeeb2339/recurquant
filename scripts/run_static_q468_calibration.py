@@ -65,7 +65,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v8"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v9"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -108,7 +108,7 @@ RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_man
 RUNTIME_MANIFEST_SCHEMA: Final = 5
 OFFICIAL_DATASETS_DISTRIBUTION_VERSION: Final = "4.8.5"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
-RUN_REPORT_SCHEMA: Final = 2
+RUN_REPORT_SCHEMA: Final = 3
 CANONICAL_ADAPTER_REVISION: Final = "experiment-013-qwen35-live-adapter-v2"
 CANONICAL_ADAPTER_KERNEL_BACKEND: Final = "transformers_pure_torch_gated_delta_rule"
 CANONICAL_ADAPTER_MODEL_DTYPE: Final = "bfloat16"
@@ -384,6 +384,7 @@ class BootstrapIdentityBindings:
     runtime_manifest_file_sha256: str
     model_file_manifest_file_sha256: str
     parquet_materialization_manifest_file_sha256: str
+    identity_input_manifest_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +456,10 @@ def _bootstrap_identity_bindings(data: bytes) -> BootstrapIdentityBindings:
         parquet_materialization_manifest_file_sha256=_sha256(
             bindings["parquet_materialization_manifest_file_sha256"],
             context="bootstrap parquet materialization manifest file SHA-256",
+        ),
+        identity_input_manifest_sha256=_sha256(
+            evidence.get("source_manifest_sha256"),
+            context="bootstrap identity input manifest SHA-256",
         ),
     )
 
@@ -1076,6 +1081,8 @@ class CalibrationRunConfig:
     expected_model_file_manifest_sha256: str
     expected_parquet_materialization_manifest_sha256: str
     expected_runtime_manifest_sha256: str
+    capture_provenance_receipt_bytes: bytes
+    expected_capture_provenance_receipt_sha256: str
     output_dir: Path
     require_cuda: bool = True
     fisher_h1_smoke: bool = False
@@ -1861,11 +1868,11 @@ def _source_manifest_entry_sha256(
     )
 
 
-def _authenticate_calibration_identity_capture_provenance(
+def _authenticate_calibration_identity_capture_provenance_bytes_unchecked(
     *,
-    receipt_path: Path,
+    receipt_bytes: bytes,
     expected_receipt_sha256: str,
-    runtime_manifest_path: Path,
+    runtime_manifest_bytes: bytes,
     expected_runtime_manifest_sha256: str,
     source_manifest_bytes: bytes,
     expected_identity_input_sha256: str,
@@ -1879,13 +1886,11 @@ def _authenticate_calibration_identity_capture_provenance(
     capture against the runtime-v5 tree and distribution RECORD inventories.
     """
 
+    if not isinstance(receipt_bytes, bytes) or not isinstance(runtime_manifest_bytes, bytes):
+        raise TypeError("capture provenance receipt and runtime manifest must be bytes")
     expected_receipt = _sha256(
         expected_receipt_sha256,
         context="expected calibration identity capture provenance receipt SHA-256",
-    )
-    receipt_bytes = _read_stable_regular_bytes(
-        receipt_path,
-        context="calibration identity capture provenance receipt",
     )
     actual_receipt = sha256_bytes(receipt_bytes)
     if actual_receipt != expected_receipt:
@@ -2004,15 +2009,11 @@ def _authenticate_calibration_identity_capture_provenance(
     ):
         raise CalibrationRunError("capture provenance source differs from H0")
 
-    runtime_bytes = _read_stable_regular_bytes(
-        runtime_manifest_path,
-        context="calibration runtime manifest for capture provenance",
-    )
     expected_runtime = _sha256(
         expected_runtime_manifest_sha256,
         context="expected runtime manifest SHA-256 for capture provenance",
     )
-    actual_runtime = sha256_bytes(runtime_bytes)
+    actual_runtime = sha256_bytes(runtime_manifest_bytes)
     if (
         actual_runtime != expected_runtime
         or actual_runtime != expected_bindings.runtime_manifest_file_sha256
@@ -2020,7 +2021,7 @@ def _authenticate_calibration_identity_capture_provenance(
         raise CalibrationRunError(
             "capture provenance runtime manifest differs from identity/CLI binding"
         )
-    runtime_manifest = parse_calibration_runtime_manifest(runtime_bytes)
+    runtime_manifest = parse_calibration_runtime_manifest(runtime_manifest_bytes)
     tree_by_name = {
         tree.name: {item.path: item for item in tree.files}
         for tree in runtime_manifest.runtime_trees
@@ -2109,6 +2110,67 @@ def _authenticate_calibration_identity_capture_provenance(
                 f"capture provenance module differs from runtime inventory: {module_name}"
             )
     return actual_receipt
+
+
+def _authenticate_calibration_identity_capture_provenance_bytes(
+    *,
+    receipt_bytes: bytes,
+    expected_receipt_sha256: str,
+    runtime_manifest_bytes: bytes,
+    expected_runtime_manifest_sha256: str,
+    source_manifest_bytes: bytes,
+    expected_identity_input_sha256: str,
+    expected_bindings: BootstrapIdentityBindings,
+    expected_source_commit: str,
+) -> str:
+    """Fail closed with one public error type for malformed provenance bytes."""
+
+    try:
+        return _authenticate_calibration_identity_capture_provenance_bytes_unchecked(
+            receipt_bytes=receipt_bytes,
+            expected_receipt_sha256=expected_receipt_sha256,
+            runtime_manifest_bytes=runtime_manifest_bytes,
+            expected_runtime_manifest_sha256=expected_runtime_manifest_sha256,
+            source_manifest_bytes=source_manifest_bytes,
+            expected_identity_input_sha256=expected_identity_input_sha256,
+            expected_bindings=expected_bindings,
+            expected_source_commit=expected_source_commit,
+        )
+    except CalibrationRunError:
+        raise
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise CalibrationRunError(str(exc)) from exc
+
+
+def _authenticate_calibration_identity_capture_provenance(
+    *,
+    receipt_path: Path,
+    expected_receipt_sha256: str,
+    runtime_manifest_path: Path,
+    expected_runtime_manifest_sha256: str,
+    source_manifest_bytes: bytes,
+    expected_identity_input_sha256: str,
+    expected_bindings: BootstrapIdentityBindings,
+    expected_source_commit: str,
+) -> str:
+    receipt_bytes = _read_stable_regular_bytes(
+        receipt_path,
+        context="calibration identity capture provenance receipt",
+    )
+    runtime_manifest_bytes = _read_stable_regular_bytes(
+        runtime_manifest_path,
+        context="calibration runtime manifest for capture provenance",
+    )
+    return _authenticate_calibration_identity_capture_provenance_bytes(
+        receipt_bytes=receipt_bytes,
+        expected_receipt_sha256=expected_receipt_sha256,
+        runtime_manifest_bytes=runtime_manifest_bytes,
+        expected_runtime_manifest_sha256=expected_runtime_manifest_sha256,
+        source_manifest_bytes=source_manifest_bytes,
+        expected_identity_input_sha256=expected_identity_input_sha256,
+        expected_bindings=expected_bindings,
+        expected_source_commit=expected_source_commit,
+    )
 
 
 def verify_frozen_identity_contract(
@@ -5498,6 +5560,7 @@ def _report_bytes(
     stability: Mapping[str, object],
     artifacts: Mapping[str, bytes],
     runtime: Mapping[str, object],
+    capture_provenance_receipt_file_sha256: str,
     fisher_h1_smoke_report_file_sha256: str | None,
 ) -> bytes:
     evidence = {
@@ -5540,6 +5603,7 @@ def _report_bytes(
             "prior": "uniform_1_over_key_rows",
         },
         "prerequisites": {
+            "capture_provenance_receipt_file_sha256": (capture_provenance_receipt_file_sha256),
             "fisher_h1_smoke_report_file_sha256": (fisher_h1_smoke_report_file_sha256),
         },
         "repository": {
@@ -5605,6 +5669,7 @@ def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
     source_manifest_file_sha256: str,
     model_manifest: ModelFileManifest,
     authenticated_runtime: AuthenticatedRuntime,
+    expected_capture_provenance_receipt_sha256: str,
 ) -> str:
     """Authenticate the mandatory one-sequence Fisher H=1 smoke receipt."""
 
@@ -5656,7 +5721,11 @@ def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
         evidence["status"] != "fisher_h1_smoke_passed"
         or evidence["runner_revision"] != RUNNER_REVISION
         or evidence["artifacts"] != {}
-        or evidence["prerequisites"] != {"fisher_h1_smoke_report_file_sha256": None}
+        or evidence["prerequisites"]
+        != {
+            "capture_provenance_receipt_file_sha256": (expected_capture_provenance_receipt_sha256),
+            "fisher_h1_smoke_report_file_sha256": None,
+        }
     ):
         raise CalibrationRunError("Fisher H=1 smoke status or provenance drifted")
     _exact_typed_mapping(
@@ -5903,6 +5972,7 @@ def authenticate_fisher_h1_smoke_prerequisite(
     source_manifest_file_sha256: str,
     model_manifest: ModelFileManifest,
     authenticated_runtime: AuthenticatedRuntime,
+    expected_capture_provenance_receipt_sha256: str,
 ) -> str:
     """Fail closed with one public error type for malformed smoke evidence."""
 
@@ -5916,6 +5986,7 @@ def authenticate_fisher_h1_smoke_prerequisite(
             source_manifest_file_sha256=source_manifest_file_sha256,
             model_manifest=model_manifest,
             authenticated_runtime=authenticated_runtime,
+            expected_capture_provenance_receipt_sha256=(expected_capture_provenance_receipt_sha256),
         )
     except CalibrationRunError:
         raise
@@ -6025,6 +6096,7 @@ def run_calibration(
     if not isinstance(config.require_cuda, bool) or not isinstance(config.fisher_h1_smoke, bool):
         raise TypeError("calibration mode flags must be booleans")
     for name, value in (
+        ("capture_provenance_receipt_bytes", config.capture_provenance_receipt_bytes),
         ("prior_fisher_h1_smoke_report_bytes", config.prior_fisher_h1_smoke_report_bytes),
         (
             "prior_fisher_h1_smoke_complete_bytes",
@@ -6033,9 +6105,38 @@ def run_calibration(
     ):
         if value is not None and not isinstance(value, bytes):
             raise TypeError(f"{name} must be bytes or None")
-    # First executable boundary: a strict promoted identity decode. No source
-    # adapter, model path, repository command, or output path is touched first.
+    bootstrap_bindings = _bootstrap_identity_bindings(config.frozen_identity_bytes)
+    source_commit = _git_revision(
+        config.expected_source_commit,
+        context="expected source commit",
+    )
+    capture_provenance_receipt_file_sha256 = (
+        _authenticate_calibration_identity_capture_provenance_bytes(
+            receipt_bytes=config.capture_provenance_receipt_bytes,
+            expected_receipt_sha256=(config.expected_capture_provenance_receipt_sha256),
+            runtime_manifest_bytes=config.runtime_manifest_bytes,
+            expected_runtime_manifest_sha256=(config.expected_runtime_manifest_sha256),
+            source_manifest_bytes=config.repository_source_manifest_bytes,
+            expected_identity_input_sha256=(bootstrap_bindings.identity_input_manifest_sha256),
+            expected_bindings=bootstrap_bindings,
+            expected_source_commit=source_commit,
+        )
+    )
+    # After the metadata-only provenance gate, strictly decode the promoted
+    # identity before touching an adapter, model path, or output path.
     identity = services.backend.decode_identity(config.frozen_identity_bytes)
+    if (
+        identity.repository_source_manifest_file_sha256
+        != bootstrap_bindings.repository_source_manifest_file_sha256
+        or identity.runtime_manifest_file_sha256 != bootstrap_bindings.runtime_manifest_file_sha256
+        or identity.model_file_manifest_file_sha256
+        != bootstrap_bindings.model_file_manifest_file_sha256
+        or identity.parquet_materialization_manifest_file_sha256
+        != bootstrap_bindings.parquet_materialization_manifest_file_sha256
+        or identity.identity_input_manifest_sha256
+        != bootstrap_bindings.identity_input_manifest_sha256
+    ):
+        raise CalibrationRunError("decoded identity differs from bootstrap provenance bindings")
     if config.output_dir.resolve().exists():
         raise FileExistsError(
             f"refusing to overwrite existing calibration output: {config.output_dir.resolve()}"
@@ -6059,10 +6160,6 @@ def run_calibration(
     # byte-identical to H0.  The verifier below proves ancestry and equality;
     # a raw HEAD == H0 check would incorrectly forbid committing the promoted
     # identity before opening weights.
-    source_commit = _git_revision(
-        config.expected_source_commit,
-        context="expected source commit",
-    )
     source_manifest_file_sha256 = sha256_bytes(config.repository_source_manifest_bytes)
     if source_manifest_file_sha256 != identity.repository_source_manifest_file_sha256:
         raise CalibrationRunError(
@@ -6149,6 +6246,7 @@ def run_calibration(
             source_manifest_file_sha256=source_manifest_file_sha256,
             model_manifest=model_manifest,
             authenticated_runtime=authenticated_runtime,
+            expected_capture_provenance_receipt_sha256=(capture_provenance_receipt_file_sha256),
         )
 
     materialized: list[tuple[dict[str, object], tuple[int, ...]]] = []
@@ -6292,6 +6390,7 @@ def run_calibration(
             },
             artifacts={},
             runtime=runtime,
+            capture_provenance_receipt_file_sha256=(capture_provenance_receipt_file_sha256),
             fisher_h1_smoke_report_file_sha256=None,
         )
         smoke_payloads = {FISHER_SMOKE_REPORT_FILENAME: report}
@@ -6327,6 +6426,7 @@ def run_calibration(
             stability=result.stability,
             artifacts={},
             runtime=runtime,
+            capture_provenance_receipt_file_sha256=(capture_provenance_receipt_file_sha256),
             fisher_h1_smoke_report_file_sha256=(fisher_h1_smoke_report_file_sha256),
         )
         _publish_output_directory(config.output_dir, {REPORT_FILENAME: report})
@@ -6363,6 +6463,7 @@ def run_calibration(
         stability=result.stability,
         artifacts=payloads,
         runtime=runtime,
+        capture_provenance_receipt_file_sha256=(capture_provenance_receipt_file_sha256),
         fisher_h1_smoke_report_file_sha256=fisher_h1_smoke_report_file_sha256,
     )
     payloads[REPORT_FILENAME] = report
@@ -7122,6 +7223,11 @@ def _load_adapter(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--frozen-identity", required=True, type=Path)
+    parser.add_argument("--capture-provenance-receipt", required=True, type=Path)
+    parser.add_argument(
+        "--expected-capture-provenance-receipt-sha256",
+        required=True,
+    )
     parser.add_argument("--repository-source-manifest", required=True, type=Path)
     parser.add_argument("--model-file-manifest", required=True, type=Path)
     parser.add_argument("--expected-model-file-manifest-sha256", required=True)
@@ -7536,6 +7642,23 @@ def _official_main(
             "source and runtime manifests bind different Git executable bytes"
         )
 
+    capture_provenance_receipt_file_sha256 = _authenticate_calibration_identity_capture_provenance(
+        receipt_path=args.capture_provenance_receipt,
+        expected_receipt_sha256=(args.expected_capture_provenance_receipt_sha256),
+        runtime_manifest_path=args.runtime_manifest,
+        expected_runtime_manifest_sha256=(args.expected_runtime_manifest_sha256),
+        source_manifest_bytes=source_manifest_bytes,
+        expected_identity_input_sha256=(bindings.identity_input_manifest_sha256),
+        expected_bindings=bindings,
+        expected_source_commit=requested_commit,
+    )
+    capture_provenance_receipt_bytes = _read_stable_regular_bytes(
+        args.capture_provenance_receipt,
+        context="calibration identity capture provenance receipt after authentication",
+    )
+    if sha256_bytes(capture_provenance_receipt_bytes) != (capture_provenance_receipt_file_sha256):
+        raise CalibrationRunError("capture provenance receipt changed after authentication")
+
     requirements_path = _assert_no_link_components(
         Path(os.path.abspath(args.repository_root)),
         PurePosixPath(CALIBRATION_REQUIREMENTS_PATH),
@@ -7583,8 +7706,9 @@ def _official_main(
         or identity.model_file_manifest_file_sha256 != bindings.model_file_manifest_file_sha256
         or identity.parquet_materialization_manifest_file_sha256
         != bindings.parquet_materialization_manifest_file_sha256
+        or identity.identity_input_manifest_sha256 != bindings.identity_input_manifest_sha256
     ):
-        raise CalibrationRunError("full identity decode differs from bootstrap execution bindings")
+        raise CalibrationRunError("full identity decode differs from bootstrap identity bindings")
     verified_source, _source_sha256 = services.verify_repository_source(
         bootstrap_source.manifest,
         args.repository_root,
@@ -7632,6 +7756,8 @@ def _official_main(
             args.expected_parquet_materialization_manifest_sha256
         ),
         expected_runtime_manifest_sha256=args.expected_runtime_manifest_sha256,
+        capture_provenance_receipt_bytes=capture_provenance_receipt_bytes,
+        expected_capture_provenance_receipt_sha256=(capture_provenance_receipt_file_sha256),
         output_dir=args.output_dir,
         require_cuda=True,
         fisher_h1_smoke=args.fisher_h1_smoke,

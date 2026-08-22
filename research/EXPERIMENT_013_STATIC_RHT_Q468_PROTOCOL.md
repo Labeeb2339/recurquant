@@ -1,9 +1,10 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound fifth replacement-H0 candidate. Fisher-smoke prerequisite
-> semantics and launcher-finalized capture custody are hardened, but Fisher
-> smoke and full calibration do not yet mechanically require that finalized
-> provenance receipt; not yet re-preregistered.**
+> **Status: unbound fifth replacement-H0 candidate. Runner v9 now makes the
+> launcher-finalized capture-provenance receipt a mandatory, report-bound
+> prerequisite for Fisher smoke and full calibration. No replacement H0,
+> identity recapture, protected execution, or quality result has been
+> authorized; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -1018,6 +1019,71 @@ pre-H0 amendment must mechanically close that downstream bypass. Until then,
 no protected execution, replacement-H0 tag, identity recapture, promotion,
 model staging, or quality claim is authorized.
 
+Twentieth pre-H0 mandatory downstream capture-provenance amendment:
+2026-08-23. A direct-invocation review confirmed the remaining bypass recorded
+by the Nineteenth amendment: the finalized capture-provenance receipt was
+required to verify the frozen identity and authorize model staging, but the
+Fisher H=1 smoke and full-calibration entrypoints themselves accepted no such
+input. A caller with an otherwise exact identity and manually prepared model
+root could therefore reach those downstream paths without proving that the
+identity input had survived the outer launcher's postconditions and owned-root
+cleanup. No protected receipt body, dataset row, model payload, CUDA
+computation, calibration score, policy, stability value, or quality result was
+accessed to find or repair the defect.
+
+Runner v9 requires both `--capture-provenance-receipt` and
+`--expected-capture-provenance-receipt-sha256` for every official Fisher smoke
+and full-calibration invocation. The direct `run_calibration` configuration
+likewise requires the exact receipt bytes and explicit SHA-256; supplying only
+an arbitrary digest is not an authorization. Before full identity decoding,
+adapter validation or construction, calibration materialization, model-root
+inspection, model loading, output creation, or CUDA work, the runner checks
+canonical schema-v2 bytes; capture v6; runner v9; phase and source commit; the
+launcher-finalized status and publication contract; the exact identity-input,
+source, runtime, model, and Parquet bindings; the H0 capture-source hash; the
+excluded-module policy; and all seven runtime-v5 critical-module origins
+against package roots, distribution versions, RECORD ownership, file hashes,
+and sizes. Malformed inputs fail through the public calibration error boundary.
+
+Run-report schema advances from v2 to v3. Every smoke or full report binds the
+authenticated receipt's file SHA-256 in `evidence.prerequisites`. A full run
+accepts its prior Fisher smoke report only when that report is runner v9,
+schema v3, and binds the same capture-provenance receipt SHA-256; a canonical
+rehash around another receipt does not satisfy the prerequisite. This creates
+one transitive custody chain from launcher-finalized identity capture through
+smoke to full calibration. It is local authenticated evidence, not a signature
+or external append-only attestation.
+
+The outer launcher and its embedded standard-library bootstrap now require the
+receipt pair for ordinary smoke and full profiles, require an absolute receipt
+path at that boundary, authenticate the explicit digest and exact finalized
+envelope before loading the runner, and bind the envelope's source commit to
+the source-manifest H0. Host-side bound-artifact reauthentication repeats after
+the child and therefore detects receipt mutation during execution. The sealed
+`capture-calibration-identity` profile remains intentionally separate: it
+accepts neither downstream receipt option nor a prior-smoke option, emits the
+candidate receipt for host finalization, and does not attempt to consume its
+own not-yet-published output.
+
+Regression coverage must prove both ordinary modes fail before identity decode
+or protected access on missing, mismatched, malformed, stale-schema, stale-
+runner, former-status, wrong-source, or semantically drifted provenance; that
+the host and embedded gates stop before subprocess or runner loading; that a
+rehash cannot move a smoke report to another finalized receipt; and that the
+capture and Stage-A profiles do not acquire downstream-only options. Focused,
+full clean-tree, and CI tests must all pass before this descendant can
+contribute to a future H0.
+
+Runner revision is v9, capture procedure remains v6, capture-provenance schema
+remains v2, frozen-identity schema remains v5, calibration-runtime schema
+remains v5, and run-report schema is v3. No record selection, dataset revision,
+token span, Fisher boundary, model contract, quantization policy, metric,
+statistical gate, or claim boundary changes. This amendment closes the known
+downstream provenance bypass only. It is not a Fisher result, calibration
+result, quality result, deployment result, novelty result, or breakthrough
+claim. No H0 tag, identity recapture, promotion, model staging, protected run,
+or result publication is authorized by this working copy.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -1429,7 +1495,7 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v8's identity view. It requires the exact receipt and runtime inputs
+runner v9's identity view. It requires the exact receipt and runtime inputs
 `--capture-provenance-receipt`,
 `--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
 `--expected-runtime-manifest-sha256`. It accepts no H1, model manifest, Hub,

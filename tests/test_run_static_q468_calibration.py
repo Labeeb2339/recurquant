@@ -129,6 +129,10 @@ def official_cli_arguments(tmp_path: Path, *, ruler_receipts: Path) -> list[str]
     return [
         "--frozen-identity",
         str(tmp_path / "identity.json"),
+        "--capture-provenance-receipt",
+        str(tmp_path / "capture-provenance.json"),
+        "--expected-capture-provenance-receipt-sha256",
+        "5" * 64,
         "--repository-source-manifest",
         str(tmp_path / "source.json"),
         "--model-file-manifest",
@@ -301,6 +305,7 @@ def bootstrap_identity_bytes(
     runtime_manifest_sha256: str,
     model_manifest_sha256: str,
     parquet_manifest_sha256: str,
+    identity_input_manifest_sha256: str = "1" * 64,
 ) -> bytes:
     evidence = {
         "execution_bindings": {
@@ -313,6 +318,7 @@ def bootstrap_identity_bytes(
         "phase": "calibration",
         "promotion_required": False,
         "schema_version": runner.FROZEN_IDENTITY_SCHEMA_VERSION,
+        "source_manifest_sha256": identity_input_manifest_sha256,
         "status": "frozen",
     }
     return runner.canonical_json_bytes(
@@ -399,6 +405,7 @@ def frozen_identity_source_authorization() -> Any:
             parquet_materialization_manifest_file_sha256=(
                 frozen.parquet_materialization_manifest_file_sha256
             ),
+            identity_input_manifest_sha256=frozen.identity_input_manifest_sha256,
         ),
         identity_bytes=b"frozen-identity",
         frozen_identity_file_sha256="d" * 64,
@@ -586,6 +593,45 @@ def capture_provenance_runtime_manifest_bytes() -> tuple[bytes, list[dict[str, o
     return runner.canonical_json_bytes(payload), origins
 
 
+def capture_provenance_receipt_document(
+    *,
+    origins: Sequence[Mapping[str, object]],
+    bindings: Any,
+    capture_source_sha256: str,
+    identity_input_manifest_sha256: str,
+    source_commit: str,
+) -> dict[str, object]:
+    return {
+        "artifact_kind": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND,
+        "capture_source": {
+            "path": runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+            "sha256": capture_source_sha256,
+        },
+        "capture_version": runner.CALIBRATION_IDENTITY_CAPTURE_VERSION,
+        "critical_module_origins": origins,
+        "excluded_runtime_modules": list(runner.CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES),
+        "execution_bindings": {
+            "calibration_runtime_manifest_file_sha256": bindings.runtime_manifest_file_sha256,
+            "model_file_manifest_file_sha256": bindings.model_file_manifest_file_sha256,
+            "parquet_materialization_manifest_file_sha256": (
+                bindings.parquet_materialization_manifest_file_sha256
+            ),
+            "repository_source_manifest_file_sha256": (
+                bindings.repository_source_manifest_file_sha256
+            ),
+        },
+        "identity_input_file_sha256": identity_input_manifest_sha256,
+        "phase": "calibration",
+        "publication_contract": (
+            runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+        ),
+        "runner_revision": runner.RUNNER_REVISION,
+        "schema_version": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
+        "source_commit": source_commit,
+        "status": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
+    }
+
+
 def capture_provenance_receipt_fixture(
     tmp_path: Path,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -608,36 +654,15 @@ def capture_provenance_receipt_fixture(
         runtime_manifest_file_sha256=digest(runtime_bytes),
         model_file_manifest_file_sha256="9" * 64,
         parquet_materialization_manifest_file_sha256="a" * 64,
+        identity_input_manifest_sha256="1" * 64,
     )
-    receipt = {
-        "artifact_kind": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND,
-        "capture_source": {
-            "path": runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
-            "sha256": capture_source_sha256,
-        },
-        "capture_version": runner.CALIBRATION_IDENTITY_CAPTURE_VERSION,
-        "critical_module_origins": origins,
-        "excluded_runtime_modules": list(runner.CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES),
-        "execution_bindings": {
-            "calibration_runtime_manifest_file_sha256": bindings.runtime_manifest_file_sha256,
-            "model_file_manifest_file_sha256": bindings.model_file_manifest_file_sha256,
-            "parquet_materialization_manifest_file_sha256": (
-                bindings.parquet_materialization_manifest_file_sha256
-            ),
-            "repository_source_manifest_file_sha256": (
-                bindings.repository_source_manifest_file_sha256
-            ),
-        },
-        "identity_input_file_sha256": "1" * 64,
-        "phase": "calibration",
-        "publication_contract": (
-            runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
-        ),
-        "runner_revision": runner.RUNNER_REVISION,
-        "schema_version": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
-        "source_commit": "1" * 40,
-        "status": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
-    }
+    receipt = capture_provenance_receipt_document(
+        origins=origins,
+        bindings=bindings,
+        capture_source_sha256=capture_source_sha256,
+        identity_input_manifest_sha256=bindings.identity_input_manifest_sha256,
+        source_commit="1" * 40,
+    )
     receipt_bytes = runner.canonical_json_bytes(receipt)
     receipt_path = tmp_path / "capture-provenance.json"
     receipt_path.write_bytes(receipt_bytes)
@@ -1199,17 +1224,19 @@ class FakeBackend:
         stability_passed: bool = True,
         decode_error: BaseException | None = None,
         expected_source_commit: str | None = None,
+        expected_identity_bytes: bytes = b"identity",
     ) -> None:
         self.frozen_identity = frozen_identity
         self.events = events
         self.stability_passed = stability_passed
         self.decode_error = decode_error
         self.expected_source_commit = expected_source_commit or current_head()
+        self.expected_identity_bytes = expected_identity_bytes
         self.captured: list[Any] = []
 
     def decode_identity(self, data: bytes) -> Any:
         self.events.append("decode_identity")
-        assert data == b"identity"
+        assert data == self.expected_identity_bytes
         if self.decode_error is not None:
             raise self.decode_error
         return self.frozen_identity
@@ -1416,7 +1443,16 @@ def source_verifier(
         nonlocal calls
         calls += 1
         events.append("verify_source")
-        assert expected == {"manifest": "expected", "source_commit": expected_source_commit}
+        assert expected == {
+            "manifest": "expected",
+            "paths": [
+                {
+                    "path": runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+                    "raw_sha256": "c" * 64,
+                }
+            ],
+            "source_commit": expected_source_commit,
+        }
         assert root == SCRIPT.parents[1]
         if fail_on_call == calls:
             raise runner.CalibrationRunError("source drift")
@@ -1441,11 +1477,21 @@ def configured_run(
         "model.safetensors": b"safe-test-placeholder",
         "model.safetensors.index.json": b"{}",
     }
+    capture_source_sha256 = "c" * 64
     source_bytes = runner.canonical_json_bytes(
-        {"manifest": "expected", "source_commit": expected_source_commit}
+        {
+            "manifest": "expected",
+            "paths": [
+                {
+                    "path": runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+                    "raw_sha256": capture_source_sha256,
+                }
+            ],
+            "source_commit": expected_source_commit,
+        }
     )
     model_bytes = model_manifest_bytes(files)
-    runtime_bytes = runtime_manifest_bytes()
+    runtime_bytes, provenance_origins = capture_provenance_runtime_manifest_bytes()
     parquet_bytes = b'{"artifact_kind":"test-parquet-materializations"}\n'
     frozen = identity(
         selected_records,
@@ -1453,6 +1499,29 @@ def configured_run(
         runtime_manifest_sha256=digest(runtime_bytes),
         model_manifest_sha256=digest(model_bytes),
         parquet_manifest_sha256=digest(parquet_bytes),
+    )
+    identity_bytes = bootstrap_identity_bytes(
+        source_manifest_sha256=digest(source_bytes),
+        runtime_manifest_sha256=digest(runtime_bytes),
+        model_manifest_sha256=digest(model_bytes),
+        parquet_manifest_sha256=digest(parquet_bytes),
+        identity_input_manifest_sha256=frozen.identity_input_manifest_sha256,
+    )
+    provenance_bindings = runner.BootstrapIdentityBindings(
+        repository_source_manifest_file_sha256=digest(source_bytes),
+        runtime_manifest_file_sha256=digest(runtime_bytes),
+        model_file_manifest_file_sha256=digest(model_bytes),
+        parquet_materialization_manifest_file_sha256=digest(parquet_bytes),
+        identity_input_manifest_sha256=frozen.identity_input_manifest_sha256,
+    )
+    capture_provenance_receipt_bytes = runner.canonical_json_bytes(
+        capture_provenance_receipt_document(
+            origins=provenance_origins,
+            bindings=provenance_bindings,
+            capture_source_sha256=capture_source_sha256,
+            identity_input_manifest_sha256=frozen.identity_input_manifest_sha256,
+            source_commit=expected_source_commit,
+        )
     )
     model_root = tmp_path / "model"
     write_model_root(model_root, files)
@@ -1463,6 +1532,7 @@ def configured_run(
         stability_passed=stability_passed,
         decode_error=decode_error,
         expected_source_commit=expected_source_commit,
+        expected_identity_bytes=identity_bytes,
     )
     sequence_map = {
         str(item["canonical_id"]): materialized(
@@ -1515,7 +1585,7 @@ def configured_run(
         authenticate_runtime=authenticate_runtime,
     )
     config = runner.CalibrationRunConfig(
-        frozen_identity_bytes=b"identity",
+        frozen_identity_bytes=identity_bytes,
         repository_source_manifest_bytes=source_bytes,
         model_file_manifest_bytes=model_bytes,
         parquet_materialization_manifest_bytes=parquet_bytes,
@@ -1526,6 +1596,8 @@ def configured_run(
         expected_model_file_manifest_sha256=digest(model_bytes),
         expected_parquet_materialization_manifest_sha256=digest(parquet_bytes),
         expected_runtime_manifest_sha256=digest(runtime_bytes),
+        capture_provenance_receipt_bytes=capture_provenance_receipt_bytes,
+        expected_capture_provenance_receipt_sha256=digest(capture_provenance_receipt_bytes),
         output_dir=tmp_path / "output",
         require_cuda=False,
     )
@@ -1600,6 +1672,7 @@ def configured_run(
             "runtime_manifest_file_sha256": authenticated_runtime.manifest_file_sha256,
             "torch": runner.CANONICAL_TORCH_RUNTIME_VERSION,
         },
+        capture_provenance_receipt_file_sha256=digest(capture_provenance_receipt_bytes),
         fisher_h1_smoke_report_file_sha256=None,
     )
     config = replace(
@@ -1647,7 +1720,9 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
     ]
     assert adapter.closed
     report = json.loads((config.output_dir / runner.REPORT_FILENAME).read_text())
+    assert report["schema_version"] == 3
     assert report["evidence"]["status"] == "passed"
+    assert report["evidence"]["runner_revision"] == runner.RUNNER_REVISION
     assert report["evidence"]["calibration"] == {
         "expected_fisher_step_count": 1,
         "observed_fisher_step_count": 1,
@@ -1666,7 +1741,10 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
         "repository_source_manifest_file_sha256": digest(config.repository_source_manifest_bytes),
     }
     assert report["evidence"]["prerequisites"] == {
-        "fisher_h1_smoke_report_file_sha256": digest(config.prior_fisher_h1_smoke_report_bytes)
+        "capture_provenance_receipt_file_sha256": (
+            config.expected_capture_provenance_receipt_sha256
+        ),
+        "fisher_h1_smoke_report_file_sha256": digest(config.prior_fisher_h1_smoke_report_bytes),
     }
 
 
@@ -1701,7 +1779,9 @@ def test_fisher_h1_smoke_runs_first_frozen_sequence_and_publishes_only_receipt(
         runner.FISHER_SMOKE_COMPLETE_FILENAME,
     }
     report = json.loads((config.output_dir / runner.FISHER_SMOKE_REPORT_FILENAME).read_text())
+    assert report["schema_version"] == 3
     assert report["evidence"]["status"] == "fisher_h1_smoke_passed"
+    assert report["evidence"]["runner_revision"] == runner.RUNNER_REVISION
     assert report["evidence"]["calibration"] == {
         "expected_fisher_step_count": 1,
         "observed_fisher_step_count": 1,
@@ -1711,7 +1791,41 @@ def test_fisher_h1_smoke_runs_first_frozen_sequence_and_publishes_only_receipt(
         "token_count": 3,
     }
     assert report["evidence"]["artifacts"] == {}
-    assert report["evidence"]["prerequisites"] == {"fisher_h1_smoke_report_file_sha256": None}
+    assert report["evidence"]["prerequisites"] == {
+        "capture_provenance_receipt_file_sha256": (
+            config.expected_capture_provenance_receipt_sha256
+        ),
+        "fisher_h1_smoke_report_file_sha256": None,
+    }
+
+
+@pytest.mark.parametrize("fisher_h1_smoke", [False, True], ids=["full", "smoke"])
+def test_smoke_and_full_require_semantic_capture_provenance_before_identity_decode(
+    tmp_path: Path,
+    fisher_h1_smoke: bool,
+) -> None:
+    config, adapter, services, events = configured_run(tmp_path)
+    malformed_document = json.loads(config.capture_provenance_receipt_bytes)
+    malformed_document["status"] = "captured_before_launcher_finalization"
+    malformed_receipt = runner.canonical_json_bytes(malformed_document)
+    config = replace(
+        config,
+        capture_provenance_receipt_bytes=malformed_receipt,
+        expected_capture_provenance_receipt_sha256=digest(malformed_receipt),
+        fisher_h1_smoke=fisher_h1_smoke,
+        prior_fisher_h1_smoke_report_bytes=(
+            None if fisher_h1_smoke else config.prior_fisher_h1_smoke_report_bytes
+        ),
+        prior_fisher_h1_smoke_complete_bytes=(
+            None if fisher_h1_smoke else config.prior_fisher_h1_smoke_complete_bytes
+        ),
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="capture provenance receipt"):
+        runner.run_calibration(config, adapter, services=services)
+
+    assert events == []
+    assert not config.output_dir.exists()
 
 
 def test_full_calibration_requires_authenticated_prior_fisher_smoke_before_data(
@@ -1776,9 +1890,10 @@ def test_full_calibration_rejects_rehashed_smoke_from_another_identity_before_da
             ("runtime", "adapter", "model_loading_diagnostic_counts", "missing_keys"),
             1,
         ),
+        (("prerequisites", "capture_provenance_receipt_file_sha256"), "0" * 64),
     ],
 )
-def test_full_calibration_rejects_rehashed_malformed_smoke_runtime_before_data(
+def test_full_calibration_rejects_rehashed_malformed_smoke_evidence_before_data(
     tmp_path: Path,
     path: tuple[str, ...],
     replacement: object,
@@ -2015,10 +2130,12 @@ def test_source_manifest_exact_bytes_are_identity_bound_before_verifier(tmp_path
     config, adapter, services, events = configured_run(tmp_path)
     config = replace(config, repository_source_manifest_bytes=b'{"manifest":"changed"}\n')
 
-    with pytest.raises(runner.CalibrationRunError, match="frozen identity binding"):
+    with pytest.raises(
+        runner.CalibrationRunError, match="capture provenance differs from identity"
+    ):
         runner.run_calibration(config, adapter, services=services)
 
-    assert events == ["decode_identity"]
+    assert events == []
 
 
 def test_materialized_token_mismatch_stops_before_model_file_open_or_load(tmp_path: Path) -> None:
@@ -2089,9 +2206,13 @@ def test_runtime_manifest_commitment_and_authentication_precede_data(tmp_path: P
     config, adapter, services, events = configured_run(tmp_path)
     config = replace(config, expected_runtime_manifest_sha256="9" * 64)
 
-    with pytest.raises(runner.CalibrationRunError, match="runtime manifest bytes"):
+    with pytest.raises(
+        runner.CalibrationRunError,
+        match="capture provenance runtime manifest differs from identity/CLI binding",
+    ):
         runner.run_calibration(config, adapter, services=services)
 
+    assert "decode_identity" not in events
     assert "authenticate_runtime" not in events
     assert "materialize_sequence" not in events
     assert "load_model" not in events
@@ -3034,6 +3155,7 @@ def test_frozen_identity_source_contract_rejects_each_full_binding_mismatch(
         runtime_manifest_file_sha256="1" * 64,
         model_file_manifest_file_sha256="2" * 64,
         parquet_materialization_manifest_file_sha256="3" * 64,
+        identity_input_manifest_sha256="1" * 64,
     )
     decoded_identity = identity(
         (),
@@ -5143,8 +5265,19 @@ def test_official_cli_uses_only_unambiguous_ruler_receipt_directory_option(
     parsed = runner._parser().parse_args(arguments)
 
     assert parsed.ruler_receipt_dir == receipt_dir
+    assert parsed.capture_provenance_receipt == tmp_path / "capture-provenance.json"
+    assert parsed.expected_capture_provenance_receipt_sha256 == "5" * 64
     assert "--ruler-receipt-dir" in runner._parser().format_help()
     assert "--ruler-root" not in runner._parser().format_help()
+    for required in (
+        "--capture-provenance-receipt",
+        "--expected-capture-provenance-receipt-sha256",
+    ):
+        missing = list(arguments)
+        index = missing.index(required)
+        del missing[index : index + 2]
+        with pytest.raises(SystemExit):
+            runner._parser().parse_args(missing)
     legacy = list(arguments)
     legacy[legacy.index("--ruler-receipt-dir")] = "--ruler-root"
     with pytest.raises(SystemExit):
@@ -5435,6 +5568,10 @@ def test_public_main_binds_manifest_bytes_before_adapter_import(
             [
                 "--frozen-identity",
                 str(paths["identity"]),
+                "--capture-provenance-receipt",
+                str(tmp_path / "unopened-capture-provenance.json"),
+                "--expected-capture-provenance-receipt-sha256",
+                "5" * 64,
                 "--repository-source-manifest",
                 str(paths["source"]),
                 "--runtime-manifest",
@@ -5475,6 +5612,84 @@ def test_public_main_binds_manifest_bytes_before_adapter_import(
 
     assert imported == []
     assert not (tmp_path / "unopened-model").exists()
+
+
+def test_official_main_rejects_nonfinal_capture_receipt_before_source_module_or_adapter_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _adapter, _services, _events = configured_run(tmp_path / "configured")
+    ruler_receipts = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    artifacts = {
+        "identity.json": config.frozen_identity_bytes,
+        "source.json": config.repository_source_manifest_bytes,
+        "runtime.json": config.runtime_manifest_bytes,
+        "model.json": config.model_file_manifest_bytes,
+        "parquet.json": config.parquet_materialization_manifest_bytes,
+    }
+    for name, payload in artifacts.items():
+        (tmp_path / name).write_bytes(payload)
+    malformed_receipt = runner.canonical_json_bytes({})
+    (tmp_path / "capture-provenance.json").write_bytes(malformed_receipt)
+
+    git_record = {"sha256": "d" * 64, "size_bytes": 123}
+    bootstrap = runner.BootstrapSource(
+        manifest={"git_executable": git_record},
+        source_commit=config.expected_source_commit,
+        entries={},
+    )
+    monkeypatch.setattr(runner, "_bootstrap_source_manifest", lambda *_args, **_kwargs: bootstrap)
+    monkeypatch.setattr(
+        runner,
+        "_authenticate_git_executable",
+        lambda _path: SimpleNamespace(path=tmp_path / "git.exe", **git_record),
+    )
+    touched: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_load_exact_source_module",
+        lambda *_args, **_kwargs: (
+            touched.append("source-module") or pytest.fail("source modules must not load")
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_load_adapter",
+        lambda *_args, **_kwargs: touched.append("adapter") or pytest.fail("adapter must not load"),
+    )
+    monkeypatch.setattr(runner, "_AUTHENTICATED_CALIBRATION_API", None)
+    monkeypatch.setattr(runner, "_AUTHENTICATED_IDENTITY_RESOLVER", None)
+    monkeypatch.setattr(runner, "_AUTHENTICATED_SOURCE_VERIFIER", None)
+
+    arguments = official_cli_arguments(tmp_path, ruler_receipts=ruler_receipts)
+    replacements = {
+        "--expected-capture-provenance-receipt-sha256": digest(malformed_receipt),
+        "--expected-model-file-manifest-sha256": digest(config.model_file_manifest_bytes),
+        "--expected-parquet-materialization-manifest-sha256": digest(
+            config.parquet_materialization_manifest_bytes
+        ),
+        "--expected-runtime-manifest-sha256": digest(config.runtime_manifest_bytes),
+        "--source-commit": config.expected_source_commit,
+    }
+    for option, value in replacements.items():
+        arguments[arguments.index(option) + 1] = value
+
+    with pytest.raises(runner.CalibrationRunError, match="capture provenance receipt"):
+        runner._official_main(
+            arguments,
+            runtime_context=runner.SealedRuntimeContext(
+                manifest_file_sha256=digest(config.runtime_manifest_bytes),
+                base_runtime_root=tmp_path / "base",
+                package_roots={"packages": tmp_path / "packages"},
+                package_import_paths={"packages": "Lib/site-packages"},
+                git_executable_path=tmp_path / "git.exe",
+                pycache_prefix=tmp_path / "pycache",
+            ),
+            interpreter_path=tmp_path / "base" / "python.exe",
+        )
+
+    assert touched == []
+    assert not (tmp_path / "output").exists()
 
 
 def test_public_main_rejects_unsealed_official_execution() -> None:

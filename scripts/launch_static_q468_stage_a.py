@@ -486,9 +486,16 @@ if _stage_a_offline:
         stage_a_environment,
         count=1,
     )
-    result = replace_exact(result, "_smoke(_runner_options)\n", "", count=1)
+    result = replace_exact(
+        result,
+        "if not _capture_profile:\n    _smoke(_runner_options)\n",
+        "",
+        count=1,
+    )
     forbidden = (
         "scripts/run_static_q468_calibration.py",
+        '"--capture-provenance-receipt",',
+        '"--expected-capture-provenance-receipt-sha256",',
         "--fisher-h1-smoke",
         "--prior-fisher-h1-smoke-report",
         "--prior-fisher-h1-smoke-complete-marker",
