@@ -103,6 +103,40 @@ RUNTIME_MANIFEST_SCHEMA: Final = 5
 OFFICIAL_DATASETS_DISTRIBUTION_VERSION: Final = "4.8.5"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 2
+CANONICAL_ADAPTER_REVISION: Final = "experiment-013-qwen35-live-adapter-v2"
+CANONICAL_ADAPTER_KERNEL_BACKEND: Final = "transformers_pure_torch_gated_delta_rule"
+CANONICAL_ADAPTER_MODEL_DTYPE: Final = "bfloat16"
+CANONICAL_TORCH_DISTRIBUTION_VERSION: Final = "2.13.0+cu130"
+CANONICAL_TORCH_RUNTIME_VERSION: Final = "2.13.0+cu130"
+CANONICAL_CUDA_RUNTIME_VERSION: Final = "13.0"
+CANONICAL_ADAPTER_QUERY_SHAPE: Final = (1, 1, 16, 128)
+CANONICAL_ADAPTER_STATE_SHAPE: Final = (1, 16, 128, 128)
+CANONICAL_ADAPTER_RECURRENT_LAYER_INDICES: Final = (
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14,
+    16,
+    17,
+    18,
+    20,
+    21,
+    22,
+)
+CANONICAL_ADAPTER_LOADING_DIAGNOSTICS: Final = (
+    "error_msgs",
+    "mismatched_keys",
+    "missing_keys",
+    "unexpected_keys",
+)
 
 QUERY_EMA_DECAY: Final = 2.0 ** (-1.0 / 32.0)
 QUERY_ENERGY_EPSILON: Final = 1.0e-6
@@ -324,6 +358,18 @@ def _nonnegative_int(value: object, *, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{context} must be a non-negative integer")
     return value
+
+
+def _canonical_nonnegative_float_hex(value: object, *, context: str) -> float:
+    if not isinstance(value, str):
+        raise ValueError(f"{context} must be a canonical hexadecimal float")
+    try:
+        parsed = float.fromhex(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{context} must be a canonical hexadecimal float") from exc
+    if not math.isfinite(parsed) or parsed < 0.0 or value.startswith("-") or parsed.hex() != value:
+        raise ValueError(f"{context} must be finite, non-negative, and canonical")
+    return parsed
 
 
 @dataclass(frozen=True, slots=True)
@@ -5506,6 +5552,40 @@ def _report_bytes(
     return canonical_json_bytes(document)
 
 
+def _frozen_token_sequence_manifest_sha256(
+    records: Sequence[Mapping[str, object]],
+) -> str:
+    commitments: list[dict[str, object]] = []
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise ValueError(f"frozen calibration record {index} is not a mapping")
+        commitments.append(
+            {
+                "identity_record_sha256": _sha256(
+                    record.get("identity_record_sha256"),
+                    context=f"frozen calibration record {index} identity SHA-256",
+                ),
+                "prompt_token_ids_sha256": _sha256(
+                    record.get("prompt_token_ids_sha256"),
+                    context=f"frozen calibration record {index} prompt-token SHA-256",
+                ),
+                "sequence_length": _positive_int(
+                    record.get("sequence_length"),
+                    context=f"frozen calibration record {index} sequence length",
+                ),
+                "sequence_token_ids_sha256": _sha256(
+                    record.get("sequence_token_ids_sha256"),
+                    context=f"frozen calibration record {index} sequence-token SHA-256",
+                ),
+                "target_token_ids_sha256": _sha256(
+                    record.get("target_token_ids_sha256"),
+                    context=f"frozen calibration record {index} target-token SHA-256",
+                ),
+            }
+        )
+    return sha256_bytes(canonical_json_bytes(commitments))
+
+
 def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
     report_bytes: bytes,
     complete_marker_bytes: bytes,
@@ -5660,19 +5740,147 @@ def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
     runtime = evidence["runtime"]
     if not isinstance(runtime, Mapping):
         raise CalibrationRunError("Fisher H=1 smoke runtime receipt is missing")
+    _exact_fields(
+        runtime,
+        {
+            "adapter",
+            "authenticated_distribution_count",
+            "authenticated_file_count",
+            "cuda_available",
+            "cuda_runtime",
+            "elapsed_seconds_hex",
+            "gpu",
+            "packages",
+            "platform",
+            "python",
+            "runtime_manifest_file_sha256",
+            "torch",
+        },
+        context="Fisher H=1 smoke runtime receipt",
+    )
+    expected_packages = dict(authenticated_runtime.distributions)
     if (
-        runtime.get("runtime_manifest_file_sha256") != authenticated_runtime.manifest_file_sha256
-        or runtime.get("authenticated_distribution_count")
-        != authenticated_runtime.distribution_count
-        or runtime.get("authenticated_file_count") != authenticated_runtime.file_count
-        or runtime.get("packages") != dict(authenticated_runtime.distributions)
-        or runtime.get("cuda_available") is not True
-        or not isinstance(runtime.get("gpu"), Mapping)
+        runtime["runtime_manifest_file_sha256"] != authenticated_runtime.manifest_file_sha256
+        or runtime["authenticated_distribution_count"] != authenticated_runtime.distribution_count
+        or type(runtime["authenticated_distribution_count"]) is not int
+        or runtime["authenticated_file_count"] != authenticated_runtime.file_count
+        or type(runtime["authenticated_file_count"]) is not int
+        or runtime["packages"] != expected_packages
+        or runtime["python"] != authenticated_runtime.python_version
+        or expected_packages.get("torch") != CANONICAL_TORCH_DISTRIBUTION_VERSION
+        or runtime["torch"] != CANONICAL_TORCH_RUNTIME_VERSION
+        or runtime["cuda_available"] is not True
+        or runtime["cuda_runtime"] != CANONICAL_CUDA_RUNTIME_VERSION
+        or not isinstance(runtime["platform"], str)
+        or not runtime["platform"]
     ):
         raise CalibrationRunError("Fisher H=1 smoke runtime identity drifted")
+    _canonical_nonnegative_float_hex(
+        runtime["elapsed_seconds_hex"],
+        context="Fisher H=1 smoke elapsed seconds",
+    )
+
+    gpu = runtime["gpu"]
+    if not isinstance(gpu, Mapping):
+        raise CalibrationRunError("Fisher H=1 smoke GPU receipt is missing")
+    _exact_fields(
+        gpu,
+        {
+            "capability",
+            "device_index",
+            "name",
+            "peak_allocated_bytes",
+            "peak_reserved_bytes",
+        },
+        context="Fisher H=1 smoke GPU receipt",
+    )
+    device_index = _nonnegative_int(
+        gpu["device_index"],
+        context="Fisher H=1 smoke GPU device index",
+    )
+    capability = gpu["capability"]
+    if (
+        not isinstance(capability, list)
+        or len(capability) != 2
+        or type(capability[0]) is not int
+        or capability[0] <= 0
+        or type(capability[1]) is not int
+        or capability[1] < 0
+        or not isinstance(gpu["name"], str)
+        or not gpu["name"]
+    ):
+        raise CalibrationRunError("Fisher H=1 smoke GPU identity drifted")
+    peak_allocated = _nonnegative_int(
+        gpu["peak_allocated_bytes"],
+        context="Fisher H=1 smoke GPU peak allocated bytes",
+    )
+    peak_reserved = _nonnegative_int(
+        gpu["peak_reserved_bytes"],
+        context="Fisher H=1 smoke GPU peak reserved bytes",
+    )
+    if peak_reserved < peak_allocated:
+        raise CalibrationRunError("Fisher H=1 smoke GPU peak counters are inconsistent")
+
     adapter = runtime.get("adapter")
-    if not isinstance(adapter, Mapping) or adapter.get("fisher_step_count") != fisher_count:
-        raise CalibrationRunError("Fisher H=1 smoke adapter step receipt drifted")
+    if not isinstance(adapter, Mapping):
+        raise CalibrationRunError("Fisher H=1 smoke adapter receipt is missing")
+    _exact_fields(
+        adapter,
+        {
+            "adapter_revision",
+            "capture_input_sha256",
+            "device",
+            "fisher_step_count",
+            "kernel_backend",
+            "materialization_attempted",
+            "materialized_sequence_count",
+            "model_dtype",
+            "model_id",
+            "model_loaded",
+            "model_loading_diagnostic_counts",
+            "model_revision",
+            "query_shape",
+            "recurrent_layer_indices",
+            "state_shape",
+            "token_sequence_manifest_sha256",
+            "transformers_version",
+        },
+        context="Fisher H=1 smoke adapter receipt",
+    )
+    diagnostics = adapter["model_loading_diagnostic_counts"]
+    if not isinstance(diagnostics, Mapping):
+        raise CalibrationRunError("Fisher H=1 smoke model diagnostics are missing")
+    _exact_fields(
+        diagnostics,
+        set(CANONICAL_ADAPTER_LOADING_DIAGNOSTICS),
+        context="Fisher H=1 smoke model diagnostics",
+    )
+    if any(type(diagnostics[name]) is not int or diagnostics[name] != 0 for name in diagnostics):
+        raise CalibrationRunError("Fisher H=1 smoke model diagnostics are not empty")
+    expected_token_sequence_manifest_sha256 = _frozen_token_sequence_manifest_sha256(
+        identity.records
+    )
+    if (
+        adapter["adapter_revision"] != CANONICAL_ADAPTER_REVISION
+        or adapter["kernel_backend"] != CANONICAL_ADAPTER_KERNEL_BACKEND
+        or adapter["model_dtype"] != CANONICAL_ADAPTER_MODEL_DTYPE
+        or adapter["model_id"] != model_manifest.model_id
+        or adapter["model_revision"] != model_manifest.revision
+        or adapter["transformers_version"] != model_manifest.transformers_version
+        or adapter["device"] != f"cuda:{device_index}"
+        or adapter["fisher_step_count"] != fisher_count
+        or type(adapter["fisher_step_count"]) is not int
+        or adapter["materialization_attempted"] is not True
+        or adapter["materialized_sequence_count"] != len(identity.records)
+        or type(adapter["materialized_sequence_count"]) is not int
+        or adapter["model_loaded"] is not True
+        or adapter["query_shape"] != list(CANONICAL_ADAPTER_QUERY_SHAPE)
+        or adapter["recurrent_layer_indices"] != list(CANONICAL_ADAPTER_RECURRENT_LAYER_INDICES)
+        or adapter["state_shape"] != list(CANONICAL_ADAPTER_STATE_SHAPE)
+        or adapter["capture_input_sha256"] != identity.identity_input_manifest_sha256
+        or adapter["token_sequence_manifest_sha256"] != expected_token_sequence_manifest_sha256
+    ):
+        raise CalibrationRunError("Fisher H=1 smoke adapter identity drifted")
     return sha256_bytes(report_bytes)
 
 

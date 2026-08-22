@@ -49,6 +49,20 @@ def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def token_sequence_manifest_digest(records: Sequence[Mapping[str, object]]) -> str:
+    commitments = [
+        {
+            "identity_record_sha256": item["identity_record_sha256"],
+            "prompt_token_ids_sha256": item["prompt_token_ids_sha256"],
+            "sequence_length": item["sequence_length"],
+            "sequence_token_ids_sha256": item["sequence_token_ids_sha256"],
+            "target_token_ids_sha256": item["target_token_ids_sha256"],
+        }
+        for item in records
+    ]
+    return digest(runner.canonical_json_bytes(commitments))
+
+
 def token_digest(values: Sequence[int]) -> str:
     return digest(runner.canonical_json_bytes(list(values)))
 
@@ -206,10 +220,15 @@ def fisher_boundary_contract(
     return identity_resolver.build_fisher_boundary_contract(token_ids)
 
 
-def record(token_ids: tuple[int, ...] = (1, 2, 3)) -> dict[str, object]:
+def record(
+    token_ids: tuple[int, ...] = (1, 2, 3),
+    *,
+    canonical_id: str = "item-1",
+) -> dict[str, object]:
     prompt_stop = max(1, len(token_ids) - 1)
-    return {
-        "canonical_id": "item-1",
+    item: dict[str, object] = {
+        "anchor_manifest_sha256": "e" * 64,
+        "canonical_id": canonical_id,
         "config": "default",
         "family": "mbpp",
         "formatted_content_sha256": "b" * 64,
@@ -218,6 +237,8 @@ def record(token_ids: tuple[int, ...] = (1, 2, 3)) -> dict[str, object]:
         "prompt_token_ids_sha256": token_digest(token_ids[:prompt_stop]),
         "ruler_category": None,
         "seed": None,
+        "selection_rank": 0,
+        "selection_sha256": "d" * 64,
         "configured_length": None,
         "sequence_length": len(token_ids),
         "sequence_token_ids_sha256": token_digest(token_ids),
@@ -233,6 +254,8 @@ def record(token_ids: tuple[int, ...] = (1, 2, 3)) -> dict[str, object]:
         },
         "tokenizer_manifest_sha256": "c" * 64,
     }
+    item["identity_record_sha256"] = identity_resolver.identity_record_sha256(item)
+    return item
 
 
 def materialized(item: Mapping[str, object], token_ids: tuple[int, ...]) -> Any:
@@ -1442,8 +1465,11 @@ def configured_run(
             machine_name=manifest.machine_name,
             base_runtime_file_count=len(manifest.runtime_trees[0].files),
             package_root_count=len(manifest.package_roots),
-            distributions=(("transformers", "5.14.1"),),
-            distribution_count=1,
+            distributions=(
+                ("torch", runner.CANONICAL_TORCH_DISTRIBUTION_VERSION),
+                ("transformers", "5.14.1"),
+            ),
+            distribution_count=2,
             file_count=sum(len(tree.files) for tree in manifest.runtime_trees),
         )
 
@@ -1509,18 +1535,44 @@ def configured_run(
         },
         artifacts={},
         runtime={
-            "adapter": {"fisher_step_count": first_fisher_count},
+            "adapter": {
+                "adapter_revision": runner.CANONICAL_ADAPTER_REVISION,
+                "capture_input_sha256": frozen.identity_input_manifest_sha256,
+                "device": "cuda:0",
+                "fisher_step_count": first_fisher_count,
+                "kernel_backend": runner.CANONICAL_ADAPTER_KERNEL_BACKEND,
+                "materialization_attempted": True,
+                "materialized_sequence_count": len(frozen.records),
+                "model_dtype": runner.CANONICAL_ADAPTER_MODEL_DTYPE,
+                "model_id": parsed_model.model_id,
+                "model_loaded": True,
+                "model_loading_diagnostic_counts": {
+                    name: 0 for name in runner.CANONICAL_ADAPTER_LOADING_DIAGNOSTICS
+                },
+                "model_revision": parsed_model.revision,
+                "query_shape": list(runner.CANONICAL_ADAPTER_QUERY_SHAPE),
+                "recurrent_layer_indices": list(runner.CANONICAL_ADAPTER_RECURRENT_LAYER_INDICES),
+                "state_shape": list(runner.CANONICAL_ADAPTER_STATE_SHAPE),
+                "token_sequence_manifest_sha256": token_sequence_manifest_digest(frozen.records),
+                "transformers_version": parsed_model.transformers_version,
+            },
             "authenticated_distribution_count": authenticated_runtime.distribution_count,
             "authenticated_file_count": authenticated_runtime.file_count,
             "cuda_available": True,
-            "cuda_runtime": "test",
+            "cuda_runtime": runner.CANONICAL_CUDA_RUNTIME_VERSION,
             "elapsed_seconds_hex": (0.0).hex(),
-            "gpu": {"name": "test-gpu"},
+            "gpu": {
+                "capability": [12, 0],
+                "device_index": 0,
+                "name": "test-gpu",
+                "peak_allocated_bytes": 1,
+                "peak_reserved_bytes": 2,
+            },
             "packages": dict(authenticated_runtime.distributions),
             "platform": "test",
-            "python": "test",
+            "python": authenticated_runtime.python_version,
             "runtime_manifest_file_sha256": authenticated_runtime.manifest_file_sha256,
-            "torch": "test",
+            "torch": runner.CANONICAL_TORCH_RUNTIME_VERSION,
         },
         fisher_h1_smoke_report_file_sha256=None,
     )
@@ -1596,7 +1648,7 @@ def test_fisher_h1_smoke_runs_first_frozen_sequence_and_publishes_only_receipt(
     tmp_path: Path,
 ) -> None:
     first = record()
-    second = {**record(), "canonical_id": "item-2"}
+    second = record(canonical_id="item-2")
     config, adapter, services, events = configured_run(
         tmp_path,
         records=[first, second],
@@ -1673,6 +1725,60 @@ def test_full_calibration_rejects_rehashed_smoke_from_another_identity_before_da
     assert "materialize_sequence" not in events
     assert "authenticate_model_files" not in events
     assert "load_model" not in events
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("runtime", "elapsed_seconds_hex"), "not-a-float"),
+        (("runtime", "elapsed_seconds_hex"), "0x1p999999999"),
+        (("runtime", "forged"), True),
+        (("runtime", "gpu"), {}),
+        (("runtime", "gpu", "name"), ""),
+        (("runtime", "gpu", "peak_allocated_bytes"), -1),
+        (("runtime", "gpu", "peak_reserved_bytes"), 0),
+        (("runtime", "adapter", "forged"), True),
+        (("runtime", "adapter", "capture_input_sha256"), "invalid"),
+        (("runtime", "adapter", "capture_input_sha256"), "0" * 64),
+        (("runtime", "adapter", "fisher_step_count"), True),
+        (("runtime", "adapter", "materialization_attempted"), False),
+        (("runtime", "adapter", "materialized_sequence_count"), 0),
+        (("runtime", "adapter", "model_id"), "forged/model"),
+        (("runtime", "adapter", "model_loaded"), False),
+        (("runtime", "adapter", "token_sequence_manifest_sha256"), "0" * 64),
+        (
+            ("runtime", "adapter", "model_loading_diagnostic_counts", "missing_keys"),
+            1,
+        ),
+    ],
+)
+def test_full_calibration_rejects_rehashed_malformed_smoke_runtime_before_data(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    replacement: object,
+) -> None:
+    config, adapter, services, events = configured_run(tmp_path)
+    document = json.loads(config.prior_fisher_h1_smoke_report_bytes)
+    target: dict[str, Any] = document["evidence"]
+    for key in path[:-1]:
+        nested = target[key]
+        assert isinstance(nested, dict)
+        target = nested
+    target[path[-1]] = replacement
+    document["canonical_evidence_sha256"] = digest(
+        runner.canonical_json_bytes(document["evidence"])
+    )
+    config = replace(
+        config,
+        prior_fisher_h1_smoke_report_bytes=runner.canonical_json_bytes(document),
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="Fisher H=1 smoke"):
+        runner.run_calibration(config, adapter, services=services)
+
+    assert "materialize_sequence" not in events
+    assert "load_model" not in events
+    assert not config.output_dir.exists()
 
 
 def test_authenticated_unchanged_descendant_retains_h0_provenance(tmp_path: Path) -> None:

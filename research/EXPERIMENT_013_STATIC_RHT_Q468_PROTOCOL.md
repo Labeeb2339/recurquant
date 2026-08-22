@@ -1,9 +1,8 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: fifth replacement-H0 candidate after a preserved pre-model,
-> pre-dataset-row Fisher-smoke failure exposed sealed-runtime mutation, a
-> missing calibration dependency, and an unresolved identity-capture runtime-
-> provenance gap; not yet re-preregistered.**
+> **Status: unbound fifth replacement-H0 candidate. Fisher-smoke prerequisite
+> semantics are being hardened, and capture-completion custody remains an open
+> blocker; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -21,7 +20,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current fifth replacement-H0 candidate amended: 2026-08-15
+Current fifth replacement-H0 candidate amended: 2026-08-23
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -940,6 +939,36 @@ policies, metrics, gates, protected-stage rules, and every other scientific or
 content field remain byte-for-byte unchanged. This amendment repairs
 execution provenance and containment only. It is not a Fisher result, a
 quality result, an adoption result, or a breakthrough claim.
+
+Eighteenth pre-H0 Fisher-smoke prerequisite authentication amendment:
+2026-08-23. A source-only mutation probe found that the full-calibration
+prerequisite verifier authenticated the smoke report's outer canonical hash and
+primary identity bindings but inspected the nested runtime and adapter records
+only shallowly. After recomputing the unkeyed canonical hash, a report with an
+empty GPU record, a non-float elapsed-time string, or an extra forged adapter
+field could still pass that gate. No protected receipt body, model payload,
+CUDA computation, calibration score, policy, stability value, or quality result
+was accessed to find the defect.
+
+The runner now requires exact runtime, GPU, adapter, and model-loading-
+diagnostic field sets; canonical finite non-negative elapsed time; the frozen
+Torch 2.13.0+cu130 and CUDA 13.0 identities; typed GPU identity and consistent
+non-negative peak-memory counters; the exact reviewed adapter revision,
+backend, dtype, shapes, recurrent layers, model contract, full-materialization
+count, model-open status, empty loading diagnostics, the exact identity-bound
+capture and token-sequence hashes, and the exact Fisher-step count. Rehashed
+malformed receipts fail before canonical calibration materialization or model
+loading. Regression coverage includes the previously accepted mutations and
+additional type, counter, identity, and completion-state drifts.
+
+This is semantic fail-closed validation, not proof that a local receipt is
+unforgeable. External signing or append-only anchoring remains outside this
+evaluator. A separate review also found that the identity-capture provenance
+receipt can be published before launcher postconditions and cleanup are final;
+that custody blocker remains open. Therefore no descendant containing only this
+amendment may be tagged as H0. The fifth replacement candidate remains unbound
+until capture completion is bound to successful launcher finalization and all
+focused, full, and CI tests pass.
 
 ## Question
 
