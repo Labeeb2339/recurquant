@@ -48,6 +48,27 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     _write(import_root / "demo-1.0.dist-info" / "METADATA", metadata)
     record = b"demo-1.0.dist-info/METADATA,,\ndemo-1.0.dist-info/RECORD,,\ndemo/__init__.py,,\n"
     _write(import_root / "demo-1.0.dist-info" / "RECORD", record)
+    for (
+        module_name,
+        distribution_name,
+    ) in launcher.CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS.items():
+        dist_info_name = f"{distribution_name.replace('-', '_')}-1.0.dist-info"
+        _write(
+            import_root / module_name / "__init__.py",
+            f"NAME = {module_name!r}\n".encode(),
+        )
+        _write(
+            import_root / dist_info_name / "METADATA",
+            (f"Metadata-Version: 2.1\nName: {distribution_name}\nVersion: 1.0\n\n").encode(),
+        )
+        _write(
+            import_root / dist_info_name / "RECORD",
+            (
+                f"{dist_info_name}/METADATA,,\n"
+                f"{dist_info_name}/RECORD,,\n"
+                f"{module_name}/__init__.py,,\n"
+            ).encode(),
+        )
 
     package_roots = {"packages": packages.resolve(strict=True)}
     import_paths = {"packages": "Lib/site-packages"}
@@ -105,22 +126,37 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
             b"    return 0\n"
         ),
     )
+    capture_source_path = _write(
+        repository / launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+        b"CAPTURE_VERSION = 6\n",
+    )
     source_payload = {
         "git_executable": {
             "sha256": git_record["sha256"],
             "size_bytes": git_record["size_bytes"],
         },
         "object_format": "sha1",
-        "paths": [
-            {
-                "git_blob_oid": "b" * 40,
-                "index_blob_oid": "b" * 40,
-                "mode": "100644",
-                "path": launcher.RUNNER_SOURCE_PATH,
-                "raw_sha256": _sha256(runner_path.read_bytes()),
-                "worktree_blob_oid": "b" * 40,
-            }
-        ],
+        "paths": sorted(
+            [
+                {
+                    "git_blob_oid": "c" * 40,
+                    "index_blob_oid": "c" * 40,
+                    "mode": "100644",
+                    "path": launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+                    "raw_sha256": _sha256(capture_source_path.read_bytes()),
+                    "worktree_blob_oid": "c" * 40,
+                },
+                {
+                    "git_blob_oid": "b" * 40,
+                    "index_blob_oid": "b" * 40,
+                    "mode": "100644",
+                    "path": launcher.RUNNER_SOURCE_PATH,
+                    "raw_sha256": _sha256(runner_path.read_bytes()),
+                    "worktree_blob_oid": "b" * 40,
+                },
+            ],
+            key=lambda item: item["path"],
+        ),
         "profile": "experiment-013-static-q468-frozen-source-v2",
         "repository_binding": {},
         "schema": "recurquant.experiment013.source-manifest.v2",
@@ -209,8 +245,123 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         "repository": repository,
         "ruler_receipt_dir": ruler_receipt_dir,
         "runner_arguments": runner_arguments,
+        "runtime_manifest": runtime,
         "runtime_path": runtime_path,
+        "source_manifest": {
+            "file_sha256": _sha256(source_path.read_bytes()),
+            "git_executable": source["git_executable"],
+            "paths": [
+                {"path": item["path"], "raw_sha256": item["raw_sha256"]} for item in source["paths"]
+            ],
+            "source_commit": source["source_commit"],
+        },
+        "source_path": source_path,
     }
+
+
+def _capture_fixture(tmp_path: Path) -> dict[str, Any]:
+    fixture = _sealed_fixture(tmp_path)
+    output_parent = tmp_path / "capture-output"
+    output_parent.mkdir()
+    identity_output = output_parent / "identity-input.json"
+    receipt_output = output_parent / "capture-provenance.json"
+    capture_arguments = [
+        "capture-calibration-identity",
+        "--repository-root",
+        str(fixture["repository"]),
+        "--source-commit",
+        str(fixture["source_manifest"]["source_commit"]),
+        "--repository-source-manifest",
+        str(fixture["source_path"]),
+        "--expected-repository-source-manifest-sha256",
+        fixture["bindings"]["repository_source_manifest_file_sha256"],
+        "--runtime-manifest",
+        str(fixture["runtime_path"]),
+        "--expected-runtime-manifest-sha256",
+        fixture["bindings"]["calibration_runtime_manifest_file_sha256"],
+        "--model-file-manifest",
+        str(fixture["model_path"]),
+        "--expected-model-file-manifest-sha256",
+        fixture["bindings"]["model_file_manifest_file_sha256"],
+        "--parquet-materialization-manifest",
+        str(fixture["parquet_path"]),
+        "--expected-parquet-materialization-manifest-sha256",
+        fixture["bindings"]["parquet_materialization_manifest_file_sha256"],
+        "--cache-root",
+        str(fixture["cache_root"]),
+        "--ruler-receipt-dir",
+        str(fixture["ruler_receipt_dir"]),
+        "--output",
+        str(identity_output),
+        "--capture-provenance-receipt-output",
+        str(receipt_output),
+    ]
+    separator = fixture["host_arguments"].index("--")
+    fixture.update(
+        {
+            "capture_arguments": capture_arguments,
+            "capture_host_arguments": [
+                *fixture["host_arguments"][: separator + 1],
+                *capture_arguments,
+            ],
+            "identity_output": identity_output,
+            "receipt_output": receipt_output,
+        }
+    )
+    return fixture
+
+
+def _capture_candidate(fixture: dict[str, Any], identity_bytes: bytes) -> bytes:
+    runtime_manifest = fixture["runtime_manifest"]
+    distributions = {item["name"]: item for item in runtime_manifest["distributions"]}
+    runtime_trees = {
+        item["name"]: {record["path"]: record for record in item["files"]}
+        for item in runtime_manifest["runtime_trees"]
+    }
+    source_entries = {
+        item["path"]: item["raw_sha256"] for item in fixture["source_manifest"]["paths"]
+    }
+    origins: list[dict[str, object]] = []
+    for module_name in sorted(launcher.CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS):
+        distribution_name = launcher.CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS[module_name]
+        distribution = distributions[distribution_name]
+        relative_path = f"Lib/site-packages/{module_name}/__init__.py"
+        file_record = runtime_trees[distribution["package_root"]][relative_path]
+        origins.append(
+            {
+                "distribution": distribution_name,
+                "module": module_name,
+                "package_root": distribution["package_root"],
+                "relative_path": relative_path,
+                "sha256": file_record["sha256"],
+                "size_bytes": file_record["size_bytes"],
+                "version": distribution["version"],
+            }
+        )
+    return launcher._canonical_json_bytes(
+        {
+            "artifact_kind": launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND,
+            "capture_source": {
+                "path": launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+                "sha256": source_entries[launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH],
+            },
+            "capture_version": launcher.CALIBRATION_IDENTITY_CAPTURE_VERSION,
+            "critical_module_origins": origins,
+            "excluded_runtime_modules": list(
+                launcher.CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
+            ),
+            "execution_bindings": fixture["bindings"],
+            "identity_input_file_sha256": _sha256(identity_bytes),
+            "phase": "calibration",
+            "publication_contract": (
+                launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+            ),
+            "runner_revision": launcher.RUNNER_REVISION,
+            "schema_version": launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
+            "source_commit": fixture["source_manifest"]["source_commit"],
+            "status": launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
+        }
+    )
 
 
 def _run_embedded_manifest_boundary(
@@ -342,6 +493,356 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
     )
     assert environment["HF_DATASETS_CACHE"] == str(fixture["cache_root"] / "datasets")
     assert stdin_payload == launcher.SEALED_BOOTSTRAP_BYTES
+
+
+def test_capture_candidate_authenticates_exact_source_runtime_and_bindings(
+    tmp_path: Path,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+
+    assert launcher._validate_capture_provenance_candidate(
+        candidate,
+        bindings=fixture["bindings"],
+        identity_input_file_sha256=_sha256(identity_bytes),
+        runtime_manifest=fixture["runtime_manifest"],
+        source_manifest=fixture["source_manifest"],
+    ) == json.loads(candidate)
+
+    stale = json.loads(candidate)
+    stale["schema_version"] = 1
+    with pytest.raises(launcher.SealedLaunchError, match="identity drifted"):
+        launcher._validate_capture_provenance_candidate(
+            launcher._canonical_json_bytes(stale),
+            bindings=fixture["bindings"],
+            identity_input_file_sha256=_sha256(identity_bytes),
+            runtime_manifest=fixture["runtime_manifest"],
+            source_manifest=fixture["source_manifest"],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "binding",
+        "capture-source",
+        "excluded-policy",
+        "extra-field",
+        "identity-input",
+        "module-hash",
+        "module-path",
+        "module-size",
+        "module-version",
+        "publication-contract",
+        "runner-revision",
+        "schema-v1",
+        "source-commit",
+        "status",
+    ],
+)
+def test_capture_candidate_rejects_every_finalization_drift(
+    mutation: str,
+    tmp_path: Path,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = json.loads(_capture_candidate(fixture, identity_bytes))
+    if mutation == "binding":
+        candidate["execution_bindings"]["model_file_manifest_file_sha256"] = "0" * 64
+    elif mutation == "capture-source":
+        candidate["capture_source"]["sha256"] = "0" * 64
+    elif mutation == "excluded-policy":
+        candidate["excluded_runtime_modules"] = ["setuptools"]
+    elif mutation == "extra-field":
+        candidate["launcher_finalized"] = True
+    elif mutation == "identity-input":
+        candidate["identity_input_file_sha256"] = "0" * 64
+    elif mutation == "module-hash":
+        candidate["critical_module_origins"][0]["sha256"] = "0" * 64
+    elif mutation == "module-path":
+        candidate["critical_module_origins"][0]["relative_path"] = (
+            "Lib/site-packages/shadow/__init__.py"
+        )
+    elif mutation == "module-size":
+        candidate["critical_module_origins"][0]["size_bytes"] += 1
+    elif mutation == "module-version":
+        candidate["critical_module_origins"][0]["version"] = "2.0"
+    elif mutation == "publication-contract":
+        candidate["publication_contract"] = "child-published-before-cleanup"
+    elif mutation == "runner-revision":
+        candidate["runner_revision"] = "experiment-013-static-q468-calibration-runner-v7"
+    elif mutation == "schema-v1":
+        candidate["schema_version"] = 1
+    elif mutation == "source-commit":
+        candidate["source_commit"] = "0" * 40
+    else:
+        candidate["status"] = "captured_under_authenticated_runtime"
+
+    with pytest.raises(launcher.SealedLaunchError):
+        launcher._validate_capture_provenance_candidate(
+            launcher._canonical_json_bytes(candidate),
+            bindings=fixture["bindings"],
+            identity_input_file_sha256=_sha256(identity_bytes),
+            runtime_manifest=fixture["runtime_manifest"],
+            source_manifest=fixture["source_manifest"],
+        )
+
+
+def test_capture_receipt_is_published_only_after_postconditions_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    temporary_roots: list[Path] = []
+    original_publish = launcher._atomic_publish_capture_receipt
+
+    def run_wrapper(
+        command: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        assert kwargs["stdout"] == subprocess.PIPE
+        assert not fixture["receipt_output"].exists()
+        temporary_roots.extend((Path(command[13]), Path(command[15])))
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    def publish_wrapper(
+        snapshot: launcher.CaptureArtifactSnapshot,
+        payload: bytes,
+    ) -> None:
+        assert temporary_roots and all(not path.exists() for path in temporary_roots)
+        assert fixture["identity_output"].read_bytes() == identity_bytes
+        assert not fixture["receipt_output"].exists()
+        original_publish(snapshot, payload)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+    monkeypatch.setattr(launcher, "_atomic_publish_capture_receipt", publish_wrapper)
+
+    assert launcher.launch(fixture["capture_host_arguments"]) == 0
+    assert fixture["receipt_output"].read_bytes() == candidate
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {
+        "capture_provenance_receipt_file_sha256": _sha256(candidate),
+        "identity_input_file_sha256": _sha256(identity_bytes),
+        "runner_revision": launcher.RUNNER_REVISION,
+        "status": "captured_calibration_identity_with_launcher_finalization",
+    }
+
+
+def test_capture_child_failure_or_postcondition_failure_never_publishes_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+
+    def failed_child(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 37, stdout=candidate)
+
+    monkeypatch.setattr(launcher.subprocess, "run", failed_child)
+    assert launcher.launch(fixture["capture_host_arguments"]) == 37
+    assert fixture["identity_output"].is_file()
+    assert not fixture["receipt_output"].exists()
+
+    fixture["identity_output"].unlink()
+
+    def residue_child(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        fixture["identity_output"].write_bytes(identity_bytes)
+        _write(Path(command[15]) / "residue.txt", b"must fail closed\n")
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    monkeypatch.setattr(launcher.subprocess, "run", residue_child)
+    with pytest.raises(launcher.SealedLaunchError, match="postcondition failed"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert fixture["identity_output"].is_file()
+    assert not fixture["receipt_output"].exists()
+
+
+def test_capture_cleanup_failure_never_publishes_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    temporary_roots: list[Path] = []
+    cleanup = launcher._cleanup_owned_temporary_directory
+
+    def run_wrapper(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        temporary_roots.extend((Path(command[13]), Path(command[15])))
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    def fail_scratch_cleanup(path: Path, **kwargs: Any) -> None:
+        if kwargs["context"] == "sealed scratch directory":
+            raise launcher.SealedLaunchError("injected capture scratch cleanup failure")
+        cleanup(path, **kwargs)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+    monkeypatch.setattr(launcher, "_cleanup_owned_temporary_directory", fail_scratch_cleanup)
+
+    with pytest.raises(launcher.SealedLaunchError, match="scratch cleanup failure"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert not fixture["receipt_output"].exists()
+    pycache, scratch = temporary_roots
+    assert not pycache.exists()
+    assert scratch.exists()
+    cleanup(
+        scratch,
+        expected_identity=launcher._temporary_directory_identity(
+            scratch,
+            context="sealed scratch directory",
+        ),
+        context="sealed scratch directory",
+    )
+
+
+def test_capture_invalid_candidate_is_rejected_after_cleanup_without_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = json.loads(_capture_candidate(fixture, identity_bytes))
+    candidate["publication_contract"] = "child-finalized-before-cleanup"
+    stale_candidate = launcher._canonical_json_bytes(candidate)
+    temporary_roots: list[Path] = []
+
+    def run_wrapper(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        temporary_roots.extend((Path(command[13]), Path(command[15])))
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=stale_candidate)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+
+    with pytest.raises(launcher.SealedLaunchError, match="identity drifted"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert temporary_roots and all(not path.exists() for path in temporary_roots)
+    assert fixture["identity_output"].is_file()
+    assert not fixture["receipt_output"].exists()
+
+
+def test_capture_identity_mutation_during_candidate_validation_prevents_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    validate = launcher._validate_capture_provenance_candidate
+
+    def run_wrapper(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    def mutate_identity_during_validation(*args: Any, **kwargs: Any) -> dict[str, object]:
+        result = validate(*args, **kwargs)
+        fixture["identity_output"].write_bytes(
+            launcher._canonical_json_bytes({"identity": "mutated"})
+        )
+        return result
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+    monkeypatch.setattr(
+        launcher,
+        "_validate_capture_provenance_candidate",
+        mutate_identity_during_validation,
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="changed before receipt publication"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert not fixture["receipt_output"].exists()
+
+
+def test_capture_receipt_collision_during_validation_is_never_overwritten(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    validate = launcher._validate_capture_provenance_candidate
+    competing_bytes = b"competing receipt bytes\n"
+
+    def run_wrapper(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    def inject_competing_receipt(*args: Any, **kwargs: Any) -> dict[str, object]:
+        result = validate(*args, **kwargs)
+        fixture["receipt_output"].write_bytes(competing_bytes)
+        return result
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+    monkeypatch.setattr(
+        launcher,
+        "_validate_capture_provenance_candidate",
+        inject_competing_receipt,
+    )
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert fixture["receipt_output"].read_bytes() == competing_bytes
+
+
+def test_capture_success_without_identity_output_leaves_no_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout=candidate),
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="was not published"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert not fixture["receipt_output"].exists()
+
+
+def test_capture_rejects_output_collision_before_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    arguments = list(fixture["capture_host_arguments"])
+    output_index = arguments.index("--output") + 1
+    arguments[output_index] = str(fixture["receipt_output"])
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="output paths must differ"):
+        launcher.launch(arguments)
 
 
 def test_failed_child_return_code_survives_residue_and_owned_roots_are_cleaned(

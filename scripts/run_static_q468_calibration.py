@@ -65,7 +65,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v7"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v8"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -93,7 +93,13 @@ MODEL_STAGING_AUTHORIZATION_SCHEMA: Final = 2
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
-CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 1
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 2
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS: Final = (
+    "captured_under_authenticated_runtime_and_launcher_finalized"
+)
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
+)
 CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 6
 CALIBRATION_IDENTITY_INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
 MODEL_STAGING_PATHS_KIND: Final = "recurquant_experiment013_model_staging_paths_verification"
@@ -1901,6 +1907,7 @@ def _authenticate_calibration_identity_capture_provenance(
             "execution_bindings",
             "identity_input_file_sha256",
             "phase",
+            "publication_contract",
             "runner_revision",
             "schema_version",
             "source_commit",
@@ -1920,7 +1927,9 @@ def _authenticate_calibration_identity_capture_provenance(
         or root["capture_version"] != CALIBRATION_IDENTITY_CAPTURE_VERSION
         or root["runner_revision"] != RUNNER_REVISION
         or root["phase"] != "calibration"
-        or root["status"] != "captured_under_authenticated_runtime"
+        or root["publication_contract"]
+        != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+        or root["status"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
     ):
         raise CalibrationRunError(
             "calibration identity capture provenance receipt identity drifted"
@@ -7009,40 +7018,18 @@ def _sealed_capture_calibration_identity(
             "execution_bindings": bindings,
             "identity_input_file_sha256": sha256_bytes(payload),
             "phase": "calibration",
+            "publication_contract": (CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT),
             "runner_revision": RUNNER_REVISION,
             "schema_version": CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
             "source_commit": requested_commit,
-            "status": "captured_under_authenticated_runtime",
+            "status": CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
         }
         receipt_payload = canonical_json_bytes(receipt)
         _revalidate_new_capture_artifact_path(
             receipt_output_snapshot,
             context="calibration identity capture provenance receipt",
         )
-        _atomic_publish_new(
-            receipt_output,
-            receipt_payload,
-            capture_path_snapshot=receipt_output_snapshot,
-        )
-        if (
-            _read_stable_regular_bytes(
-                receipt_output,
-                context="published calibration identity capture provenance receipt",
-            )
-            != receipt_payload
-        ):
-            raise CalibrationRunError("published capture provenance receipt bytes changed")
-        print(
-            canonical_json_bytes(
-                {
-                    "capture_provenance_receipt_file_sha256": sha256_bytes(receipt_payload),
-                    "identity_input_file_sha256": sha256_bytes(payload),
-                    "runner_revision": RUNNER_REVISION,
-                    "status": "captured_calibration_identity_under_authenticated_runtime",
-                }
-            ).decode("utf-8"),
-            end="",
-        )
+        print(receipt_payload.decode("utf-8"), end="")
         return 0
     finally:
         if blocker in sys.meta_path:

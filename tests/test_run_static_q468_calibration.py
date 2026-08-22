@@ -630,10 +630,13 @@ def capture_provenance_receipt_fixture(
         },
         "identity_input_file_sha256": "1" * 64,
         "phase": "calibration",
+        "publication_contract": (
+            runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+        ),
         "runner_revision": runner.RUNNER_REVISION,
         "schema_version": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
         "source_commit": "1" * 40,
-        "status": "captured_under_authenticated_runtime",
+        "status": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
     }
     receipt_bytes = runner.canonical_json_bytes(receipt)
     receipt_path = tmp_path / "capture-provenance.json"
@@ -868,6 +871,9 @@ def test_capture_provenance_receipt_rejects_replaced_source_manifest(
         "module-version",
         "module-path",
         "excluded-policy",
+        "publication-contract",
+        "schema-v1",
+        "status",
     ],
 )
 def test_capture_provenance_receipt_rejects_every_custody_drift(
@@ -889,8 +895,14 @@ def test_capture_provenance_receipt_rejects_every_custody_drift(
         receipt["critical_module_origins"][0][  # type: ignore[index]
             "relative_path"
         ] = "Lib/site-packages/shadow/__init__.py"
-    else:
+    elif mutation == "excluded-policy":
         receipt["excluded_runtime_modules"] = ["setuptools"]
+    elif mutation == "publication-contract":
+        receipt["publication_contract"] = "child-published-before-host-cleanup"
+    elif mutation == "schema-v1":
+        receipt["schema_version"] = 1
+    else:
+        receipt["status"] = "captured_under_authenticated_runtime"
     mutated = runner.canonical_json_bytes(receipt)
     Path(arguments["receipt_path"]).write_bytes(mutated)
     arguments["expected_receipt_sha256"] = digest(mutated)
@@ -914,9 +926,10 @@ def test_capture_provenance_receipt_rejects_noncanonical_or_missing_receipt(
         runner._authenticate_calibration_identity_capture_provenance(**arguments)
 
 
-def test_sealed_capture_publishes_receipt_only_after_output_and_reauthentication(
+def test_sealed_capture_emits_receipt_candidate_without_publishing_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     arguments, authenticated, manifest, runtime_context, observations = (
         prepared_fake_sealed_capture(tmp_path, monkeypatch)
@@ -934,11 +947,16 @@ def test_sealed_capture_publishes_receipt_only_after_output_and_reauthentication
             == 0
         )
     identity_bytes = (tmp_path / "identity-input.json").read_bytes()
-    receipt_bytes = (tmp_path / "capture-provenance.json").read_bytes()
+    assert not (tmp_path / "capture-provenance.json").exists()
+    receipt_bytes = capsys.readouterr().out.encode("utf-8")
     receipt = json.loads(receipt_bytes)
     assert receipt_bytes == runner.canonical_json_bytes(receipt)
     assert receipt["identity_input_file_sha256"] == digest(identity_bytes)
     assert receipt["excluded_runtime_modules"] == ["never_present_capture_dependency"]
+    assert receipt["publication_contract"] == (
+        runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+    )
+    assert receipt["status"] == runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
     assert observations["runtime_authentications"] == 2
     assert observations["source_verifications"] == 3
     capture_kwargs = observations["capture_kwargs"]
@@ -954,9 +972,10 @@ def test_sealed_capture_publishes_receipt_only_after_output_and_reauthentication
     )
 
 
-def test_receipt_publication_failure_leaves_unaccompanied_identity_unusable(
+def test_sealed_capture_never_attempts_receipt_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     downstream = tmp_path / "downstream"
     downstream.mkdir()
@@ -972,22 +991,22 @@ def test_receipt_publication_failure_leaves_unaccompanied_identity_unusable(
         publish(path, payload, **kwargs)
 
     monkeypatch.setattr(runner, "_atomic_publish_new", fail_receipt)
-    with (
-        isolated_sealed_capture_modules(),
-        pytest.raises(
-            OSError,
-            match="receipt publication failure",
-        ),
-    ):
-        runner._sealed_capture_calibration_identity(
-            arguments,
-            manifest=manifest,
-            runtime_context=runtime_context,
-            authenticated_runtime=authenticated,
-            interpreter_path=tmp_path / "python.exe",
+    with isolated_sealed_capture_modules():
+        assert (
+            runner._sealed_capture_calibration_identity(
+                arguments,
+                manifest=manifest,
+                runtime_context=runtime_context,
+                authenticated_runtime=authenticated,
+                interpreter_path=tmp_path / "python.exe",
+            )
+            == 0
         )
     assert (tmp_path / "identity-input.json").is_file()
     assert not (tmp_path / "capture-provenance.json").exists()
+    assert json.loads(capsys.readouterr().out)["artifact_kind"] == (
+        runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+    )
 
     Path(provenance_arguments["receipt_path"]).unlink()
     with pytest.raises(runner.CalibrationRunError, match="unavailable"):
@@ -1047,15 +1066,22 @@ def test_sealed_capture_rejects_receipt_parent_replacement_before_publication(
     receipt_path = receipt_parent / "capture-provenance.json"
     arguments[arguments.index("--capture-provenance-receipt-output") + 1] = str(receipt_path)
     displaced_parent = tmp_path / "displaced-receipt-parent"
-    publish = runner._atomic_publish_new
+    revalidate = runner._revalidate_new_capture_artifact_path
+    replaced = False
 
-    def replace_parent(path: Path, payload: bytes, **kwargs: object) -> None:
-        if path == receipt_path:
+    def replace_parent(
+        snapshot: runner.NewCaptureArtifactPath,
+        *,
+        context: str,
+    ) -> None:
+        nonlocal replaced
+        if snapshot.path == receipt_path and not replaced:
             receipt_parent.rename(displaced_parent)
             receipt_parent.mkdir()
-        publish(path, payload, **kwargs)
+            replaced = True
+        revalidate(snapshot, context=context)
 
-    monkeypatch.setattr(runner, "_atomic_publish_new", replace_parent)
+    monkeypatch.setattr(runner, "_revalidate_new_capture_artifact_path", replace_parent)
     with (
         isolated_sealed_capture_modules(),
         pytest.raises(

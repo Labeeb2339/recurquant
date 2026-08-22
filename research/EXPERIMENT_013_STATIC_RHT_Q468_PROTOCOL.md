@@ -1,8 +1,9 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
 > **Status: unbound fifth replacement-H0 candidate. Fisher-smoke prerequisite
-> semantics are being hardened, and capture-completion custody remains an open
-> blocker; not yet re-preregistered.**
+> semantics and launcher-finalized capture custody are hardened, but Fisher
+> smoke and full calibration do not yet mechanically require that finalized
+> provenance receipt; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -970,6 +971,53 @@ amendment may be tagged as H0. The fifth replacement candidate remains unbound
 until capture completion is bound to successful launcher finalization and all
 focused, full, and CI tests pass.
 
+Nineteenth pre-H0 launcher-finalized capture-provenance amendment: 2026-08-23.
+The capture-completion review found that runner v7 could publish a valid
+provenance receipt before the outer launcher had completed child
+postconditions, dataset-cache reauthentication, scratch and pycache cleanup,
+and final host-side artifact authentication. A later launcher or cleanup
+failure could therefore leave a receipt whose status overstated the completed
+custody chain. No protected receipt body, model payload, CUDA computation,
+calibration score, policy, stability value, or quality result was accessed to
+find or repair the defect.
+
+Runner v8 supersedes that publication order. The sealed child may durably
+publish only the canonical identity-input bytes. It must prove that the
+separate receipt destination remains absent, then emit exactly one canonical
+schema-v2 provenance candidate on captured stdout; it never writes, renames,
+links, or otherwise publishes the receipt destination. Schema v2 retains the
+v6 capture identity and adds the exact publication contract
+`sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1`. Its
+status is
+`captured_under_authenticated_runtime_and_launcher_finalized`. Schema v1,
+runner v7, the former status, missing or extra fields, noncanonical bytes, and
+any source, runtime, binding, origin, exclusion, or identity-input drift are
+rejected.
+
+The outer authenticated launcher captures child stdout without forwarding it.
+It may publish those exact candidate bytes only after the child returns zero;
+all child postconditions pass; the dataset cache, bound artifacts, source, and
+runtime reauthenticate unchanged; both launcher-owned temporary roots are
+successfully removed; the identity output still occupies its snapshotted
+non-link parent and reads stably with the candidate-bound SHA-256; and the
+receipt destination still occupies its original parent and remains absent. It
+then uses atomic no-overwrite publication and emits only a canonical digest
+summary. Child failure, postcondition failure, cleanup failure, candidate
+failure, identity mutation, parent replacement, or a pre-existing receipt
+leaves no finalized receipt. The receipt remains local custody evidence, not a
+signature or append-only external attestation.
+
+Focused runner and launcher regressions must exercise the successful order and
+each fail-closed boundary above. Full clean-tree tests and CI must pass before
+this descendant can contribute to a future H0. This amendment closes the
+premature-publication blocker recorded by the Eighteenth amendment, but does
+not authorize an H0: direct invocation review found that Fisher H=1 smoke and
+full calibration can still be supplied a manually prepared exact model root
+without themselves consuming the finalized provenance receipt. The next
+pre-H0 amendment must mechanically close that downstream bypass. Until then,
+no protected execution, replacement-H0 tag, identity recapture, promotion,
+model staging, or quality claim is authorized.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -1365,9 +1413,10 @@ use the authenticated staged v5 interpreter with the exact authenticated base
 facts are checked in the capture process before tokenizer or dataset content
 access. A repository host virtual environment may coordinate preparation or
 tests, but may not execute the official capture or satisfy this provenance
-requirement merely by authenticating staged files. Success produces both the
-no-overwrite identity input and its separate canonical schema-v1 capture-
-provenance receipt. The receipt is custody evidence, not an identity field.
+requirement merely by authenticating staged files. Success produces the no-
+overwrite identity input in the child and, only after outer-launcher
+finalization, its separate canonical schema-v2 capture-provenance receipt. The
+receipt is custody evidence, not an identity field.
 
 The source manifest binds implementation commit H0. Committing the promoted
 identity creates H1. H1 is authorized only when H0 is its Git ancestor, the
@@ -1380,7 +1429,7 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v7's identity view. It requires the exact receipt and runtime inputs
+runner v8's identity view. It requires the exact receipt and runtime inputs
 `--capture-provenance-receipt`,
 `--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
 `--expected-runtime-manifest-sha256`. It accepts no H1, model manifest, Hub,

@@ -30,9 +30,35 @@ RUNTIME_MANIFEST_SCHEMA: Final = 5
 IDENTITY_SCHEMA: Final = 5
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
+CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v8"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 2
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_calibration_identity_capture_provenance"
+)
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 2
+CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 6
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS: Final = (
+    "captured_under_authenticated_runtime_and_launcher_finalized"
+)
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
+)
+CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES: Final = (
+    "pkg_resources",
+    "setuptools",
+)
+CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS: Final = {
+    "datasets": "datasets",
+    "fsspec": "fsspec",
+    "huggingface_hub": "huggingface-hub",
+    "numpy": "numpy",
+    "pyarrow": "pyarrow",
+    "tokenizers": "tokenizers",
+    "transformers": "transformers",
+}
 FISHER_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
 _WINDOWS_REPARSE_POINT: Final = 0x400
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
@@ -356,6 +382,122 @@ def _stable_file_bytes(path: Path, *, context: str) -> bytes:
     ):
         raise SealedLaunchError(f"{context} changed while it was read")
     return data
+
+
+CaptureArtifactSnapshot = tuple[
+    Path,
+    tuple[tuple[str, int, int, int], ...],
+]
+
+
+def _new_capture_artifact_snapshot(
+    path: Path,
+    *,
+    context: str,
+) -> CaptureArtifactSnapshot:
+    raw = Path(path)
+    if not raw.is_absolute():
+        raise SealedLaunchError(f"{context} must be absolute")
+    destination = Path(os.path.abspath(raw))
+    if not destination.name:
+        raise SealedLaunchError(f"{context} cannot be a filesystem root")
+    if os.path.lexists(destination):
+        raise FileExistsError(f"refusing to overwrite existing {context}: {destination}")
+    parent_identities = _non_link_directory_identity_chain(
+        destination.parent,
+        context=f"{context} parent",
+    )
+    parent = _absolute_directory(destination.parent, context=f"{context} parent")
+    return parent / destination.name, parent_identities
+
+
+def _revalidate_capture_artifact_snapshot(
+    snapshot: CaptureArtifactSnapshot,
+    *,
+    context: str,
+    expect_absent: bool,
+) -> Path:
+    destination, expected_parent_identities = snapshot
+    parent_identities = _non_link_directory_identity_chain(
+        destination.parent,
+        context=f"{context} parent",
+    )
+    parent = _absolute_directory(destination.parent, context=f"{context} parent")
+    if parent / destination.name != destination or parent_identities != expected_parent_identities:
+        raise SealedLaunchError(f"{context} parent changed during sealed capture")
+    exists = os.path.lexists(destination)
+    if expect_absent and exists:
+        raise FileExistsError(f"refusing to overwrite existing {context}: {destination}")
+    if not expect_absent and not exists:
+        raise SealedLaunchError(f"{context} was not published by the sealed child")
+    return destination
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    try:
+        left.relative_to(right)
+    except ValueError:
+        pass
+    else:
+        return True
+    try:
+        right.relative_to(left)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_capture_artifact_disjointness(
+    snapshots: Sequence[CaptureArtifactSnapshot],
+    *,
+    forbidden_roots: Sequence[Path],
+) -> None:
+    destinations = [snapshot[0] for snapshot in snapshots]
+    if len(set(destinations)) != len(destinations):
+        raise SealedLaunchError("capture identity and provenance output paths must differ")
+    for destination in destinations:
+        for root in forbidden_roots:
+            authenticated_root = _absolute_directory(root, context="capture forbidden root")
+            if _paths_overlap(destination.parent, authenticated_root):
+                raise SealedLaunchError(
+                    "capture output parent overlaps an authenticated runtime or cache root"
+                )
+
+
+def _atomic_publish_capture_receipt(
+    snapshot: CaptureArtifactSnapshot,
+    payload: bytes,
+) -> None:
+    if not isinstance(payload, bytes):
+        raise TypeError("capture provenance receipt payload must be bytes")
+    destination = _revalidate_capture_artifact_snapshot(
+        snapshot,
+        context="calibration identity capture provenance receipt",
+        expect_absent=True,
+    )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        dir=destination.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _revalidate_capture_artifact_snapshot(
+            snapshot,
+            context="calibration identity capture provenance receipt",
+            expect_absent=True,
+        )
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            raise FileExistsError(
+                f"refusing to overwrite existing capture provenance receipt: {destination}"
+            ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _absolute_path_sha256(path: Path) -> str:
@@ -1101,6 +1243,175 @@ def _parse_source_manifest(data: bytes) -> dict[str, object]:
         "paths": paths,
         "source_commit": str(root["source_commit"]),
     }
+
+
+def _validate_capture_provenance_candidate(
+    payload: bytes,
+    *,
+    bindings: Mapping[str, str],
+    identity_input_file_sha256: str,
+    runtime_manifest: Mapping[str, object],
+    source_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    root = _strict_json(payload, context="capture provenance candidate")
+    _exact_fields(
+        root,
+        {
+            "artifact_kind",
+            "capture_source",
+            "capture_version",
+            "critical_module_origins",
+            "excluded_runtime_modules",
+            "execution_bindings",
+            "identity_input_file_sha256",
+            "phase",
+            "publication_contract",
+            "runner_revision",
+            "schema_version",
+            "source_commit",
+            "status",
+        },
+        context="capture provenance candidate",
+    )
+    if _canonical_json_bytes(root) != payload:
+        raise SealedLaunchError("capture provenance candidate is not canonical JSON")
+    if (
+        root["artifact_kind"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+        or type(root["capture_version"]) is not int
+        or root["capture_version"] != CALIBRATION_IDENTITY_CAPTURE_VERSION
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+        or root["runner_revision"] != RUNNER_REVISION
+        or root["phase"] != "calibration"
+        or root["publication_contract"]
+        != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+        or root["status"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
+    ):
+        raise SealedLaunchError("capture provenance candidate identity drifted")
+    if root["excluded_runtime_modules"] != list(CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES):
+        raise SealedLaunchError("capture provenance candidate exclusion policy drifted")
+    if root["source_commit"] != source_manifest["source_commit"]:
+        raise SealedLaunchError("capture provenance candidate source commit drifted")
+    if _sha256(
+        root["identity_input_file_sha256"],
+        context="capture provenance identity input SHA-256",
+    ) != _sha256(
+        identity_input_file_sha256,
+        context="published identity input SHA-256",
+    ):
+        raise SealedLaunchError("capture provenance candidate binds a different identity input")
+
+    raw_bindings = root["execution_bindings"]
+    if not isinstance(raw_bindings, dict):
+        raise SealedLaunchError("capture provenance candidate bindings are missing")
+    _exact_fields(
+        raw_bindings,
+        set(_BOUND_ARTIFACT_OPTIONS),
+        context="capture provenance candidate bindings",
+    )
+    normalized_bindings = {
+        name: _sha256(raw_bindings[name], context=f"capture provenance binding {name}")
+        for name in sorted(raw_bindings)
+    }
+    if normalized_bindings != dict(bindings):
+        raise SealedLaunchError("capture provenance candidate bindings drifted")
+
+    capture_source = root["capture_source"]
+    if not isinstance(capture_source, dict):
+        raise SealedLaunchError("capture provenance candidate source record is missing")
+    _exact_fields(
+        capture_source,
+        {"path", "sha256"},
+        context="capture provenance candidate source record",
+    )
+    source_entries = {
+        str(item["path"]): str(item["raw_sha256"])
+        for item in source_manifest["paths"]  # type: ignore[union-attr]
+    }
+    if capture_source["path"] != CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH or _sha256(
+        capture_source["sha256"],
+        context="capture provenance source SHA-256",
+    ) != source_entries.get(CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH):
+        raise SealedLaunchError("capture provenance candidate source drifted")
+
+    raw_origins = root["critical_module_origins"]
+    if not isinstance(raw_origins, list):
+        raise SealedLaunchError("capture provenance candidate origins are missing")
+    expected_modules = sorted(CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS)
+    if [item.get("module") if isinstance(item, dict) else None for item in raw_origins] != (
+        expected_modules
+    ):
+        raise SealedLaunchError("capture provenance candidate origin inventory drifted")
+    distributions = {
+        str(item["name"]): item
+        for item in runtime_manifest["distributions"]  # type: ignore[union-attr]
+    }
+    trees = {
+        str(item["name"]): {
+            str(record["path"]): record
+            for record in item["files"]  # type: ignore[index]
+        }
+        for item in runtime_manifest["runtime_trees"]  # type: ignore[union-attr]
+    }
+    import_paths = {
+        str(item["name"]): str(item["import_path"])
+        for item in runtime_manifest["package_roots"]  # type: ignore[union-attr]
+    }
+    for item in raw_origins:
+        assert isinstance(item, dict)
+        _exact_fields(
+            item,
+            {
+                "distribution",
+                "module",
+                "package_root",
+                "relative_path",
+                "sha256",
+                "size_bytes",
+                "version",
+            },
+            context="capture provenance candidate origin",
+        )
+        module_name = str(item["module"])
+        distribution_name = CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS[module_name]
+        distribution = distributions.get(distribution_name)
+        if distribution is None or item["distribution"] != distribution_name:
+            raise SealedLaunchError("capture provenance candidate distribution drifted")
+        package_root = str(item["package_root"])
+        relative_path = _canonical_relative_path(
+            item["relative_path"],
+            context=f"capture provenance {module_name} relative path",
+        )
+        import_path = import_paths.get(package_root)
+        if (
+            package_root != distribution["package_root"]
+            or item["version"] != distribution["version"]
+            or relative_path not in distribution["files"]
+            or import_path is None
+        ):
+            raise SealedLaunchError("capture provenance candidate runtime identity drifted")
+        try:
+            module_relative = PurePosixPath(relative_path).relative_to(PurePosixPath(import_path))
+        except ValueError as exc:
+            raise SealedLaunchError(
+                "capture provenance candidate origin is outside its import root"
+            ) from exc
+        if not module_relative.parts or module_relative.parts[0] != module_name:
+            raise SealedLaunchError("capture provenance candidate module is shadowed")
+        runtime_file = trees.get(package_root, {}).get(relative_path)
+        if runtime_file != {
+            "path": relative_path,
+            "sha256": _sha256(
+                item["sha256"],
+                context=f"capture provenance {module_name} file SHA-256",
+            ),
+            "size_bytes": _nonnegative_int(
+                item["size_bytes"],
+                context=f"capture provenance {module_name} file size",
+            ),
+        }:
+            raise SealedLaunchError("capture provenance candidate runtime file drifted")
+    return root
 
 
 def _verify_source(source_manifest: Mapping[str, object], repository_root: Path) -> Path:
@@ -2552,10 +2863,11 @@ def launch(argv: Sequence[str]) -> int:
     )
     runtime_manifest = _parse_runtime_manifest(runtime_bytes)
     runner_options = _extract_runner_options(runner_arguments)
-    _bindings, source_manifest, _runner_path = _verify_bound_artifacts(
+    bindings, source_manifest, _runner_path = _verify_bound_artifacts(
         runner_options,
         runtime_manifest_path=args.runtime_manifest,
     )
+    capture_profile = bool(runner_arguments and runner_arguments[0] == _CAPTURE_COMMAND)
     if source_manifest["git_executable"] != {
         "sha256": runtime_manifest["git_executable"]["sha256"],
         "size_bytes": runtime_manifest["git_executable"]["size_bytes"],
@@ -2576,12 +2888,28 @@ def launch(argv: Sequence[str]) -> int:
         dataset_cache_root,
         context="dataset cache root",
     )
+    capture_output_snapshot: CaptureArtifactSnapshot | None = None
+    capture_receipt_snapshot: CaptureArtifactSnapshot | None = None
+    if capture_profile:
+        capture_output_snapshot = _new_capture_artifact_snapshot(
+            Path(runner_options["--output"]),
+            context="calibration identity output",
+        )
+        capture_receipt_snapshot = _new_capture_artifact_snapshot(
+            Path(runner_options["--capture-provenance-receipt-output"]),
+            context="calibration identity capture provenance receipt",
+        )
+        _validate_capture_artifact_disjointness(
+            (capture_output_snapshot, capture_receipt_snapshot),
+            forbidden_roots=(base, *packages.values(), dataset_cache_root),
+        )
 
     pycache: Path | None = None
     scratch: Path | None = None
     pycache_identity: tuple[int, int, int] | None = None
     scratch_identity: tuple[int, int, int] | None = None
     completed: subprocess.CompletedProcess[bytes] | None = None
+    child_returncode: int | None = None
     primary_error: BaseException | None = None
     secondary_failures: list[tuple[str, BaseException]] = []
     try:
@@ -2598,6 +2926,19 @@ def launch(argv: Sequence[str]) -> int:
             dataset_cache_root,
             runtime_roots=(base, *packages.values(), pycache, scratch),
         )
+        if capture_profile:
+            assert capture_output_snapshot is not None
+            assert capture_receipt_snapshot is not None
+            _validate_capture_artifact_disjointness(
+                (capture_output_snapshot, capture_receipt_snapshot),
+                forbidden_roots=(
+                    base,
+                    *packages.values(),
+                    dataset_cache_root,
+                    pycache,
+                    scratch,
+                ),
+            )
         command = _sealed_argv(
             interpreter=interpreter,
             runtime_manifest=args.runtime_manifest.resolve(strict=True),
@@ -2608,16 +2949,24 @@ def launch(argv: Sequence[str]) -> int:
             scratch_directory=scratch,
             runner_arguments=runner_arguments,
         )
-        completed = subprocess.run(
-            command,
-            check=False,
-            cwd=scratch,
-            env=_sealed_environment(
+        run_arguments = {
+            "check": False,
+            "cwd": scratch,
+            "env": _sealed_environment(
                 scratch_directory=scratch,
                 dataset_cache_root=dataset_cache_root,
             ),
-            input=SEALED_BOOTSTRAP_BYTES,
-        )
+            "input": SEALED_BOOTSTRAP_BYTES,
+        }
+        if capture_profile:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                **run_arguments,
+            )
+        else:
+            completed = subprocess.run(command, **run_arguments)
+        child_returncode = int(completed.returncode)
         try:
             _verify_empty_pycache(pycache)
         except Exception as exc:
@@ -2656,12 +3005,12 @@ def launch(argv: Sequence[str]) -> int:
         except Exception as exc:
             secondary_failures.append(("dataset cache root reauthentication", exc))
         try:
-            _bindings, repeated_source, _runner_path = _verify_bound_artifacts(
+            repeated_bindings, repeated_source, _runner_path = _verify_bound_artifacts(
                 runner_options,
                 runtime_manifest_path=args.runtime_manifest,
             )
-            if repeated_source["git_executable"] != source_manifest["git_executable"]:
-                raise SealedLaunchError("source Git executable binding changed during execution")
+            if repeated_bindings != bindings or repeated_source != source_manifest:
+                raise SealedLaunchError("bound artifacts changed during execution")
         except Exception as exc:
             secondary_failures.append(("bound-artifact reauthentication", exc))
         try:
@@ -2674,11 +3023,10 @@ def launch(argv: Sequence[str]) -> int:
             )
         except Exception as exc:
             secondary_failures.append(("runtime reauthentication", exc))
-        if completed.returncode == 0 and secondary_failures:
+        if child_returncode == 0 and secondary_failures:
             failures = tuple(secondary_failures)
             secondary_failures.clear()
             raise _postcondition_error(failures)
-        return int(completed.returncode)
     except BaseException as exc:
         primary_error = exc
         raise
@@ -2700,8 +3048,94 @@ def launch(argv: Sequence[str]) -> int:
         _surface_secondary_failures(
             secondary_failures,
             primary_error=primary_error,
-            child_returncode=None if completed is None else int(completed.returncode),
+            child_returncode=child_returncode,
         )
+
+    if child_returncode is None or completed is None:
+        raise SealedLaunchError("sealed child completed without a return code")
+    if capture_profile and child_returncode == 0:
+        assert capture_output_snapshot is not None
+        assert capture_receipt_snapshot is not None
+        final_bindings, final_source, _runner_path = _verify_bound_artifacts(
+            runner_options,
+            runtime_manifest_path=args.runtime_manifest,
+        )
+        if final_bindings != bindings or final_source != source_manifest:
+            raise SealedLaunchError("bound artifacts changed after owned-root cleanup")
+        final_cache_root = _verified_dataset_cache_root(
+            dataset_cache_root,
+            runtime_roots=(base, *packages.values()),
+        )
+        if (
+            _non_link_directory_identity_chain(
+                final_cache_root,
+                context="dataset cache root",
+            )
+            != dataset_cache_identity
+        ):
+            raise SealedLaunchError("dataset cache root changed after owned-root cleanup")
+        _verify_runtime(
+            runtime_manifest,
+            base_runtime_root=base,
+            package_roots=packages,
+            git_executable_path=git_executable,
+            require_current_process=False,
+        )
+        identity_output = _revalidate_capture_artifact_snapshot(
+            capture_output_snapshot,
+            context="calibration identity output",
+            expect_absent=False,
+        )
+        _revalidate_capture_artifact_snapshot(
+            capture_receipt_snapshot,
+            context="calibration identity capture provenance receipt",
+            expect_absent=True,
+        )
+        identity_bytes = _stable_file_bytes(
+            identity_output,
+            context="published calibration identity input",
+        )
+        candidate = completed.stdout
+        if not isinstance(candidate, bytes):
+            raise SealedLaunchError("sealed capture emitted no provenance candidate")
+        _validate_capture_provenance_candidate(
+            candidate,
+            bindings=bindings,
+            identity_input_file_sha256=_sha256_bytes(identity_bytes),
+            runtime_manifest=runtime_manifest,
+            source_manifest=source_manifest,
+        )
+        identity_output = _revalidate_capture_artifact_snapshot(
+            capture_output_snapshot,
+            context="calibration identity output",
+            expect_absent=False,
+        )
+        repeated_identity_bytes = _stable_file_bytes(
+            identity_output,
+            context="final published calibration identity input",
+        )
+        if repeated_identity_bytes != identity_bytes:
+            raise SealedLaunchError(
+                "published calibration identity changed before receipt publication"
+            )
+        _revalidate_capture_artifact_snapshot(
+            capture_output_snapshot,
+            context="calibration identity output",
+            expect_absent=False,
+        )
+        _atomic_publish_capture_receipt(capture_receipt_snapshot, candidate)
+        print(
+            _canonical_json_bytes(
+                {
+                    "capture_provenance_receipt_file_sha256": _sha256_bytes(candidate),
+                    "identity_input_file_sha256": _sha256_bytes(identity_bytes),
+                    "runner_revision": RUNNER_REVISION,
+                    "status": "captured_calibration_identity_with_launcher_finalization",
+                }
+            ).decode("utf-8"),
+            end="",
+        )
+    return child_returncode
 
 
 def main(argv: Sequence[str] | None = None) -> int:
