@@ -1,6 +1,6 @@
 # Prior-art audit
 
-Last searched: 2026-08-02
+Last searched: 2026-08-23
 
 This is a living claim boundary, not proof that no related work exists. Repeat
 the search before any paper or novelty statement.
@@ -18,6 +18,16 @@ the search before any paper or novelty statement.
   RecurQuant's per-recurrent-layer cache layout. RecurQuant cannot claim the
   first INT8 SSM cache, broad sensitivity-guided SSM quantization, or a first
   packed recurrent kernel.
+- [SGLang's `MambaCheckpointPool`](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/mamba_checkpoint_pool.py)
+  stores idle KDA, Gated DeltaNet, and Mamba2 prefix checkpoints with
+  per-head/channel INT8 quantization. It quantizes on cache insertion and
+  dequantizes on a hit rather than repeatedly quantizing the active recurrence.
+  RecurQuant therefore cannot claim the first quantized Gated DeltaNet state or
+  checkpoint cache; active per-token storage is the relevant distinction.
+- [SSDi8](https://proceedings.iclr.cc/paper_files/paper/2026/hash/9d3852f2b1fc883fc41011cb0257f0d0-Abstract-Conference.html)
+  and its [official implementation](https://github.com/cau-hai-lab/SSDi8)
+  provide a persistent INT8 Mamba-2 SSD execution path and W4A8/W8A8 kernels.
+  A broad first persistent low-precision SSM execution claim is unsafe.
 - [Nemotron 3 Super](https://arxiv.org/abs/2604.12374) studies recurrent rounding
   accumulation and uses FP16 stochastic rounding in its released deployment
   path.
@@ -30,6 +40,15 @@ the search before any paper or novelty statement.
   Experiment 010 stability baseline.
 
 ## Existing Gated DeltaNet systems work
+
+- The pinned [Qwen3.5-0.8B configuration](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/config.json)
+  specifies FP32 SSM state. Current production work has already explored lower
+  active-state precision: [vLLM's Qwen3.5 serving report](https://vllm-project.github.io/2026/08/06/qwen35-25k-tps.html)
+  uses BF16 state, while Google's
+  [Ironwood optimization report](https://developers.googleblog.com/systems-engineering-playbook-optimizing-qwen-35-397b-moe-on-ironwood-tpu7x/)
+  describes changing active GDN state from FP32 to BF16 and fusing Conv1D with
+  GDN. RecurQuant cannot claim the first reduced-precision active GDN state or
+  first fused GDN recurrence.
 
 - [When Good Enough Is Optimal](https://arxiv.org/abs/2606.06034) uses low-
   precision approximations inside quantized Gated DeltaNet computation. Its
@@ -141,6 +160,24 @@ transform composes usefully with physical causal row selection for one Gated
 DeltaNet cache layout. A positive result cannot support a broad first,
 rotation, Hadamard, or outlier-suppression novelty claim.
 
+## Serving and kernel baselines
+
+- [FlashQLA](https://github.com/QwenLM/FlashQLA),
+  [FlashInfer's GDN decode definition](https://bench.flashinfer.ai/kernels/gdn_decode_qk4_v8_d128_k_last),
+  and [PyTorch's fused Mamba2 work](https://pytorch.org/blog/accelerating-mamba2-with-kernel-fusion/)
+  establish strong fused full-precision/BF16 serving baselines. In FlashInfer's
+  kernel name, `qk4_v8` denotes head counts, not 4-bit/8-bit quantization.
+- [SAW-INT4](https://arxiv.org/abs/2604.19157) and its
+  [official implementation](https://github.com/togethercomputer/saw-int4)
+  reinforce that codec bytes alone are not systems evidence: layouts, memory
+  traffic, workspace, fusion, and end-to-end latency must be measured.
+
+A credible StateLease systems comparison must separate eager simulated QDQ,
+physically packed unfused execution, a fused StateLease path, and the fastest
+available vendor/full-precision path. It must report actual allocated payload,
+scale, mask, controller, replay, padding, and workspace bytes alongside DRAM
+traffic, throughput, and p50/p95 latency.
+
 ## Architecture evidence
 
 - [Gated DeltaNet-2](https://arxiv.org/abs/2605.22791) separates channel-wise
@@ -156,15 +193,17 @@ rotation, Hadamard, or outlier-suppression novelty claim.
 
 The scan did not locate a published implementation combining all four:
 
-1. sub-8-bit **persistent** Gated DeltaNet cache storage;
-2. a causal transition-derived diagonal future-read score;
-3. physical row-distortion allocation with confirmation-gated admissions; and
-4. a packed end-to-end runtime kernel with measured quality and latency.
+1. exact-byte, causal closed-loop allocation of the active, repeatedly updated
+   Gated DeltaNet state;
+2. physical row-level selection among packed Q4, Q6, and Q8 formats;
+3. confirmation-gated admissions with deterministic replay; and
+4. a fused serving path with measured quality, memory traffic, and latency.
 
 That negative search is not proof of firstness, and the current RecurQuant
-alpha does not satisfy item 4: it physically stores the cache in packed form
-but materializes one recurrent state for each layer call and has no fused
-recurrence kernel or latency result.
+alpha does not satisfy the complete combination. StateLease-H5 uses a frozen
+packed Q4/Q8 checkpoint plan with c4/c5 replay boundaries; it does not lease
+among Q4/Q6/Q8 payloads. The Python path also materializes one recurrent state
+for each layer call and has no fused recurrence kernel or latency result.
 
 Experiment 008 also failed its frozen development gate: CORA-C2 and raw CORA
 were both worse on macro excess NLL than CQER-32. Exact-combination novelty
@@ -182,7 +221,13 @@ The frozen v0.2 protocol compares uniform INT4, one uniform INT8 reference,
 three same-byte random layer placements, MSE-selected placement, nearest and
 stochastic rounding, and the prespecified layer-0 policy. It does **not**
 compare against Q-Mamba's DSQ method, Nemotron checkpoint/replay, ReplaySSM,
-KVBuffer, per-head/per-block allocation, or fused-kernel baselines. A later
-claim of novelty or general superiority would require those comparisons,
-multiple models and tasks, a repeated prior-art search, and measured end-to-end
+SGLang's one-shot INT8 checkpoint, threshold/outlier allocation, learned
+controllers, per-head/per-block allocation, or fused-kernel baselines.
+
+Before a broader StateLease claim, the minimum equal-budget matrix is FP32,
+BF16, FP16 nearest, FP16 stochastic rounding over at least five seeds, uniform
+physical Q8/Q6/Q4, frozen static allocation, threshold/outlier dynamic
+allocation, StateLease, and a separately labelled SGLang-style one-shot INT8
+checkpoint. It also requires multiple models and workloads, long-horizon and
+answer-position slices, a repeated prior-art search, and measured end-to-end
 latency.

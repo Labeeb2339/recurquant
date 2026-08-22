@@ -6,14 +6,18 @@ from transformers import GPT2Config, Qwen3_5ForCausalLM
 
 import recurquant.qwen35 as qwen35_module
 from recurquant import (
+    EXPERIMENT012_STATELEASE_H5_EXACT_ROW_PLAN_SHA256,
     PackedRecurrentStateCache,
+    create_qwen35_experiment012_statelease_h5_cache,
     create_qwen35_packed_cache,
     create_qwen35_v02_mixed_cache,
+    experiment012_statelease_h5_plan,
 )
 from recurquant.cli import build_parser
 from recurquant.packed_cache import PackedLinearAttentionLayer
 from recurquant.qwen35_quickstart import (
     MIXED_POLICY,
+    STATELEASE_H5_POLICY,
     UNIFORM_INT4_STRESS_POLICY,
     _model_dtype,
     run_qwen35_quickstart,
@@ -229,3 +233,151 @@ def test_installed_qwen35_command_uses_shared_mixed_policy_defaults() -> None:
     )
     assert stress_args.policy == UNIFORM_INT4_STRESS_POLICY
     assert stress_args.local_files_only is True
+
+    statelease_args = parser.parse_args(["qwen35", "--policy", STATELEASE_H5_POLICY])
+    assert statelease_args.policy == STATELEASE_H5_POLICY
+
+
+def test_built_in_statelease_h5_plan_binds_every_promoted_row() -> None:
+    import hashlib
+    import json
+    from dataclasses import asdict
+    from pathlib import Path
+
+    from recurquant.evidence import canonical_json_bytes
+    from recurquant.row_policy import RowLocation
+
+    plan = experiment012_statelease_h5_plan()
+    identity_path = (
+        Path(__file__).resolve().parents[1]
+        / "evidence"
+        / "experiment009-rht-cqer-stage-b-identity-cdc603b.json"
+    )
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    source_row_plan = identity["evidence"]["row_plan"]
+    source_rows = tuple(RowLocation(**row) for row in source_row_plan["high_precision_rows"])
+
+    assert len(plan.high_precision_rows) == 1_976
+    assert plan.high_precision_rows[0] == qwen35_module.RowLocation(0, 1, 7)
+    assert plan.high_precision_rows[-1] == qwen35_module.RowLocation(22, 14, 118)
+    assert plan.high_precision_rows == source_rows
+    assert source_row_plan["canonical_plan_sha256"] == (
+        "b480b6483bec2f07ef56388df27f5d78402b9b9545f2c039d332495de2a9fbde"
+    )
+    assert hashlib.sha256(canonical_json_bytes(asdict(plan))).hexdigest() == (
+        EXPERIMENT012_STATELEASE_H5_EXACT_ROW_PLAN_SHA256
+    )
+
+    layer_types = [
+        (
+            "linear_attention"
+            if layer_index in qwen35_module.EXPERIMENT010_STATELEASE_LAYER_QUOTAS
+            else "full_attention"
+        )
+        for layer_index in range(23)
+    ]
+    config = tiny_config(layer_types)
+    config.linear_num_value_heads = 16
+    config.linear_num_key_heads = 16
+    config.linear_key_head_dim = 128
+    config.linear_value_head_dim = 128
+    cache = create_qwen35_experiment012_statelease_h5_cache(config)
+    assert cache.plan == plan
+
+
+def test_built_in_statelease_h5_plan_rejects_same_quota_mask_swap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+    import zlib
+
+    plan = experiment012_statelease_h5_plan()
+    original = next(location for location in plan.high_precision_rows if location.layer_index == 0)
+    occupied = {
+        (location.head_index, location.row_index)
+        for location in plan.high_precision_rows
+        if location.layer_index == 0
+    }
+    replacement = next(
+        qwen35_module.RowLocation(0, head_index, row_index)
+        for head_index in range(16)
+        for row_index in range(128)
+        if (head_index, row_index) not in occupied
+    )
+
+    packed_mask = bytearray(
+        zlib.decompress(
+            base64.b64decode(
+                qwen35_module._EXPERIMENT012_STATELEASE_H5_MASK_ZLIB_B64,
+                validate=True,
+            )
+        )
+    )
+    layer_mask_bytes = 16 * 128 // 8
+    layer_offset = next(
+        index
+        for index, shape in enumerate(qwen35_module._EXPERIMENT012_STATELEASE_H5_SCORE_SHAPES)
+        if shape[0] == original.layer_index
+    )
+
+    def bit_index(location: qwen35_module.RowLocation) -> int:
+        return (
+            layer_offset * layer_mask_bytes * 8
+            + location.head_index * 128
+            + location.row_index
+        )
+
+    original_bit = bit_index(original)
+    replacement_bit = bit_index(replacement)
+    assert packed_mask[original_bit // 8] & (1 << (original_bit % 8))
+    assert not packed_mask[replacement_bit // 8] & (1 << (replacement_bit % 8))
+    before_layer_count = sum(
+        byte.bit_count()
+        for byte in packed_mask[
+            layer_offset * layer_mask_bytes : (layer_offset + 1) * layer_mask_bytes
+        ]
+    )
+    packed_mask[original_bit // 8] &= ~(1 << (original_bit % 8))
+    packed_mask[replacement_bit // 8] |= 1 << (replacement_bit % 8)
+    after_layer_count = sum(
+        byte.bit_count()
+        for byte in packed_mask[
+            layer_offset * layer_mask_bytes : (layer_offset + 1) * layer_mask_bytes
+        ]
+    )
+    assert after_layer_count == before_layer_count
+
+    monkeypatch.setattr(
+        qwen35_module,
+        "_EXPERIMENT012_STATELEASE_H5_MASK_ZLIB_B64",
+        base64.b64encode(zlib.compress(bytes(packed_mask))).decode("ascii"),
+    )
+    with pytest.raises(ValueError, match="exact frozen Experiment 012"):
+        experiment012_statelease_h5_plan()
+
+
+def test_experiment010_validator_rejects_plan_and_row_subclasses() -> None:
+    from dataclasses import fields, replace
+
+    from recurquant.row_policy import ExactBudgetRowPlan, RowLocation
+
+    class PlanSubclass(ExactBudgetRowPlan):
+        pass
+
+    class RowSubclass(RowLocation):
+        pass
+
+    plan = experiment012_statelease_h5_plan()
+    plan_subclass = PlanSubclass(
+        **{field.name: getattr(plan, field.name) for field in fields(plan)}
+    )
+    first = plan.high_precision_rows[0]
+    row_subclass = RowSubclass(first.layer_index, first.head_index, first.row_index)
+    row_subclass_plan = replace(
+        plan,
+        high_precision_rows=(row_subclass, *plan.high_precision_rows[1:]),
+    )
+
+    for malformed in (plan_subclass, row_subclass_plan):
+        with pytest.raises(TypeError, match="exact ExactBudgetRowPlan"):
+            qwen35_module._validate_experiment010_statelease_plan(malformed)

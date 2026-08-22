@@ -78,11 +78,14 @@ from .query_energy import Qwen35QueryEnergyObserver
 from .qwen35 import (
     EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
     EXPERIMENT010_STATELEASE_LAYER_QUOTAS,
+    EXPERIMENT012_STATELEASE_H5_EXACT_ROW_PLAN_SHA256,
+    EXPERIMENT012_STATELEASE_H5_RESIDENT_BYTES,
     create_qwen35_adaptive_exact_budget_cache,
     create_qwen35_cora_exact_budget_cache,
     create_qwen35_exact_budget_cache,
     create_qwen35_experiment010_fixed_replay_cache,
     create_qwen35_experiment010_statelease_cache,
+    create_qwen35_experiment012_statelease_h5_cache,
     create_qwen35_packed_cache,
     create_qwen35_query_ema_exact_budget_cache,
     create_qwen35_rank_fused_exact_budget_cache,
@@ -90,6 +93,7 @@ from .qwen35 import (
     create_qwen35_statelease_cache,
     create_qwen35_v02_mixed_cache,
     experiment010_statelease_effective_plan_sha256,
+    experiment012_statelease_h5_plan,
 )
 from .rht import RHT_SEED, fwht_unnormalized, right_rht_decode, right_rht_encode
 from .row_policy import ExactBudgetRowPlan, RowLocation, select_rows_exact_budget
@@ -204,6 +208,8 @@ __all__ = [
     "EQUAL_ALLOCATION_REPLAY_CAPACITY",
     "EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256",
     "EXPERIMENT010_STATELEASE_LAYER_QUOTAS",
+    "EXPERIMENT012_STATELEASE_H5_EXACT_ROW_PLAN_SHA256",
+    "EXPERIMENT012_STATELEASE_H5_RESIDENT_BYTES",
     "EXPERIMENT012_CANONICAL_EVIDENCE_SHA256",
     "EXPERIMENT012_FILE_SHA256",
     "FiniteDifferencePoint",
@@ -299,6 +305,7 @@ __all__ = [
     "create_qwen35_dynamic_q468_oracle_cache",
     "create_qwen35_experiment010_fixed_replay_cache",
     "create_qwen35_experiment010_statelease_cache",
+    "create_qwen35_experiment012_statelease_h5_cache",
     "create_qwen35_packed_cache",
     "create_qwen35_query_ema_exact_budget_cache",
     "create_qwen35_rank_fused_exact_budget_cache",
@@ -307,6 +314,7 @@ __all__ = [
     "create_qwen35_static_rht_cache",
     "create_qwen35_v02_mixed_cache",
     "experiment010_statelease_effective_plan_sha256",
+    "experiment012_statelease_h5_plan",
     "create_fixed_replay_cache",
     "fixed_cc1",
     "fixed_cc2",

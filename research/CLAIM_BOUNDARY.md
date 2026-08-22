@@ -121,11 +121,27 @@ no-replay codecs both had lower excess NLL on the task. This remains a narrow
 one-task method gate, not development evidence or a cross-window, cross-model,
 speed, deployment, practical-advantage, or breakthrough finding.
 
+The current installed smoke path can reconstruct the exact 1,976-row
+StateLease-H5 identity, attach the causal observer, run the pinned model, and
+report the complete `3,454,664`-byte resident footprint. That makes the frozen
+policy inspectable; it does not turn an interactive generation into a new
+experiment, Stage-B evidence, or a kernel benchmark.
+
+The defensible research question is correspondingly narrow: whether an
+exact-byte causal controller for the active, repeatedly updated Gated DeltaNet
+state can allocate physically packed row precision better than strong static,
+thresholded, stochastic-rounding, and checkpoint/replay controls. The present
+evidence does not answer that question beyond the one-task Stage-A screen.
+
 ## Claims prohibited without new evidence
 
 - "First recurrent-state quantization method."
+- "First quantized Gated DeltaNet state" or "first reduced-precision active
+  Gated DeltaNet state."
 - "First sub-8-bit recurrent model."
 - "First update-aware recurrent cache."
+- "First dynamic mixed-precision SSM cache."
+- "First fused Gated DeltaNet recurrence" or "fastest Gated DeltaNet serving."
 - "Lossless" unless exact output equivalence is demonstrated in the stated mode.
 - "Reduces total model memory by 7.36x." The measured ratio covers resident
   recurrent-state payloads and scales only.
@@ -138,8 +154,9 @@ speed, deployment, practical-advantage, or breakthrough finding.
 
 RecurQuant packages a physical low-bit recurrent-state cache, a frozen per-layer
 allocation policy, exact-byte controls, an independently checkable confirmation
-verifier, a preregistered evaluation protocol, and labelled evidence artifacts.
-Its scoped held-out result is reproducible without expanding the claim. The
-current Python path is not a fused low-bit recurrence kernel. RecurQuant does
-not claim authorship of Qwen3.5 or its architecture, which remain credited to
-the Qwen team.
+verifier, a preregistered evaluation protocol, labelled evidence artifacts, and
+an exact-plan StateLease smoke path. Its scoped held-out result is reproducible
+without expanding the claim. The current Python path materializes recurrent
+states and is not a fused low-bit recurrence kernel. RecurQuant does not claim
+authorship of Qwen3.5 or its architecture, which remain credited to the Qwen
+team.
