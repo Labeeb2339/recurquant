@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import importlib.util
 import json
@@ -285,14 +286,74 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     }
 
 
-def _capture_fixture(tmp_path: Path) -> dict[str, Any]:
+def _stage_a_binding_bytes(fixture: dict[str, Any]) -> tuple[bytes, str]:
+    authorization_evidence = {
+        "artifact_revision": launcher.STAGE_A_CALIBRATION_AUTHORIZATION_REVISION,
+        "authorized_output_file_sha256": {},
+        "bindings": {
+            "calibration_core_binding_file_sha256": "1" * 64,
+            "calibration_run_report_file_sha256": "2" * 64,
+            "capture_provenance_receipt_file_sha256": "3" * 64,
+            "execution_bindings": fixture["bindings"],
+            "fisher_h1_smoke_report_file_sha256": "4" * 64,
+            "frozen_calibration_identity_file_sha256": "5" * 64,
+            "identity_input_manifest_sha256": "6" * 64,
+            "source_commit": fixture["source_manifest"]["source_commit"],
+            "static_q48_policy_file_sha256": "7" * 64,
+        },
+        "dependencies_base64": {},
+        "dependency_file_sha256": {},
+        "status": launcher.STAGE_A_CALIBRATION_AUTHORIZATION_STATUS,
+    }
+    authorization_bytes = launcher._canonical_json_bytes(
+        {
+            "artifact_kind": launcher.STAGE_A_CALIBRATION_AUTHORIZATION_KIND,
+            "canonical_evidence_sha256": _sha256(
+                launcher._canonical_json_bytes(authorization_evidence)
+            ),
+            "evidence": authorization_evidence,
+            "schema_version": launcher.STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA,
+        }
+    )
+    authorization_sha256 = _sha256(authorization_bytes)
+    binding_values = {
+        name: f"{index:064x}"
+        for index, name in enumerate(sorted(launcher._STAGE_A_CALIBRATION_BINDING_FIELDS), start=10)
+    }
+    binding_values["calibration_authorization_file_sha256"] = authorization_sha256
+    binding_evidence = {
+        "artifact_revision": launcher.STAGE_A_CALIBRATION_BINDING_REVISION,
+        "binding": binding_values,
+        "dependencies_base64": {
+            "calibration_authorization_artifact": base64.b64encode(authorization_bytes).decode(
+                "ascii"
+            )
+        },
+        "dependency_file_sha256": {"calibration_authorization_artifact": authorization_sha256},
+    }
+    return (
+        launcher._canonical_json_bytes(
+            {
+                "artifact_kind": launcher.STAGE_A_CALIBRATION_BINDING_KIND,
+                "canonical_evidence_sha256": _sha256(
+                    launcher._canonical_json_bytes(binding_evidence)
+                ),
+                "evidence": binding_evidence,
+                "schema_version": launcher.STAGE_A_CALIBRATION_BINDING_SCHEMA,
+            }
+        ),
+        authorization_sha256,
+    )
+
+
+def _capture_fixture(tmp_path: Path, *, stage_a: bool = False) -> dict[str, Any]:
     fixture = _sealed_fixture(tmp_path)
     output_parent = tmp_path / "capture-output"
     output_parent.mkdir()
     identity_output = output_parent / "identity-input.json"
     receipt_output = output_parent / "capture-provenance.json"
     capture_arguments = [
-        "capture-calibration-identity",
+        "capture-stage-a-identity" if stage_a else "capture-calibration-identity",
         "--repository-root",
         str(fixture["repository"]),
         "--source-commit",
@@ -322,6 +383,17 @@ def _capture_fixture(tmp_path: Path) -> dict[str, Any]:
         "--capture-provenance-receipt-output",
         str(receipt_output),
     ]
+    if stage_a:
+        binding_bytes, authorization_sha256 = _stage_a_binding_bytes(fixture)
+        binding_path = _write(output_parent / "stage-a-binding.json", binding_bytes)
+        capture_arguments.extend(
+            [
+                "--stage-a-calibration-binding",
+                str(binding_path),
+                "--expected-stage-a-calibration-binding-sha256",
+                _sha256(binding_bytes),
+            ]
+        )
     separator = fixture["host_arguments"].index("--")
     fixture.update(
         {
@@ -332,8 +404,13 @@ def _capture_fixture(tmp_path: Path) -> dict[str, Any]:
             ],
             "identity_output": identity_output,
             "receipt_output": receipt_output,
+            "stage_a": stage_a,
         }
     )
+    if stage_a:
+        fixture["stage_a_binding_bytes"] = binding_bytes
+        fixture["stage_a_binding_path"] = binding_path
+        fixture["stage_a_authorization_sha256"] = authorization_sha256
     return fixture
 
 
@@ -364,30 +441,39 @@ def _capture_candidate(fixture: dict[str, Any], identity_bytes: bytes) -> bytes:
                 "version": distribution["version"],
             }
         )
-    return launcher._canonical_json_bytes(
-        {
-            "artifact_kind": launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND,
-            "capture_source": {
-                "path": launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
-                "sha256": source_entries[launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH],
-            },
-            "capture_version": launcher.CALIBRATION_IDENTITY_CAPTURE_VERSION,
-            "critical_module_origins": origins,
-            "excluded_runtime_modules": list(
-                launcher.CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
-            ),
-            "execution_bindings": fixture["bindings"],
-            "identity_input_file_sha256": _sha256(identity_bytes),
-            "phase": "calibration",
-            "publication_contract": (
-                launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
-            ),
-            "runner_revision": launcher.RUNNER_REVISION,
-            "schema_version": launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
-            "source_commit": fixture["source_manifest"]["source_commit"],
-            "status": launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
-        }
-    )
+    phase = "stage_a" if fixture.get("stage_a") else "calibration"
+    candidate: dict[str, object] = {
+        "artifact_kind": (
+            launcher.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND
+            if phase == "stage_a"
+            else launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+        ),
+        "capture_source": {
+            "path": launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+            "sha256": source_entries[launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH],
+        },
+        "capture_version": launcher.CALIBRATION_IDENTITY_CAPTURE_VERSION,
+        "critical_module_origins": origins,
+        "excluded_runtime_modules": list(launcher.CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES),
+        "execution_bindings": fixture["bindings"],
+        "identity_input_file_sha256": _sha256(identity_bytes),
+        "phase": phase,
+        "publication_contract": (
+            launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
+        ),
+        "runner_revision": launcher.RUNNER_REVISION,
+        "schema_version": (
+            launcher.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+            if phase == "stage_a"
+            else launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+        ),
+        "source_commit": fixture["source_manifest"]["source_commit"],
+        "status": launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
+    }
+    if phase == "stage_a":
+        candidate["calibration_binding_file_sha256"] = _sha256(fixture["stage_a_binding_bytes"])
+        candidate["calibration_authorization_file_sha256"] = fixture["stage_a_authorization_sha256"]
+    return launcher._canonical_json_bytes(candidate)
 
 
 def _run_embedded_manifest_boundary(
@@ -548,6 +634,71 @@ def test_capture_candidate_authenticates_exact_source_runtime_and_bindings(
         )
 
 
+def test_stage_a_capture_candidate_binds_v4_authorization_and_exact_chain(
+    tmp_path: Path,
+) -> None:
+    fixture = _capture_fixture(tmp_path, stage_a=True)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "stage-a-fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    binding_bytes, envelope = launcher._verify_stage_a_capture_binding(
+        launcher._extract_runner_options(fixture["capture_arguments"]),
+        execution_bindings=fixture["bindings"],
+        source_commit=fixture["source_manifest"]["source_commit"],
+    )
+    assert binding_bytes == fixture["stage_a_binding_bytes"]
+    assert launcher._validate_capture_provenance_candidate(
+        candidate,
+        bindings=fixture["bindings"],
+        identity_input_file_sha256=_sha256(identity_bytes),
+        runtime_manifest=fixture["runtime_manifest"],
+        source_manifest=fixture["source_manifest"],
+        phase="stage_a",
+        stage_a_binding_envelope=envelope,
+    ) == json.loads(candidate)
+
+    for field in (
+        "calibration_binding_file_sha256",
+        "calibration_authorization_file_sha256",
+    ):
+        tampered = json.loads(candidate)
+        tampered[field] = "0" * 64
+        with pytest.raises(launcher.SealedLaunchError, match="Stage-A"):
+            launcher._validate_capture_provenance_candidate(
+                launcher._canonical_json_bytes(tampered),
+                bindings=fixture["bindings"],
+                identity_input_file_sha256=_sha256(identity_bytes),
+                runtime_manifest=fixture["runtime_manifest"],
+                source_manifest=fixture["source_manifest"],
+                phase="stage_a",
+                stage_a_binding_envelope=envelope,
+            )
+
+
+def test_stage_a_capture_rejects_binding_downgrade_before_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path, stage_a=True)
+    binding = json.loads(fixture["stage_a_binding_bytes"])
+    binding["schema_version"] = 3
+    downgraded = launcher._canonical_json_bytes(binding)
+    fixture["stage_a_binding_path"].write_bytes(downgraded)
+    expected_index = (
+        fixture["capture_host_arguments"].index("--expected-stage-a-calibration-binding-sha256") + 1
+    )
+    fixture["capture_host_arguments"][expected_index] = _sha256(downgraded)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess started before binding rejection"),
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="kind or schema"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert not fixture["identity_output"].exists()
+    assert not fixture["receipt_output"].exists()
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -657,6 +808,85 @@ def test_capture_receipt_is_published_only_after_postconditions_and_cleanup(
         "runner_revision": launcher.RUNNER_REVISION,
         "status": "captured_calibration_identity_with_launcher_finalization",
     }
+
+
+def test_capture_fails_if_identity_changes_during_receipt_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    changed_identity_bytes = launcher._canonical_json_bytes({"identity": "mutated"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    original_publish = launcher._atomic_publish_capture_receipt
+
+    def run_wrapper(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    def publish_and_mutate_identity(
+        snapshot: launcher.CaptureArtifactSnapshot,
+        payload: bytes,
+    ) -> None:
+        original_publish(snapshot, payload)
+        fixture["identity_output"].write_bytes(changed_identity_bytes)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+    monkeypatch.setattr(
+        launcher,
+        "_atomic_publish_capture_receipt",
+        publish_and_mutate_identity,
+    )
+
+    with pytest.raises(
+        launcher.SealedLaunchError,
+        match="identity changed after receipt publication",
+    ):
+        launcher.launch(fixture["capture_host_arguments"])
+
+    assert fixture["receipt_output"].read_bytes() == candidate
+    assert fixture["identity_output"].read_bytes() == changed_identity_bytes
+    assert capsys.readouterr().out == ""
+
+
+def test_stage_a_receipt_is_host_finalized_after_cleanup_and_reread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = _capture_fixture(tmp_path, stage_a=True)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "stage-a-fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    temporary_roots: list[Path] = []
+    stable_receipt_reads = 0
+    stable_read = launcher._stable_file_bytes
+
+    def run_wrapper(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        assert kwargs["stdout"] == subprocess.PIPE
+        temporary_roots.extend((Path(command[13]), Path(command[15])))
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    def stable_read_wrapper(path: Path, *, context: str) -> bytes:
+        nonlocal stable_receipt_reads
+        if path == fixture["receipt_output"]:
+            assert temporary_roots and all(not item.exists() for item in temporary_roots)
+            stable_receipt_reads += 1
+        return stable_read(path, context=context)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+    monkeypatch.setattr(launcher, "_stable_file_bytes", stable_read_wrapper)
+
+    assert launcher.launch(fixture["capture_host_arguments"]) == 0
+    assert fixture["receipt_output"].read_bytes() == candidate
+    assert stable_receipt_reads == 1
+    assert json.loads(capsys.readouterr().out)["status"] == (
+        "captured_stage_a_identity_with_launcher_finalization"
+    )
 
 
 def test_capture_child_failure_or_postcondition_failure_never_publishes_receipt(

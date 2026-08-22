@@ -31,7 +31,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import Any, Final, Protocol
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -599,6 +599,13 @@ class _DecodedExecutionBindingArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
+class _DecodedRepositorySourceArtifact:
+    manifest_file_sha256: str
+    source_manifest: Mapping[str, object]
+    source_module: Any
+
+
+@dataclass(frozen=True, slots=True)
 class VerifiedRulerBundle:
     receipts: Mapping[str, dict[str, Any]]
     generator_manifest: tuple[dict[str, Any], ...]
@@ -765,7 +772,7 @@ class MaterializedStageASequence:
     """One authenticated Stage-A identity record and its exact token sequence.
 
     The record is the content-redacted capture projection authenticated by a
-    promoted resolver-v5 Stage-A artifact.  Raw source rows, formatted prompts,
+    promoted resolver-v6 Stage-A artifact.  Raw source rows, formatted prompts,
     targets, and receipt bodies are never retained on this object.
     """
 
@@ -777,7 +784,7 @@ class MaterializedStageASequence:
     def __post_init__(self) -> None:
         if self._authentication_seal is not _STAGE_A_MATERIALIZATION_AUTHENTICATION_SEAL:
             raise ValueError(
-                "Stage-A sequences may be created only by authenticated v5 materialization"
+                "Stage-A sequences may be created only by authenticated v6 materialization"
             )
         record = _strict_json(
             self._identity_record_bytes,
@@ -2667,29 +2674,103 @@ def _normalize_runtime_authentication_context(
     )
 
 
-def _load_calibration_runner_module() -> Any:
+def _runner_source_manifest_entry(
+    source_manifest: Mapping[str, object],
+) -> Mapping[str, object]:
+    raw_paths = source_manifest.get("paths")
+    if not isinstance(raw_paths, Sequence) or isinstance(raw_paths, (str, bytes, bytearray)):
+        raise RuntimeError("authenticated source manifest paths are missing")
+    relative = "scripts/run_static_q468_calibration.py"
+    matches = [
+        item for item in raw_paths if isinstance(item, Mapping) and item.get("path") == relative
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("calibration runner is absent from the authenticated source manifest")
+    entry = matches[0]
+    resolver.require_sha256(
+        entry.get("raw_sha256"),
+        context="authenticated calibration runner source SHA-256",
+    )
+    return entry
+
+
+def _load_calibration_runner_module(
+    source_manifest: Mapping[str, object],
+) -> Any:
+    """Execute only exact runner bytes authenticated by the source artifact."""
+
     if _CALIBRATION_RUNNER_MODULE_NAME in sys.modules:
         raise RuntimeError("refusing a preloaded Experiment 013 calibration runner")
-    spec = importlib.util.spec_from_file_location(
-        _CALIBRATION_RUNNER_MODULE_NAME,
-        CALIBRATION_RUNNER_PATH,
+    entry = _runner_source_manifest_entry(source_manifest)
+    runner_bytes = _bundle_stable_descendant_bytes(
+        REPOSITORY_ROOT,
+        "scripts/run_static_q468_calibration.py",
+        context="calibration runner source",
     )
-    if spec is None or spec.loader is None:  # pragma: no cover
-        raise RuntimeError("cannot load the Experiment 013 calibration artifact validators")
-    module = importlib.util.module_from_spec(spec)
+    runner_sha256 = sha256_bytes(runner_bytes)
+    if runner_sha256 != entry["raw_sha256"]:
+        raise RuntimeError("calibration runner source differs from the authenticated manifest")
+    try:
+        code = compile(
+            runner_bytes,
+            str(CALIBRATION_RUNNER_PATH),
+            "exec",
+            dont_inherit=True,
+        )
+    except (SyntaxError, ValueError) as error:
+        raise RuntimeError("authenticated calibration runner source cannot be compiled") from error
+    module = ModuleType(_CALIBRATION_RUNNER_MODULE_NAME)
+    module.__file__ = str(CALIBRATION_RUNNER_PATH)
+    module.__package__ = ""
+    module.__loader__ = None
+    module.__spec__ = None
+    module.__dict__["__recurquant_authenticated_source_sha256__"] = runner_sha256
+    module.__dict__["__recurquant_authenticated_source_size_bytes__"] = len(runner_bytes)
     sys.modules[_CALIBRATION_RUNNER_MODULE_NAME] = module
     try:
-        spec.loader.exec_module(module)
+        exec(code, module.__dict__)
     except BaseException:
         sys.modules.pop(_CALIBRATION_RUNNER_MODULE_NAME, None)
         raise
     return module
 
 
+def _decode_repository_source_artifact(
+    artifacts: Mapping[str, bytes],
+) -> _DecodedRepositorySourceArtifact:
+    """Decode the canonical source artifact without executing runner code."""
+
+    if not isinstance(artifacts, Mapping) or set(artifacts) != set(
+        resolver.EXECUTION_BINDING_FIELDS
+    ):
+        raise ValueError("all four verified execution-binding artifacts are required")
+    for field, data in artifacts.items():
+        if not isinstance(data, bytes) or not data:
+            raise ValueError(f"execution-binding artifact {field} must be non-empty bytes")
+    source_bytes = artifacts["repository_source_manifest_file_sha256"]
+    try:
+        from recurquant import experiment013_source
+    except ImportError as error:  # pragma: no cover - installation guard
+        raise RuntimeError("Experiment 013 source validator is unavailable") from error
+    source_value = _strict_json(source_bytes, context="repository source manifest")
+    normalized_source = experiment013_source.validate_experiment013_source_manifest(source_value)
+    if (
+        experiment013_source.canonical_experiment013_source_manifest_bytes(normalized_source)
+        != source_bytes
+    ):
+        raise ValueError("repository source manifest is not canonical JSON")
+    return _DecodedRepositorySourceArtifact(
+        manifest_file_sha256=sha256_bytes(source_bytes),
+        source_manifest=MappingProxyType(dict(normalized_source)),
+        source_module=experiment013_source,
+    )
+
+
 def _decode_execution_binding_artifacts(
     artifacts: Mapping[str, bytes],
     *,
     runner: Any,
+    source_artifact: _DecodedRepositorySourceArtifact | None = None,
 ) -> _DecodedExecutionBindingArtifacts:
     """Strictly decode each execution artifact before binding its exact bytes."""
 
@@ -2705,16 +2786,12 @@ def _decode_execution_binding_artifacts(
     model_bytes = artifacts["model_file_manifest_file_sha256"]
     parquet_bytes = artifacts["parquet_materialization_manifest_file_sha256"]
     try:
-        from recurquant import experiment013_parquet, experiment013_source
+        from recurquant import experiment013_parquet
     except ImportError as error:  # pragma: no cover - installation guard
         raise RuntimeError("Experiment 013 source/Parquet validators are unavailable") from error
-    source_value = _strict_json(source_bytes, context="repository source manifest")
-    normalized_source = experiment013_source.validate_experiment013_source_manifest(source_value)
-    if (
-        experiment013_source.canonical_experiment013_source_manifest_bytes(normalized_source)
-        != source_bytes
-    ):
-        raise ValueError("repository source manifest is not canonical JSON")
+    decoded_source = source_artifact or _decode_repository_source_artifact(artifacts)
+    if decoded_source.manifest_file_sha256 != sha256_bytes(source_bytes):
+        raise ValueError("repository source manifest changed during artifact decoding")
     runtime_manifest = runner.parse_calibration_runtime_manifest(runtime_bytes)
     model_manifest = runner.parse_model_file_manifest(model_bytes)
     if runtime_manifest.file_sha256 != sha256_bytes(runtime_bytes):
@@ -2742,10 +2819,10 @@ def _decode_execution_binding_artifacts(
     }
     return _DecodedExecutionBindingArtifacts(
         bindings=MappingProxyType(bindings),
-        source_manifest=MappingProxyType(dict(normalized_source)),
+        source_manifest=decoded_source.source_manifest,
         runtime_manifest=runtime_manifest,
         model_manifest=model_manifest,
-        source_module=experiment013_source,
+        source_module=decoded_source.source_module,
         parquet_module=experiment013_parquet,
     )
 
@@ -2755,9 +2832,14 @@ def _validate_execution_binding_artifacts(
 ) -> dict[str, str]:
     """Strictly decode all four artifacts without retaining an imported runner."""
 
-    runner = _load_calibration_runner_module()
+    source_artifact = _decode_repository_source_artifact(artifacts)
+    runner = _load_calibration_runner_module(source_artifact.source_manifest)
     try:
-        decoded = _decode_execution_binding_artifacts(artifacts, runner=runner)
+        decoded = _decode_execution_binding_artifacts(
+            artifacts,
+            runner=runner,
+            source_artifact=source_artifact,
+        )
         return dict(decoded.bindings)
     finally:
         if sys.modules.get(_CALIBRATION_RUNNER_MODULE_NAME) is runner:
@@ -2768,24 +2850,28 @@ def _verify_loaded_runner_source(
     runner: Any,
     source_manifest: Mapping[str, object],
 ) -> None:
-    entries = {
-        str(item["path"]): item
-        for item in source_manifest["paths"]  # type: ignore[index]
-    }
-    relative = "scripts/run_static_q468_calibration.py"
-    entry = entries.get(relative)
+    entry = _runner_source_manifest_entry(source_manifest)
     raw_file = getattr(runner, "__file__", None)
-    if not isinstance(entry, Mapping) or not isinstance(raw_file, (str, os.PathLike)):
+    if not isinstance(raw_file, (str, os.PathLike)):
         raise RuntimeError("calibration runner is absent from the authenticated source manifest")
     declared = Path(raw_file)
     try:
         resolved = declared.resolve(strict=True)
     except OSError as error:
         raise RuntimeError("calibration runner source is unavailable") from error
+    live_bytes = _bundle_stable_descendant_bytes(
+        REPOSITORY_ROOT,
+        "scripts/run_static_q468_calibration.py",
+        context="loaded calibration runner source",
+    )
     if (
         declared.is_symlink()
         or resolved != CALIBRATION_RUNNER_PATH.resolve(strict=True)
-        or sha256_bytes(resolved.read_bytes()) != entry["raw_sha256"]
+        or getattr(runner, "__recurquant_authenticated_source_sha256__", None)
+        != entry["raw_sha256"]
+        or getattr(runner, "__recurquant_authenticated_source_size_bytes__", None)
+        != len(live_bytes)
+        or sha256_bytes(live_bytes) != entry["raw_sha256"]
     ):
         raise RuntimeError("loaded calibration runner source bytes drifted")
 
@@ -2821,9 +2907,10 @@ def _authenticate_execution_binding_artifacts(
 ) -> _AuthenticatedExecutionBindings:
     """Reauthenticate source, runtime, model metadata, and Parquet at point of use."""
 
+    source_artifact = _decode_repository_source_artifact(artifacts)
     created_runner = previous is None
     if created_runner:
-        runner = _load_calibration_runner_module()
+        runner = _load_calibration_runner_module(source_artifact.source_manifest)
     else:
         runner = previous.runner
         if sys.modules.get(_CALIBRATION_RUNNER_MODULE_NAME) is not runner:
@@ -2831,7 +2918,11 @@ def _authenticate_execution_binding_artifacts(
         if runtime_context != previous.runtime_context:
             raise ValueError("runtime authentication context changed during capture")
     try:
-        decoded = _decode_execution_binding_artifacts(artifacts, runner=runner)
+        decoded = _decode_execution_binding_artifacts(
+            artifacts,
+            runner=runner,
+            source_artifact=source_artifact,
+        )
         if previous is not None and dict(decoded.bindings) != dict(previous.bindings):
             raise ValueError("execution-binding artifacts changed during capture")
         verified_source = decoded.source_module.verify_experiment013_source_manifest(
@@ -3024,12 +3115,11 @@ def _capture_identity_input_with_tokens(
         if phase == "stage_a":
             assert normalized_calibration_binding is not None
             result["calibration_binding"] = normalized_calibration_binding
-        expected_revisions = dict(resolver.FROZEN_DATASET_REVISIONS)
-        resolver.build_candidate(
-            result,
-            expected_revisions=expected_revisions,
-            calibration_binding_artifact=calibration_binding,
-        )
+        if phase == "calibration":
+            resolver.build_candidate(
+                result,
+                expected_revisions=dict(resolver.FROZEN_DATASET_REVISIONS),
+            )
         return result, {} if token_sink is None else token_sink
     finally:
         if sys.modules.get(_CALIBRATION_RUNNER_MODULE_NAME) is authentication.runner:
@@ -3108,13 +3198,15 @@ def materialize_stage_a_identity_sequences(
     source: CaptureSource,
     frozen_stage_a_identity_artifact: bytes,
     calibration_binding_artifact: bytes,
+    stage_a_capture_provenance_receipt: bytes,
+    expected_stage_a_capture_provenance_receipt_sha256: str,
     expected_frozen_stage_a_identity_file_sha256: str | None = None,
     execution_binding_artifacts: Mapping[str, bytes] | None = None,
     runtime_authentication_context: Mapping[str, object] | None = None,
 ) -> StageAIdentityMaterialization:
     """Authenticate and materialize the exact twelve frozen Stage-A sequences.
 
-    The promoted resolver-v5 artifact and its complete calibration binding are
+    The promoted resolver-v6 artifact and its complete calibration binding are
     authenticated before any data source is touched.  The canonical capture is
     then replayed once with token retention, and every content-redacted record
     must equal the corresponding authenticated frozen record byte for byte.
@@ -3130,13 +3222,17 @@ def materialize_stage_a_identity_sequences(
         CAPTURE_VERSION != 6
         or resolver.RESOLVER_VERSION != 6
         or resolver.INPUT_SCHEMA != "recurquant.experiment013.identity-input.v5"
-        or resolver.FROZEN_SCHEMA != "recurquant.experiment013.identity-frozen.v5"
+        or resolver.STAGE_A_FROZEN_SCHEMA != "recurquant.experiment013.identity-frozen.v6"
     ):
-        raise RuntimeError("Stage-A materialization requires the resolver-v5 identity contract")
+        raise RuntimeError("Stage-A materialization requires the resolver-v6 identity contract")
 
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_stage_a_identity_artifact,
         calibration_binding_artifact=calibration_binding_artifact,
+        stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            expected_stage_a_capture_provenance_receipt_sha256
+        ),
         expected_file_sha256=expected_frozen_stage_a_identity_file_sha256,
     )
     result, token_sink = _capture_identity_input_with_tokens(
@@ -3154,6 +3250,10 @@ def materialize_stage_a_identity_sequences(
         result,
         expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
         calibration_binding_artifact=calibration_binding_artifact,
+        stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            expected_stage_a_capture_provenance_receipt_sha256
+        ),
     )
     frozen_document = _strict_json(
         frozen_stage_a_identity_artifact,
@@ -4034,6 +4134,8 @@ def authenticate_stage_a_input_bundle(
     *,
     frozen_stage_a_identity_artifact: bytes,
     calibration_binding_artifact: bytes,
+    stage_a_capture_provenance_receipt: bytes,
+    expected_stage_a_capture_provenance_receipt_sha256: str,
     execution_binding_artifacts: Mapping[str, bytes],
 ) -> AuthenticatedStageAInputBundle:
     """Authenticate an opaque Stage-A byte bundle without decoding protected rows."""
@@ -4045,6 +4147,10 @@ def authenticate_stage_a_input_bundle(
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_stage_a_identity_artifact,
         calibration_binding_artifact=calibration_binding_artifact,
+        stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            expected_stage_a_capture_provenance_receipt_sha256
+        ),
     )
     expected_bindings = _validate_execution_binding_artifacts(execution_binding_artifacts)
     if dict(frozen.execution_bindings) != expected_bindings:
@@ -4261,6 +4367,8 @@ def stage_stage_a_input_bundle(
     ruler_receipt_dir: Path,
     frozen_stage_a_identity_artifact: bytes,
     calibration_binding_artifact: bytes,
+    stage_a_capture_provenance_receipt: bytes,
+    expected_stage_a_capture_provenance_receipt_sha256: str,
     execution_binding_artifacts: Mapping[str, bytes],
     runtime_authentication_context: Mapping[str, object],
 ) -> AuthenticatedStageAInputBundle:
@@ -4278,6 +4386,10 @@ def stage_stage_a_input_bundle(
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_stage_a_identity_artifact,
         calibration_binding_artifact=calibration_binding_artifact,
+        stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            expected_stage_a_capture_provenance_receipt_sha256
+        ),
     )
     expected_execution_bindings = _validate_execution_binding_artifacts(execution_binding_artifacts)
     if dict(frozen.execution_bindings) != expected_execution_bindings:
@@ -4294,6 +4406,10 @@ def stage_stage_a_input_bundle(
                 destination,
                 frozen_stage_a_identity_artifact=frozen_stage_a_identity_artifact,
                 calibration_binding_artifact=calibration_binding_artifact,
+                stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+                expected_stage_a_capture_provenance_receipt_sha256=(
+                    expected_stage_a_capture_provenance_receipt_sha256
+                ),
                 execution_binding_artifacts=execution_binding_artifacts,
             )
         try:
@@ -4494,6 +4610,10 @@ def stage_stage_a_input_bundle(
                 staging_root,
                 frozen_stage_a_identity_artifact=frozen_stage_a_identity_artifact,
                 calibration_binding_artifact=calibration_binding_artifact,
+                stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+                expected_stage_a_capture_provenance_receipt_sha256=(
+                    expected_stage_a_capture_provenance_receipt_sha256
+                ),
                 execution_binding_artifacts=execution_binding_artifacts,
             )
             lock_path = parent / f".{destination.name}.publish.lock"
@@ -4539,6 +4659,10 @@ def stage_stage_a_input_bundle(
             destination,
             frozen_stage_a_identity_artifact=frozen_stage_a_identity_artifact,
             calibration_binding_artifact=calibration_binding_artifact,
+            stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                expected_stage_a_capture_provenance_receipt_sha256
+            ),
             execution_binding_artifacts=execution_binding_artifacts,
         )
     finally:
@@ -4904,6 +5028,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.phase in resolver.PROTECTED_STAGES:
         raise PermissionError(
             f"{args.phase} is protected; capture v6 refuses it before file or source access"
+        )
+    if args.phase == "stage_a":
+        raise PermissionError(
+            "Stage-A capture is sealed-launcher-only; direct CLI refuses it before "
+            "binding, path, source, or provider access"
         )
     if args.ruler_receipt_dir is None:
         raise ValueError("--ruler-receipt-dir is required")

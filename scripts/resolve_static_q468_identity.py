@@ -36,6 +36,9 @@ from typing import Any, Final
 INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
 CANDIDATE_SCHEMA: Final = "recurquant.experiment013.identity-candidate.v5"
 FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v5"
+STAGE_A_CANDIDATE_SCHEMA: Final = "recurquant.experiment013.identity-candidate.v6"
+STAGE_A_FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v6"
+STAGE_A_IDENTITY_SCHEMA_VERSION: Final = 6
 ARTIFACT_KIND: Final = "recurquant_static_rht_q468_identity"
 # Procedure version.  The identity field sets remain the published v5 contract.
 RESOLVER_VERSION: Final = 6
@@ -303,6 +306,11 @@ FROZEN_EVIDENCE_FIELDS: Final = frozenset(
     }
 )
 CANDIDATE_EVIDENCE_FIELDS: Final = FROZEN_EVIDENCE_FIELDS - {"promotion"}
+STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: Final = "stage_a_capture_provenance_receipt_file_sha256"
+STAGE_A_FROZEN_EVIDENCE_FIELDS: Final = FROZEN_EVIDENCE_FIELDS | {
+    STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD
+}
+STAGE_A_CANDIDATE_EVIDENCE_FIELDS: Final = STAGE_A_FROZEN_EVIDENCE_FIELDS - {"promotion"}
 FROZEN_RECORD_FIELDS: Final = RECORD_FIELDS | {
     "anchor_positions",
     "anchor_positions_sha256",
@@ -325,7 +333,7 @@ STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 3
-CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v9"
+CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
 CALIBRATION_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
@@ -337,6 +345,14 @@ CALIBRATION_CAPTURE_PROVENANCE_STATUS: Final = (
 CALIBRATION_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
+STAGE_A_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_stage_a_identity_capture_provenance"
+)
+STAGE_A_CAPTURE_PROVENANCE_SCHEMA_VERSION: Final = 1
+STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
+    "captured_under_authenticated_runtime_and_launcher_finalized"
+)
+STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = CALIBRATION_CAPTURE_PUBLICATION_CONTRACT
 CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-complete-v1\n"
 FISHER_H1_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
 CALIBRATION_OUTPUT_FILENAMES: Final = MappingProxyType(
@@ -1437,15 +1453,29 @@ def _validate_execution_bindings(value: object) -> dict[str, str]:
     }
 
 
-def build_candidate(
+@dataclass(frozen=True, slots=True)
+class _ValidatedIdentityInput:
+    phase: str
+    source_hash: str
+    datasets: tuple[dict[str, Any], ...]
+    tokenizer: dict[str, Any]
+    execution_bindings: dict[str, str]
+    records: tuple[dict[str, Any], ...]
+    split_half: dict[str, Any] | None
+    calibration_binding: dict[str, str] | None
+
+
+def _validate_identity_input_source(
     source: Mapping[str, Any],
     *,
     expected_revisions: Mapping[str, str],
-    calibration_binding_artifact: bytes | None = None,
-) -> dict[str, Any]:
-    """Validate metadata and return a deterministic candidate artifact."""
+    calibration_binding_artifact: bytes | None,
+    expected_calibration_binding_file_sha256: str | None = None,
+) -> _ValidatedIdentityInput:
+    """Validate one raw identity input without relying on finalized custody."""
 
-    phase = source.get("phase")
+    identity_input = require_mapping(source, context="identity input")
+    phase = identity_input.get("phase")
     expected_fields = {
         "schema",
         "phase",
@@ -1457,8 +1487,8 @@ def build_candidate(
     }
     if phase == "stage_a":
         expected_fields.add("calibration_binding")
-    require_exact_fields(source, frozenset(expected_fields), context="identity input")
-    if source["schema"] != INPUT_SCHEMA:
+    require_exact_fields(identity_input, frozenset(expected_fields), context="identity input")
+    if identity_input["schema"] != INPUT_SCHEMA:
         raise ValueError("identity input schema drifted")
     if phase not in ALLOWED_PHASES:
         if phase in PROTECTED_STAGES:
@@ -1466,20 +1496,23 @@ def build_candidate(
                 f"{phase} is protected and unavailable in resolver procedure v{RESOLVER_VERSION}"
             )
         raise ValueError(f"unsupported identity phase: {phase!r}")
-    if source["model_weights_loaded"] is not False:
+    if identity_input["model_weights_loaded"] is not False:
         raise ValueError("identity resolution must occur before model weights")
-    expected_calibration_binding: dict[str, str] | None = None
-    authorized_execution_bindings: dict[str, str] | None = None
+
+    verified_binding: StageACalibrationBindingArtifact | None = None
     if phase == "stage_a":
         if not isinstance(calibration_binding_artifact, bytes):
             raise ValueError("Stage A requires a verified calibration binding artifact")
         verified_binding = deserialize_stage_a_calibration_binding_artifact(
-            calibration_binding_artifact
+            calibration_binding_artifact,
+            expected_file_sha256=expected_calibration_binding_file_sha256,
         )
-        expected_calibration_binding = dict(verified_binding.binding)
-        authorized_execution_bindings = dict(verified_binding.execution_bindings)
-    elif calibration_binding_artifact is not None:
-        raise ValueError("calibration resolution forbids a Stage-A binding artifact")
+    elif (
+        calibration_binding_artifact is not None
+        or expected_calibration_binding_file_sha256 is not None
+    ):
+        raise ValueError("calibration resolution forbids Stage-A authorization artifacts")
+
     if set(expected_revisions) != set(DATASET_KEYS):
         raise ValueError("all four dataset revisions are mandatory")
     revisions = {
@@ -1489,23 +1522,23 @@ def build_candidate(
     if revisions != FROZEN_DATASET_REVISIONS:
         raise ValueError("CLI dataset revisions do not match the frozen upstream commits")
     datasets = _validate_dataset_contracts(
-        source["datasets"],
+        identity_input["datasets"],
         expected_revisions=revisions,
         phase=str(phase),
     )
-    tokenizer = _validate_tokenizer(source["tokenizer"])
-    execution_bindings = _validate_execution_bindings(source["execution_bindings"])
-    parquet_materialization_manifest_file_sha256 = execution_bindings[
-        "parquet_materialization_manifest_file_sha256"
-    ]
-    if parquet_materialization_manifest_file_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
-        raise ValueError("Parquet materialization manifest file SHA-256 drifted")
+    tokenizer = _validate_tokenizer(identity_input["tokenizer"])
+    execution_bindings = _validate_execution_bindings(identity_input["execution_bindings"])
     if (
-        authorized_execution_bindings is not None
-        and execution_bindings != authorized_execution_bindings
+        execution_bindings["parquet_materialization_manifest_file_sha256"]
+        != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
+    ):
+        raise ValueError("Parquet materialization manifest file SHA-256 drifted")
+    if verified_binding is not None and execution_bindings != dict(
+        verified_binding.execution_bindings
     ):
         raise ValueError("Stage-A execution bindings differ from calibration authorization")
-    raw_records = require_sequence(source["records"], context="records")
+
+    raw_records = require_sequence(identity_input["records"], context="records")
     records = [
         _normalize_record(
             raw,
@@ -1521,25 +1554,98 @@ def build_candidate(
         split_half = _split_half_manifest(records)
         calibration_binding = None
     else:
+        assert verified_binding is not None
         _validate_stage_a_records(records)
         split_half = None
-        calibration_binding = _validate_calibration_binding(source["calibration_binding"])
-        if calibration_binding != expected_calibration_binding:
+        calibration_binding = _validate_calibration_binding(identity_input["calibration_binding"])
+        if calibration_binding != dict(verified_binding.binding):
             raise ValueError("Stage-A input calibration binding differs from the verified artifact")
 
+    return _ValidatedIdentityInput(
+        phase=str(phase),
+        source_hash=sha256_bytes(canonical_json_bytes(identity_input)),
+        datasets=tuple(datasets),
+        tokenizer=tokenizer,
+        execution_bindings=execution_bindings,
+        records=tuple(records),
+        split_half=split_half,
+        calibration_binding=calibration_binding,
+    )
+
+
+def validate_stage_a_identity_input_for_capture(
+    source: Mapping[str, Any],
+    *,
+    calibration_binding_artifact: bytes,
+    expected_calibration_binding_file_sha256: str,
+) -> None:
+    """Authenticate and validate raw Stage-A input before receipt finalization.
+
+    This gate intentionally has no capture-receipt parameter: a receipt does not
+    exist until the sealed runner has validated and published the identity input.
+    """
+
+    validated = _validate_identity_input_source(
+        source,
+        expected_revisions=FROZEN_DATASET_REVISIONS,
+        calibration_binding_artifact=calibration_binding_artifact,
+        expected_calibration_binding_file_sha256=require_sha256(
+            expected_calibration_binding_file_sha256,
+            context="expected Stage-A binding file SHA-256",
+        ),
+    )
+    if validated.phase != "stage_a":
+        raise ValueError("pre-finalization validation requires a Stage-A identity input")
+
+
+def build_candidate(
+    source: Mapping[str, Any],
+    *,
+    expected_revisions: Mapping[str, str],
+    calibration_binding_artifact: bytes | None = None,
+    stage_a_capture_provenance_receipt: bytes | None = None,
+    expected_stage_a_capture_provenance_receipt_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Validate metadata and return a deterministic candidate artifact."""
+
+    validated = _validate_identity_input_source(
+        source,
+        expected_revisions=expected_revisions,
+        calibration_binding_artifact=calibration_binding_artifact,
+    )
+    phase = validated.phase
+    stage_a_capture_provenance_receipt_file_sha256: str | None = None
+    if phase == "stage_a":
+        assert isinstance(calibration_binding_artifact, bytes)
+        if not isinstance(stage_a_capture_provenance_receipt, bytes):
+            raise ValueError("Stage A requires a finalized capture provenance receipt")
+        if expected_stage_a_capture_provenance_receipt_sha256 is None:
+            raise ValueError("Stage A requires an explicit capture provenance receipt SHA-256")
+        verified_capture = deserialize_stage_a_capture_provenance_receipt(
+            stage_a_capture_provenance_receipt,
+            expected_file_sha256=expected_stage_a_capture_provenance_receipt_sha256,
+            calibration_binding_artifact=calibration_binding_artifact,
+            expected_identity_input_file_sha256=validated.source_hash,
+        )
+        stage_a_capture_provenance_receipt_file_sha256 = verified_capture.file_sha256
+    elif (
+        stage_a_capture_provenance_receipt is not None
+        or expected_stage_a_capture_provenance_receipt_sha256 is not None
+    ):
+        raise ValueError("calibration resolution forbids Stage-A authorization artifacts")
+    records = list(validated.records)
     content_manifest_hash = sha256_bytes(canonical_json_bytes(records))
-    source_hash = sha256_bytes(canonical_json_bytes(source))
     evidence: dict[str, Any] = {
-        "schema_version": 5,
+        "schema_version": STAGE_A_IDENTITY_SCHEMA_VERSION if phase == "stage_a" else 5,
         "artifact_kind": ARTIFACT_KIND,
-        "identity_schema": CANDIDATE_SCHEMA,
+        "identity_schema": STAGE_A_CANDIDATE_SCHEMA if phase == "stage_a" else CANDIDATE_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
         "status": "candidate",
         "phase": phase,
         "identity_only": True,
         "claim_boundary": CLAIM_BOUNDARY,
-        "source_manifest_sha256": source_hash,
-        "execution_bindings": execution_bindings,
+        "source_manifest_sha256": validated.source_hash,
+        "execution_bindings": validated.execution_bindings,
         "model_contracts": {
             "primary": {"id": PRIMARY_MODEL_ID, "revision": PRIMARY_MODEL_REVISION},
             "conditional_scale_check": {
@@ -1549,7 +1655,7 @@ def build_candidate(
             },
             "weights_loaded": False,
         },
-        "datasets": list(datasets),
+        "datasets": list(validated.datasets),
         "upstream_tool_contracts": {
             "ruler_generator": {
                 "id": RULER_SOURCE_ID,
@@ -1560,7 +1666,7 @@ def build_candidate(
                 "revision": EVALPLUS_SOURCE_REVISION,
             },
         },
-        "tokenizer": tokenizer,
+        "tokenizer": validated.tokenizer,
         "records": records,
         "record_count": len(records),
         "content_manifest_sha256": content_manifest_hash,
@@ -1571,8 +1677,8 @@ def build_candidate(
             "humaneval_plus_stage_a_b_namespace": HUMANEVAL_AB_NAMESPACE,
             "humaneval_plus_stage_c_namespace": HUMANEVAL_C_NAMESPACE,
         },
-        "calibration_split_half": split_half,
-        "calibration_binding": calibration_binding,
+        "calibration_split_half": validated.split_half,
+        "calibration_binding": validated.calibration_binding,
         "protected_identity": {
             "stage_b_read": False,
             "stage_c_read": False,
@@ -1580,6 +1686,11 @@ def build_candidate(
         },
         "promotion_required": True,
     }
+    if phase == "stage_a":
+        assert stage_a_capture_provenance_receipt_file_sha256 is not None
+        evidence[STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD] = (
+            stage_a_capture_provenance_receipt_file_sha256
+        )
     artifact = {
         "canonical_evidence_sha256": sha256_bytes(canonical_json_bytes(evidence)),
         "evidence": evidence,
@@ -1592,18 +1703,18 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
     if set(artifact) != {"canonical_evidence_sha256", "evidence"}:
         raise ValueError("candidate wrapper fields drifted")
     evidence = require_mapping(artifact.get("evidence"), context="candidate evidence")
+    phase = evidence.get("phase")
     require_exact_fields(
         evidence,
-        CANDIDATE_EVIDENCE_FIELDS,
+        (STAGE_A_CANDIDATE_EVIDENCE_FIELDS if phase == "stage_a" else CANDIDATE_EVIDENCE_FIELDS),
         context="candidate evidence",
     )
     if artifact.get("canonical_evidence_sha256") != sha256_bytes(canonical_json_bytes(evidence)):
         raise ValueError("candidate canonical evidence SHA-256 drifted")
-    phase = evidence["phase"]
     exact_scalars = {
-        "schema_version": 5,
+        "schema_version": STAGE_A_IDENTITY_SCHEMA_VERSION if phase == "stage_a" else 5,
         "artifact_kind": ARTIFACT_KIND,
-        "identity_schema": CANDIDATE_SCHEMA,
+        "identity_schema": STAGE_A_CANDIDATE_SCHEMA if phase == "stage_a" else CANDIDATE_SCHEMA,
         "resolver_version": RESOLVER_VERSION,
         "status": "candidate",
         "identity_only": True,
@@ -1617,6 +1728,11 @@ def validate_candidate_artifact(artifact: Mapping[str, Any]) -> None:
             raise ValueError(f"candidate {name} drifted")
     if phase not in ALLOWED_PHASES:
         raise ValueError("candidate phase drifted")
+    if phase == "stage_a":
+        require_sha256(
+            evidence[STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD],
+            context="Stage-A capture provenance receipt file SHA-256",
+        )
     require_sha256(
         evidence["source_manifest_sha256"],
         context="candidate source manifest SHA-256",
@@ -1759,6 +1875,8 @@ def promote_candidate(
     *,
     candidate_file_sha256: str,
     calibration_binding_artifact: bytes | None = None,
+    stage_a_capture_provenance_receipt: bytes | None = None,
+    expected_stage_a_capture_provenance_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Create a deterministic frozen identity from an authenticated candidate."""
 
@@ -1784,10 +1902,30 @@ def promote_candidate(
             raise ValueError(
                 "Stage-A candidate execution bindings differ from calibration authorization"
             )
-    elif calibration_binding_artifact is not None:
-        raise ValueError("calibration promotion forbids a Stage-A binding artifact")
+        if not isinstance(stage_a_capture_provenance_receipt, bytes):
+            raise ValueError("Stage-A promotion requires finalized capture provenance")
+        if expected_stage_a_capture_provenance_receipt_sha256 is None:
+            raise ValueError("Stage-A promotion requires an explicit provenance receipt SHA-256")
+        verified_capture = deserialize_stage_a_capture_provenance_receipt(
+            stage_a_capture_provenance_receipt,
+            expected_file_sha256=expected_stage_a_capture_provenance_receipt_sha256,
+            calibration_binding_artifact=calibration_binding_artifact,
+            expected_identity_input_file_sha256=candidate["evidence"]["source_manifest_sha256"],
+        )
+        if candidate["evidence"][STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD] != (
+            verified_capture.file_sha256
+        ):
+            raise ValueError("Stage-A candidate binds a different capture provenance receipt")
+    elif (
+        calibration_binding_artifact is not None
+        or stage_a_capture_provenance_receipt is not None
+        or expected_stage_a_capture_provenance_receipt_sha256 is not None
+    ):
+        raise ValueError("calibration promotion forbids Stage-A authorization artifacts")
     evidence = deepcopy(dict(candidate["evidence"]))
-    evidence["identity_schema"] = FROZEN_SCHEMA
+    evidence["identity_schema"] = (
+        STAGE_A_FROZEN_SCHEMA if candidate_phase == "stage_a" else FROZEN_SCHEMA
+    )
     evidence["status"] = "frozen"
     evidence["promotion_required"] = False
     evidence["promotion"] = {
@@ -1795,6 +1933,10 @@ def promote_candidate(
         "candidate_canonical_evidence_sha256": candidate["canonical_evidence_sha256"],
         "explicit": True,
     }
+    if candidate_phase == "stage_a":
+        evidence["promotion"][STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD] = evidence[
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD
+        ]
     return {
         "canonical_evidence_sha256": sha256_bytes(canonical_json_bytes(evidence)),
         "evidence": evidence,
@@ -1839,6 +1981,7 @@ class FrozenStageAIdentityArtifact:
     calibration_binding: Mapping[str, str]
     parquet_materialization_manifest_file_sha256: str
     execution_bindings: Mapping[str, str]
+    stage_a_capture_provenance_receipt_file_sha256: str
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1847,6 +1990,21 @@ class FrozenStageAIdentityArtifact:
             tuple(_deep_freeze(record) for record in self.records),
         )
         object.__setattr__(self, "calibration_binding", _deep_freeze(self.calibration_binding))
+        object.__setattr__(self, "execution_bindings", _deep_freeze(self.execution_bindings))
+
+
+@dataclass(frozen=True, slots=True)
+class StageACaptureProvenanceReceipt:
+    """Strictly verified finalized custody receipt for one Stage-A identity input."""
+
+    file_sha256: str
+    identity_input_file_sha256: str
+    calibration_binding_file_sha256: str
+    calibration_authorization_file_sha256: str
+    source_commit: str
+    execution_bindings: Mapping[str, str]
+
+    def __post_init__(self) -> None:
         object.__setattr__(self, "execution_bindings", _deep_freeze(self.execution_bindings))
 
 
@@ -1881,6 +2039,7 @@ class StageACalibrationBindingArtifact:
     binding: Mapping[str, str]
     dependency_file_sha256: Mapping[str, str]
     calibration_dependencies: Mapping[str, bytes]
+    authorization_dependencies: Mapping[str, bytes]
     authorization_file_sha256: str
     execution_bindings: Mapping[str, str]
     source_commit: str
@@ -1899,15 +2058,21 @@ class StageACalibrationBindingArtifact:
             "calibration_dependencies",
             _deep_freeze(self.calibration_dependencies),
         )
+        object.__setattr__(
+            self,
+            "authorization_dependencies",
+            _deep_freeze(self.authorization_dependencies),
+        )
         object.__setattr__(self, "execution_bindings", _deep_freeze(self.execution_bindings))
 
 
 @dataclass(frozen=True, slots=True)
 class StageACalibrationAuthorizationArtifact:
-    """Verified authorization over one finalized runner-v9 calibration chain."""
+    """Verified authorization over one finalized runner-v10 calibration chain."""
 
     binding: Mapping[str, str]
     calibration_dependencies: Mapping[str, bytes]
+    authorization_dependencies: Mapping[str, bytes]
     authorized_output_file_sha256: Mapping[str, str]
     execution_bindings: Mapping[str, str]
     source_commit: str
@@ -1921,6 +2086,11 @@ class StageACalibrationAuthorizationArtifact:
             self,
             "calibration_dependencies",
             _deep_freeze(self.calibration_dependencies),
+        )
+        object.__setattr__(
+            self,
+            "authorization_dependencies",
+            _deep_freeze(self.authorization_dependencies),
         )
         object.__setattr__(
             self,
@@ -2187,14 +2357,26 @@ def deserialize_frozen_stage_a_identity_artifact(
     data: bytes,
     *,
     calibration_binding_artifact: bytes,
+    stage_a_capture_provenance_receipt: bytes,
+    expected_stage_a_capture_provenance_receipt_sha256: str,
     expected_file_sha256: str | None = None,
 ) -> FrozenStageAIdentityArtifact:
-    """Decode Stage A and reauthenticate both its promotion and calibration chain."""
+    """Decode Stage A and reauthenticate capture, promotion, and calibration custody."""
 
     if not isinstance(data, bytes):
         raise TypeError("frozen Stage-A identity artifact must be bytes")
     if not isinstance(calibration_binding_artifact, bytes):
         raise TypeError("Stage-A calibration binding artifact must be bytes")
+    if not isinstance(stage_a_capture_provenance_receipt, bytes):
+        raise TypeError("Stage-A capture provenance receipt must be bytes")
+    verified_binding_artifact = deserialize_stage_a_calibration_binding_artifact(
+        calibration_binding_artifact
+    )
+    verified_capture = deserialize_stage_a_capture_provenance_receipt(
+        stage_a_capture_provenance_receipt,
+        expected_file_sha256=expected_stage_a_capture_provenance_receipt_sha256,
+        calibration_binding_artifact=calibration_binding_artifact,
+    )
     file_sha256 = sha256_bytes(data)
     if expected_file_sha256 is not None:
         expected = require_sha256(
@@ -2214,7 +2396,7 @@ def deserialize_frozen_stage_a_identity_artifact(
     evidence = require_mapping(root["evidence"], context="frozen Stage-A identity evidence")
     require_exact_fields(
         evidence,
-        FROZEN_EVIDENCE_FIELDS,
+        STAGE_A_FROZEN_EVIDENCE_FIELDS,
         context="frozen Stage-A identity evidence",
     )
     canonical_evidence_sha256 = require_sha256(
@@ -2224,7 +2406,9 @@ def deserialize_frozen_stage_a_identity_artifact(
     if canonical_evidence_sha256 != sha256_bytes(canonical_json_bytes(evidence)):
         raise ValueError("frozen Stage-A canonical evidence SHA-256 drifted")
     if (
-        evidence["identity_schema"] != FROZEN_SCHEMA
+        type(evidence["schema_version"]) is not int
+        or evidence["schema_version"] != STAGE_A_IDENTITY_SCHEMA_VERSION
+        or evidence["identity_schema"] != STAGE_A_FROZEN_SCHEMA
         or evidence["status"] != "frozen"
         or evidence["phase"] != "stage_a"
         or evidence["promotion_required"] is not False
@@ -2239,15 +2423,29 @@ def deserialize_frozen_stage_a_identity_artifact(
                 "candidate_file_sha256",
                 "candidate_canonical_evidence_sha256",
                 "explicit",
+                STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD,
             }
         ),
         context="frozen Stage-A promotion",
     )
     if promotion["explicit"] is not True:
         raise ValueError("frozen Stage-A identity was not explicitly promoted")
+    if (
+        require_sha256(
+            evidence[STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD],
+            context="frozen Stage-A capture provenance receipt SHA-256",
+        )
+        != verified_capture.file_sha256
+        or require_sha256(
+            promotion[STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD],
+            context="promoted Stage-A capture provenance receipt SHA-256",
+        )
+        != verified_capture.file_sha256
+    ):
+        raise ValueError("frozen Stage-A identity binds a different capture provenance receipt")
     candidate_evidence = deepcopy(dict(evidence))
     candidate_evidence.pop("promotion")
-    candidate_evidence["identity_schema"] = CANDIDATE_SCHEMA
+    candidate_evidence["identity_schema"] = STAGE_A_CANDIDATE_SCHEMA
     candidate_evidence["status"] = "candidate"
     candidate_evidence["promotion_required"] = True
     candidate_canonical_sha256 = sha256_bytes(canonical_json_bytes(candidate_evidence))
@@ -2256,6 +2454,8 @@ def deserialize_frozen_stage_a_identity_artifact(
         "evidence": candidate_evidence,
     }
     validate_candidate_artifact(candidate_document)
+    if candidate_evidence["source_manifest_sha256"] != verified_capture.identity_input_file_sha256:
+        raise ValueError("frozen Stage-A identity differs from its captured identity input")
     if (
         require_sha256(
             promotion["candidate_canonical_evidence_sha256"],
@@ -2274,9 +2474,6 @@ def deserialize_frozen_stage_a_identity_artifact(
     ):
         raise ValueError("promoted Stage-A candidate file SHA-256 drifted")
 
-    verified_binding_artifact = deserialize_stage_a_calibration_binding_artifact(
-        calibration_binding_artifact
-    )
     verified_binding = verified_binding_artifact.binding
     if candidate_evidence["calibration_binding"] != verified_binding:
         raise ValueError("frozen Stage-A identity differs from the verified calibration binding")
@@ -2299,6 +2496,7 @@ def deserialize_frozen_stage_a_identity_artifact(
         calibration_binding=dict(verified_binding),
         parquet_materialization_manifest_file_sha256=parquet_manifest_sha256,
         execution_bindings=execution_bindings,
+        stage_a_capture_provenance_receipt_file_sha256=verified_capture.file_sha256,
     )
 
 
@@ -3321,54 +3519,14 @@ def _deserialize_model_file_manifest(data: bytes) -> dict[str, Any]:
     }
 
 
-def _deserialize_capture_provenance_receipt(
-    data: bytes,
+def _validate_capture_provenance_source_runtime(
+    root: Mapping[str, Any],
     *,
     source_manifest: Mapping[str, Any],
     runtime_manifest: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    root = _json_without_duplicate_keys(data, context="calibration capture provenance receipt")
-    require_exact_fields(
-        root,
-        frozenset(
-            {
-                "artifact_kind",
-                "capture_source",
-                "capture_version",
-                "critical_module_origins",
-                "excluded_runtime_modules",
-                "execution_bindings",
-                "identity_input_file_sha256",
-                "phase",
-                "publication_contract",
-                "runner_revision",
-                "schema_version",
-                "source_commit",
-                "status",
-            }
-        ),
-        context="calibration capture provenance receipt",
-    )
-    if canonical_json_bytes(root) != data:
-        raise ValueError("calibration capture provenance receipt is not canonical JSON")
-    if (
-        root["artifact_kind"] != CALIBRATION_CAPTURE_PROVENANCE_KIND
-        or root["schema_version"] != CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION
-        or root["capture_version"] != CALIBRATION_CAPTURE_VERSION
-        or root["phase"] != "calibration"
-        or root["publication_contract"] != CALIBRATION_CAPTURE_PUBLICATION_CONTRACT
-        or root["runner_revision"] != CALIBRATION_RUNNER_REVISION
-        or root["status"] != CALIBRATION_CAPTURE_PROVENANCE_STATUS
-    ):
-        raise ValueError("calibration capture provenance identity drifted")
-    require_exact_revision(root["source_commit"], context="capture provenance source commit")
-    if len(str(root["source_commit"])) != 40:
-        raise ValueError("capture provenance source commit must be a SHA-1 H0")
-    require_sha256(
-        root["identity_input_file_sha256"],
-        context="capture provenance identity input SHA-256",
-    )
-    _validate_execution_bindings(root["execution_bindings"])
+) -> None:
+    """Bind the capture module and critical imports to authenticated manifests."""
+
     capture_source = require_mapping(
         root["capture_source"], context="capture provenance source record"
     )
@@ -3471,6 +3629,61 @@ def _deserialize_capture_provenance_receipt(
     )
     if tuple(excluded) != CALIBRATION_CAPTURE_EXCLUDED_RUNTIME_MODULES:
         raise ValueError("capture provenance excluded module inventory drifted")
+
+
+def _deserialize_capture_provenance_receipt(
+    data: bytes,
+    *,
+    source_manifest: Mapping[str, Any],
+    runtime_manifest: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    root = _json_without_duplicate_keys(data, context="calibration capture provenance receipt")
+    require_exact_fields(
+        root,
+        frozenset(
+            {
+                "artifact_kind",
+                "capture_source",
+                "capture_version",
+                "critical_module_origins",
+                "excluded_runtime_modules",
+                "execution_bindings",
+                "identity_input_file_sha256",
+                "phase",
+                "publication_contract",
+                "runner_revision",
+                "schema_version",
+                "source_commit",
+                "status",
+            }
+        ),
+        context="calibration capture provenance receipt",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError("calibration capture provenance receipt is not canonical JSON")
+    if (
+        root["artifact_kind"] != CALIBRATION_CAPTURE_PROVENANCE_KIND
+        or root["schema_version"] != CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION
+        or root["capture_version"] != CALIBRATION_CAPTURE_VERSION
+        or root["phase"] != "calibration"
+        or root["publication_contract"] != CALIBRATION_CAPTURE_PUBLICATION_CONTRACT
+        or root["runner_revision"] != CALIBRATION_RUNNER_REVISION
+        or root["status"] != CALIBRATION_CAPTURE_PROVENANCE_STATUS
+    ):
+        raise ValueError("calibration capture provenance identity drifted")
+    require_exact_revision(root["source_commit"], context="capture provenance source commit")
+    if len(str(root["source_commit"])) != 40:
+        raise ValueError("capture provenance source commit must be a SHA-1 H0")
+    require_sha256(
+        root["identity_input_file_sha256"],
+        context="capture provenance identity input SHA-256",
+    )
+    _validate_execution_bindings(root["execution_bindings"])
+    _validate_capture_provenance_source_runtime(
+        root,
+        source_manifest=source_manifest,
+        runtime_manifest=runtime_manifest,
+    )
     return root
 
 
@@ -4064,7 +4277,7 @@ def build_stage_a_calibration_authorization_artifact(
     repository_source_manifest: bytes,
     static_q48_policy_artifact: bytes,
 ) -> bytes:
-    """Authorize Stage A only after the complete runner-v9 chain is finalized."""
+    """Authorize Stage A only after the complete runner-v10 chain is finalized."""
 
     dependencies = {
         "calibration_complete_marker": calibration_complete_marker,
@@ -4201,6 +4414,7 @@ def deserialize_stage_a_calibration_authorization_artifact(
     return StageACalibrationAuthorizationArtifact(
         binding=binding,
         calibration_dependencies=calibration_dependencies,
+        authorization_dependencies=dependencies,
         authorized_output_file_sha256=output_hashes,
         execution_bindings=dict(execution_bindings),
         source_commit=str(bindings["source_commit"]),
@@ -4312,11 +4526,134 @@ def deserialize_stage_a_calibration_binding_artifact(
         binding=binding,
         dependency_file_sha256={dependency_name: authorization_hash},
         calibration_dependencies=dict(authorization.calibration_dependencies),
+        authorization_dependencies=dict(authorization.authorization_dependencies),
         authorization_file_sha256=authorization_hash,
         execution_bindings=dict(authorization.execution_bindings),
         source_commit=authorization.source_commit,
         canonical_evidence_sha256=canonical_evidence_sha256,
         file_sha256=file_sha256,
+    )
+
+
+def deserialize_stage_a_capture_provenance_receipt(
+    data: bytes,
+    *,
+    expected_file_sha256: str,
+    calibration_binding_artifact: bytes,
+    expected_identity_input_file_sha256: str | None = None,
+) -> StageACaptureProvenanceReceipt:
+    """Authenticate one finalized Stage-A capture before downstream data access."""
+
+    if not isinstance(data, bytes):
+        raise TypeError("Stage-A capture provenance receipt must be bytes")
+    if not isinstance(calibration_binding_artifact, bytes):
+        raise TypeError("Stage-A calibration binding artifact must be bytes")
+    expected_receipt_sha256 = require_sha256(
+        expected_file_sha256,
+        context="expected Stage-A capture provenance receipt SHA-256",
+    )
+    file_sha256 = sha256_bytes(data)
+    if file_sha256 != expected_receipt_sha256:
+        raise ValueError("Stage-A capture provenance receipt differs from its explicit SHA-256")
+
+    binding = deserialize_stage_a_calibration_binding_artifact(calibration_binding_artifact)
+    root = _json_without_duplicate_keys(data, context="Stage-A capture provenance receipt")
+    require_exact_fields(
+        root,
+        frozenset(
+            {
+                "artifact_kind",
+                "calibration_authorization_file_sha256",
+                "calibration_binding_file_sha256",
+                "capture_source",
+                "capture_version",
+                "critical_module_origins",
+                "excluded_runtime_modules",
+                "execution_bindings",
+                "identity_input_file_sha256",
+                "phase",
+                "publication_contract",
+                "runner_revision",
+                "schema_version",
+                "source_commit",
+                "status",
+            }
+        ),
+        context="Stage-A capture provenance receipt",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError("Stage-A capture provenance receipt is not canonical JSON")
+    if (
+        root["artifact_kind"] != STAGE_A_CAPTURE_PROVENANCE_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != STAGE_A_CAPTURE_PROVENANCE_SCHEMA_VERSION
+        or type(root["capture_version"]) is not int
+        or root["capture_version"] != CALIBRATION_CAPTURE_VERSION
+        or root["runner_revision"] != CALIBRATION_RUNNER_REVISION
+        or root["phase"] != "stage_a"
+        or root["status"] != STAGE_A_CAPTURE_PROVENANCE_STATUS
+        or root["publication_contract"] != STAGE_A_CAPTURE_PUBLICATION_CONTRACT
+    ):
+        raise ValueError("Stage-A capture provenance finalized identity drifted")
+
+    source_commit = require_exact_revision(
+        root["source_commit"], context="Stage-A capture provenance source commit"
+    )
+    if len(source_commit) != 40 or source_commit != binding.source_commit:
+        raise ValueError("Stage-A capture provenance source commit differs from authorized H0")
+    identity_input_file_sha256 = require_sha256(
+        root["identity_input_file_sha256"],
+        context="Stage-A capture provenance identity input SHA-256",
+    )
+    if expected_identity_input_file_sha256 is not None and identity_input_file_sha256 != (
+        require_sha256(
+            expected_identity_input_file_sha256,
+            context="expected Stage-A identity input SHA-256",
+        )
+    ):
+        raise ValueError("Stage-A capture provenance binds a different identity input")
+    calibration_binding_file_sha256 = require_sha256(
+        root["calibration_binding_file_sha256"],
+        context="Stage-A capture provenance calibration binding SHA-256",
+    )
+    if calibration_binding_file_sha256 != binding.file_sha256:
+        raise ValueError("Stage-A capture provenance binds a different calibration binding")
+    calibration_authorization_file_sha256 = require_sha256(
+        root["calibration_authorization_file_sha256"],
+        context="Stage-A capture provenance calibration authorization SHA-256",
+    )
+    if calibration_authorization_file_sha256 != binding.authorization_file_sha256:
+        raise ValueError("Stage-A capture provenance binds a different embedded authorization")
+    execution_bindings = _validate_execution_bindings(root["execution_bindings"])
+    if dict(root["execution_bindings"]) != execution_bindings or execution_bindings != dict(
+        binding.execution_bindings
+    ):
+        raise ValueError("Stage-A capture provenance execution bindings drifted")
+
+    authorization_dependencies = require_mapping(
+        binding.authorization_dependencies,
+        context="Stage-A calibration authorization dependencies",
+    )
+    source_manifest = _deserialize_repository_source_manifest(
+        authorization_dependencies["repository_source_manifest"]
+    )
+    runtime_manifest = _deserialize_calibration_runtime_manifest(
+        authorization_dependencies["calibration_runtime_manifest"]
+    )
+    if source_manifest["source_commit"] != source_commit:
+        raise ValueError("Stage-A capture provenance source manifest differs from H0")
+    _validate_capture_provenance_source_runtime(
+        root,
+        source_manifest=source_manifest,
+        runtime_manifest=runtime_manifest,
+    )
+    return StageACaptureProvenanceReceipt(
+        file_sha256=file_sha256,
+        identity_input_file_sha256=identity_input_file_sha256,
+        calibration_binding_file_sha256=calibration_binding_file_sha256,
+        calibration_authorization_file_sha256=calibration_authorization_file_sha256,
+        source_commit=source_commit,
+        execution_bindings=execution_bindings,
     )
 
 
@@ -4377,6 +4714,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--promote", action="store_true")
     parser.add_argument("--expected-candidate-sha256")
     parser.add_argument("--calibration-binding", type=Path)
+    parser.add_argument("--stage-a-capture-provenance-receipt", type=Path)
+    parser.add_argument("--expected-stage-a-capture-provenance-receipt-sha256")
     parser.add_argument("--mbpp-revision")
     parser.add_argument("--pg19-revision")
     parser.add_argument("--ruler-revision")
@@ -4387,22 +4726,47 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def _reject_protected_before_input(phase: str) -> None:
     if phase in PROTECTED_STAGES:
         raise PermissionError(
-            f"{phase} is protected; resolver v3 refuses it before reading --input"
+            f"{phase} is protected; resolver v{RESOLVER_VERSION} refuses it before reading --input"
         )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     _reject_protected_before_input(args.phase)
+    if args.phase != "stage_a" and (
+        args.stage_a_capture_provenance_receipt is not None
+        or args.expected_stage_a_capture_provenance_receipt_sha256 is not None
+    ):
+        raise ValueError("Stage-A capture provenance options are valid only for Stage A")
     if args.promote:
         if args.dry_run or args.output is None:
             raise ValueError("promotion requires --output and forbids --dry-run")
         calibration_binding_artifact: bytes | None = None
+        stage_a_capture_provenance_receipt: bytes | None = None
+        expected_stage_a_capture_provenance_receipt_sha256: str | None = None
         if args.phase == "stage_a":
             if args.calibration_binding is None:
                 raise ValueError("Stage-A promotion requires --calibration-binding")
+            if args.stage_a_capture_provenance_receipt is None:
+                raise ValueError("Stage-A promotion requires --stage-a-capture-provenance-receipt")
+            if args.expected_stage_a_capture_provenance_receipt_sha256 is None:
+                raise ValueError(
+                    "Stage-A promotion requires an explicit capture provenance receipt SHA-256"
+                )
+            expected_stage_a_capture_provenance_receipt_sha256 = require_sha256(
+                args.expected_stage_a_capture_provenance_receipt_sha256,
+                context="--expected-stage-a-capture-provenance-receipt-sha256",
+            )
             calibration_binding_artifact = args.calibration_binding.read_bytes()
             deserialize_stage_a_calibration_binding_artifact(calibration_binding_artifact)
+            stage_a_capture_provenance_receipt = (
+                args.stage_a_capture_provenance_receipt.read_bytes()
+            )
+            deserialize_stage_a_capture_provenance_receipt(
+                stage_a_capture_provenance_receipt,
+                expected_file_sha256=expected_stage_a_capture_provenance_receipt_sha256,
+                calibration_binding_artifact=calibration_binding_artifact,
+            )
         elif args.calibration_binding is not None:
             raise ValueError("calibration promotion forbids --calibration-binding")
         expected_hash = require_sha256(
@@ -4422,6 +4786,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             candidate,
             candidate_file_sha256=actual_hash,
             calibration_binding_artifact=calibration_binding_artifact,
+            stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                expected_stage_a_capture_provenance_receipt_sha256
+            ),
         )
         validate_promotion_output(args.output)
         atomic_write(args.output, canonical_json_bytes(frozen))
@@ -4439,20 +4807,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     if any(value is None for value in revisions.values()):
         raise ValueError("all four dataset revision arguments are mandatory")
     calibration_binding_artifact: bytes | None = None
+    stage_a_capture_provenance_receipt: bytes | None = None
+    expected_stage_a_capture_provenance_receipt_sha256: str | None = None
+    verified_stage_a_capture: StageACaptureProvenanceReceipt | None = None
     if args.phase == "stage_a":
         if args.calibration_binding is None:
             raise ValueError("Stage A requires --calibration-binding")
+        if args.stage_a_capture_provenance_receipt is None:
+            raise ValueError("Stage A requires --stage-a-capture-provenance-receipt")
+        if args.expected_stage_a_capture_provenance_receipt_sha256 is None:
+            raise ValueError("Stage A requires an explicit capture provenance receipt SHA-256")
+        expected_stage_a_capture_provenance_receipt_sha256 = require_sha256(
+            args.expected_stage_a_capture_provenance_receipt_sha256,
+            context="--expected-stage-a-capture-provenance-receipt-sha256",
+        )
         calibration_binding_artifact = args.calibration_binding.read_bytes()
         deserialize_stage_a_calibration_binding_artifact(calibration_binding_artifact)
+        stage_a_capture_provenance_receipt = args.stage_a_capture_provenance_receipt.read_bytes()
+        verified_stage_a_capture = deserialize_stage_a_capture_provenance_receipt(
+            stage_a_capture_provenance_receipt,
+            expected_file_sha256=expected_stage_a_capture_provenance_receipt_sha256,
+            calibration_binding_artifact=calibration_binding_artifact,
+        )
     elif args.calibration_binding is not None:
         raise ValueError("--calibration-binding is valid only for Stage A")
-    source = _json_without_duplicate_keys(args.input.read_bytes(), context="identity input")
+    raw_input = args.input.read_bytes()
+    if verified_stage_a_capture is not None and sha256_bytes(raw_input) != (
+        verified_stage_a_capture.identity_input_file_sha256
+    ):
+        raise ValueError("Stage-A identity input differs from finalized capture provenance")
+    source = _json_without_duplicate_keys(raw_input, context="identity input")
     if source.get("phase") != args.phase:
         raise ValueError("input phase does not match --phase")
     candidate = build_candidate(
         source,
         expected_revisions=revisions,  # type: ignore[arg-type]
         calibration_binding_artifact=calibration_binding_artifact,
+        stage_a_capture_provenance_receipt=stage_a_capture_provenance_receipt,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            expected_stage_a_capture_provenance_receipt_sha256
+        ),
     )
     payload = canonical_json_bytes(candidate)
     digest = sha256_bytes(payload)

@@ -1,10 +1,10 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound fifth replacement-H0 candidate. Runner v9 now makes the
-> launcher-finalized capture-provenance receipt a mandatory, report-bound
-> prerequisite for Fisher smoke and full calibration. No replacement H0,
-> identity recapture, protected execution, or quality result has been
-> authorized; not yet re-preregistered.**
+> **Status: unbound fifth replacement-H0 candidate. Calibration runner v10 now
+> gives calibration and Stage-A identity capture separate sealed profiles;
+> Stage-A runner v4 carries the finalized receipt through the one-run custody
+> chain. No replacement H0, identity recapture, protected execution, or quality
+> result has been authorized; not yet re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -786,9 +786,10 @@ no-link/no-reparse traversal, exact-owned-root removal, primary-failure
 preservation, aggregated secondary diagnostics, survival check, and partial-
 creation behavior for every launcher-owned scratch and bytecode root.
 
-Identity schema remains v5; capture and resolver procedure remains v6; adapter
-revision remains v2; and RULER launcher v7, generation-manifest v2, and RULER
-runtime-manifest v3 remain unchanged. The new external calibration-identity-
+At this amendment point, identity schema remained v5; capture and resolver
+procedure remained v6; adapter revision remained v2; and RULER launcher v7,
+generation-manifest v2, and RULER runtime-manifest v3 remained unchanged. The
+new external calibration-identity-
 capture-provenance receipt uses schema v1. Frozen-identity-contract and model-
 staging-authorization stdout schemas advance from v1 to v2 solely to bind that
 receipt's file SHA-256; model-staging-path stdout remains v1. This amendment
@@ -1148,6 +1149,99 @@ metadata-only test audit is creation and verification of the post-calibration
 authorization and schema-v4 binding; no H0 tag, live Stage-A identity capture,
 promotion, model staging, Stage-A run, protected read, or result publication is
 authorized by this working-copy amendment.
+
+Twenty-second pre-H0 custody amendment candidate: 2026-08-23. Runner v10 adds
+an exact, non-mixable `capture-stage-a-identity` profile alongside the existing
+calibration-capture profile. It requires the schema-v4 Stage-A calibration
+binding and its explicit SHA-256, strictly authenticates the binding's embedded
+authorization, H0, calibration prerequisites, and four execution bindings
+before constructing a live capture source, and calls the Stage-A capture API
+with the exact authenticated binding bytes. The direct capture-script CLI is
+not a custody boundary and therefore rejects Stage-A capture before reading a
+binding, manifest, protected input, tokenizer, dataset, or model path. The
+sealed runner emits one canonical receipt candidate only; it cannot publish
+the launcher-finalized receipt that attests to conditions outside the child.
+Before publishing even the identity input, the authenticated resolver applies
+the same exact raw-input validator later used by candidate construction. It
+requires the complete input field set, frozen dataset revisions and contracts,
+tokenizer contract, four execution bindings and fixed Parquet hash, authorized
+binding parity, normalized record hashes, exact 12-row cardinality, order,
+family allocation, RULER schedule, token spans, and calibration binding. Empty,
+partial, extra-field, forged-selection, or cross-chain input cannot acquire an
+identity file or receipt candidate. This pre-finalization gate accepts no
+receipt parameter; candidate construction still requires the separately
+launcher-finalized receipt.
+
+The outer launcher binds the child command, source and runtime inventories,
+model and Parquet manifests, cache root, identity output, schema-v4 binding,
+and absent receipt destination before execution. A zero child exit is
+insufficient. The host must first verify scratch and pycache postconditions,
+reauthenticate the cache and every bound artifact, clean only its owned roots,
+repeat reauthentication after cleanup, stably reread the identity output,
+strictly validate the single canonical candidate, and confirm that the receipt
+destination still does not exist. It then performs atomic no-overwrite
+publication and stably rereads and semantically revalidates the published
+bytes. Any child failure, residue, link or parent substitution, artifact drift,
+identity drift, malformed or extra stdout, cleanup failure, or publication
+collision leaves no accepted receipt.
+
+The finalized Stage-A capture-provenance receipt uses schema v1 and binds
+capture v6, runner v10, phase, H0, identity-input hash, schema-v4 binding hash,
+embedded authorization hash, the exact four execution bindings, authenticated
+capture-source hash, critical module origins, excluded runtime modules, and
+the host-finalization publication contract. Stage-A resolution and promotion
+must receive both the exact canonical receipt and its explicit SHA-256 and
+strictly verify all relationships before reading identity-input or candidate
+bytes. Stage-A candidate and frozen promotion evidence advance to schema v6
+only to bind this receipt; calibration identity remains schema v5. A receipt
+from another H0, input, binding, authorization, source, runtime, model,
+Parquet materialization, or publication route is ineligible even if its own
+hash and JSON structure are internally consistent.
+
+The official Stage-A execution chain advances to runner v4, attempt schema v3,
+identity-attempt-lock schema v4, and execution-artifact schema v4. The host,
+embedded bootstrap, and screen CLI all require the exact receipt path plus its
+explicit SHA-256. They authenticate the schema-v6 frozen identity, schema-v4
+binding, and flat finalized receipt before identity-bound artifact, protected
+provider, or model-root access. The receipt SHA is committed by the
+`Stage-A-Capture-Provenance` seal line and repeated in reservation, attempt,
+identity lock, one-run evidence, execution dependencies, verifier,
+publication, recovery, input-bundle authentication, and materialization.
+Legacy schema-v5 Stage-A identity or a missing, altered, rehashed, or
+cross-chain receipt fails before the one-run boundary. Calibration identity
+and its historical schema-v5 consumers remain unchanged.
+
+Security-critical Python loading on this path is exact-byte execution, not a
+hash-then-import pathname check. The capture helper validates the canonical
+source manifest before loading the calibration runner; the metadata-only
+authorizer loads the resolver from that already explicit-hash-authenticated
+manifest; the Stage-A host loads the calibration launcher from one stable
+authenticated byte buffer; and the screen's exact-module loader does the same
+for its resolver, capture, calibration-runner, source-verifier, and gate
+modules. Each compiles and executes the held bytes after occupying a controlled
+module name. Same-path swaps cannot execute a second buffer before a later
+postcheck. The Stage-A host likewise parses the exact runtime-manifest bytes
+first authenticated by the identity and exact-compares them again during
+post-child reauthentication.
+
+This code does not claim to solve every hostile-host filesystem race. The
+operating system still starts the already authenticated Python and Git
+executables by pathname; preventing a privileged or same-user writer from
+replacing those files between the final identity check and process creation
+requires an immutable/ACL-protected runtime or an OS-specific held-handle
+launch contract. A future live H0 must stage these executables in a location
+that the experiment account cannot mutate during the run, and record that host
+protection. This residual host-administration requirement is not waived by the
+Python-level exact-byte loader fixes.
+
+This amendment changes custody mechanics only. It does not change the frozen
+record set, token spans, model contract, Q4/Q6/Q8 layouts, Fisher boundary,
+allocation, byte budget, metric, statistical gate, or claim boundary. Its
+tests use synthetic metadata and monkeypatched providers only. It neither
+creates nor authorizes an H0 tag, post-calibration authorization from a real
+chain, live identity capture, promotion, model staging, calibration, Stage-A
+execution, protected read, quality result, deployment claim, novelty claim, or
+breakthrough claim.
 
 ## Question
 

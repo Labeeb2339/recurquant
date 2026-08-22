@@ -4,7 +4,7 @@ import copy
 import importlib.util
 import json
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -33,6 +33,10 @@ REVISIONS = {
     "humaneval_plus": resolver.HUMANEVAL_PLUS_REVISION,
 }
 FIXTURE_BINDING_ARTIFACT = b"verified-stage-a-binding-fixture"
+FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT = b"finalized-stage-a-capture-receipt-fixture"
+FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256 = resolver.sha256_bytes(
+    FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT
+)
 FIXTURE_BINDING = {
     "calibration_authorization_file_sha256": resolver.sha256_bytes(b"calibration-authorization"),
     "calibration_identity_file_sha256": resolver.sha256_bytes(b"calibration-file"),
@@ -830,6 +834,48 @@ def _rechain_authorization_receipt(
     return kwargs
 
 
+def _finalized_stage_a_capture_receipt_fixture(
+    fixture: SimpleNamespace,
+    authorization: SimpleNamespace,
+) -> SimpleNamespace:
+    binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
+        calibration_authorization_artifact=authorization.artifact
+    )
+    binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
+    runtime_manifest, origins = _authorization_runtime_manifest()
+    assert runtime_manifest == authorization.runtime_manifest
+    identity_input_file_sha256 = _hash("finalized-stage-a-identity-input")
+    document = {
+        "artifact_kind": resolver.STAGE_A_CAPTURE_PROVENANCE_KIND,
+        "calibration_authorization_file_sha256": binding.authorization_file_sha256,
+        "calibration_binding_file_sha256": resolver.sha256_bytes(binding_bytes),
+        "capture_source": {
+            "path": resolver.CALIBRATION_CAPTURE_SOURCE_PATH,
+            "sha256": _hash("capture-source"),
+        },
+        "capture_version": resolver.CALIBRATION_CAPTURE_VERSION,
+        "critical_module_origins": origins,
+        "excluded_runtime_modules": list(resolver.CALIBRATION_CAPTURE_EXCLUDED_RUNTIME_MODULES),
+        "execution_bindings": dict(binding.execution_bindings),
+        "identity_input_file_sha256": identity_input_file_sha256,
+        "phase": "stage_a",
+        "publication_contract": resolver.STAGE_A_CAPTURE_PUBLICATION_CONTRACT,
+        "runner_revision": resolver.CALIBRATION_RUNNER_REVISION,
+        "schema_version": resolver.STAGE_A_CAPTURE_PROVENANCE_SCHEMA_VERSION,
+        "source_commit": fixture.source_commit_h0,
+        "status": resolver.STAGE_A_CAPTURE_PROVENANCE_STATUS,
+    }
+    receipt = resolver.canonical_json_bytes(document)
+    return SimpleNamespace(
+        binding=binding,
+        binding_bytes=binding_bytes,
+        document=document,
+        identity_input_file_sha256=identity_input_file_sha256,
+        receipt=receipt,
+        receipt_sha256=resolver.sha256_bytes(receipt),
+    )
+
+
 def _datasets() -> list[dict[str, Any]]:
     return [
         {
@@ -1051,21 +1097,177 @@ def _build_candidate(source: dict[str, Any]) -> dict[str, Any]:
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
     )
-    with patch.object(
-        resolver,
-        "deserialize_stage_a_calibration_binding_artifact",
-        return_value=verified,
+    verified_capture = SimpleNamespace(
+        file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
+        identity_input_file_sha256=resolver.sha256_bytes(resolver.canonical_json_bytes(source)),
+    )
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
     ):
         return resolver.build_candidate(
             source,
             expected_revisions=REVISIONS,
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
 
 
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(resolver.canonical_json_bytes(value))
+
+
+def _fixture_verified_stage_a_capture(source: Mapping[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(
+        file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
+        identity_input_file_sha256=resolver.sha256_bytes(resolver.canonical_json_bytes(source)),
+    )
+
+
+def _fixture_stage_a_capture_cli_args(receipt_path: Path) -> list[str]:
+    receipt_path.write_bytes(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT)
+    return [
+        "--stage-a-capture-provenance-receipt",
+        str(receipt_path),
+        "--expected-stage-a-capture-provenance-receipt-sha256",
+        FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
+    ]
+
+
+def _validate_stage_a_input_before_receipt(
+    source: Mapping[str, Any],
+    *,
+    verified_binding: SimpleNamespace | None = None,
+) -> None:
+    binding = verified_binding or SimpleNamespace(
+        binding=dict(FIXTURE_BINDING),
+        execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS),
+    )
+    expected_binding_hash = resolver.sha256_bytes(FIXTURE_BINDING_ARTIFACT)
+
+    def deserialize_binding(data: bytes, **kwargs: object) -> SimpleNamespace:
+        assert data == FIXTURE_BINDING_ARTIFACT
+        assert kwargs == {"expected_file_sha256": expected_binding_hash}
+        return binding
+
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            side_effect=deserialize_binding,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            side_effect=AssertionError("pre-finalization validation read a finalized receipt"),
+        ),
+    ):
+        resolver.validate_stage_a_identity_input_for_capture(
+            source,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            expected_calibration_binding_file_sha256=expected_binding_hash,
+        )
+
+
+def test_stage_a_pre_finalization_validator_accepts_production_shaped_input_without_receipt() -> (
+    None
+):
+    _validate_stage_a_input_before_receipt(_stage_a_source())
+
+
+def test_build_candidate_still_requires_finalized_receipt_after_input_validation() -> None:
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING),
+        execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS),
+    )
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        pytest.raises(ValueError, match="requires a finalized capture provenance receipt"),
+    ):
+        resolver.build_candidate(
+            _stage_a_source(),
+            expected_revisions=REVISIONS,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda source: source.__setitem__("datasets", []),
+            "datasets must contain exactly four contracts",
+        ),
+        (
+            lambda source: source.__setitem__("tokenizer", {}),
+            "tokenizer fields drifted",
+        ),
+        (
+            lambda source: source.__setitem__("records", []),
+            "Stage A must contain exactly four",
+        ),
+        (
+            lambda source: source.__setitem__("unexpected", "field"),
+            "identity input fields drifted",
+        ),
+        (
+            lambda source: source["records"][0].pop("target_token_ids_sha256"),
+            r"records\[0\] fields drifted",
+        ),
+        (
+            lambda source: source["records"][0].__setitem__("selection_sha256", "0" * 64),
+            "selection SHA-256 drifted",
+        ),
+    ],
+)
+def test_stage_a_pre_finalization_validator_rejects_incomplete_or_forged_input(
+    mutation: Any,
+    message: str,
+) -> None:
+    source = _stage_a_source()
+    mutation(source)
+
+    with pytest.raises(ValueError, match=message):
+        _validate_stage_a_input_before_receipt(source)
+
+
+def test_stage_a_pre_finalization_validator_rejects_cross_chain_bindings() -> None:
+    wrong_execution = dict(FIXTURE_EXECUTION_BINDINGS)
+    wrong_execution["model_file_manifest_file_sha256"] = _hash("wrong-model-chain")
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING),
+        execution_bindings=wrong_execution,
+    )
+
+    with pytest.raises(ValueError, match="differ from calibration authorization"):
+        _validate_stage_a_input_before_receipt(
+            _stage_a_source(),
+            verified_binding=verified,
+        )
+
+
+def test_stage_a_pre_finalization_validator_rejects_calibration_binding_drift() -> None:
+    source = _stage_a_source()
+    source["calibration_binding"]["static_k29334_policy_file_sha256"] = "0" * 64
+
+    with pytest.raises(ValueError, match="differs from the verified artifact"):
+        _validate_stage_a_input_before_receipt(source)
 
 
 def test_stage_a_candidate_is_deterministic_and_complete() -> None:
@@ -1209,15 +1411,30 @@ def test_v4_input_candidate_and_frozen_schemas_are_rejected() -> None:
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
     )
-    with patch.object(
-        resolver,
-        "deserialize_stage_a_calibration_binding_artifact",
-        return_value=verified,
+    verified_capture = SimpleNamespace(
+        file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
+        identity_input_file_sha256=candidate["evidence"]["source_manifest_sha256"],
+    )
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
     ):
         frozen = resolver.promote_candidate(
             candidate,
             candidate_file_sha256=candidate_hash,
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
     frozen["evidence"]["identity_schema"] = "recurquant.experiment013.identity-frozen.v4"
     frozen["canonical_evidence_sha256"] = resolver.sha256_bytes(
@@ -1229,11 +1446,20 @@ def test_v4_input_candidate_and_frozen_schemas_are_rejected() -> None:
             "deserialize_stage_a_calibration_binding_artifact",
             return_value=verified,
         ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
         pytest.raises(ValueError, match="frozen Stage-A identity contract drifted"),
     ):
         resolver.deserialize_frozen_stage_a_identity_artifact(
             resolver.canonical_json_bytes(frozen),
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
 
 
@@ -1283,12 +1509,23 @@ def test_stage_a_candidate_rejects_cross_chain_execution_bindings() -> None:
             "deserialize_stage_a_calibration_binding_artifact",
             return_value=verified,
         ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=SimpleNamespace(
+                file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
+        ),
         pytest.raises(ValueError, match="differ from calibration authorization"),
     ):
         resolver.build_candidate(
             source,
             expected_revisions=REVISIONS,
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
 
 
@@ -1401,6 +1638,138 @@ def test_post_calibration_authorization_and_v4_binding_round_trip() -> None:
         resolver.sha256_bytes(authorization.artifact)
     )
     assert dict(verified_binding.calibration_dependencies) == fixture.dependencies
+
+
+def test_finalized_stage_a_capture_provenance_round_trips_exact_flat_contract() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        capture = _finalized_stage_a_capture_receipt_fixture(fixture, authorization)
+        verified = resolver.deserialize_stage_a_capture_provenance_receipt(
+            capture.receipt,
+            expected_file_sha256=capture.receipt_sha256,
+            calibration_binding_artifact=capture.binding_bytes,
+            expected_identity_input_file_sha256=capture.identity_input_file_sha256,
+        )
+
+    assert set(capture.document) == {
+        "artifact_kind",
+        "calibration_authorization_file_sha256",
+        "calibration_binding_file_sha256",
+        "capture_source",
+        "capture_version",
+        "critical_module_origins",
+        "excluded_runtime_modules",
+        "execution_bindings",
+        "identity_input_file_sha256",
+        "phase",
+        "publication_contract",
+        "runner_revision",
+        "schema_version",
+        "source_commit",
+        "status",
+    }
+    assert capture.document["capture_version"] == 6
+    assert capture.document["runner_revision"].endswith("-v10")
+    assert verified.file_sha256 == capture.receipt_sha256
+    assert verified.identity_input_file_sha256 == capture.identity_input_file_sha256
+    assert verified.calibration_binding_file_sha256 == resolver.sha256_bytes(capture.binding_bytes)
+    assert verified.calibration_authorization_file_sha256 == (
+        capture.binding.authorization_file_sha256
+    )
+    assert dict(verified.execution_bindings) == dict(capture.binding.execution_bindings)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing_field", "fields drifted"),
+        ("extra_field", "fields drifted"),
+        ("status", "finalized identity drifted"),
+        ("publication", "finalized identity drifted"),
+        ("source_commit", "differs from authorized H0"),
+        ("identity_input", "binds a different identity input"),
+        ("binding", "binds a different calibration binding"),
+        ("authorization", "binds a different embedded authorization"),
+        ("execution", "execution bindings drifted"),
+        ("capture_path", "source path drifted"),
+        ("capture_sha", "source differs from the repository manifest"),
+        ("origins", "critical module inventory is not exact"),
+        ("excluded", "excluded module inventory drifted"),
+    ],
+)
+def test_finalized_stage_a_capture_provenance_rejects_rehashed_forgery(
+    mutation: str,
+    message: str,
+) -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        capture = _finalized_stage_a_capture_receipt_fixture(fixture, authorization)
+        document = copy.deepcopy(capture.document)
+        if mutation == "missing_field":
+            document.pop("status")
+        elif mutation == "extra_field":
+            document["unexpected"] = False
+        elif mutation == "status":
+            document["status"] = "captured_but_not_finalized"
+        elif mutation == "publication":
+            document["publication_contract"] = "overwrite-permitted"
+        elif mutation == "source_commit":
+            document["source_commit"] = "0" * 40
+        elif mutation == "identity_input":
+            document["identity_input_file_sha256"] = "0" * 64
+        elif mutation == "binding":
+            document["calibration_binding_file_sha256"] = "0" * 64
+        elif mutation == "authorization":
+            document["calibration_authorization_file_sha256"] = "0" * 64
+        elif mutation == "execution":
+            document["execution_bindings"]["model_file_manifest_file_sha256"] = "0" * 64
+        elif mutation == "capture_path":
+            document["capture_source"]["path"] = "scripts/forged_capture.py"
+        elif mutation == "capture_sha":
+            document["capture_source"]["sha256"] = "0" * 64
+        elif mutation == "origins":
+            document["critical_module_origins"] = document["critical_module_origins"][:-1]
+        elif mutation == "excluded":
+            document["excluded_runtime_modules"] = []
+        else:  # pragma: no cover - parameter completeness guard
+            raise AssertionError(mutation)
+        receipt = resolver.canonical_json_bytes(document)
+        with pytest.raises(ValueError, match=message):
+            resolver.deserialize_stage_a_capture_provenance_receipt(
+                receipt,
+                expected_file_sha256=resolver.sha256_bytes(receipt),
+                calibration_binding_artifact=capture.binding_bytes,
+                expected_identity_input_file_sha256=capture.identity_input_file_sha256,
+            )
+
+
+def test_stage_a_capture_receipt_explicit_sha_precedes_binding_and_json_access() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        capture = _finalized_stage_a_capture_receipt_fixture(fixture, authorization)
+        with (
+            patch.object(
+                resolver,
+                "deserialize_stage_a_calibration_binding_artifact",
+                side_effect=AssertionError("binding must not be touched after receipt SHA failure"),
+            ),
+            pytest.raises(ValueError, match="differs from its explicit SHA-256"),
+        ):
+            resolver.deserialize_stage_a_capture_provenance_receipt(
+                b"not-json-and-wrong-hash",
+                expected_file_sha256="0" * 64,
+                calibration_binding_artifact=capture.binding_bytes,
+            )
+
+
+def test_stage_a_capture_receipt_rejects_noncanonical_bytes() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        capture = _finalized_stage_a_capture_receipt_fixture(fixture, authorization)
+        receipt = json.dumps(capture.document, indent=2).encode("utf-8")
+        with pytest.raises(ValueError, match="not canonical JSON"):
+            resolver.deserialize_stage_a_capture_provenance_receipt(
+                receipt,
+                expected_file_sha256=resolver.sha256_bytes(receipt),
+                calibration_binding_artifact=capture.binding_bytes,
+                expected_identity_input_file_sha256=capture.identity_input_file_sha256,
+            )
 
 
 def test_post_calibration_authorization_rejects_chain_and_marker_tamper() -> None:
@@ -1970,18 +2339,27 @@ def test_calibration_cache_exposure_is_empty_at_continuation_stop() -> None:
 
 
 def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = _stage_a_source()
     source_path = tmp_path / "source.json"
-    _write_json(source_path, _stage_a_source())
+    _write_json(source_path, source)
     binding_path = tmp_path / "binding.json"
     binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
+    receipt_path = tmp_path / "stage-a-capture-provenance.json"
 
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
     )
-    with patch.object(
-        resolver,
-        "deserialize_stage_a_calibration_binding_artifact",
-        return_value=verified,
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=_fixture_verified_stage_a_capture(source),
+        ),
     ):
         result = resolver.main(
             [
@@ -1991,6 +2369,7 @@ def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[st
                 str(source_path),
                 "--calibration-binding",
                 str(binding_path),
+                *_fixture_stage_a_capture_cli_args(receipt_path),
                 "--dry-run",
                 "--mbpp-revision",
                 REVISIONS["mbpp"],
@@ -2005,14 +2384,20 @@ def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[st
 
     assert result == 0
     assert len(capsys.readouterr().out.strip()) == 64
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["binding.json", "source.json"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "binding.json",
+        "source.json",
+        "stage-a-capture-provenance.json",
+    ]
 
 
 def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path) -> None:
+    source = _stage_a_source()
     source_path = tmp_path / "source.json"
-    _write_json(source_path, _stage_a_source())
+    _write_json(source_path, source)
     binding_path = tmp_path / "binding.json"
     binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
+    receipt_path = tmp_path / "stage-a-capture-provenance.json"
     candidate_path = tmp_path / ".quarantine" / "stage-a-candidate.json"
     base_args = [
         "--phase",
@@ -2021,6 +2406,7 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
         str(source_path),
         "--calibration-binding",
         str(binding_path),
+        *_fixture_stage_a_capture_cli_args(receipt_path),
         "--mbpp-revision",
         REVISIONS["mbpp"],
         "--pg19-revision",
@@ -2034,10 +2420,17 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
     )
-    with patch.object(
-        resolver,
-        "deserialize_stage_a_calibration_binding_artifact",
-        return_value=verified,
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=_fixture_verified_stage_a_capture(source),
+        ),
     ):
         assert resolver.main([*base_args, "--output", str(candidate_path)]) == 0
         candidate_hash = resolver.sha256_bytes(candidate_path.read_bytes())
@@ -2054,6 +2447,7 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
                     "--promote",
                     "--calibration-binding",
                     str(binding_path),
+                    *_fixture_stage_a_capture_cli_args(receipt_path),
                     "--expected-candidate-sha256",
                     candidate_hash,
                 ]
@@ -2076,15 +2470,27 @@ def test_stage_a_promotion_requires_the_verified_binding_artifact() -> None:
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
     )
-    with patch.object(
-        resolver,
-        "deserialize_stage_a_calibration_binding_artifact",
-        return_value=verified,
+    verified_capture = _fixture_verified_stage_a_capture(_stage_a_source())
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
     ):
         frozen = resolver.promote_candidate(
             candidate,
             candidate_file_sha256=candidate_hash,
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
 
     assert frozen["evidence"]["status"] == "frozen"
@@ -2096,20 +2502,36 @@ def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() 
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
     )
-    with patch.object(
-        resolver,
-        "deserialize_stage_a_calibration_binding_artifact",
-        return_value=verified,
+    verified_capture = _fixture_verified_stage_a_capture(_stage_a_source())
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
     ):
         frozen = resolver.promote_candidate(
             candidate,
             candidate_file_sha256=candidate_hash,
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
         frozen_bytes = resolver.canonical_json_bytes(frozen)
         decoded = resolver.deserialize_frozen_stage_a_identity_artifact(
             frozen_bytes,
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
 
     assert decoded.file_sha256 == resolver.sha256_bytes(frozen_bytes)
@@ -2144,11 +2566,20 @@ def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() 
             "deserialize_stage_a_calibration_binding_artifact",
             return_value=verified,
         ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
         pytest.raises(ValueError, match="identity record SHA-256 drifted"),
     ):
         resolver.deserialize_frozen_stage_a_identity_artifact(
             resolver.canonical_json_bytes(tampered),
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
     wrong_binding = dict(FIXTURE_BINDING)
     wrong_binding["static_k29334_policy_file_sha256"] = "0" * 64
@@ -2161,11 +2592,20 @@ def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() 
                 execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS),
             ),
         ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
         pytest.raises(ValueError, match="differs from the verified calibration binding"),
     ):
         resolver.deserialize_frozen_stage_a_identity_artifact(
             frozen_bytes,
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
 
     tampered = copy.deepcopy(frozen)
@@ -2179,11 +2619,20 @@ def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() 
             "deserialize_stage_a_calibration_binding_artifact",
             return_value=verified,
         ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=verified_capture,
+        ),
         pytest.raises(ValueError, match="candidate file SHA-256 drifted"),
     ):
         resolver.deserialize_frozen_stage_a_identity_artifact(
             resolver.canonical_json_bytes(tampered),
             calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+            stage_a_capture_provenance_receipt=(FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+            ),
         )
 
 
@@ -2261,6 +2710,7 @@ def test_noncanonical_candidate_bytes_cannot_be_promoted(tmp_path: Path) -> None
     candidate_path.write_text(json.dumps(candidate, indent=2), encoding="utf-8")
     binding_path = tmp_path / "binding.json"
     binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
+    receipt_path = tmp_path / "stage-a-capture-provenance.json"
 
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
@@ -2270,6 +2720,11 @@ def test_noncanonical_candidate_bytes_cannot_be_promoted(tmp_path: Path) -> None
             resolver,
             "deserialize_stage_a_calibration_binding_artifact",
             return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=_fixture_verified_stage_a_capture(_stage_a_source()),
         ),
         pytest.raises(ValueError, match="not canonical resolver JSON"),
     ):
@@ -2284,6 +2739,7 @@ def test_noncanonical_candidate_bytes_cannot_be_promoted(tmp_path: Path) -> None
                 "--promote",
                 "--calibration-binding",
                 str(binding_path),
+                *_fixture_stage_a_capture_cli_args(receipt_path),
                 "--expected-candidate-sha256",
                 resolver.sha256_bytes(candidate_path.read_bytes()),
             ]
@@ -2323,6 +2779,7 @@ def test_candidate_wrong_hash_cannot_be_promoted(tmp_path: Path) -> None:
     _write_json(candidate_path, candidate)
     binding_path = tmp_path / "binding.json"
     binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
+    receipt_path = tmp_path / "stage-a-capture-provenance.json"
 
     verified = SimpleNamespace(
         binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
@@ -2332,6 +2789,11 @@ def test_candidate_wrong_hash_cannot_be_promoted(tmp_path: Path) -> None:
             resolver,
             "deserialize_stage_a_calibration_binding_artifact",
             return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            return_value=_fixture_verified_stage_a_capture(_stage_a_source()),
         ),
         pytest.raises(ValueError, match="does not match explicit promotion hash"),
     ):
@@ -2346,6 +2808,7 @@ def test_candidate_wrong_hash_cannot_be_promoted(tmp_path: Path) -> None:
                 "--promote",
                 "--calibration-binding",
                 str(binding_path),
+                *_fixture_stage_a_capture_cli_args(receipt_path),
                 "--expected-candidate-sha256",
                 "0" * 64,
             ]
@@ -2359,6 +2822,7 @@ def test_stage_a_cli_verifies_binding_before_reading_identity_input(
     input_path.write_bytes(b"must-not-be-read")
     binding_path = tmp_path / "invalid-binding.json"
     binding_path.write_bytes(b"not-a-binding")
+    receipt_path = tmp_path / "capture-provenance.json"
     original_read_bytes = Path.read_bytes
 
     def guarded_read_bytes(path: Path) -> bytes:
@@ -2376,6 +2840,10 @@ def test_stage_a_cli_verifies_binding_before_reading_identity_input(
                 str(input_path),
                 "--calibration-binding",
                 str(binding_path),
+                "--stage-a-capture-provenance-receipt",
+                str(receipt_path),
+                "--expected-stage-a-capture-provenance-receipt-sha256",
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
                 "--dry-run",
                 "--mbpp-revision",
                 resolver.MBPP_REVISION,
@@ -2396,6 +2864,7 @@ def test_stage_a_promotion_cli_verifies_binding_before_reading_candidate(
     candidate_path.write_bytes(b"must-not-be-read")
     binding_path = tmp_path / "invalid-binding.json"
     binding_path.write_bytes(b"not-a-binding")
+    receipt_path = tmp_path / "capture-provenance.json"
     original_read_bytes = Path.read_bytes
 
     def guarded_read_bytes(path: Path) -> bytes:
@@ -2416,6 +2885,122 @@ def test_stage_a_promotion_cli_verifies_binding_before_reading_candidate(
                 "--promote",
                 "--calibration-binding",
                 str(binding_path),
+                "--stage-a-capture-provenance-receipt",
+                str(receipt_path),
+                "--expected-stage-a-capture-provenance-receipt-sha256",
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
+                "--expected-candidate-sha256",
+                "0" * 64,
+            ]
+        )
+
+
+def test_stage_a_cli_verifies_capture_receipt_before_reading_identity_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "protected-stage-a-input.json"
+    input_path.write_bytes(b"must-not-be-read")
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
+    receipt_path = tmp_path / "invalid-capture-provenance.json"
+    receipt_path.write_bytes(b"not-a-receipt")
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.resolve() == input_path.resolve():
+            raise AssertionError("Stage-A input was read before receipt verification")
+        return original_read_bytes(path)
+
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            side_effect=ValueError("invalid finalized Stage-A capture provenance"),
+        ),
+        pytest.raises(ValueError, match="invalid finalized Stage-A capture provenance"),
+    ):
+        resolver.main(
+            [
+                "--phase",
+                "stage_a",
+                "--input",
+                str(input_path),
+                "--calibration-binding",
+                str(binding_path),
+                "--stage-a-capture-provenance-receipt",
+                str(receipt_path),
+                "--expected-stage-a-capture-provenance-receipt-sha256",
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
+                "--dry-run",
+                "--mbpp-revision",
+                resolver.MBPP_REVISION,
+                "--pg19-revision",
+                resolver.PG19_REVISION,
+                "--ruler-revision",
+                resolver.RULER_REVISION,
+                "--humaneval-plus-revision",
+                resolver.HUMANEVAL_PLUS_REVISION,
+            ]
+        )
+
+
+def test_stage_a_promotion_cli_verifies_capture_receipt_before_reading_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate_path = tmp_path / "protected-stage-a-candidate.json"
+    candidate_path.write_bytes(b"must-not-be-read")
+    binding_path = tmp_path / "binding.json"
+    binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
+    receipt_path = tmp_path / "invalid-capture-provenance.json"
+    receipt_path.write_bytes(b"not-a-receipt")
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.resolve() == candidate_path.resolve():
+            raise AssertionError("Stage-A candidate was read before receipt verification")
+        return original_read_bytes(path)
+
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        patch.object(
+            resolver,
+            "deserialize_stage_a_capture_provenance_receipt",
+            side_effect=ValueError("invalid finalized Stage-A capture provenance"),
+        ),
+        pytest.raises(ValueError, match="invalid finalized Stage-A capture provenance"),
+    ):
+        resolver.main(
+            [
+                "--phase",
+                "stage_a",
+                "--input",
+                str(candidate_path),
+                "--output",
+                str(tmp_path / "frozen-stage-a-identity.json"),
+                "--promote",
+                "--calibration-binding",
+                str(binding_path),
+                "--stage-a-capture-provenance-receipt",
+                str(receipt_path),
+                "--expected-stage-a-capture-provenance-receipt-sha256",
+                FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
                 "--expected-candidate-sha256",
                 "0" * 64,
             ]

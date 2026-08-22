@@ -682,6 +682,8 @@ def capture_provenance_receipt_fixture(
 def prepared_fake_sealed_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    stage_a: bool = False,
 ) -> tuple[
     list[str],
     Any,
@@ -717,8 +719,31 @@ def prepared_fake_sealed_capture(
     for name, path in paths.items():
         path.write_bytes(artifact_bytes[name])
     bindings = {name: digest(data) for name, data in artifact_bytes.items()}
+    binding_values = {
+        name: f"{index:064x}"
+        for index, name in enumerate(
+            sorted(
+                {
+                    "calibration_authorization_file_sha256",
+                    "calibration_identity_file_sha256",
+                    "calibration_score_artifact_file_sha256",
+                    "comparator_score_artifact_file_sha256",
+                    "split_half_stability_artifact_file_sha256",
+                    "static_fisher_k29334_policy_file_sha256",
+                    "static_k27030_policy_file_sha256",
+                    "static_k29334_policy_file_sha256",
+                    "static_mse_k29334_policy_file_sha256",
+                }
+            ),
+            start=1,
+        )
+    }
+    binding_bytes = b"authenticated Stage-A calibration binding\n"
+    binding_path = tmp_path / "stage-a-calibration-binding.json"
+    if stage_a:
+        binding_path.write_bytes(binding_bytes)
     arguments = [
-        "capture-calibration-identity",
+        "capture-stage-a-identity" if stage_a else "capture-calibration-identity",
         "--repository-root",
         str(repository),
         "--source-commit",
@@ -748,6 +773,15 @@ def prepared_fake_sealed_capture(
         "--capture-provenance-receipt-output",
         str(tmp_path / "capture-provenance.json"),
     ]
+    if stage_a:
+        arguments.extend(
+            [
+                "--stage-a-calibration-binding",
+                str(binding_path),
+                "--expected-stage-a-calibration-binding-sha256",
+                digest(binding_bytes),
+            ]
+        )
     manifest = runner.parse_calibration_runtime_manifest(runtime_bytes)
     (tmp_path / "base").mkdir()
     (tmp_path / "packages").mkdir()
@@ -793,17 +827,46 @@ def prepared_fake_sealed_capture(
 
     source_module = SimpleNamespace(verify_experiment013_source_manifest=verify_source)
 
+    def validate_stage_a_identity_input_for_capture(
+        source: object,
+        **kwargs: object,
+    ) -> None:
+        assert kwargs == {
+            "calibration_binding_artifact": binding_bytes,
+            "expected_calibration_binding_file_sha256": digest(binding_bytes),
+        }
+        observations["stage_a_pre_finalization_input"] = source
+
+    resolver_module = SimpleNamespace(
+        CALIBRATION_RUNNER_REVISION=runner.RUNNER_REVISION,
+        deserialize_stage_a_calibration_binding_artifact=lambda data, **kwargs: (
+            SimpleNamespace(
+                authorization_file_sha256=binding_values["calibration_authorization_file_sha256"],
+                binding=binding_values,
+                execution_bindings=bindings,
+                source_commit="4" * 40,
+            )
+            if data == binding_bytes and kwargs == {"expected_file_sha256": digest(binding_bytes)}
+            else pytest.fail("Stage-A binding was not authenticated exactly")
+        ),
+        validate_stage_a_identity_input_for_capture=(validate_stage_a_identity_input_for_capture),
+    )
+    observations["resolver_module"] = resolver_module
+
     def capture_identity_input(**kwargs: object) -> dict[str, object]:
         observations["capture_kwargs"] = dict(kwargs)
-        return {
+        result = {
             "datasets": {},
             "execution_bindings": bindings,
             "model_weights_loaded": False,
-            "phase": "calibration",
+            "phase": "stage_a" if stage_a else "calibration",
             "records": [],
             "schema": runner.CALIBRATION_IDENTITY_INPUT_SCHEMA,
             "tokenizer": {},
         }
+        if stage_a:
+            result["calibration_binding"] = binding_values
+        return result
 
     capture_module = SimpleNamespace(
         CAPTURE_VERSION=runner.CALIBRATION_IDENTITY_CAPTURE_VERSION,
@@ -819,7 +882,7 @@ def prepared_fake_sealed_capture(
         return {
             runner.SOURCE_VERIFIER_PATH: source_module,
             runner.PARQUET_SOURCE_PATH: SimpleNamespace(),
-            runner.IDENTITY_RESOLVER_SOURCE_PATH: SimpleNamespace(),
+            runner.IDENTITY_RESOLVER_SOURCE_PATH: resolver_module,
             runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: capture_module,
         }[relative_path]
 
@@ -995,6 +1058,143 @@ def test_sealed_capture_emits_receipt_candidate_without_publishing_it(
     assert runtime_authentication_context["package_runtime_roots"] == dict(
         runtime_context.package_roots
     )
+
+
+def test_sealed_stage_a_capture_authenticates_binding_and_emits_only_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch, stage_a=True)
+    )
+
+    with isolated_sealed_capture_modules():
+        assert (
+            runner._sealed_capture_stage_a_identity(
+                arguments,
+                manifest=manifest,
+                runtime_context=runtime_context,
+                authenticated_runtime=authenticated,
+                interpreter_path=tmp_path / "python.exe",
+            )
+            == 0
+        )
+
+    identity_bytes = (tmp_path / "identity-input.json").read_bytes()
+    assert not (tmp_path / "capture-provenance.json").exists()
+    receipt_bytes = capsys.readouterr().out.encode("utf-8")
+    receipt = json.loads(receipt_bytes)
+    assert receipt_bytes == runner.canonical_json_bytes(receipt)
+    assert receipt["artifact_kind"] == runner.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND
+    assert receipt["schema_version"] == runner.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+    assert receipt["phase"] == "stage_a"
+    assert receipt["identity_input_file_sha256"] == digest(identity_bytes)
+    assert receipt["calibration_binding_file_sha256"] == digest(
+        (tmp_path / "stage-a-calibration-binding.json").read_bytes()
+    )
+    capture_kwargs = observations["capture_kwargs"]
+    assert isinstance(capture_kwargs, dict)
+    assert capture_kwargs["phase"] == "stage_a"
+    assert (
+        capture_kwargs["calibration_binding"]
+        == (tmp_path / "stage-a-calibration-binding.json").read_bytes()
+    )
+    assert "model_root" not in capture_kwargs
+    assert observations["stage_a_pre_finalization_input"] is not None
+
+
+def test_sealed_stage_a_capture_rejects_binding_digest_before_live_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch, stage_a=True)
+    )
+    expected_index = arguments.index("--expected-stage-a-calibration-binding-sha256") + 1
+    arguments[expected_index] = "f" * 64
+
+    with (
+        isolated_sealed_capture_modules(),
+        pytest.raises(runner.CalibrationRunError, match="explicit SHA-256"),
+    ):
+        runner._sealed_capture_stage_a_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=tmp_path / "python.exe",
+        )
+    assert "capture_kwargs" not in observations
+    assert not (tmp_path / "identity-input.json").exists()
+    assert not (tmp_path / "capture-provenance.json").exists()
+
+
+def test_sealed_stage_a_capture_rejects_resolver_runner_revision_before_live_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch, stage_a=True)
+    )
+    resolver_module = observations["resolver_module"]
+    assert isinstance(resolver_module, SimpleNamespace)
+    resolver_module.CALIBRATION_RUNNER_REVISION = "experiment-013-static-q468-calibration-runner-v9"
+
+    with (
+        isolated_sealed_capture_modules(),
+        pytest.raises(
+            runner.CalibrationRunError,
+            match="authenticated identity resolver runner revision drifted",
+        ),
+    ):
+        runner._sealed_capture_stage_a_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=tmp_path / "python.exe",
+        )
+
+    assert "capture_kwargs" not in observations
+    assert not (tmp_path / "identity-input.json").exists()
+    assert not (tmp_path / "capture-provenance.json").exists()
+
+
+def test_sealed_stage_a_capture_rejects_resolver_pre_finalization_failure_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch, stage_a=True)
+    )
+    resolver_module = observations["resolver_module"]
+    assert isinstance(resolver_module, SimpleNamespace)
+
+    def reject_invalid_stage_a_input(_source: object, **_kwargs: object) -> None:
+        raise ValueError("records are forged")
+
+    resolver_module.validate_stage_a_identity_input_for_capture = reject_invalid_stage_a_input
+
+    with (
+        isolated_sealed_capture_modules(),
+        pytest.raises(
+            runner.CalibrationRunError,
+            match="authenticated pre-finalization validation",
+        ),
+    ):
+        runner._sealed_capture_stage_a_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=tmp_path / "python.exe",
+        )
+
+    assert not (tmp_path / "identity-input.json").exists()
+    assert not (tmp_path / "capture-provenance.json").exists()
+    assert capsys.readouterr().out == ""
 
 
 def test_sealed_capture_never_attempts_receipt_publication(
@@ -1886,6 +2086,145 @@ def test_post_calibration_authorizer_requires_exact_inputs_and_publishes_v4_pair
             output_dir=tmp_path / "forbidden-output",
             identity_resolver=FakeResolver(),
         )
+
+
+def test_authorization_resolver_path_swap_executes_no_unauthenticated_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    resolver_path = repository / runner.IDENTITY_RESOLVER_SOURCE_PATH
+    resolver_path.parent.mkdir(parents=True)
+    authenticated_bytes = b"AUTHENTICATED_SENTINEL = 'exact-buffer'\n"
+    side_effect = tmp_path / "unauthenticated-resolver-side-effect.txt"
+    malicious_bytes = (
+        "from pathlib import Path\n"
+        f"Path({str(side_effect)!r}).write_text('executed', encoding='utf-8')\n"
+    ).encode()
+    resolver_path.write_bytes(authenticated_bytes)
+    bootstrap = runner.BootstrapSource(
+        manifest={},
+        source_commit="a" * 40,
+        entries={
+            runner.IDENTITY_RESOLVER_SOURCE_PATH: {
+                "raw_sha256": digest(authenticated_bytes),
+            }
+        },
+    )
+    stable_read = runner._read_stable_regular_bytes
+
+    def read_then_swap(path: Path, *, context: str) -> bytes:
+        payload = stable_read(path, context=context)
+        if Path(path) == resolver_path:
+            resolver_path.write_bytes(malicious_bytes)
+        return payload
+
+    monkeypatch.setattr(runner, "REPOSITORY_ROOT", repository)
+    monkeypatch.setattr(runner, "_read_stable_regular_bytes", read_then_swap)
+
+    with pytest.raises(runner.CalibrationRunError, match="identity drifted on import"):
+        runner._load_authorization_identity_resolver(bootstrap)
+
+    assert not side_effect.exists()
+    assert "_recurquant_experiment013_identity_resolver_for_authorization" not in sys.modules
+
+
+def test_forged_authorization_resolver_is_rejected_before_output_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_commit = "a" * 40
+    full = {
+        name: f"fixture-{name}".encode()
+        for name in {
+            runner.SCORE_FILENAME,
+            runner.COMPARATOR_SCORE_FILENAME,
+            runner.SPLIT_FILENAME,
+            runner.K27030_FILENAME,
+            runner.K29334_FILENAME,
+            runner.MSE_K29334_FILENAME,
+            runner.FISHER_K29334_FILENAME,
+            runner.Q48_FILENAME,
+            runner.CORE_BINDING_FILENAME,
+            runner.REPORT_FILENAME,
+            runner.COMPLETE_FILENAME,
+        }
+    }
+    smoke = {
+        runner.FISHER_SMOKE_REPORT_FILENAME: b"smoke-report",
+        runner.FISHER_SMOKE_COMPLETE_FILENAME: runner.FISHER_SMOKE_COMPLETE_BYTES,
+    }
+    receipt = b"capture-receipt"
+    frozen_identity = b"frozen-identity"
+    source_manifest = b"source-manifest"
+    runtime_manifest = b"runtime-manifest"
+    model_manifest = b"model-manifest"
+    path_payloads = {
+        tmp_path / "receipt.json": receipt,
+        tmp_path / "identity.json": frozen_identity,
+        tmp_path / "source.json": source_manifest,
+        tmp_path / "runtime.json": runtime_manifest,
+        tmp_path / "model.json": model_manifest,
+    }
+    stable_read = runner._read_stable_regular_bytes
+
+    def read_fixture_or_source(path: Path, *, context: str) -> bytes:
+        fixture = path_payloads.get(Path(path))
+        if fixture is not None:
+            return fixture
+        return stable_read(path, context=context)
+
+    def read_directory(
+        _path: Path,
+        *,
+        expected_filenames: set[str],
+        context: str,
+    ) -> dict[str, bytes]:
+        payloads = smoke if "smoke" in context.casefold() else full
+        assert set(payloads) == expected_filenames
+        return dict(payloads)
+
+    forged_bootstrap = runner.BootstrapSource(
+        manifest={},
+        source_commit=source_commit,
+        entries={
+            runner.IDENTITY_RESOLVER_SOURCE_PATH: {
+                "raw_sha256": "0" * 64,
+            }
+        },
+    )
+    monkeypatch.setattr(runner, "_read_stable_regular_bytes", read_fixture_or_source)
+    monkeypatch.setattr(runner, "_read_exact_regular_directory", read_directory)
+    monkeypatch.setattr(
+        runner,
+        "_bootstrap_source_manifest",
+        lambda *_args, **_kwargs: forged_bootstrap,
+    )
+    output_dir = tmp_path / "authorization-output"
+
+    with pytest.raises(runner.CalibrationRunError, match="bytes drifted before import"):
+        runner.authorize_stage_a_calibration(
+            calibration_output_dir=tmp_path / "calibration",
+            fisher_h1_smoke_output_dir=tmp_path / "smoke",
+            capture_provenance_receipt_path=tmp_path / "receipt.json",
+            expected_capture_provenance_receipt_sha256=digest(receipt),
+            frozen_identity_path=tmp_path / "identity.json",
+            expected_frozen_identity_sha256=digest(frozen_identity),
+            repository_source_manifest_path=tmp_path / "source.json",
+            expected_repository_source_manifest_sha256=digest(source_manifest),
+            runtime_manifest_path=tmp_path / "runtime.json",
+            expected_runtime_manifest_sha256=digest(runtime_manifest),
+            model_file_manifest_path=tmp_path / "model.json",
+            expected_model_file_manifest_sha256=digest(model_manifest),
+            expected_full_run_report_sha256=digest(full[runner.REPORT_FILENAME]),
+            expected_fisher_h1_smoke_report_sha256=digest(
+                smoke[runner.FISHER_SMOKE_REPORT_FILENAME]
+            ),
+            source_commit=source_commit,
+            output_dir=output_dir,
+        )
+
+    assert not output_dir.exists()
 
 
 def test_post_calibration_authorizer_cli_forwards_all_authenticated_manifests(
@@ -5521,6 +5860,38 @@ def test_sealed_capture_parser_is_exact_nonmixable_and_hard_codes_phase(
     duplicated = [*arguments, "--output", str(tmp_path / "other.json")]
     with pytest.raises(runner.CalibrationRunError, match="exact|mixed"):
         runner._parse_calibration_identity_capture_arguments(duplicated)
+
+
+def test_sealed_stage_a_capture_parser_is_exact_nonmixable_and_hard_codes_phase(
+    tmp_path: Path,
+) -> None:
+    receipt_dir = ruler_receipt_directory(tmp_path / "ruler-receipts")
+    arguments = sealed_capture_cli_arguments(tmp_path, ruler_receipts=receipt_dir)
+    arguments[0] = "capture-stage-a-identity"
+    binding = tmp_path / "stage-a-binding.json"
+    arguments.extend(
+        [
+            "--stage-a-calibration-binding",
+            str(binding),
+            "--expected-stage-a-calibration-binding-sha256",
+            "6" * 64,
+        ]
+    )
+    parsed = runner._parse_stage_a_identity_capture_arguments(arguments)
+
+    assert parsed.capture_phase == "stage_a"
+    assert parsed.stage_a_calibration_binding == binding
+    assert not hasattr(parsed, "phase")
+    for forbidden in (
+        ["--phase", "stage_a"],
+        ["--model-root", str(tmp_path / "model")],
+        ["--fisher-h1-smoke", "1"],
+        ["--capture-provenance-receipt", str(tmp_path / "old.json")],
+    ):
+        with pytest.raises(runner.CalibrationRunError, match="exact|mixed"):
+            runner._parse_stage_a_identity_capture_arguments([*arguments, *forbidden])
+    with pytest.raises(runner.CalibrationRunError, match="calibration.*command"):
+        runner._parse_calibration_identity_capture_arguments(arguments)
 
 
 def test_unsealed_main_rejects_calibration_identity_capture(

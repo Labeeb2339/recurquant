@@ -35,21 +35,76 @@ def _write(path: Path, data: bytes) -> Path:
     return path
 
 
-def _identity(bindings: dict[str, str]) -> bytes:
+def _identity(
+    bindings: dict[str, str],
+    *,
+    capture_receipt_sha256: str | None = None,
+    identity_input_sha256: str | None = None,
+    authorization_sha256: str | None = None,
+) -> bytes:
+    receipt_sha256 = _digest("fixture-stage-a-capture-receipt")
+    if capture_receipt_sha256 is not None:
+        receipt_sha256 = capture_receipt_sha256
     evidence = {
-        "schema_version": 5,
-        "identity_schema": "recurquant.experiment013.identity-frozen.v5",
+        "schema_version": 6,
+        "identity_schema": "recurquant.experiment013.identity-frozen.v6",
         "status": "frozen",
         "phase": "stage_a",
         "identity_only": True,
         "promotion_required": False,
-        "promotion": {"explicit": True},
+        "promotion": {
+            "candidate_file_sha256": _digest("candidate-file"),
+            "candidate_canonical_evidence_sha256": _digest("candidate-evidence"),
+            "explicit": True,
+            launcher.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: receipt_sha256,
+        },
+        "source_manifest_sha256": identity_input_sha256 or _digest("identity-input"),
+        launcher.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: receipt_sha256,
         "execution_bindings": bindings,
+        "calibration_binding": {
+            "calibration_authorization_file_sha256": (
+                authorization_sha256 or _digest("calibration-authorization")
+            )
+        },
     }
     return launcher._canonical_json_bytes(
         {
             "canonical_evidence_sha256": _digest(launcher._canonical_json_bytes(evidence)),
             "evidence": evidence,
+        }
+    )
+
+
+def _capture_receipt(
+    bindings: dict[str, str],
+    *,
+    binding_bytes: bytes,
+    capture_source_sha256: str,
+    identity_input_sha256: str | None = None,
+    authorization_sha256: str | None = None,
+) -> bytes:
+    return launcher._canonical_json_bytes(
+        {
+            "artifact_kind": launcher.STAGE_A_CAPTURE_PROVENANCE_KIND,
+            "calibration_authorization_file_sha256": (
+                authorization_sha256 or _digest("calibration-authorization")
+            ),
+            "calibration_binding_file_sha256": _digest(binding_bytes),
+            "capture_source": {
+                "path": "scripts/capture_static_q468_identity_input.py",
+                "sha256": capture_source_sha256,
+            },
+            "capture_version": 6,
+            "critical_module_origins": [],
+            "excluded_runtime_modules": ["pkg_resources", "setuptools"],
+            "execution_bindings": dict(bindings),
+            "identity_input_file_sha256": identity_input_sha256 or _digest("identity-input"),
+            "phase": "stage_a",
+            "publication_contract": launcher.STAGE_A_CAPTURE_PUBLICATION_CONTRACT,
+            "runner_revision": launcher.STAGE_A_CAPTURE_RUNNER_REVISION,
+            "schema_version": 1,
+            "source_commit": "2" * 40,
+            "status": launcher.STAGE_A_CAPTURE_PROVENANCE_STATUS,
         }
     )
 
@@ -63,6 +118,7 @@ def _source_manifest(root: Path) -> bytes:
             launcher.RUNNER_SOURCE_PATH,
             launcher.LAUNCHER_SOURCE_PATH,
             launcher.CALIBRATION_LAUNCHER_SOURCE_PATH,
+            "scripts/capture_static_q468_identity_input.py",
         }
     ):
         path = root / Path(relative)
@@ -100,6 +156,10 @@ def _runner_arguments(paths: dict[str, Path], digests: dict[str, str]) -> list[s
     values = {
         "--frozen-identity": paths["identity"],
         "--stage-a-calibration-binding": paths["binding"],
+        "--stage-a-capture-provenance-receipt": paths["receipt"],
+        "--expected-stage-a-capture-provenance-receipt-sha256": _digest(
+            paths["receipt"].read_bytes()
+        ),
         "--repository-root": paths["root"],
         "--source-commit": "2" * 40,
         "--identity-commit": "3" * 40,
@@ -274,12 +334,17 @@ def _embedded_bootstrap_fixture(tmp_path: Path) -> dict[str, Any]:
         repository / launcher.CALIBRATION_LAUNCHER_SOURCE_PATH,
         b"# authenticated fixture\n",
     )
+    _write(
+        repository / "scripts" / "capture_static_q468_identity_input.py",
+        b"# authenticated capture fixture\n",
+    )
     source_paths = []
     for relative in sorted(
         {
             launcher.RUNNER_SOURCE_PATH,
             launcher.LAUNCHER_SOURCE_PATH,
             launcher.CALIBRATION_LAUNCHER_SOURCE_PATH,
+            "scripts/capture_static_q468_identity_input.py",
         }
     ):
         path = repository / Path(relative)
@@ -319,12 +384,27 @@ def _embedded_bootstrap_fixture(tmp_path: Path) -> dict[str, Any]:
         "parquet_materialization_manifest_file_sha256": _digest(parquet_path.read_bytes()),
         "repository_source_manifest_file_sha256": _digest(source_path.read_bytes()),
     }
-    identity_path = _write(artifacts / "identity.json", _identity(bindings))
+    capture_source_sha256 = next(
+        entry["raw_sha256"]
+        for entry in source_paths
+        if entry["path"] == "scripts/capture_static_q468_identity_input.py"
+    )
+    receipt_bytes = _capture_receipt(
+        bindings,
+        binding_bytes=binding_path.read_bytes(),
+        capture_source_sha256=capture_source_sha256,
+    )
+    receipt_path = _write(artifacts / "stage-a-capture-provenance.json", receipt_bytes)
+    identity_path = _write(
+        artifacts / "identity.json",
+        _identity(bindings, capture_receipt_sha256=_digest(receipt_bytes)),
+    )
     paths = {
         "binding": binding_path,
         "identity": identity_path,
         "model": model_path,
         "parquet": parquet_path,
+        "receipt": receipt_path,
         "root": repository,
         "runtime": runtime_path,
         "source": source_path,
@@ -356,7 +436,7 @@ def _embedded_bootstrap_fixture(tmp_path: Path) -> dict[str, Any]:
     }
 
 
-def test_identity_parser_accepts_only_promoted_stage_a_v5() -> None:
+def test_identity_parser_accepts_only_promoted_stage_a_v6() -> None:
     bindings = {name: _digest(name) for name in launcher._BOUND_ARTIFACT_OPTIONS}
     assert launcher._parse_identity(_identity(bindings)) == {
         name: bindings[name] for name in sorted(bindings)
@@ -368,16 +448,33 @@ def test_identity_parser_accepts_only_promoted_stage_a_v5() -> None:
     with pytest.raises(launcher.SealedStageALaunchError, match="promoted Stage-A"):
         launcher._parse_identity(launcher._canonical_json_bytes(root))
 
+    legacy = launcher._strict_json(_identity(bindings), context="legacy identity")
+    legacy["evidence"]["schema_version"] = 5
+    legacy["evidence"]["identity_schema"] = "recurquant.experiment013.identity-frozen.v5"
+    legacy["canonical_evidence_sha256"] = _digest(
+        launcher._canonical_json_bytes(legacy["evidence"])
+    )
+    with pytest.raises(launcher.SealedStageALaunchError, match="resolver-v6"):
+        launcher._parse_identity(launcher._canonical_json_bytes(legacy))
+
 
 def test_runner_cli_forbids_method_seed_threshold_and_policy_options(tmp_path: Path) -> None:
     paths = {
         name: tmp_path / name
-        for name in ("identity", "binding", "runtime", "model", "parquet", "source")
+        for name in ("identity", "binding", "receipt", "runtime", "model", "parquet", "source")
     }
+    paths["receipt"].write_bytes(b"fixture receipt")
     paths["root"] = tmp_path
     digests = {name: _digest(name) for name in ("runtime", "model", "parquet")}
     arguments = _runner_arguments(paths, digests)
     assert set(launcher._extract_options(arguments)) == launcher._REQUIRED_OPTIONS
+    receipt_option_index = arguments.index("--stage-a-capture-provenance-receipt")
+    without_receipt = [
+        *arguments[:receipt_option_index],
+        *arguments[receipt_option_index + 2 :],
+    ]
+    with pytest.raises(launcher.SealedStageALaunchError, match="omit required inputs"):
+        launcher._extract_options(without_receipt)
     for option in ("--methods", "--seed", "--threshold", "--q48-policy", "--uniform-policy"):
         with pytest.raises(launcher.SealedStageALaunchError, match="frozen CLI"):
             launcher._extract_options([*arguments, option, "bad"])
@@ -391,6 +488,48 @@ def test_source_bootstrap_and_verifier_detect_byte_tamper(tmp_path: Path) -> Non
     runner.write_bytes(b"tampered")
     with pytest.raises(launcher.SealedStageALaunchError, match="source bytes drifted"):
         launcher._verify_source(decoded, tmp_path)
+
+
+def test_calibration_launcher_swap_cannot_execute_unauthenticated_second_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher_path = tmp_path / launcher.CALIBRATION_LAUNCHER_SOURCE_PATH
+    sentinel = tmp_path / "unauthenticated-launcher-executed.txt"
+    authenticated_bytes = b'SEALED_BOOTSTRAP = "authenticated-old"\nMARKER = "old"\n'
+    swapped_bytes = (
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('new code executed', encoding='utf-8')\n"
+        'SEALED_BOOTSTRAP = "unauthenticated-new"\n'
+    ).encode()
+    _write(launcher_path, authenticated_bytes)
+    source = {
+        "paths": [
+            {
+                "path": launcher.CALIBRATION_LAUNCHER_SOURCE_PATH,
+                "raw_sha256": _digest(authenticated_bytes),
+            }
+        ]
+    }
+    original_read_bytes = Path.read_bytes
+    raced = False
+
+    def racing_read_bytes(path: Path) -> bytes:
+        nonlocal raced
+        data = original_read_bytes(path)
+        if path.resolve() == launcher_path.resolve() and not raced:
+            raced = True
+            launcher_path.write_bytes(swapped_bytes)
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    with pytest.raises(
+        launcher.SealedStageALaunchError, match="changed while it was authenticated"
+    ):
+        launcher._load_calibration_launcher(tmp_path, source)
+    assert raced is True
+    assert not sentinel.exists()
+    assert launcher.CALIBRATION_LAUNCHER_MODULE_NAME not in sys.modules
 
 
 def test_bound_artifacts_are_checked_before_runner_load(tmp_path: Path) -> None:
@@ -415,21 +554,37 @@ def test_bound_artifacts_are_checked_before_runner_load(tmp_path: Path) -> None:
         "parquet_materialization_manifest_file_sha256": _digest(parquet),
         "repository_source_manifest_file_sha256": _digest(source),
     }
+    receipt = _capture_receipt(
+        bindings,
+        binding_bytes=files["binding"],
+        capture_source_sha256=_digest(b"scripts/capture_static_q468_identity_input.py"),
+    )
+    paths["receipt"] = tmp_path / "stage-a-capture-provenance.json"
+    paths["receipt"].write_bytes(receipt)
     paths["identity"] = tmp_path / "identity.json"
-    paths["identity"].write_bytes(_identity(bindings))
+    paths["identity"].write_bytes(_identity(bindings, capture_receipt_sha256=_digest(receipt)))
     arguments = _runner_arguments(
         paths,
         {"runtime": _digest(runtime), "model": _digest(model), "parquet": _digest(parquet)},
     )
     options = launcher._extract_options(arguments)
-    parsed, _source, runner = launcher._verify_bound_inputs(
+    parsed, _source, runner, authenticated_runtime = launcher._verify_bound_inputs(
         options, runtime_manifest_path=paths["runtime"]
     )
     assert parsed == bindings
     assert runner.name == "screen_static_q468_stage_a.py"
+    assert authenticated_runtime == runtime
 
     paths["model"].write_bytes(b"tampered")
     with pytest.raises(launcher.SealedStageALaunchError, match="identity binding mismatch"):
+        launcher._verify_bound_inputs(options, runtime_manifest_path=paths["runtime"])
+
+    paths["model"].unlink()
+    paths["receipt"].write_bytes(b"tampered finalized receipt")
+    with pytest.raises(
+        launcher.SealedStageALaunchError,
+        match="capture provenance receipt differs from authenticated identity custody",
+    ):
         launcher._verify_bound_inputs(options, runtime_manifest_path=paths["runtime"])
 
 
@@ -446,14 +601,14 @@ def test_bootstrap_derivation_switches_schema_phase_runner_and_keeps_isolation()
         bootstrap = launcher._stage_a_bootstrap(calibration)
     finally:
         sys.modules.pop(spec.name, None)
-    assert 'evidence.get("schema_version") != 5' in bootstrap
+    assert 'evidence.get("schema_version") != 6' in bootstrap
     assert 'evidence.get("phase") != "stage_a"' in bootstrap
     assert launcher.RUNNER_SOURCE_PATH in bootstrap
     assert "scripts/run_static_q468_calibration.py" not in bootstrap
     assert "_stage_a_options" in bootstrap
     assert "--stage-a-calibration-binding" in bootstrap
-    assert '"--capture-provenance-receipt",' not in bootstrap
-    assert '"--expected-capture-provenance-receipt-sha256",' not in bootstrap
+    assert "--stage-a-capture-provenance-receipt" in bootstrap
+    assert "--expected-stage-a-capture-provenance-receipt-sha256" in bootstrap
     assert "--fisher-h1-smoke" not in bootstrap
     assert "--prior-fisher-h1-smoke-report" not in bootstrap
     assert "full calibration" not in bootstrap
@@ -527,6 +682,22 @@ def test_embedded_bootstrap_reaches_runner_boundary_and_rejects_bound_tamper(
     assert fixture["sentinel"].read_text(encoding="utf-8") == "stage-a-boundary\n"
 
     fixture["sentinel"].unlink()
+    receipt_path = Path(
+        fixture["runner_arguments"][
+            fixture["runner_arguments"].index("--stage-a-capture-provenance-receipt") + 1
+        ]
+    )
+    receipt_bytes = receipt_path.read_bytes()
+    model_bytes = fixture["model_path"].read_bytes()
+    receipt_path.write_bytes(b"tampered finalized Stage-A receipt")
+    fixture["model_path"].unlink()
+    receipt_rejected = run_bootstrap(tmp_path / "pycache-receipt-tampered")
+    assert receipt_rejected.returncode != 37
+    assert b"capture provenance receipt differs from identity custody" in receipt_rejected.stderr
+    assert not fixture["sentinel"].exists()
+    receipt_path.write_bytes(receipt_bytes)
+    fixture["model_path"].write_bytes(model_bytes)
+
     missing_offline = run_bootstrap(tmp_path / "pycache-missing-offline", offline=False)
     assert missing_offline.returncode != 37
     assert b"private cache contract" in missing_offline.stderr
@@ -610,6 +781,7 @@ def test_stage_a_partial_temp_creation_cleans_first_owned_root(
             calibration_launcher=calibration,
             bootstrap=b"raise SystemExit(0)",
             runtime_manifest_path=tmp_path / "runtime.json",
+            runtime_manifest_bytes=b"runtime",
             runtime_manifest={},
             interpreter=Path(sys.executable),
             base_runtime_root=tmp_path,
@@ -673,7 +845,12 @@ def test_stage_a_nonzero_child_preserves_code_reauthenticates_and_cleans_residue
         "_verify_bound_inputs",
         lambda *args, **kwargs: (
             events.append("bound")
-            or ({}, {"git_executable": {"sha256": "a", "size_bytes": 1}}, Path("runner"))
+            or (
+                {},
+                {"git_executable": {"sha256": "a", "size_bytes": 1}},
+                Path("runner"),
+                b"runtime",
+            )
         ),
     )
 
@@ -681,6 +858,7 @@ def test_stage_a_nonzero_child_preserves_code_reauthenticates_and_cleans_residue
         calibration_launcher=calibration,
         bootstrap=b"raise SystemExit(0)",
         runtime_manifest_path=runtime_path,
+        runtime_manifest_bytes=b"runtime",
         runtime_manifest={},
         interpreter=Path(sys.executable),
         base_runtime_root=base,
@@ -738,10 +916,29 @@ def test_offline_child_fatally_rejects_socket_connect_before_runner_side_effect(
     identity["evidence"]["execution_bindings"]["repository_source_manifest_file_sha256"] = _digest(
         fixture["source_path"].read_bytes()
     )
+    receipt_path = Path(
+        fixture["runner_arguments"][
+            fixture["runner_arguments"].index("--stage-a-capture-provenance-receipt") + 1
+        ]
+    )
+    receipt = launcher._strict_json(receipt_path.read_bytes(), context="capture receipt")
+    receipt["execution_bindings"]["repository_source_manifest_file_sha256"] = _digest(
+        fixture["source_path"].read_bytes()
+    )
+    receipt_path.write_bytes(launcher._canonical_json_bytes(receipt))
+    receipt_sha256 = _digest(receipt_path.read_bytes())
+    identity["evidence"][launcher.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD] = receipt_sha256
+    identity["evidence"]["promotion"][launcher.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD] = (
+        receipt_sha256
+    )
     identity["canonical_evidence_sha256"] = _digest(
         launcher._canonical_json_bytes(identity["evidence"])
     )
     fixture["identity_path"].write_bytes(launcher._canonical_json_bytes(identity))
+    expected_receipt_index = fixture["runner_arguments"].index(
+        "--expected-stage-a-capture-provenance-receipt-sha256"
+    )
+    fixture["runner_arguments"][expected_receipt_index + 1] = receipt_sha256
     pycache = tmp_path / "network-pycache"
     scratch = tmp_path / "network-scratch"
     pycache.mkdir()
@@ -791,7 +988,9 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     runtime_path = tmp_path / "runtime.json"
-    runtime_path.write_bytes(b"runtime")
+    authenticated_runtime_bytes = b"authenticated runtime manifest"
+    swapped_runtime_bytes = b"swapped runtime selecting an attacker interpreter"
+    runtime_path.write_bytes(authenticated_runtime_bytes)
     repository = tmp_path / "repo"
     repository.mkdir()
     base = tmp_path / "base"
@@ -820,17 +1019,31 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
     }
     options["--repository-root"] = str(repository)
     monkeypatch.setattr(launcher, "_extract_options", lambda args: options)
-    monkeypatch.setattr(
-        launcher,
-        "_verify_bound_inputs",
-        lambda *args, **kwargs: (
-            calls.append("verify")
-            or ({}, {"paths": [], "git_executable": source_git_record}, Path("runner"))
-        ),
-    )
+    verification_count = 0
+
+    def verify_bound_inputs(*_args: Any, **_kwargs: Any) -> tuple[Any, ...]:
+        nonlocal verification_count
+        verification_count += 1
+        calls.append("verify")
+        if verification_count == 1:
+            runtime_path.write_bytes(swapped_runtime_bytes)
+        return (
+            {},
+            {"paths": [], "git_executable": source_git_record},
+            Path("runner"),
+            authenticated_runtime_bytes,
+        )
+
+    monkeypatch.setattr(launcher, "_verify_bound_inputs", verify_bound_inputs)
     calibration_helpers = _load_calibration_launcher("stage_a_launch_helper_test")
+    parsed_runtime_bytes: list[bytes] = []
+
+    def parse_runtime_manifest(data: bytes) -> dict[str, Any]:
+        parsed_runtime_bytes.append(data)
+        return {"git_executable": git_record}
+
     fake_calibration = SimpleNamespace(
-        _parse_runtime_manifest=lambda data: {"git_executable": git_record},
+        _parse_runtime_manifest=parse_runtime_manifest,
         _verify_runtime=lambda *args, **kwargs: (
             base,
             {"packages": packages},
@@ -885,3 +1098,5 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
     assert result == 0
     assert calls == ["verify", "subprocess", "verify", "subprocess", "verify"]
     assert child_modes == ["prepare-inputs", "preflight"]
+    assert parsed_runtime_bytes == [authenticated_runtime_bytes]
+    assert runtime_path.read_bytes() == swapped_runtime_bytes

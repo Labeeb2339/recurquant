@@ -54,6 +54,10 @@ SPEC.loader.exec_module(capture)
 resolver = capture.resolver
 FIXTURE_GIT_EXECUTABLE = experiment013_source.authenticate_git_executable().path
 FIXTURE_BINDING_ARTIFACT = b"verified-fixture-binding-artifact"
+FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT = b"verified-fixture-capture-provenance"
+FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256 = capture.sha256_bytes(
+    FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT
+)
 FIXTURE_EXECUTION_ARTIFACTS = {
     "repository_source_manifest_file_sha256": b"fixture-source-manifest",
     "calibration_runtime_manifest_file_sha256": b"fixture-runtime-manifest",
@@ -88,6 +92,18 @@ def test_capture_script_imports_in_direct_cli_process() -> None:
 
 def _hash(label: str) -> str:
     return capture.sha256_bytes(label.encode())
+
+
+def _runner_source_manifest() -> dict[str, object]:
+    runner_bytes = capture.CALIBRATION_RUNNER_PATH.read_bytes()
+    return {
+        "paths": [
+            {
+                "path": "scripts/run_static_q468_calibration.py",
+                "raw_sha256": capture.sha256_bytes(runner_bytes),
+            }
+        ]
+    }
 
 
 class FakeTokenizer:
@@ -287,8 +303,16 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     strict_binding_decoder = resolver.deserialize_stage_a_calibration_binding_artifact
 
-    def decode_binding(data: bytes) -> object:
+    def decode_binding(
+        data: bytes,
+        *,
+        expected_file_sha256: str | None = None,
+    ) -> object:
         if data == FIXTURE_BINDING_ARTIFACT:
+            if expected_file_sha256 is not None and expected_file_sha256 != capture.sha256_bytes(
+                data
+            ):
+                raise ValueError("fixture Stage-A binding differs from its explicit SHA-256")
             return SimpleNamespace(
                 binding={
                     key: _hash(f"binding-{key}")
@@ -299,12 +323,48 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
                     for field, payload in sorted(FIXTURE_EXECUTION_ARTIFACTS.items())
                 },
             )
-        return strict_binding_decoder(data)
+        return strict_binding_decoder(
+            data,
+            expected_file_sha256=expected_file_sha256,
+        )
 
     monkeypatch.setattr(
         resolver,
         "deserialize_stage_a_calibration_binding_artifact",
         decode_binding,
+    )
+    strict_capture_decoder = resolver.deserialize_stage_a_capture_provenance_receipt
+    latest_identity_input_sha256: str | None = None
+
+    def decode_capture_provenance(
+        data: bytes,
+        *,
+        expected_file_sha256: str,
+        calibration_binding_artifact: bytes,
+        expected_identity_input_file_sha256: str | None = None,
+    ) -> object:
+        nonlocal latest_identity_input_sha256
+        if data != FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT:
+            return strict_capture_decoder(
+                data,
+                expected_file_sha256=expected_file_sha256,
+                calibration_binding_artifact=calibration_binding_artifact,
+                expected_identity_input_file_sha256=expected_identity_input_file_sha256,
+            )
+        assert expected_file_sha256 == FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+        assert calibration_binding_artifact == FIXTURE_BINDING_ARTIFACT
+        if expected_identity_input_file_sha256 is not None:
+            latest_identity_input_sha256 = expected_identity_input_file_sha256
+        assert latest_identity_input_sha256 is not None
+        return SimpleNamespace(
+            file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
+            identity_input_file_sha256=latest_identity_input_sha256,
+        )
+
+    monkeypatch.setattr(
+        resolver,
+        "deserialize_stage_a_capture_provenance_receipt",
+        decode_capture_provenance,
     )
 
 
@@ -710,6 +770,15 @@ def _binding() -> bytes:
     return FIXTURE_BINDING_ARTIFACT
 
 
+def _stage_a_capture_provenance_kwargs() -> dict[str, object]:
+    return {
+        "stage_a_capture_provenance_receipt": (FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT),
+        "expected_stage_a_capture_provenance_receipt_sha256": (
+            FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
+        ),
+    }
+
+
 def _frozen_stage_a_identity(source: FakeSource | None = None) -> bytes:
     captured = capture.capture_identity_input(
         phase="stage_a",
@@ -720,12 +789,14 @@ def _frozen_stage_a_identity(source: FakeSource | None = None) -> bytes:
         captured,
         expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     candidate_bytes = resolver.canonical_json_bytes(candidate)
     frozen = resolver.promote_candidate(
         candidate,
         candidate_file_sha256=resolver.sha256_bytes(candidate_bytes),
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     return resolver.canonical_json_bytes(frozen)
 
@@ -1028,9 +1099,55 @@ def test_preloaded_calibration_runner_is_rejected() -> None:
     sys.modules[capture._CALIBRATION_RUNNER_MODULE_NAME] = sentinel  # type: ignore[assignment]
     try:
         with pytest.raises(RuntimeError, match="preloaded"):
-            capture._load_calibration_runner_module()
+            capture._load_calibration_runner_module(_runner_source_manifest())
     finally:
         if sys.modules.get(capture._CALIBRATION_RUNNER_MODULE_NAME) is sentinel:
+            sys.modules.pop(capture._CALIBRATION_RUNNER_MODULE_NAME, None)
+
+
+def test_calibration_runner_path_swap_cannot_execute_unauthenticated_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    runner_path = repository / "scripts" / "run_static_q468_calibration.py"
+    runner_path.parent.mkdir(parents=True)
+    authenticated_bytes = b"AUTHENTICATED_SENTINEL = 'exact-buffer'\n"
+    side_effect = tmp_path / "unauthenticated-side-effect.txt"
+    malicious_bytes = (
+        "from pathlib import Path\n"
+        f"Path({str(side_effect)!r}).write_text('executed', encoding='utf-8')\n"
+    ).encode()
+    runner_path.write_bytes(authenticated_bytes)
+    manifest = {
+        "paths": [
+            {
+                "path": "scripts/run_static_q468_calibration.py",
+                "raw_sha256": capture.sha256_bytes(authenticated_bytes),
+            }
+        ]
+    }
+    stable_read = capture._bundle_stable_descendant_bytes
+
+    def read_then_swap(
+        root: Path,
+        relative_path: str,
+        *,
+        context: str,
+    ) -> bytes:
+        payload = stable_read(root, relative_path, context=context)
+        runner_path.write_bytes(malicious_bytes)
+        return payload
+
+    monkeypatch.setattr(capture, "REPOSITORY_ROOT", repository)
+    monkeypatch.setattr(capture, "CALIBRATION_RUNNER_PATH", runner_path)
+    monkeypatch.setattr(capture, "_bundle_stable_descendant_bytes", read_then_swap)
+    runner = capture._load_calibration_runner_module(manifest)
+    try:
+        assert runner.AUTHENTICATED_SENTINEL == "exact-buffer"
+        assert not side_effect.exists()
+    finally:
+        if sys.modules.get(capture._CALIBRATION_RUNNER_MODULE_NAME) is runner:
             sys.modules.pop(capture._CALIBRATION_RUNNER_MODULE_NAME, None)
 
 
@@ -1350,6 +1467,7 @@ def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies() ->
     authorization = SimpleNamespace(
         binding=dict(core.binding),
         calibration_dependencies=core_dependencies,
+        authorization_dependencies={},
         execution_bindings=dict(identity.execution_bindings),
         source_commit="f" * 40,
         file_sha256=resolver.sha256_bytes(authorization_bytes),
@@ -1408,6 +1526,7 @@ def test_stage_a_capture_uses_exact_schedules_and_token_caps() -> None:
         captured,
         expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     assert candidate["evidence"]["record_count"] == 12
     ruler_rows = [row for row in captured["records"] if row["family"] == "ruler"]
@@ -1443,6 +1562,7 @@ def test_stage_a_materialization_authenticates_exact_inventory_tokens_and_spans(
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_bytes,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     source = FakeSource()
 
@@ -1451,6 +1571,7 @@ def test_stage_a_materialization_authenticates_exact_inventory_tokens_and_spans(
         frozen_stage_a_identity_artifact=frozen_bytes,
         calibration_binding_artifact=_binding(),
         expected_frozen_stage_a_identity_file_sha256=resolver.sha256_bytes(frozen_bytes),
+        **_stage_a_capture_provenance_kwargs(),
     )
 
     assert materialized.frozen_identity_file_sha256 == frozen.file_sha256
@@ -1582,6 +1703,7 @@ def test_stage_a_materialization_accepts_exact_two_token_target() -> None:
         source=source,
         frozen_stage_a_identity_artifact=frozen_bytes,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
 
     qa = next(
@@ -1606,6 +1728,7 @@ def test_stage_a_materialization_rejects_candidate_and_drift_before_use() -> Non
         captured,
         expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     source = FakeSource()
     with pytest.raises(ValueError, match="frozen Stage-A identity"):
@@ -1613,6 +1736,7 @@ def test_stage_a_materialization_rejects_candidate_and_drift_before_use() -> Non
             source=source,
             frozen_stage_a_identity_artifact=resolver.canonical_json_bytes(candidate),
             calibration_binding_artifact=_binding(),
+            **_stage_a_capture_provenance_kwargs(),
         )
     assert source.accesses == []
 
@@ -1631,6 +1755,7 @@ def test_stage_a_materialization_rejects_candidate_and_drift_before_use() -> Non
             source=changed,
             frozen_stage_a_identity_artifact=frozen_bytes,
             calibration_binding_artifact=_binding(),
+            **_stage_a_capture_provenance_kwargs(),
         )
 
 
@@ -1640,6 +1765,7 @@ def test_stage_a_materialization_rejects_missing_duplicate_reordered_and_tampere
         source=FakeSource(),
         frozen_stage_a_identity_artifact=frozen_bytes,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     common = {
         "tokenizer_manifest_sha256": materialized.tokenizer_manifest_sha256,
@@ -1672,7 +1798,7 @@ def test_stage_a_materialization_rejects_missing_duplicate_reordered_and_tampere
     tampered_record = sequence.identity_record
     tampered_record["target_token_ids_sha256"] = "0" * 64
     tampered_record["identity_record_sha256"] = resolver.identity_record_sha256(tampered_record)
-    with pytest.raises(ValueError, match="only by authenticated v5 materialization"):
+    with pytest.raises(ValueError, match="only by authenticated v6 materialization"):
         capture.MaterializedStageASequence(
             _identity_record_bytes=capture.canonical_json_bytes(sequence.identity_record),
             prompt_token_ids=sequence.prompt_token_ids,
@@ -1694,6 +1820,7 @@ def test_stage_a_materialization_identity_records_are_content_redacted() -> None
         source=FakeSource(),
         frozen_stage_a_identity_artifact=frozen_bytes,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     records = capture.canonical_json_bytes(materialized.identity_records)
 
@@ -1973,6 +2100,42 @@ def test_cli_rejects_protected_phase_before_paths_are_read(tmp_path: Path) -> No
         )
 
     assert not output.exists()
+
+
+def test_direct_stage_a_cli_fails_before_binding_path_source_or_provider_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    touched: list[str] = []
+
+    def fail_if_touched(name: str) -> Any:
+        def fail(*_args: Any, **_kwargs: Any) -> Any:
+            touched.append(name)
+            raise AssertionError(f"direct Stage-A CLI touched {name}")
+
+        return fail
+
+    monkeypatch.setattr(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        fail_if_touched("binding decoder"),
+    )
+    monkeypatch.setattr(Path, "read_bytes", fail_if_touched("path bytes"))
+    monkeypatch.setattr(
+        capture,
+        "_runtime_context_from_cli",
+        fail_if_touched("runtime provider"),
+    )
+    monkeypatch.setattr(capture, "LiveCaptureSource", fail_if_touched("source constructor"))
+    monkeypatch.setattr(
+        capture,
+        "capture_identity_input",
+        fail_if_touched("capture provider"),
+    )
+
+    with pytest.raises(PermissionError, match="sealed-launcher-only.*before binding"):
+        capture.main(["--phase", "stage_a"])
+
+    assert touched == []
 
 
 def test_source_head_drift_fails_after_capture() -> None:
@@ -2330,7 +2493,11 @@ def test_execution_artifact_decoders_run_before_file_hash_binding(
                 transformers_version=resolver.TRANSFORMERS_VERSION,
             )
 
-    monkeypatch.setattr(capture, "_load_calibration_runner_module", lambda: FakeRunner())
+    monkeypatch.setattr(
+        capture,
+        "_load_calibration_runner_module",
+        lambda _source_manifest: FakeRunner(),
+    )
     artifacts = {
         "repository_source_manifest_file_sha256": source_bytes,
         "calibration_runtime_manifest_file_sha256": runtime_bytes,
@@ -2376,7 +2543,7 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
         "parquet_materialization_manifest_file_sha256": b"parquet\n",
     }
     bindings = {field: capture.sha256_bytes(data) for field, data in sorted(artifacts.items())}
-    source_manifest = {"paths": []}
+    source_manifest = _runner_source_manifest()
 
     class SourceModule:
         @staticmethod
@@ -2453,16 +2620,29 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
         parquet_module=object(),
     )
 
-    def load_runner() -> Any:
+    source_artifact = capture._DecodedRepositorySourceArtifact(
+        manifest_file_sha256=bindings["repository_source_manifest_file_sha256"],
+        source_manifest=source_manifest,
+        source_module=SourceModule(),
+    )
+
+    def decode_source(_artifacts: Any) -> Any:
+        events.append("decode-source")
+        return source_artifact
+
+    def load_runner(authenticated_source_manifest: Any) -> Any:
+        assert authenticated_source_manifest == source_manifest
         events.append("load-runner")
         sys.modules[capture._CALIBRATION_RUNNER_MODULE_NAME] = runner  # type: ignore[assignment]
         return runner
 
-    def decode(_artifacts: Any, *, runner: Any) -> Any:
+    def decode(_artifacts: Any, *, runner: Any, source_artifact: Any) -> Any:
         assert runner is not None
+        assert source_artifact is not None
         events.append("decode")
         return decoded
 
+    monkeypatch.setattr(capture, "_decode_repository_source_artifact", decode_source)
     monkeypatch.setattr(capture, "_load_calibration_runner_module", load_runner)
     monkeypatch.setattr(capture, "_decode_execution_binding_artifacts", decode)
     monkeypatch.setattr(
@@ -2485,6 +2665,7 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
             sys.modules.pop(capture._CALIBRATION_RUNNER_MODULE_NAME, None)
 
     assert events == [
+        "decode-source",
         "load-runner",
         "decode",
         "source",
@@ -2492,6 +2673,7 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
         "runner-source",
         "runtime",
         "model",
+        "decode-source",
         "decode",
         "source",
         "loaded-source-parquet",
@@ -2502,12 +2684,18 @@ def test_point_of_use_authentication_rechecks_source_runtime_modules_and_model(
 
 
 def test_loaded_calibration_runner_source_is_bound_to_source_manifest() -> None:
-    runner = SimpleNamespace(__file__=str(capture.CALIBRATION_RUNNER_PATH))
+    runner_bytes = capture.CALIBRATION_RUNNER_PATH.read_bytes()
+    runner_sha256 = capture.sha256_bytes(runner_bytes)
+    runner = SimpleNamespace(
+        __file__=str(capture.CALIBRATION_RUNNER_PATH),
+        __recurquant_authenticated_source_sha256__=runner_sha256,
+        __recurquant_authenticated_source_size_bytes__=len(runner_bytes),
+    )
     manifest = {
         "paths": [
             {
                 "path": "scripts/run_static_q468_calibration.py",
-                "raw_sha256": capture.sha256_bytes(capture.CALIBRATION_RUNNER_PATH.read_bytes()),
+                "raw_sha256": runner_sha256,
             }
         ]
     }
@@ -2663,6 +2851,7 @@ def _fixture_stage_a_input_bundle(
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_bytes,
         calibration_binding_artifact=_binding(),
+        **_stage_a_capture_provenance_kwargs(),
     )
     parquet_payloads = {
         "pg19": _parquet_bytes(
@@ -2833,6 +3022,7 @@ def _fixture_stage_a_input_bundle(
         frozen_stage_a_identity_artifact=frozen_bytes,
         calibration_binding_artifact=_binding(),
         execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+        **_stage_a_capture_provenance_kwargs(),
     )
     return SimpleNamespace(
         bundle=bundle,
@@ -2851,6 +3041,7 @@ def _authenticate_fixture_bundle(fixture: SimpleNamespace) -> Any:
         frozen_stage_a_identity_artifact=fixture.frozen_bytes,
         calibration_binding_artifact=_binding(),
         execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+        **_stage_a_capture_provenance_kwargs(),
     )
 
 
@@ -2970,6 +3161,7 @@ def test_existing_stage_a_bundle_still_requires_runtime_auth_and_isolation(
             calibration_binding_artifact=_binding(),
             execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
             runtime_authentication_context={"invalid": "context"},
+            **_stage_a_capture_provenance_kwargs(),
         )
     with pytest.raises(ValueError, match="must not be nested"):
         capture.stage_stage_a_input_bundle(
@@ -2980,6 +3172,7 @@ def test_existing_stage_a_bundle_still_requires_runtime_auth_and_isolation(
             calibration_binding_artifact=_binding(),
             execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
             runtime_authentication_context=FIXTURE_RUNTIME_CONTEXT,
+            **_stage_a_capture_provenance_kwargs(),
         )
 
 

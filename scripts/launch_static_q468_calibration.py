@@ -10,6 +10,8 @@ Model weights and calibration datasets are intentionally outside this module.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import importlib.metadata
 import json
@@ -32,7 +34,7 @@ BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v9"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 3
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
@@ -46,6 +48,21 @@ CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS: Final = (
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
+STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_stage_a_identity_capture_provenance"
+)
+STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 1
+STAGE_A_CALIBRATION_BINDING_KIND: Final = "recurquant_experiment013_stage_a_calibration_binding"
+STAGE_A_CALIBRATION_BINDING_SCHEMA: Final = 4
+STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibration-binding-v4"
+STAGE_A_CALIBRATION_AUTHORIZATION_KIND: Final = (
+    "recurquant_experiment013_stage_a_calibration_authorization"
+)
+STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA: Final = 1
+STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
+    "experiment-013-stage-a-calibration-authorization-v1"
+)
+STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES: Final = (
     "pkg_resources",
     "setuptools",
@@ -108,12 +125,27 @@ _EXPECTED_BOUND_DIGEST_OPTIONS: Final = {
         "--expected-parquet-materialization-manifest-sha256"
     ),
 }
-_CAPTURE_COMMAND: Final = "capture-calibration-identity"
+_STAGE_A_CALIBRATION_BINDING_FIELDS: Final = frozenset(
+    {
+        "calibration_authorization_file_sha256",
+        "calibration_identity_file_sha256",
+        "calibration_score_artifact_file_sha256",
+        "comparator_score_artifact_file_sha256",
+        "split_half_stability_artifact_file_sha256",
+        "static_fisher_k29334_policy_file_sha256",
+        "static_k27030_policy_file_sha256",
+        "static_k29334_policy_file_sha256",
+        "static_mse_k29334_policy_file_sha256",
+    }
+)
+_CALIBRATION_CAPTURE_COMMAND: Final = "capture-calibration-identity"
+_STAGE_A_CAPTURE_COMMAND: Final = "capture-stage-a-identity"
+_CAPTURE_COMMANDS: Final = frozenset({_CALIBRATION_CAPTURE_COMMAND, _STAGE_A_CAPTURE_COMMAND})
 _CAPTURE_EXPECTED_BOUND_DIGEST_OPTIONS: Final = {
     **_EXPECTED_BOUND_DIGEST_OPTIONS,
     "repository_source_manifest_file_sha256": ("--expected-repository-source-manifest-sha256"),
 }
-_CAPTURE_REQUIRED_RUNNER_OPTIONS: Final = frozenset(
+_CALIBRATION_CAPTURE_REQUIRED_RUNNER_OPTIONS: Final = frozenset(
     {
         "--cache-root",
         "--capture-provenance-receipt-output",
@@ -123,6 +155,13 @@ _CAPTURE_REQUIRED_RUNNER_OPTIONS: Final = frozenset(
         "--source-commit",
         *_BOUND_ARTIFACT_OPTIONS.values(),
         *_CAPTURE_EXPECTED_BOUND_DIGEST_OPTIONS.values(),
+    }
+)
+_STAGE_A_CAPTURE_REQUIRED_RUNNER_OPTIONS: Final = frozenset(
+    {
+        *_CALIBRATION_CAPTURE_REQUIRED_RUNNER_OPTIONS,
+        "--expected-stage-a-calibration-binding-sha256",
+        "--stage-a-calibration-binding",
     }
 )
 _REQUIRED_RUNNER_OPTIONS: Final = frozenset(
@@ -227,6 +266,161 @@ def _strict_json(data: bytes, *, context: str) -> dict[str, object]:
 def _exact_fields(value: Mapping[str, object], expected: set[str], *, context: str) -> None:
     if set(value) != expected:
         raise SealedLaunchError(f"{context} fields differ from the frozen schema")
+
+
+def _canonical_base64(value: object, *, context: str) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise SealedLaunchError(f"{context} must be canonical base64 text")
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise SealedLaunchError(f"{context} must be canonical base64 text") from error
+    if not decoded or base64.b64encode(decoded).decode("ascii") != value:
+        raise SealedLaunchError(f"{context} must be canonical base64 text")
+    return decoded
+
+
+def _parse_stage_a_calibration_binding_envelope(
+    data: bytes,
+    *,
+    expected_file_sha256: str,
+) -> dict[str, object]:
+    """Bootstrap the exact v4 envelope; the sealed child rederives the full chain."""
+
+    actual = _sha256_bytes(data)
+    if actual != _sha256(expected_file_sha256, context="expected Stage-A binding SHA-256"):
+        raise SealedLaunchError("Stage-A calibration binding differs from its explicit SHA-256")
+    root = _strict_json(data, context="Stage-A calibration binding")
+    _exact_fields(
+        root,
+        {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
+        context="Stage-A calibration binding",
+    )
+    if _canonical_json_bytes(root) != data:
+        raise SealedLaunchError("Stage-A calibration binding is not canonical JSON")
+    if (
+        root["artifact_kind"] != STAGE_A_CALIBRATION_BINDING_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != STAGE_A_CALIBRATION_BINDING_SCHEMA
+    ):
+        raise SealedLaunchError("Stage-A calibration binding kind or schema drifted")
+    evidence = root.get("evidence")
+    if not isinstance(evidence, dict):
+        raise SealedLaunchError("Stage-A calibration binding evidence is missing")
+    _exact_fields(
+        evidence,
+        {"artifact_revision", "binding", "dependencies_base64", "dependency_file_sha256"},
+        context="Stage-A calibration binding evidence",
+    )
+    if evidence["artifact_revision"] != STAGE_A_CALIBRATION_BINDING_REVISION:
+        raise SealedLaunchError("Stage-A calibration binding revision drifted")
+    if _sha256(
+        root["canonical_evidence_sha256"], context="Stage-A binding evidence SHA-256"
+    ) != _sha256_bytes(_canonical_json_bytes(evidence)):
+        raise SealedLaunchError("Stage-A calibration binding evidence hash drifted")
+    binding = evidence.get("binding")
+    encoded = evidence.get("dependencies_base64")
+    hashes = evidence.get("dependency_file_sha256")
+    if (
+        not isinstance(binding, dict)
+        or not isinstance(encoded, dict)
+        or not isinstance(hashes, dict)
+    ):
+        raise SealedLaunchError("Stage-A calibration binding dependencies are missing")
+    _exact_fields(binding, set(_STAGE_A_CALIBRATION_BINDING_FIELDS), context="Stage-A binding")
+    for name in sorted(_STAGE_A_CALIBRATION_BINDING_FIELDS):
+        _sha256(binding[name], context=f"Stage-A binding {name}")
+    dependency_name = "calibration_authorization_artifact"
+    _exact_fields(encoded, {dependency_name}, context="Stage-A binding dependencies")
+    _exact_fields(hashes, {dependency_name}, context="Stage-A binding dependency hashes")
+    authorization_bytes = _canonical_base64(
+        encoded[dependency_name], context="Stage-A calibration authorization"
+    )
+    authorization_sha256 = _sha256(
+        hashes[dependency_name], context="Stage-A calibration authorization SHA-256"
+    )
+    if _sha256_bytes(authorization_bytes) != authorization_sha256:
+        raise SealedLaunchError("Stage-A calibration authorization bytes differ from their hash")
+    if binding["calibration_authorization_file_sha256"] != authorization_sha256:
+        raise SealedLaunchError("Stage-A binding carries a different authorization hash")
+    authorization = _strict_json(authorization_bytes, context="Stage-A calibration authorization")
+    _exact_fields(
+        authorization,
+        {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
+        context="Stage-A calibration authorization",
+    )
+    if _canonical_json_bytes(authorization) != authorization_bytes:
+        raise SealedLaunchError("Stage-A calibration authorization is not canonical JSON")
+    if (
+        authorization["artifact_kind"] != STAGE_A_CALIBRATION_AUTHORIZATION_KIND
+        or type(authorization["schema_version"]) is not int
+        or authorization["schema_version"] != STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA
+    ):
+        raise SealedLaunchError("Stage-A calibration authorization kind or schema drifted")
+    authorization_evidence = authorization.get("evidence")
+    if not isinstance(authorization_evidence, dict):
+        raise SealedLaunchError("Stage-A calibration authorization evidence is missing")
+    _exact_fields(
+        authorization_evidence,
+        {
+            "artifact_revision",
+            "authorized_output_file_sha256",
+            "bindings",
+            "dependencies_base64",
+            "dependency_file_sha256",
+            "status",
+        },
+        context="Stage-A calibration authorization evidence",
+    )
+    if (
+        authorization_evidence["artifact_revision"] != STAGE_A_CALIBRATION_AUTHORIZATION_REVISION
+        or authorization_evidence["status"] != STAGE_A_CALIBRATION_AUTHORIZATION_STATUS
+        or _sha256(
+            authorization["canonical_evidence_sha256"],
+            context="Stage-A authorization evidence SHA-256",
+        )
+        != _sha256_bytes(_canonical_json_bytes(authorization_evidence))
+    ):
+        raise SealedLaunchError("Stage-A calibration authorization envelope drifted")
+    custody = authorization_evidence.get("bindings")
+    if not isinstance(custody, dict):
+        raise SealedLaunchError("Stage-A calibration authorization custody bindings are missing")
+    _exact_fields(
+        custody,
+        {
+            "calibration_core_binding_file_sha256",
+            "calibration_run_report_file_sha256",
+            "capture_provenance_receipt_file_sha256",
+            "execution_bindings",
+            "fisher_h1_smoke_report_file_sha256",
+            "frozen_calibration_identity_file_sha256",
+            "identity_input_manifest_sha256",
+            "source_commit",
+            "static_q48_policy_file_sha256",
+        },
+        context="Stage-A calibration authorization custody bindings",
+    )
+    execution_bindings = custody.get("execution_bindings")
+    if not isinstance(execution_bindings, dict):
+        raise SealedLaunchError("Stage-A authorization execution bindings are missing")
+    _exact_fields(
+        execution_bindings,
+        set(_BOUND_ARTIFACT_OPTIONS),
+        context="Stage-A authorization execution bindings",
+    )
+    normalized_execution = {
+        name: _sha256(execution_bindings[name], context=f"Stage-A authorization {name}")
+        for name in sorted(execution_bindings)
+    }
+    source_commit = custody.get("source_commit")
+    if not isinstance(source_commit, str) or _SHA1_RE.fullmatch(source_commit) is None:
+        raise SealedLaunchError("Stage-A authorization source commit must be a SHA-1")
+    return {
+        "authorization_file_sha256": authorization_sha256,
+        "execution_bindings": normalized_execution,
+        "file_sha256": actual,
+        "source_commit": source_commit,
+    }
 
 
 def _exact_typed_mapping(
@@ -1029,9 +1223,15 @@ def _verify_runtime(
 
 
 def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
-    if arguments and arguments[0] == _CAPTURE_COMMAND:
+    if arguments and arguments[0] in _CAPTURE_COMMANDS:
+        command = arguments[0]
+        required_options = (
+            _CALIBRATION_CAPTURE_REQUIRED_RUNNER_OPTIONS
+            if command == _CALIBRATION_CAPTURE_COMMAND
+            else _STAGE_A_CAPTURE_REQUIRED_RUNNER_OPTIONS
+        )
         remainder = list(arguments[1:])
-        if len(remainder) != 2 * len(_CAPTURE_REQUIRED_RUNNER_OPTIONS):
+        if len(remainder) != 2 * len(required_options):
             raise SealedLaunchError(
                 "sealed calibration identity capture arguments are not an exact option profile"
             )
@@ -1040,7 +1240,7 @@ def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
             option = remainder[index]
             value = remainder[index + 1]
             if (
-                option not in _CAPTURE_REQUIRED_RUNNER_OPTIONS
+                option not in required_options
                 or option in capture_result
                 or value.startswith("--")
                 or not value
@@ -1050,7 +1250,7 @@ def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
                     "or incomplete"
                 )
             capture_result[option] = value
-        if set(capture_result) != set(_CAPTURE_REQUIRED_RUNNER_OPTIONS):
+        if set(capture_result) != set(required_options):
             raise SealedLaunchError("sealed calibration identity capture inputs are incomplete")
         for option in (
             "--cache-root",
@@ -1062,8 +1262,9 @@ def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
             "--repository-source-manifest",
             "--ruler-receipt-dir",
             "--runtime-manifest",
+            "--stage-a-calibration-binding",
         ):
-            if not Path(capture_result[option]).is_absolute():
+            if option in capture_result and not Path(capture_result[option]).is_absolute():
                 raise SealedLaunchError(f"capture runner option must be absolute: {option}")
         return capture_result
     result: dict[str, str] = {}
@@ -1315,42 +1516,79 @@ def _validate_capture_provenance_candidate(
     identity_input_file_sha256: str,
     runtime_manifest: Mapping[str, object],
     source_manifest: Mapping[str, object],
+    phase: str = "calibration",
+    stage_a_binding_envelope: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     root = _strict_json(payload, context="capture provenance candidate")
-    _exact_fields(
-        root,
-        {
-            "artifact_kind",
-            "capture_source",
-            "capture_version",
-            "critical_module_origins",
-            "excluded_runtime_modules",
-            "execution_bindings",
-            "identity_input_file_sha256",
-            "phase",
-            "publication_contract",
-            "runner_revision",
-            "schema_version",
-            "source_commit",
-            "status",
-        },
-        context="capture provenance candidate",
-    )
+    expected_fields = {
+        "artifact_kind",
+        "capture_source",
+        "capture_version",
+        "critical_module_origins",
+        "excluded_runtime_modules",
+        "execution_bindings",
+        "identity_input_file_sha256",
+        "phase",
+        "publication_contract",
+        "runner_revision",
+        "schema_version",
+        "source_commit",
+        "status",
+    }
+    if phase == "stage_a":
+        expected_fields.update(
+            {
+                "calibration_authorization_file_sha256",
+                "calibration_binding_file_sha256",
+            }
+        )
+    _exact_fields(root, expected_fields, context="capture provenance candidate")
     if _canonical_json_bytes(root) != payload:
         raise SealedLaunchError("capture provenance candidate is not canonical JSON")
     if (
-        root["artifact_kind"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+        root["artifact_kind"]
+        != (
+            CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+            if phase == "calibration"
+            else STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND
+        )
         or type(root["capture_version"]) is not int
         or root["capture_version"] != CALIBRATION_IDENTITY_CAPTURE_VERSION
         or type(root["schema_version"]) is not int
-        or root["schema_version"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+        or root["schema_version"]
+        != (
+            CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+            if phase == "calibration"
+            else STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+        )
         or root["runner_revision"] != RUNNER_REVISION
-        or root["phase"] != "calibration"
+        or root["phase"] != phase
         or root["publication_contract"]
         != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
         or root["status"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
     ):
         raise SealedLaunchError("capture provenance candidate identity drifted")
+    if phase == "stage_a":
+        if stage_a_binding_envelope is None:
+            raise SealedLaunchError("Stage-A capture provenance lacks a verified binding envelope")
+        if (
+            _sha256(
+                root["calibration_binding_file_sha256"],
+                context="capture provenance Stage-A binding SHA-256",
+            )
+            != stage_a_binding_envelope["file_sha256"]
+        ):
+            raise SealedLaunchError("capture provenance Stage-A binding drifted")
+        if (
+            _sha256(
+                root["calibration_authorization_file_sha256"],
+                context="capture provenance Stage-A authorization SHA-256",
+            )
+            != stage_a_binding_envelope["authorization_file_sha256"]
+        ):
+            raise SealedLaunchError("capture provenance Stage-A authorization drifted")
+    elif stage_a_binding_envelope is not None:
+        raise SealedLaunchError("calibration capture cannot carry a Stage-A binding envelope")
     if root["excluded_runtime_modules"] != list(CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES):
         raise SealedLaunchError("capture provenance candidate exclusion policy drifted")
     if root["source_commit"] != source_manifest["source_commit"]:
@@ -1566,6 +1804,31 @@ def _verify_bound_artifacts(
     )
     _verify_fisher_smoke_prerequisite_files(runner_options)
     return bindings, source_manifest, runner_path
+
+
+def _verify_stage_a_capture_binding(
+    runner_options: Mapping[str, str],
+    *,
+    execution_bindings: Mapping[str, str],
+    source_commit: str,
+) -> tuple[bytes, dict[str, object]]:
+    if "--stage-a-calibration-binding" not in runner_options:
+        raise SealedLaunchError("Stage-A capture binding is missing")
+    binding_bytes = _stable_file_bytes(
+        Path(runner_options["--stage-a-calibration-binding"]),
+        context="Stage-A calibration binding",
+    )
+    envelope = _parse_stage_a_calibration_binding_envelope(
+        binding_bytes,
+        expected_file_sha256=runner_options["--expected-stage-a-calibration-binding-sha256"],
+    )
+    if envelope["execution_bindings"] != dict(execution_bindings):
+        raise SealedLaunchError(
+            "Stage-A calibration authorization execution bindings differ from capture"
+        )
+    if envelope["source_commit"] != source_commit:
+        raise SealedLaunchError("Stage-A calibration authorization source commit differs from H0")
+    return binding_bytes, envelope
 
 
 def _verify_empty_pycache(path: Path) -> Path:
@@ -1973,11 +2236,17 @@ _capture_expected_digest_options = dict(_expected_digest_options)
 _capture_expected_digest_options["repository_source_manifest_file_sha256"] = (
     "--expected-repository-source-manifest-sha256"
 )
-_capture_command = "capture-calibration-identity"
-_capture_required = {
+_calibration_capture_command = "capture-calibration-identity"
+_stage_a_capture_command = "capture-stage-a-identity"
+_capture_commands = {_calibration_capture_command, _stage_a_capture_command}
+_calibration_capture_required = {
     "--cache-root", "--capture-provenance-receipt-output", "--output",
     "--repository-root", "--ruler-receipt-dir", "--source-commit",
     *_binding_options.values(), *_capture_expected_digest_options.values(),
+}
+_stage_a_capture_required = _calibration_capture_required | {
+    "--expected-stage-a-calibration-binding-sha256",
+    "--stage-a-calibration-binding",
 }
 _smoke_options = {
     "--prior-fisher-h1-smoke-report",
@@ -2283,28 +2552,31 @@ def _name(value):
     return result
 
 def _options(arguments):
-    if arguments and arguments[0] == _capture_command:
+    if arguments and arguments[0] in _capture_commands:
+        required_capture = (_calibration_capture_required
+            if arguments[0] == _calibration_capture_command
+            else _stage_a_capture_required)
         remainder = arguments[1:]
-        if len(remainder) != 2 * len(_capture_required):
+        if len(remainder) != 2 * len(required_capture):
             _fail("sealed capture arguments are not an exact option profile")
         captured = {}
         for index in range(0, len(remainder), 2):
             option = remainder[index]
             value = remainder[index + 1]
-            if (option not in _capture_required or option in captured
+            if (option not in required_capture or option in captured
                     or not value or value.startswith("--")):
                 _fail("sealed capture arguments are mixed, duplicated, or incomplete")
             captured[option] = value
-        if set(captured) != _capture_required:
+        if set(captured) != required_capture:
             _fail("sealed capture inputs are incomplete")
         for option in {
             "--cache-root", "--capture-provenance-receipt-output",
             "--model-file-manifest", "--output",
             "--parquet-materialization-manifest", "--repository-root",
             "--repository-source-manifest", "--ruler-receipt-dir",
-            "--runtime-manifest",
+            "--runtime-manifest", "--stage-a-calibration-binding",
         }:
-            if not _p.Path(captured[option]).is_absolute():
+            if option in captured and not _p.Path(captured[option]).is_absolute():
                 _fail("sealed capture path is not absolute: " + option)
         return captured
     required = {
@@ -2374,7 +2646,7 @@ def _smoke(options):
             or type(receipt_root["capture_version"]) is not int
             or receipt_root["capture_version"] != 6
             or receipt_root["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v9"
+            != "experiment-013-static-q468-calibration-runner-v10"
             or receipt_root["phase"] != "calibration"
             or receipt_root["publication_contract"]
             != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
@@ -2397,7 +2669,7 @@ def _smoke(options):
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
             or evidence.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v9"
+            != "experiment-013-static-q468-calibration-runner-v10"
             or evidence.get("prerequisites") != {
                 "capture_provenance_receipt_file_sha256": receipt_sha256,
                 "fisher_h1_smoke_report_file_sha256": None,
@@ -2745,7 +3017,9 @@ if _p.Path.cwd().resolve(strict=True) != _scratch:
     _fail("sealed child cwd differs from the launcher-owned scratch directory")
 _runner_args = list(_s.argv[7:])
 _runner_options = _options(_runner_args)
-_capture_profile = bool(_runner_args and _runner_args[0] == _capture_command)
+_capture_profile = bool(_runner_args and _runner_args[0] in _capture_commands)
+_stage_a_capture_profile = bool(
+    _runner_args and _runner_args[0] == _stage_a_capture_command)
 _cache_raw = _p.Path(_runner_options["--cache-root"])
 if not _cache_raw.is_absolute():
     _fail("dataset cache root must be an absolute path")
@@ -2814,6 +3088,15 @@ if _capture_profile:
         if _actual != _digest(_runner_options[_expected_option], "capture digest binding"):
             _fail("capture artifact digest mismatch: " + _option)
         _bindings[_binding] = _actual
+    if _stage_a_capture_profile:
+        _stage_a_binding = _bytes(
+            _p.Path(_runner_options["--stage-a-calibration-binding"]),
+            "Stage-A calibration binding",
+        )
+        if _h.sha256(_stage_a_binding).hexdigest() != _digest(
+                _runner_options["--expected-stage-a-calibration-binding-sha256"],
+                "expected Stage-A calibration binding SHA-256"):
+            _fail("Stage-A calibration binding differs from its explicit SHA-256")
 else:
     _identity_path = _p.Path(_runner_options["--frozen-identity"])
     _bindings = _identity(_bytes(_identity_path, "frozen identity"))
@@ -2975,7 +3258,18 @@ def launch(argv: Sequence[str]) -> int:
         runner_options,
         runtime_manifest_path=args.runtime_manifest,
     )
-    capture_profile = bool(runner_arguments and runner_arguments[0] == _CAPTURE_COMMAND)
+    capture_command = runner_arguments[0] if runner_arguments else None
+    capture_profile = capture_command in _CAPTURE_COMMANDS
+    capture_phase = "stage_a" if capture_command == _STAGE_A_CAPTURE_COMMAND else "calibration"
+    capture_context = "Stage-A" if capture_phase == "stage_a" else "calibration"
+    stage_a_binding_bytes: bytes | None = None
+    stage_a_binding_envelope: dict[str, object] | None = None
+    if capture_phase == "stage_a":
+        stage_a_binding_bytes, stage_a_binding_envelope = _verify_stage_a_capture_binding(
+            runner_options,
+            execution_bindings=bindings,
+            source_commit=str(source_manifest["source_commit"]),
+        )
     if source_manifest["git_executable"] != {
         "sha256": runtime_manifest["git_executable"]["sha256"],
         "size_bytes": runtime_manifest["git_executable"]["size_bytes"],
@@ -3001,11 +3295,11 @@ def launch(argv: Sequence[str]) -> int:
     if capture_profile:
         capture_output_snapshot = _new_capture_artifact_snapshot(
             Path(runner_options["--output"]),
-            context="calibration identity output",
+            context=f"{capture_context} identity output",
         )
         capture_receipt_snapshot = _new_capture_artifact_snapshot(
             Path(runner_options["--capture-provenance-receipt-output"]),
-            context="calibration identity capture provenance receipt",
+            context=f"{capture_context} identity capture provenance receipt",
         )
         _validate_capture_artifact_disjointness(
             (capture_output_snapshot, capture_receipt_snapshot),
@@ -3119,6 +3413,17 @@ def launch(argv: Sequence[str]) -> int:
             )
             if repeated_bindings != bindings or repeated_source != source_manifest:
                 raise SealedLaunchError("bound artifacts changed during execution")
+            if capture_phase == "stage_a":
+                repeated_binding_bytes, repeated_binding_envelope = _verify_stage_a_capture_binding(
+                    runner_options,
+                    execution_bindings=repeated_bindings,
+                    source_commit=str(repeated_source["source_commit"]),
+                )
+                if (
+                    repeated_binding_bytes != stage_a_binding_bytes
+                    or repeated_binding_envelope != stage_a_binding_envelope
+                ):
+                    raise SealedLaunchError("Stage-A calibration binding changed during execution")
         except Exception as exc:
             secondary_failures.append(("bound-artifact reauthentication", exc))
         try:
@@ -3170,6 +3475,19 @@ def launch(argv: Sequence[str]) -> int:
         )
         if final_bindings != bindings or final_source != source_manifest:
             raise SealedLaunchError("bound artifacts changed after owned-root cleanup")
+        if capture_phase == "stage_a":
+            final_binding_bytes, final_binding_envelope = _verify_stage_a_capture_binding(
+                runner_options,
+                execution_bindings=final_bindings,
+                source_commit=str(final_source["source_commit"]),
+            )
+            if (
+                final_binding_bytes != stage_a_binding_bytes
+                or final_binding_envelope != stage_a_binding_envelope
+            ):
+                raise SealedLaunchError(
+                    "Stage-A calibration binding changed after owned-root cleanup"
+                )
         final_cache_root = _verified_dataset_cache_root(
             dataset_cache_root,
             runtime_roots=(base, *packages.values()),
@@ -3191,17 +3509,17 @@ def launch(argv: Sequence[str]) -> int:
         )
         identity_output = _revalidate_capture_artifact_snapshot(
             capture_output_snapshot,
-            context="calibration identity output",
+            context=f"{capture_context} identity output",
             expect_absent=False,
         )
         _revalidate_capture_artifact_snapshot(
             capture_receipt_snapshot,
-            context="calibration identity capture provenance receipt",
+            context=f"{capture_context} identity capture provenance receipt",
             expect_absent=True,
         )
         identity_bytes = _stable_file_bytes(
             identity_output,
-            context="published calibration identity input",
+            context=f"published {capture_context} identity input",
         )
         candidate = completed.stdout
         if not isinstance(candidate, bytes):
@@ -3212,33 +3530,74 @@ def launch(argv: Sequence[str]) -> int:
             identity_input_file_sha256=_sha256_bytes(identity_bytes),
             runtime_manifest=runtime_manifest,
             source_manifest=source_manifest,
+            phase=capture_phase,
+            stage_a_binding_envelope=stage_a_binding_envelope,
         )
         identity_output = _revalidate_capture_artifact_snapshot(
             capture_output_snapshot,
-            context="calibration identity output",
+            context=f"{capture_context} identity output",
             expect_absent=False,
         )
         repeated_identity_bytes = _stable_file_bytes(
             identity_output,
-            context="final published calibration identity input",
+            context=f"final published {capture_context} identity input",
         )
         if repeated_identity_bytes != identity_bytes:
             raise SealedLaunchError(
-                "published calibration identity changed before receipt publication"
+                f"published {capture_context} identity changed before receipt publication"
             )
         _revalidate_capture_artifact_snapshot(
             capture_output_snapshot,
-            context="calibration identity output",
+            context=f"{capture_context} identity output",
             expect_absent=False,
         )
         _atomic_publish_capture_receipt(capture_receipt_snapshot, candidate)
+        published_receipt = _revalidate_capture_artifact_snapshot(
+            capture_receipt_snapshot,
+            context=f"{capture_context} identity capture provenance receipt",
+            expect_absent=False,
+        )
+        published_candidate = _stable_file_bytes(
+            published_receipt,
+            context=f"published {capture_context} identity capture provenance receipt",
+        )
+        if published_candidate != candidate:
+            raise SealedLaunchError("published capture provenance receipt bytes changed")
+        _validate_capture_provenance_candidate(
+            published_candidate,
+            bindings=bindings,
+            identity_input_file_sha256=_sha256_bytes(identity_bytes),
+            runtime_manifest=runtime_manifest,
+            source_manifest=source_manifest,
+            phase=capture_phase,
+            stage_a_binding_envelope=stage_a_binding_envelope,
+        )
+        post_publication_identity = _revalidate_capture_artifact_snapshot(
+            capture_output_snapshot,
+            context=f"post-publication {capture_context} identity output",
+            expect_absent=False,
+        )
+        post_publication_identity_bytes = _stable_file_bytes(
+            post_publication_identity,
+            context=f"post-publication {capture_context} identity input",
+        )
+        if post_publication_identity_bytes != identity_bytes or _sha256_bytes(
+            post_publication_identity_bytes
+        ) != _sha256_bytes(identity_bytes):
+            raise SealedLaunchError(
+                f"published {capture_context} identity changed after receipt publication"
+            )
         print(
             _canonical_json_bytes(
                 {
                     "capture_provenance_receipt_file_sha256": _sha256_bytes(candidate),
                     "identity_input_file_sha256": _sha256_bytes(identity_bytes),
                     "runner_revision": RUNNER_REVISION,
-                    "status": "captured_calibration_identity_with_launcher_finalization",
+                    "status": (
+                        "captured_stage_a_identity_with_launcher_finalization"
+                        if capture_phase == "stage_a"
+                        else "captured_calibration_identity_with_launcher_finalization"
+                    ),
                 }
             ).decode("utf-8"),
             end="",

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Launch Experiment 013 Stage A in the authenticated sealed runtime.
 
-The host process is metadata-only.  It verifies the promoted v5 Stage-A
-identity bindings, exact H0 source files, and complete sealed runtime before
+The host process is metadata-only.  It verifies the promoted v6 Stage-A
+identity and finalized capture custody, exact H0 source files, and complete sealed runtime before
 starting the staged interpreter.  The isolated child repeats those checks and
 loads exactly ``screen_static_q468_stage_a.py`` from authenticated bytes.
 """
@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,7 +30,18 @@ RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_stage_a_runner"
 CALIBRATION_LAUNCHER_MODULE_NAME: Final = (
     "_recurquant_experiment013_calibration_launcher_for_stage_a"
 )
-IDENTITY_SCHEMA: Final = 5
+IDENTITY_SCHEMA: Final = 6
+STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: Final = "stage_a_capture_provenance_receipt_file_sha256"
+STAGE_A_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_stage_a_identity_capture_provenance"
+)
+STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
+    "captured_under_authenticated_runtime_and_launcher_finalized"
+)
+STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
+)
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _BOUND_ARTIFACT_OPTIONS: Final = {
@@ -50,6 +61,8 @@ _REQUIRED_OPTIONS: Final = frozenset(
     {
         "--frozen-identity",
         "--stage-a-calibration-binding",
+        "--stage-a-capture-provenance-receipt",
+        "--expected-stage-a-capture-provenance-receipt-sha256",
         "--repository-root",
         "--source-commit",
         "--identity-commit",
@@ -99,6 +112,48 @@ def _sha256(value: object, *, context: str) -> str:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         raise SealedStageALaunchError(f"{context} must be a lowercase SHA-256 digest")
     return value
+
+
+def _stable_regular_file_bytes(path: Path, *, context: str) -> bytes:
+    """Read one regular file once and reject identity or metadata changes during the read."""
+
+    requested = Path(path)
+    try:
+        absolute = requested.resolve(strict=True)
+        before = absolute.stat()
+        if absolute.is_symlink() or not stat.S_ISREG(before.st_mode):
+            raise SealedStageALaunchError(f"{context} is not a regular file")
+        data = absolute.read_bytes()
+        after = absolute.stat()
+        repeated = requested.resolve(strict=True)
+    except SealedStageALaunchError:
+        raise
+    except OSError as error:
+        raise SealedStageALaunchError(f"{context} is unavailable") from error
+    before_identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_identity = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if (
+        before_identity != after_identity
+        or repeated != absolute
+        or len(data) != after.st_size
+        or absolute.is_symlink()
+    ):
+        raise SealedStageALaunchError(f"{context} changed while it was authenticated")
+    return data
 
 
 def _strict_json(data: bytes, *, context: str) -> dict[str, object]:
@@ -179,7 +234,9 @@ def _extract_options(arguments: Sequence[str]) -> dict[str, str]:
     return result
 
 
-def _parse_identity(data: bytes) -> dict[str, str]:
+def _parse_identity_custody(
+    data: bytes,
+) -> tuple[dict[str, str], str, str, str]:
     root = _strict_json(data, context="frozen Stage-A identity")
     _exact_fields(root, {"canonical_evidence_sha256", "evidence"}, context="identity")
     if _canonical_json_bytes(root) != data:
@@ -190,15 +247,27 @@ def _parse_identity(data: bytes) -> dict[str, str]:
     if (
         type(evidence.get("schema_version")) is not int
         or evidence.get("schema_version") != IDENTITY_SCHEMA
-        or evidence.get("identity_schema") != "recurquant.experiment013.identity-frozen.v5"
+        or evidence.get("identity_schema") != "recurquant.experiment013.identity-frozen.v6"
         or evidence.get("status") != "frozen"
         or evidence.get("phase") != "stage_a"
         or evidence.get("identity_only") is not True
         or evidence.get("promotion_required") is not False
     ):
-        raise SealedStageALaunchError("identity is not a promoted Stage-A resolver-v5 artifact")
+        raise SealedStageALaunchError("identity is not a promoted Stage-A resolver-v6 artifact")
     promotion = evidence.get("promotion")
-    if not isinstance(promotion, dict) or promotion.get("explicit") is not True:
+    if not isinstance(promotion, dict):
+        raise SealedStageALaunchError("Stage-A identity lacks explicit promotion")
+    _exact_fields(
+        promotion,
+        {
+            "candidate_file_sha256",
+            "candidate_canonical_evidence_sha256",
+            "explicit",
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD,
+        },
+        context="identity promotion",
+    )
+    if promotion.get("explicit") is not True:
         raise SealedStageALaunchError("Stage-A identity lacks explicit promotion")
     recorded = _sha256(
         root.get("canonical_evidence_sha256"), context="identity canonical evidence SHA-256"
@@ -209,10 +278,143 @@ def _parse_identity(data: bytes) -> dict[str, str]:
     if not isinstance(bindings, dict):
         raise SealedStageALaunchError("identity execution bindings are missing")
     _exact_fields(bindings, set(_BOUND_ARTIFACT_OPTIONS), context="identity bindings")
-    return {
+    normalized_bindings = {
         name: _sha256(bindings[name], context=f"identity binding {name}")
         for name in sorted(bindings)
     }
+    calibration_binding = evidence.get("calibration_binding")
+    if not isinstance(calibration_binding, dict):
+        raise SealedStageALaunchError("identity calibration binding is missing")
+    authorization_sha256 = _sha256(
+        calibration_binding.get("calibration_authorization_file_sha256"),
+        context="identity calibration authorization SHA-256",
+    )
+    identity_input_sha256 = _sha256(
+        evidence.get("source_manifest_sha256"),
+        context="identity input file SHA-256",
+    )
+    capture_receipt_sha256 = _sha256(
+        evidence.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD),
+        context="identity capture provenance receipt SHA-256",
+    )
+    if capture_receipt_sha256 != _sha256(
+        promotion.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD),
+        context="promoted capture provenance receipt SHA-256",
+    ):
+        raise SealedStageALaunchError("identity promotion binds a different capture receipt")
+    return (
+        normalized_bindings,
+        identity_input_sha256,
+        capture_receipt_sha256,
+        authorization_sha256,
+    )
+
+
+def _parse_identity(data: bytes) -> dict[str, str]:
+    """Return execution bindings after the complete v6 bootstrap custody check."""
+
+    return _parse_identity_custody(data)[0]
+
+
+def _parse_stage_a_capture_provenance_receipt(
+    data: bytes,
+    *,
+    expected_file_sha256: str,
+    calibration_binding_artifact: bytes,
+    identity_input_file_sha256: str,
+    identity_capture_receipt_file_sha256: str,
+    identity_calibration_authorization_file_sha256: str,
+    identity_execution_bindings: Mapping[str, str],
+) -> dict[str, object]:
+    expected_sha256 = _sha256(
+        expected_file_sha256,
+        context="expected Stage-A capture provenance receipt SHA-256",
+    )
+    file_sha256 = _sha256_bytes(data)
+    if file_sha256 != expected_sha256 or file_sha256 != identity_capture_receipt_file_sha256:
+        raise SealedStageALaunchError(
+            "Stage-A capture provenance receipt differs from authenticated identity custody"
+        )
+    root = _strict_json(data, context="Stage-A capture provenance receipt")
+    _exact_fields(
+        root,
+        {
+            "artifact_kind",
+            "calibration_authorization_file_sha256",
+            "calibration_binding_file_sha256",
+            "capture_source",
+            "capture_version",
+            "critical_module_origins",
+            "excluded_runtime_modules",
+            "execution_bindings",
+            "identity_input_file_sha256",
+            "phase",
+            "publication_contract",
+            "runner_revision",
+            "schema_version",
+            "source_commit",
+            "status",
+        },
+        context="Stage-A capture provenance receipt",
+    )
+    if _canonical_json_bytes(root) != data:
+        raise SealedStageALaunchError("Stage-A capture provenance receipt is not canonical JSON")
+    if (
+        root.get("artifact_kind") != STAGE_A_CAPTURE_PROVENANCE_KIND
+        or type(root.get("schema_version")) is not int
+        or root.get("schema_version") != 1
+        or type(root.get("capture_version")) is not int
+        or root.get("capture_version") != 6
+        or root.get("runner_revision") != STAGE_A_CAPTURE_RUNNER_REVISION
+        or root.get("phase") != "stage_a"
+        or root.get("status") != STAGE_A_CAPTURE_PROVENANCE_STATUS
+        or root.get("publication_contract") != STAGE_A_CAPTURE_PUBLICATION_CONTRACT
+    ):
+        raise SealedStageALaunchError("Stage-A capture provenance finalized envelope drifted")
+    if (
+        _sha256(root.get("identity_input_file_sha256"), context="capture identity input SHA-256")
+        != identity_input_file_sha256
+    ):
+        raise SealedStageALaunchError("Stage-A capture provenance binds a different identity input")
+    if _sha256(
+        root.get("calibration_binding_file_sha256"),
+        context="capture calibration binding SHA-256",
+    ) != _sha256_bytes(calibration_binding_artifact):
+        raise SealedStageALaunchError(
+            "Stage-A capture provenance binds a different calibration binding"
+        )
+    if (
+        _sha256(
+            root.get("calibration_authorization_file_sha256"),
+            context="capture calibration authorization SHA-256",
+        )
+        != identity_calibration_authorization_file_sha256
+    ):
+        raise SealedStageALaunchError(
+            "Stage-A capture provenance binds a different calibration authorization"
+        )
+    execution = root.get("execution_bindings")
+    if not isinstance(execution, Mapping):
+        raise SealedStageALaunchError("Stage-A capture provenance execution bindings are missing")
+    _exact_fields(execution, set(_BOUND_ARTIFACT_OPTIONS), context="capture execution bindings")
+    normalized_execution = {
+        name: _sha256(execution[name], context=f"capture execution binding {name}")
+        for name in sorted(execution)
+    }
+    if normalized_execution != dict(identity_execution_bindings):
+        raise SealedStageALaunchError("Stage-A capture provenance execution bindings drifted")
+    capture_source = root.get("capture_source")
+    if not isinstance(capture_source, Mapping):
+        raise SealedStageALaunchError("Stage-A capture provenance source record is missing")
+    _exact_fields(capture_source, {"path", "sha256"}, context="capture source record")
+    if capture_source.get("path") != "scripts/capture_static_q468_identity_input.py":
+        raise SealedStageALaunchError("Stage-A capture provenance source path drifted")
+    _sha256(capture_source.get("sha256"), context="capture source SHA-256")
+    if not isinstance(root.get("critical_module_origins"), list):
+        raise SealedStageALaunchError("Stage-A capture provenance critical origins are missing")
+    if root.get("excluded_runtime_modules") != ["pkg_resources", "setuptools"]:
+        raise SealedStageALaunchError("Stage-A capture provenance exclusion inventory drifted")
+    return root
 
 
 def _parse_source(data: bytes) -> dict[str, object]:
@@ -327,18 +529,45 @@ def _load_calibration_launcher(
     source: Mapping[str, object],
 ) -> ModuleType:
     entries = {str(item["path"]): item for item in source["paths"]}  # type: ignore[index]
-    path = (repository_root / PurePosixPath(CALIBRATION_LAUNCHER_SOURCE_PATH)).resolve(strict=True)
-    if _sha256_bytes(path.read_bytes()) != entries[CALIBRATION_LAUNCHER_SOURCE_PATH]["raw_sha256"]:
+    root = repository_root.resolve(strict=True)
+    path = (root / PurePosixPath(CALIBRATION_LAUNCHER_SOURCE_PATH)).resolve(strict=True)
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise SealedStageALaunchError(
+            "calibration launcher source escapes repository root"
+        ) from error
+    authenticated_bytes = _stable_regular_file_bytes(
+        path,
+        context="calibration launcher source",
+    )
+    if (
+        _sha256_bytes(authenticated_bytes)
+        != entries[CALIBRATION_LAUNCHER_SOURCE_PATH]["raw_sha256"]
+    ):
         raise SealedStageALaunchError("calibration launcher source bytes drifted")
     if CALIBRATION_LAUNCHER_MODULE_NAME in sys.modules:
         raise SealedStageALaunchError("calibration launcher module name is already occupied")
-    spec = importlib.util.spec_from_file_location(CALIBRATION_LAUNCHER_MODULE_NAME, path)
-    if spec is None or spec.loader is None:
-        raise SealedStageALaunchError("cannot load authenticated calibration launcher")
-    module = importlib.util.module_from_spec(spec)
+    try:
+        code = compile(
+            authenticated_bytes,
+            str(path),
+            "exec",
+            dont_inherit=True,
+        )
+    except (SyntaxError, ValueError) as error:
+        raise SealedStageALaunchError(
+            "authenticated calibration launcher cannot compile"
+        ) from error
+    module = ModuleType(CALIBRATION_LAUNCHER_MODULE_NAME)
+    module.__file__ = str(path)
+    module.__package__ = ""
+    module.__loader__ = None
+    module.__spec__ = None
+    module.__cached__ = None
     sys.modules[CALIBRATION_LAUNCHER_MODULE_NAME] = module
     try:
-        spec.loader.exec_module(module)
+        exec(code, module.__dict__)
     except BaseException:
         sys.modules.pop(CALIBRATION_LAUNCHER_MODULE_NAME, None)
         raise
@@ -367,6 +596,8 @@ def _stage_a_bootstrap(calibration_launcher: ModuleType) -> str:
     "--runtime-manifest",
     "--source-commit",
     "--stage-a-calibration-binding",
+    "--stage-a-capture-provenance-receipt",
+    "--expected-stage-a-capture-provenance-receipt-sha256",
 }
 
 def _options(arguments):
@@ -389,6 +620,9 @@ def _options(arguments):
     return result
 """
     stage_a_identity = """def _identity(data):
+    global _stage_a_identity_input_sha256
+    global _stage_a_capture_receipt_sha256
+    global _stage_a_calibration_authorization_sha256
     root = _json(data, "frozen Stage-A identity")
     _fields(root, {"canonical_evidence_sha256", "evidence"}, "frozen Stage-A identity")
     if _canonical(root) != data:
@@ -396,13 +630,16 @@ def _options(arguments):
     evidence = root["evidence"]
     promotion = evidence.get("promotion") if isinstance(evidence, dict) else None
     if (not isinstance(evidence, dict) or type(evidence.get("schema_version")) is not int
-            or evidence.get("schema_version") != 5
-            or evidence.get("identity_schema") != "recurquant.experiment013.identity-frozen.v5"
+            or evidence.get("schema_version") != 6
+            or evidence.get("identity_schema") != "recurquant.experiment013.identity-frozen.v6"
             or evidence.get("status") != "frozen" or evidence.get("phase") != "stage_a"
             or evidence.get("identity_only") is not True
             or evidence.get("promotion_required") is not False
             or not isinstance(promotion, dict) or promotion.get("explicit") is not True):
         _fail("frozen Stage-A identity state, schema, or promotion drifted")
+    _fields(promotion, {"candidate_file_sha256", "candidate_canonical_evidence_sha256",
+        "explicit", "stage_a_capture_provenance_receipt_file_sha256"},
+        "frozen Stage-A identity promotion")
     if _digest(root["canonical_evidence_sha256"], "identity evidence hash") != _h.sha256(
         _canonical(evidence)
     ).hexdigest():
@@ -411,7 +648,73 @@ def _options(arguments):
     if not isinstance(bindings, dict):
         _fail("frozen Stage-A identity bindings are missing")
     _fields(bindings, set(_binding_options), "identity bindings")
+    calibration = evidence.get("calibration_binding")
+    if not isinstance(calibration, dict):
+        _fail("frozen Stage-A identity calibration binding is missing")
+    _stage_a_identity_input_sha256 = _digest(
+        evidence.get("source_manifest_sha256"), "Stage-A identity input SHA-256")
+    _stage_a_capture_receipt_sha256 = _digest(
+        evidence.get("stage_a_capture_provenance_receipt_file_sha256"),
+        "Stage-A capture provenance receipt SHA-256")
+    if _stage_a_capture_receipt_sha256 != _digest(
+            promotion.get("stage_a_capture_provenance_receipt_file_sha256"),
+            "promoted Stage-A capture provenance receipt SHA-256"):
+        _fail("Stage-A identity promotion binds a different capture receipt")
+    _stage_a_calibration_authorization_sha256 = _digest(
+        calibration.get("calibration_authorization_file_sha256"),
+        "Stage-A calibration authorization SHA-256")
     return {key: _digest(value, "identity binding") for key, value in bindings.items()}
+
+def _stage_a_receipt(options, bindings):
+    binding = _bytes(
+        _p.Path(options["--stage-a-calibration-binding"]),
+        "Stage-A calibration binding")
+    data = _bytes(
+        _p.Path(options["--stage-a-capture-provenance-receipt"]),
+        "finalized Stage-A capture provenance receipt")
+    file_sha256 = _h.sha256(data).hexdigest()
+    if (file_sha256 != _digest(
+            options["--expected-stage-a-capture-provenance-receipt-sha256"],
+            "expected Stage-A capture provenance receipt SHA-256")
+            or file_sha256 != _stage_a_capture_receipt_sha256):
+        _fail("Stage-A capture provenance receipt differs from identity custody")
+    root = _json(data, "Stage-A capture provenance receipt")
+    _fields(root, {"artifact_kind", "calibration_authorization_file_sha256",
+        "calibration_binding_file_sha256", "capture_source", "capture_version",
+        "critical_module_origins", "excluded_runtime_modules", "execution_bindings",
+        "identity_input_file_sha256", "phase", "publication_contract",
+        "runner_revision", "schema_version", "source_commit", "status"},
+        "Stage-A capture provenance receipt")
+    if (_canonical(root) != data
+            or root.get("artifact_kind")
+            != "recurquant_experiment013_stage_a_identity_capture_provenance"
+            or type(root.get("schema_version")) is not int or root.get("schema_version") != 1
+            or type(root.get("capture_version")) is not int or root.get("capture_version") != 6
+            or root.get("runner_revision")
+            != "experiment-013-static-q468-calibration-runner-v10"
+            or root.get("phase") != "stage_a"
+            or root.get("status")
+            != "captured_under_authenticated_runtime_and_launcher_finalized"
+            or root.get("publication_contract")
+            != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
+            or root.get("source_commit") != options["--source-commit"]):
+        _fail("Stage-A capture provenance finalized envelope drifted")
+    if (_digest(root.get("identity_input_file_sha256"), "capture identity input SHA-256")
+            != _stage_a_identity_input_sha256
+            or _digest(root.get("calibration_binding_file_sha256"),
+                "capture binding SHA-256") != _h.sha256(binding).hexdigest()
+            or _digest(root.get("calibration_authorization_file_sha256"),
+                "capture authorization SHA-256")
+            != _stage_a_calibration_authorization_sha256):
+        _fail("Stage-A capture provenance custody bindings drifted")
+    receipt_bindings = root.get("execution_bindings")
+    if not isinstance(receipt_bindings, dict):
+        _fail("Stage-A capture provenance execution bindings are missing")
+    _fields(receipt_bindings, set(_binding_options), "capture execution bindings")
+    if {key: _digest(value, "capture execution binding")
+            for key, value in receipt_bindings.items()} != bindings:
+        _fail("Stage-A capture provenance execution bindings drifted")
+    return root
 """
     environment_anchor = (
         "_environment = {key.upper(): value for key, value in _o.environ.items()}\n"
@@ -492,10 +795,15 @@ if _stage_a_offline:
         "",
         count=1,
     )
+    result = replace_exact(
+        result,
+        '_bindings = _identity(_bytes(_identity_path, "frozen identity"))',
+        '_bindings = _identity(_bytes(_identity_path, "frozen identity"))\n'
+        "    _stage_a_capture_receipt = _stage_a_receipt(_runner_options, _bindings)",
+        count=1,
+    )
     forbidden = (
         "scripts/run_static_q468_calibration.py",
-        '"--capture-provenance-receipt",',
-        '"--expected-capture-provenance-receipt-sha256",',
         "--fisher-h1-smoke",
         "--prior-fisher-h1-smoke-report",
         "--prior-fisher-h1-smoke-complete-marker",
@@ -669,16 +977,43 @@ def _verify_bound_inputs(
     options: Mapping[str, str],
     *,
     runtime_manifest_path: Path,
-) -> tuple[dict[str, str], dict[str, object], Path]:
-    identity_bytes = Path(options["--frozen-identity"]).read_bytes()
-    bindings = _parse_identity(identity_bytes)
+) -> tuple[dict[str, str], dict[str, object], Path, bytes]:
+    identity_bytes = _stable_regular_file_bytes(
+        Path(options["--frozen-identity"]),
+        context="frozen Stage-A identity",
+    )
+    (
+        bindings,
+        identity_input_sha256,
+        identity_capture_receipt_sha256,
+        identity_authorization_sha256,
+    ) = _parse_identity_custody(identity_bytes)
+    binding_bytes = _stable_regular_file_bytes(
+        Path(options["--stage-a-calibration-binding"]),
+        context="Stage-A calibration binding",
+    )
+    capture_receipt_bytes = _stable_regular_file_bytes(
+        Path(options["--stage-a-capture-provenance-receipt"]),
+        context="finalized Stage-A capture provenance receipt",
+    )
+    capture_receipt = _parse_stage_a_capture_provenance_receipt(
+        capture_receipt_bytes,
+        expected_file_sha256=options["--expected-stage-a-capture-provenance-receipt-sha256"],
+        calibration_binding_artifact=binding_bytes,
+        identity_input_file_sha256=identity_input_sha256,
+        identity_capture_receipt_file_sha256=identity_capture_receipt_sha256,
+        identity_calibration_authorization_file_sha256=identity_authorization_sha256,
+        identity_execution_bindings=bindings,
+    )
+    bound_artifact_bytes: dict[str, bytes] = {}
     for binding, option in _BOUND_ARTIFACT_OPTIONS.items():
-        try:
-            data = Path(options[option]).read_bytes()
-        except OSError as error:
-            raise SealedStageALaunchError(f"bound artifact is unavailable: {option}") from error
+        data = _stable_regular_file_bytes(
+            Path(options[option]),
+            context=f"bound artifact {option}",
+        )
         if _sha256_bytes(data) != bindings[binding]:
             raise SealedStageALaunchError(f"identity binding mismatch: {option}")
+        bound_artifact_bytes[binding] = data
     for binding, option in _EXPECTED_DIGEST_OPTIONS.items():
         if _sha256(options[option], context=f"runner option {option}") != bindings[binding]:
             raise SealedStageALaunchError(f"runner digest binding mismatch: {option}")
@@ -686,10 +1021,36 @@ def _verify_bound_inputs(
         strict=True
     ):
         raise SealedStageALaunchError("host and runner runtime-manifest paths differ")
-    source_bytes = Path(options["--repository-source-manifest"]).read_bytes()
+    source_bytes = bound_artifact_bytes["repository_source_manifest_file_sha256"]
     source = _parse_source(source_bytes)
+    source_document = source["document"]
+    if not isinstance(source_document, Mapping):
+        raise SealedStageALaunchError("repository source manifest document is missing")
+    if (
+        capture_receipt.get("source_commit") != source_document.get("source_commit")
+        or capture_receipt.get("source_commit") != options["--source-commit"]
+    ):
+        raise SealedStageALaunchError("Stage-A capture provenance binds a different H0")
+    capture_source = capture_receipt["capture_source"]
+    assert isinstance(capture_source, Mapping)
+    source_paths = {
+        str(entry["path"]): entry
+        for entry in source["paths"]  # type: ignore[index]
+    }
+    if (
+        capture_source.get("sha256")
+        != source_paths["scripts/capture_static_q468_identity_input.py"]["raw_sha256"]
+    ):
+        raise SealedStageALaunchError(
+            "Stage-A capture provenance source differs from authenticated H0"
+        )
     runner_path = _verify_source(source, Path(options["--repository-root"]))
-    return bindings, source, runner_path
+    return (
+        bindings,
+        source,
+        runner_path,
+        bound_artifact_bytes["calibration_runtime_manifest_file_sha256"],
+    )
 
 
 def _run_sealed_child(
@@ -697,6 +1058,7 @@ def _run_sealed_child(
     calibration_launcher: ModuleType,
     bootstrap: bytes,
     runtime_manifest_path: Path,
+    runtime_manifest_bytes: bytes,
     runtime_manifest: Mapping[str, object],
     interpreter: Path,
     base_runtime_root: Path,
@@ -799,10 +1161,14 @@ def _run_sealed_child(
         except Exception as error:
             secondary_failures.append(("Stage-A dataset cache root reauthentication", error))
         try:
-            _bindings, repeated_source, _runner = _verify_bound_inputs(
+            _bindings, repeated_source, _runner, repeated_runtime_bytes = _verify_bound_inputs(
                 options,
                 runtime_manifest_path=runtime_manifest_path,
             )
+            if repeated_runtime_bytes != runtime_manifest_bytes:
+                raise SealedStageALaunchError(
+                    "runtime manifest bytes changed during Stage-A execution"
+                )
             if repeated_source["git_executable"] != source["git_executable"]:
                 raise SealedStageALaunchError(
                     "source Git executable binding changed during Stage-A execution"
@@ -866,13 +1232,12 @@ def launch(argv: Sequence[str]) -> int:
         if name in package_roots or name == BASE_RUNTIME_ROOT_NAME:
             raise SealedStageALaunchError(f"duplicate or reserved package root: {name}")
         package_roots[name] = path
-    _bindings, source, _runner = _verify_bound_inputs(
+    _bindings, source, _runner, runtime_bytes = _verify_bound_inputs(
         options, runtime_manifest_path=args.runtime_manifest
     )
     repository_root = Path(options["--repository-root"])
     calibration_launcher = _load_calibration_launcher(repository_root, source)
     try:
-        runtime_bytes = args.runtime_manifest.read_bytes()
         runtime_manifest = calibration_launcher._parse_runtime_manifest(runtime_bytes)
         if source["git_executable"] != {
             "sha256": runtime_manifest["git_executable"]["sha256"],
@@ -906,6 +1271,7 @@ def launch(argv: Sequence[str]) -> int:
                 calibration_launcher=calibration_launcher,
                 bootstrap=bootstrap,
                 runtime_manifest_path=runtime_manifest_path,
+                runtime_manifest_bytes=runtime_bytes,
                 runtime_manifest=runtime_manifest,
                 interpreter=interpreter,
                 base_runtime_root=base,

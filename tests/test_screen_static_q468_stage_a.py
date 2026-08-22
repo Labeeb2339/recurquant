@@ -26,13 +26,23 @@ def _digest(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-def _identity_bytes(execution_bindings: dict[str, str] | None = None) -> bytes:
+def _identity_bytes(
+    execution_bindings: dict[str, str] | None = None,
+    *,
+    capture_receipt_sha256: str | None = None,
+    identity_input_sha256: str | None = None,
+    authorization_sha256: str | None = None,
+) -> bytes:
     execution = (
         {name: _digest(name) for name in sorted(stage_a.EXECUTION_BINDING_FIELDS)}
         if execution_bindings is None
         else dict(execution_bindings)
     )
     calibration = {name: _digest(name) for name in sorted(stage_a.BINDING_FIELDS)}
+    calibration["calibration_authorization_file_sha256"] = authorization_sha256 or _digest(
+        "calibration-authorization"
+    )
+    receipt_sha256 = capture_receipt_sha256 or _digest("fixture-stage-a-capture-receipt")
     records = []
     for family in ("pg19", "ruler", "humaneval_plus"):
         for rank in range(4):
@@ -52,13 +62,20 @@ def _identity_bytes(execution_bindings: dict[str, str] | None = None) -> bytes:
                 }
             )
     evidence = {
-        "schema_version": 5,
-        "identity_schema": "recurquant.experiment013.identity-frozen.v5",
+        "schema_version": 6,
+        "identity_schema": "recurquant.experiment013.identity-frozen.v6",
         "status": "frozen",
         "phase": "stage_a",
         "identity_only": True,
         "promotion_required": False,
-        "promotion": {"explicit": True},
+        "promotion": {
+            "candidate_file_sha256": _digest("candidate-file"),
+            "candidate_canonical_evidence_sha256": _digest("candidate-evidence"),
+            "explicit": True,
+            stage_a.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: receipt_sha256,
+        },
+        "source_manifest_sha256": identity_input_sha256 or _digest("identity-input"),
+        stage_a.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: receipt_sha256,
         "execution_bindings": execution,
         "calibration_binding": calibration,
         "records": records,
@@ -69,6 +86,41 @@ def _identity_bytes(execution_bindings: dict[str, str] | None = None) -> bytes:
                 stage_a.canonical_json_bytes(evidence)
             ),
             "evidence": evidence,
+        }
+    )
+
+
+def _capture_receipt_bytes(
+    execution_bindings: dict[str, str],
+    *,
+    binding_bytes: bytes,
+    source_commit: str = "1" * 40,
+    capture_source_sha256: str | None = None,
+    identity_input_sha256: str | None = None,
+    authorization_sha256: str | None = None,
+) -> bytes:
+    return stage_a.canonical_json_bytes(
+        {
+            "artifact_kind": stage_a.STAGE_A_CAPTURE_PROVENANCE_KIND,
+            "calibration_authorization_file_sha256": (
+                authorization_sha256 or _digest("calibration-authorization")
+            ),
+            "calibration_binding_file_sha256": stage_a.sha256_bytes(binding_bytes),
+            "capture_source": {
+                "path": stage_a.CAPTURE_SOURCE_PATH,
+                "sha256": capture_source_sha256 or _digest("capture-source"),
+            },
+            "capture_version": 6,
+            "critical_module_origins": [],
+            "excluded_runtime_modules": ["pkg_resources", "setuptools"],
+            "execution_bindings": dict(execution_bindings),
+            "identity_input_file_sha256": identity_input_sha256 or _digest("identity-input"),
+            "phase": "stage_a",
+            "publication_contract": stage_a.STAGE_A_CAPTURE_PUBLICATION_CONTRACT,
+            "runner_revision": stage_a.STAGE_A_CAPTURE_RUNNER_REVISION,
+            "schema_version": 1,
+            "source_commit": source_commit,
+            "status": stage_a.STAGE_A_CAPTURE_PROVENANCE_STATUS,
         }
     )
 
@@ -108,7 +160,7 @@ def _runtime_namespace() -> Any:
     )
 
 
-def test_bootstrap_requires_promoted_v5_and_exact_forward_formula() -> None:
+def test_bootstrap_requires_promoted_v6_and_exact_forward_formula() -> None:
     decoded = _bootstrap()
     assert decoded.expected_forward_count == 9 * 12 * 2
     assert set(decoded.execution_bindings) == stage_a.EXECUTION_BINDING_FIELDS
@@ -119,8 +171,187 @@ def test_bootstrap_requires_promoted_v5_and_exact_forward_formula() -> None:
     root["canonical_evidence_sha256"] = stage_a.sha256_bytes(
         stage_a.canonical_json_bytes(root["evidence"])
     )
-    with pytest.raises(stage_a.StageAError, match="promoted resolver-v5"):
+    with pytest.raises(stage_a.StageAError, match="promoted resolver-v6"):
         stage_a.bootstrap_stage_a_identity(stage_a.canonical_json_bytes(root))
+
+
+def test_bootstrap_accepts_exact_finalized_stage_a_capture_receipt_and_rejects_cross_chain() -> (
+    None
+):
+    binding_bytes = b"production-shaped Stage-A calibration binding\n"
+    provisional_identity = _bootstrap()
+    receipt_bytes = _capture_receipt_bytes(
+        dict(provisional_identity.execution_bindings),
+        binding_bytes=binding_bytes,
+    )
+    identity = stage_a.bootstrap_stage_a_identity(
+        _identity_bytes(
+            dict(provisional_identity.execution_bindings),
+            capture_receipt_sha256=stage_a.sha256_bytes(receipt_bytes),
+        )
+    )
+    decoded = stage_a.bootstrap_stage_a_capture_provenance_receipt(
+        receipt_bytes,
+        expected_file_sha256=stage_a.sha256_bytes(receipt_bytes),
+        calibration_binding_artifact=binding_bytes,
+        identity=identity,
+        expected_source_commit="1" * 40,
+    )
+    assert decoded["capture_version"] == 6
+    assert decoded["runner_revision"] == stage_a.STAGE_A_CAPTURE_RUNNER_REVISION
+
+    mutations = (
+        ("capture_version", 5, "finalized envelope"),
+        ("identity_input_file_sha256", _digest("other-input"), "different identity input"),
+        ("calibration_binding_file_sha256", _digest("other-binding"), "different calibration"),
+    )
+    for field, value, message in mutations:
+        root = stage_a._strict_json(receipt_bytes, context="test capture receipt")
+        root[field] = value
+        mutated = stage_a.canonical_json_bytes(root)
+        rebound_identity = stage_a.bootstrap_stage_a_identity(
+            _identity_bytes(
+                dict(provisional_identity.execution_bindings),
+                capture_receipt_sha256=stage_a.sha256_bytes(mutated),
+            )
+        )
+        with pytest.raises(stage_a.StageAError, match=message):
+            stage_a.bootstrap_stage_a_capture_provenance_receipt(
+                mutated,
+                expected_file_sha256=stage_a.sha256_bytes(mutated),
+                calibration_binding_artifact=binding_bytes,
+                identity=rebound_identity,
+                expected_source_commit="1" * 40,
+            )
+
+
+def test_receipt_mismatch_fails_before_execution_source_provider_or_model_access(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    binding_bytes = b"Stage-A calibration binding\n"
+    provisional_identity = _bootstrap()
+    receipt_bytes = _capture_receipt_bytes(
+        dict(provisional_identity.execution_bindings),
+        binding_bytes=binding_bytes,
+    )
+    identity_bytes = _identity_bytes(
+        dict(provisional_identity.execution_bindings),
+        capture_receipt_sha256=stage_a.sha256_bytes(receipt_bytes),
+    )
+    identity_path = tmp_path / "identity.json"
+    binding_path = tmp_path / "binding.json"
+    receipt_path = tmp_path / "receipt.json"
+    reads: list[Path] = []
+    payloads = {
+        identity_path: identity_bytes,
+        binding_path: binding_bytes,
+        receipt_path: receipt_bytes,
+    }
+    config = SimpleNamespace(
+        frozen_identity_path=identity_path,
+        calibration_binding_path=binding_path,
+        stage_a_capture_provenance_receipt_path=receipt_path,
+        expected_stage_a_capture_provenance_receipt_sha256=_digest("wrong-explicit-receipt"),
+        source_commit="1" * 40,
+    )
+
+    def stable_bytes(path: Path, *, context: str) -> bytes:
+        del context
+        reads.append(path)
+        return payloads[path]
+
+    monkeypatch.setattr(stage_a, "_assert_output_paths_isolated", lambda _config: None)
+    monkeypatch.setattr(stage_a, "_stable_file_bytes", stable_bytes)
+    monkeypatch.setattr(
+        stage_a,
+        "_read_execution_artifacts",
+        lambda _config: pytest.fail("execution artifacts must not be read"),
+    )
+    monkeypatch.setattr(
+        stage_a,
+        "_load_exact_module",
+        lambda *_args, **_kwargs: pytest.fail("source/provider modules must not be loaded"),
+    )
+    with pytest.raises(stage_a.StageAError, match="differs from authenticated custody"):
+        stage_a.authenticate_production(config, require_input_bundle=False)
+    assert reads == [identity_path, binding_path, receipt_path]
+
+
+def test_legacy_v5_identity_fails_before_binding_receipt_or_provider_access(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    legacy = stage_a._strict_json(_identity_bytes(), context="legacy Stage-A identity")
+    legacy["evidence"]["schema_version"] = 5
+    legacy["evidence"]["identity_schema"] = "recurquant.experiment013.identity-frozen.v5"
+    legacy["canonical_evidence_sha256"] = stage_a.sha256_bytes(
+        stage_a.canonical_json_bytes(legacy["evidence"])
+    )
+    legacy_bytes = stage_a.canonical_json_bytes(legacy)
+    identity_path = tmp_path / "legacy-identity.json"
+    reads: list[Path] = []
+
+    def stable_bytes(path: Path, *, context: str) -> bytes:
+        del context
+        reads.append(path)
+        if path != identity_path:
+            pytest.fail("binding or receipt path must not be accessed for legacy v5")
+        return legacy_bytes
+
+    monkeypatch.setattr(stage_a, "_assert_output_paths_isolated", lambda _config: None)
+    monkeypatch.setattr(stage_a, "_stable_file_bytes", stable_bytes)
+    monkeypatch.setattr(
+        stage_a,
+        "_load_exact_module",
+        lambda *_args, **_kwargs: pytest.fail("provider modules must not be loaded"),
+    )
+    with pytest.raises(stage_a.StageAError, match="promoted resolver-v6"):
+        stage_a.authenticate_production(
+            SimpleNamespace(frozen_identity_path=identity_path),
+            require_input_bundle=False,
+        )
+    assert reads == [identity_path]
+
+
+def test_exact_module_loader_executes_authenticated_bytes_not_swapped_path(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    name = "_recurquant_stage_a_exact_swap_regression"
+    relative = "scripts/exact_swap_regression.py"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    sentinel = tmp_path / "unauthenticated-module-executed.txt"
+    authenticated_bytes = b'VALUE = "authenticated-old"\n'
+    swapped_bytes = (
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('new code executed', encoding='utf-8')\n"
+        'VALUE = "unauthenticated-new"\n'
+    ).encode()
+    path.write_bytes(authenticated_bytes)
+    entries = {relative: {"raw_sha256": stage_a.sha256_bytes(authenticated_bytes)}}
+
+    def authenticated_read_then_swap(read_path: Path, *, context: str) -> bytes:
+        del context
+        assert read_path == path.resolve()
+        data = read_path.read_bytes()
+        read_path.write_bytes(swapped_bytes)
+        return data
+
+    monkeypatch.setattr(stage_a, "_stable_file_bytes", authenticated_read_then_swap)
+    try:
+        module = stage_a._load_exact_module(
+            name,
+            relative,
+            repository_root=tmp_path,
+            entries=entries,
+        )
+        assert module.VALUE == "authenticated-old"
+        assert path.read_bytes() == swapped_bytes
+        assert not sentinel.exists()
+    finally:
+        sys.modules.pop(name, None)
 
 
 @pytest.mark.parametrize(
@@ -272,6 +503,10 @@ def _authenticated() -> Any:
         bootstrap_identity=bootstrap,
         identity=object(),
         binding=SimpleNamespace(file_sha256=_digest("binding")),
+        capture_provenance_receipt=SimpleNamespace(
+            file_sha256=bootstrap.stage_a_capture_provenance_receipt_file_sha256
+        ),
+        capture_provenance_receipt_bytes=b"fixture finalized Stage-A capture receipt\n",
         dependency_bytes=MappingProxyType({}),
         execution_artifact_bytes=MappingProxyType({}),
         source_manifest=MappingProxyType({}),
@@ -682,8 +917,10 @@ def test_authorization_execution_mismatch_fails_before_model_file_touch(
     h0 = "1" * 40
     identity_path = tmp_path / "identity.json"
     binding_path = tmp_path / "binding.json"
+    receipt_path = tmp_path / "capture-receipt.json"
     identity_bytes = b"identity"
     binding_bytes = b"binding"
+    receipt_bytes = b"capture receipt"
     execution = {
         "repository_source_manifest_file_sha256": b"source",
         "calibration_runtime_manifest_file_sha256": b"runtime",
@@ -697,10 +934,14 @@ def test_authorization_execution_mismatch_fails_before_model_file_touch(
         execution_bindings=MappingProxyType(execution_hashes),
         calibration_binding=MappingProxyType({}),
         file_sha256=_digest("identity"),
+        identity_input_file_sha256=_digest("identity-input"),
+        stage_a_capture_provenance_receipt_file_sha256=stage_a.sha256_bytes(receipt_bytes),
     )
     config = SimpleNamespace(
         frozen_identity_path=identity_path,
         calibration_binding_path=binding_path,
+        stage_a_capture_provenance_receipt_path=receipt_path,
+        expected_stage_a_capture_provenance_receipt_sha256=stage_a.sha256_bytes(receipt_bytes),
         expected_runtime_manifest_sha256=execution_hashes[
             "calibration_runtime_manifest_file_sha256"
         ],
@@ -730,21 +971,36 @@ def test_authorization_execution_mismatch_fails_before_model_file_touch(
         deserialize_stage_a_calibration_binding_artifact=lambda _data: SimpleNamespace(
             execution_bindings=wrong_authorized,
             source_commit=h0,
-        )
+        ),
+        deserialize_stage_a_capture_provenance_receipt=lambda *_args, **_kwargs: object(),
     )
 
     monkeypatch.setattr(stage_a, "_assert_output_paths_isolated", lambda _config: None)
     monkeypatch.setattr(stage_a, "bootstrap_stage_a_identity", lambda _data: bootstrap)
+    monkeypatch.setattr(
+        stage_a,
+        "bootstrap_stage_a_capture_provenance_receipt",
+        lambda *_args, **_kwargs: {"capture_source": {"sha256": _digest("capture-source")}},
+    )
     monkeypatch.setattr(stage_a, "_read_execution_artifacts", lambda _config: execution)
     monkeypatch.setattr(stage_a, "_bootstrap_source_manifest", lambda _data: source_bootstrap)
     monkeypatch.setattr(stage_a, "_verify_source_bytes", lambda *_args: None)
-    monkeypatch.setattr(stage_a, "_source_entries", lambda _source: {})
+    monkeypatch.setattr(
+        stage_a,
+        "_source_entries",
+        lambda _source: {stage_a.CAPTURE_SOURCE_PATH: {"raw_sha256": _digest("capture-source")}},
+    )
     monkeypatch.setattr(stage_a, "_install_source_namespace", lambda _root: None)
     monkeypatch.setattr(stage_a, "_assert_tracked_identity_bytes", lambda *_args: None)
 
     def stable_bytes(path: Path, *, context: str) -> bytes:
         del context
-        return identity_bytes if path == identity_path else binding_bytes
+        if path == identity_path:
+            return identity_bytes
+        if path == binding_path:
+            return binding_bytes
+        assert path == receipt_path
+        return receipt_bytes
 
     monkeypatch.setattr(stage_a, "_stable_file_bytes", stable_bytes)
 
@@ -790,6 +1046,7 @@ def _git_config(tmp_path: Path) -> tuple[Any, bytes]:
     config = stage_a.StageAConfig(
         frozen_identity_path=identity,
         calibration_binding_path=tmp_path / "binding.json",
+        stage_a_capture_provenance_receipt_path=tmp_path / "capture-receipt.json",
         repository_source_manifest_path=tmp_path / "source.json",
         runtime_manifest_path=tmp_path / "runtime.json",
         model_file_manifest_path=tmp_path / "model.json",
@@ -805,6 +1062,9 @@ def _git_config(tmp_path: Path) -> tuple[Any, bytes]:
         expected_runtime_manifest_sha256=_digest("runtime"),
         expected_model_file_manifest_sha256=_digest("model"),
         expected_parquet_materialization_manifest_sha256=_digest("parquet"),
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            _bootstrap().stage_a_capture_provenance_receipt_file_sha256
+        ),
     )
     return config, identity_bytes
 
@@ -1125,7 +1385,21 @@ def test_real_recovery_boundary_authenticates_final_lock_and_is_idempotent(
     execution_bindings = {
         name: stage_a.sha256_bytes(payload) for name, payload in artifact_bytes.items()
     }
-    identity_bytes = _identity_bytes(execution_bindings)
+    capture_source_sha256 = stage_a.sha256_bytes(
+        (tmp_path / stage_a.CAPTURE_SOURCE_PATH).read_bytes()
+    )
+    capture_receipt_bytes = _capture_receipt_bytes(
+        execution_bindings,
+        binding_bytes=binding_bytes,
+        source_commit=h0,
+        capture_source_sha256=capture_source_sha256,
+    )
+    capture_receipt_path = evidence_dir / "stage-a-capture-provenance.json"
+    capture_receipt_path.write_bytes(capture_receipt_bytes)
+    identity_bytes = _identity_bytes(
+        execution_bindings,
+        capture_receipt_sha256=stage_a.sha256_bytes(capture_receipt_bytes),
+    )
     identity_path = tmp_path / "identity.json"
     identity_path.write_bytes(identity_bytes)
     _run(tmp_path, "add", "identity.json")
@@ -1135,6 +1409,7 @@ def test_real_recovery_boundary_authenticates_final_lock_and_is_idempotent(
     config = stage_a.StageAConfig(
         frozen_identity_path=identity_path,
         calibration_binding_path=binding_path,
+        stage_a_capture_provenance_receipt_path=capture_receipt_path,
         repository_source_manifest_path=artifact_paths["repository_source_manifest_file_sha256"],
         runtime_manifest_path=artifact_paths["calibration_runtime_manifest_file_sha256"],
         model_file_manifest_path=artifact_paths["model_file_manifest_file_sha256"],
@@ -1156,6 +1431,9 @@ def test_real_recovery_boundary_authenticates_final_lock_and_is_idempotent(
         expected_parquet_materialization_manifest_sha256=execution_bindings[
             "parquet_materialization_manifest_file_sha256"
         ],
+        expected_stage_a_capture_provenance_receipt_sha256=stage_a.sha256_bytes(
+            capture_receipt_bytes
+        ),
         git_executable_path=git_executable,
     )
     bootstrap = stage_a.bootstrap_stage_a_identity(identity_bytes)
@@ -1163,6 +1441,10 @@ def test_real_recovery_boundary_authenticates_final_lock_and_is_idempotent(
         _authenticated(),
         bootstrap_identity=bootstrap,
         binding=SimpleNamespace(file_sha256=stage_a.sha256_bytes(binding_bytes)),
+        capture_provenance_receipt=SimpleNamespace(
+            file_sha256=stage_a.sha256_bytes(capture_receipt_bytes)
+        ),
+        capture_provenance_receipt_bytes=capture_receipt_bytes,
         execution_artifact_bytes=MappingProxyType(artifact_bytes),
         source_manifest=MappingProxyType(source_manifest),
         source_manifest_file_sha256=stage_a.sha256_bytes(source_bytes),
@@ -1230,6 +1512,9 @@ def _test_execution_artifact(
         "dependencies": {
             "stage_a_identity_file_sha256": authenticated.bootstrap_identity.file_sha256,
             "stage_a_calibration_binding_file_sha256": authenticated.binding.file_sha256,
+            stage_a.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+                authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+            ),
             "repository_source_manifest_file_sha256": authenticated.source_manifest_file_sha256,
             "stage_a_input_bundle_manifest_file_sha256": (
                 authenticated.input_bundle_manifest_file_sha256
@@ -1253,6 +1538,9 @@ def _test_execution_artifact(
             "one_run_seal_message_sha256": reservation.receipt["one_run_seal_message_sha256"],
             "one_run_seal_tree": reservation.tree,
             "preseal_engine_smoke_sha256": smoke_sha256,
+            stage_a.STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+                authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+            ),
             "stage_a_input_bundle_manifest_file_sha256": (
                 authenticated.input_bundle_manifest_file_sha256
             ),
@@ -1283,6 +1571,9 @@ def _verification_kwargs(reservation: Any, authenticated: Any) -> dict[str, Any]
     return {
         "expected_identity_file_sha256": authenticated.bootstrap_identity.file_sha256,
         "expected_calibration_binding_file_sha256": authenticated.binding.file_sha256,
+        "expected_stage_a_capture_provenance_receipt_file_sha256": (
+            authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+        ),
         "expected_h1_commit": reservation.h1_commit,
         "expected_seal_commit": reservation.seal_commit,
         "expected_source_commit": authenticated.source_commit,
@@ -1321,7 +1612,7 @@ def test_execution_artifact_verifier_binds_seal_runtime_and_redaction(tmp_path: 
         payload,
         **_verification_kwargs(reservation, authenticated),
     )
-    assert verified["schema_version"] == 3
+    assert verified["schema_version"] == 4
 
     tampered = stage_a._strict_json(payload, context="test result")
     tampered["evidence"]["raw_token_evidence"][0]["target_token_ids_sha256"] = _digest(

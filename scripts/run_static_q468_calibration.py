@@ -66,7 +66,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v9"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -103,6 +103,12 @@ CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT: Final = (
 )
 CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 6
 CALIBRATION_IDENTITY_INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
+STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_stage_a_identity_capture_provenance"
+)
+STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 1
+STAGE_A_CALIBRATION_BINDING_SCHEMA: Final = 4
+STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibration-binding-v4"
 MODEL_STAGING_PATHS_KIND: Final = "recurquant_experiment013_model_staging_paths_verification"
 MODEL_STAGING_PATHS_SCHEMA: Final = 1
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
@@ -652,7 +658,10 @@ def _load_exact_source_module(
         Path(os.path.abspath(repository_root)), PurePosixPath(relative_path)
     )
     expected_sha256 = _sha256(entry.get("raw_sha256"), context=f"{module_name} source SHA-256")
-    source_bytes = source_path.read_bytes()
+    source_bytes = _read_stable_regular_bytes(
+        source_path,
+        context=f"authenticated module source {module_name}",
+    )
     actual_sha256 = sha256_bytes(source_bytes)
     if actual_sha256 != expected_sha256:
         raise CalibrationRunError(
@@ -6576,35 +6585,49 @@ _CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS: Final = frozenset(
         "--source-commit",
     }
 )
+_STAGE_A_IDENTITY_CAPTURE_VALUE_OPTIONS: Final = frozenset(
+    {
+        *_CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS,
+        "--expected-stage-a-calibration-binding-sha256",
+        "--stage-a-calibration-binding",
+    }
+)
+_IDENTITY_CAPTURE_COMMANDS: Final = {
+    "capture-calibration-identity": (
+        "calibration",
+        _CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS,
+    ),
+    "capture-stage-a-identity": (
+        "stage_a",
+        _STAGE_A_IDENTITY_CAPTURE_VALUE_OPTIONS,
+    ),
+}
 
 
-def _parse_calibration_identity_capture_arguments(
+def _parse_identity_capture_arguments(
     arguments: Sequence[str],
 ) -> argparse.Namespace:
     values = list(arguments)
-    if not values or values[0] != "capture-calibration-identity":
-        raise CalibrationRunError("sealed calibration identity capture command is missing")
+    if not values or values[0] not in _IDENTITY_CAPTURE_COMMANDS:
+        raise CalibrationRunError("sealed identity capture command is missing")
+    command = values[0]
+    capture_phase, value_options = _IDENTITY_CAPTURE_COMMANDS[command]
     remainder = values[1:]
-    if len(remainder) != 2 * len(_CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS):
+    if len(remainder) != 2 * len(value_options):
         raise CalibrationRunError(
-            "sealed calibration identity capture arguments are not an exact option profile"
+            "sealed identity capture arguments are not an exact option profile"
         )
     parsed: dict[str, str] = {}
     for index in range(0, len(remainder), 2):
         option = remainder[index]
         value = remainder[index + 1]
-        if (
-            option not in _CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS
-            or option in parsed
-            or value.startswith("--")
-            or not value
-        ):
+        if option not in value_options or option in parsed or value.startswith("--") or not value:
             raise CalibrationRunError(
-                "sealed calibration identity capture arguments are mixed, duplicated, or incomplete"
+                "sealed identity capture arguments are mixed, duplicated, or incomplete"
             )
         parsed[option] = value
-    if set(parsed) != set(_CALIBRATION_IDENTITY_CAPTURE_VALUE_OPTIONS):
-        raise CalibrationRunError("sealed calibration identity capture inputs are incomplete")
+    if set(parsed) != set(value_options):
+        raise CalibrationRunError("sealed identity capture inputs are incomplete")
     path_options = {
         "--cache-root",
         "--capture-provenance-receipt-output",
@@ -6615,20 +6638,40 @@ def _parse_calibration_identity_capture_arguments(
         "--repository-source-manifest",
         "--ruler-receipt-dir",
         "--runtime-manifest",
+        "--stage-a-calibration-binding",
     }
-    normalized: dict[str, object] = {}
+    normalized: dict[str, object] = {
+        "capture_command": command,
+        "capture_phase": capture_phase,
+    }
     for option, value in parsed.items():
         name = option[2:].replace("-", "_")
         if option in path_options:
             path = Path(value)
             if not path.is_absolute():
-                raise CalibrationRunError(
-                    f"sealed calibration identity capture requires an absolute {option}"
-                )
+                raise CalibrationRunError(f"sealed identity capture requires an absolute {option}")
             normalized[name] = path
         else:
             normalized[name] = value
     return argparse.Namespace(**normalized)
+
+
+def _parse_calibration_identity_capture_arguments(
+    arguments: Sequence[str],
+) -> argparse.Namespace:
+    parsed = _parse_identity_capture_arguments(arguments)
+    if parsed.capture_phase != "calibration":
+        raise CalibrationRunError("sealed calibration identity capture command is missing")
+    return parsed
+
+
+def _parse_stage_a_identity_capture_arguments(
+    arguments: Sequence[str],
+) -> argparse.Namespace:
+    parsed = _parse_identity_capture_arguments(arguments)
+    if parsed.capture_phase != "stage_a":
+        raise CalibrationRunError("sealed Stage-A identity capture command is missing")
+    return parsed
 
 
 def _new_capture_artifact_path(path: Path, *, context: str) -> NewCaptureArtifactPath:
@@ -6859,26 +6902,49 @@ def _assert_capture_forbidden_modules_absent() -> None:
         )
 
 
+def _validate_identity_input_payload(
+    payload: bytes,
+    *,
+    phase: str,
+    expected_bindings: Mapping[str, str],
+    expected_calibration_binding: Mapping[str, str] | None,
+) -> dict[str, object]:
+    root = _strict_json_bytes(payload, context=f"{phase} identity input")
+    if canonical_json_bytes(root) != payload:
+        raise CalibrationRunError(f"{phase} identity input is not canonical JSON")
+    if (
+        root.get("schema") != CALIBRATION_IDENTITY_INPUT_SCHEMA
+        or root.get("phase") != phase
+        or root.get("model_weights_loaded") is not False
+        or root.get("execution_bindings") != dict(expected_bindings)
+    ):
+        raise CalibrationRunError(f"{phase} identity input custody fields drifted")
+    if phase == "calibration":
+        if "calibration_binding" in root or expected_calibration_binding is not None:
+            raise CalibrationRunError("calibration identity input carries a Stage-A binding")
+    elif (
+        phase != "stage_a"
+        or expected_calibration_binding is None
+        or root.get("calibration_binding") != dict(expected_calibration_binding)
+    ):
+        raise CalibrationRunError("Stage-A identity input calibration binding drifted")
+    return root
+
+
 def _validate_calibration_identity_input_payload(
     payload: bytes,
     *,
     expected_bindings: Mapping[str, str],
 ) -> dict[str, object]:
-    root = _strict_json_bytes(payload, context="calibration identity input")
-    if canonical_json_bytes(root) != payload:
-        raise CalibrationRunError("calibration identity input is not canonical JSON")
-    if (
-        root.get("schema") != CALIBRATION_IDENTITY_INPUT_SCHEMA
-        or root.get("phase") != "calibration"
-        or root.get("model_weights_loaded") is not False
-        or "calibration_binding" in root
-        or root.get("execution_bindings") != dict(expected_bindings)
-    ):
-        raise CalibrationRunError("calibration identity input custody fields drifted")
-    return root
+    return _validate_identity_input_payload(
+        payload,
+        phase="calibration",
+        expected_bindings=expected_bindings,
+        expected_calibration_binding=None,
+    )
 
 
-def _sealed_capture_calibration_identity(
+def _sealed_capture_identity(
     arguments: Sequence[str],
     *,
     manifest: CalibrationRuntimeManifest,
@@ -6886,20 +6952,37 @@ def _sealed_capture_calibration_identity(
     authenticated_runtime: AuthenticatedRuntime,
     interpreter_path: Path,
 ) -> int:
-    args = _parse_calibration_identity_capture_arguments(arguments)
+    args = _parse_identity_capture_arguments(arguments)
+    phase = str(args.capture_phase)
+    context_prefix = "calibration" if phase == "calibration" else "Stage-A"
+    binding_bytes: bytes | None = None
+    binding_sha256: str | None = None
+    if phase == "stage_a":
+        binding_bytes = _read_stable_regular_bytes(
+            args.stage_a_calibration_binding,
+            context="Stage-A calibration binding",
+        )
+        binding_sha256 = sha256_bytes(binding_bytes)
+        if binding_sha256 != _sha256(
+            args.expected_stage_a_calibration_binding_sha256,
+            context="expected Stage-A calibration binding SHA-256",
+        ):
+            raise CalibrationRunError(
+                "Stage-A calibration binding differs from its explicit SHA-256"
+            )
     ruler_receipt_dir = _verify_ruler_receipt_directory_precondition(args.ruler_receipt_dir)
     output_snapshot = _new_capture_artifact_path(
         args.output,
-        context="calibration identity output",
+        context=f"{context_prefix} identity output",
     )
     receipt_output_snapshot = _new_capture_artifact_path(
         args.capture_provenance_receipt_output,
-        context="calibration identity capture provenance receipt",
+        context=f"{context_prefix} identity capture provenance receipt",
     )
     output = output_snapshot.path
     receipt_output = receipt_output_snapshot.path
     if output == receipt_output:
-        raise CalibrationRunError("calibration identity output and receipt paths must differ")
+        raise CalibrationRunError(f"{context_prefix} identity output and receipt paths must differ")
 
     artifact_paths = {
         "repository_source_manifest_file_sha256": args.repository_source_manifest,
@@ -6920,12 +7003,12 @@ def _sealed_capture_calibration_identity(
     for name in sorted(artifact_paths):
         data = _read_stable_regular_bytes(
             artifact_paths[name],
-            context=f"calibration identity capture {name}",
+            context=f"{context_prefix} identity capture {name}",
         )
         actual = sha256_bytes(data)
         expected = _sha256(expected_digests[name], context=f"expected {name}")
         if actual != expected:
-            raise CalibrationRunError(f"calibration identity capture {name} drifted")
+            raise CalibrationRunError(f"{context_prefix} identity capture {name} drifted")
         artifact_bytes[name] = data
         bindings[name] = actual
 
@@ -6933,15 +7016,26 @@ def _sealed_capture_calibration_identity(
         for artifact_name in sorted(artifact_paths):
             repeated_bytes = _read_stable_regular_bytes(
                 artifact_paths[artifact_name],
-                context=f"repeated calibration identity capture {artifact_name}",
+                context=f"repeated {context_prefix} identity capture {artifact_name}",
             )
             if (
                 repeated_bytes != artifact_bytes[artifact_name]
                 or sha256_bytes(repeated_bytes) != bindings[artifact_name]
             ):
                 raise CalibrationRunError(
-                    f"calibration identity capture artifact changed: {artifact_name}"
+                    f"{context_prefix} identity capture artifact changed: {artifact_name}"
                 )
+        if phase == "stage_a":
+            assert binding_bytes is not None
+            repeated_binding = _read_stable_regular_bytes(
+                args.stage_a_calibration_binding,
+                context="repeated Stage-A calibration binding",
+            )
+            if (
+                repeated_binding != binding_bytes
+                or sha256_bytes(repeated_binding) != binding_sha256
+            ):
+                raise CalibrationRunError("Stage-A calibration binding changed during capture")
 
     if bindings["calibration_runtime_manifest_file_sha256"] != manifest.file_sha256:
         raise CalibrationRunError("capture runtime differs from the sealed launcher runtime")
@@ -6990,9 +7084,12 @@ def _sealed_capture_calibration_identity(
     source_module: ModuleType | None = None
     parquet_module: ModuleType | None = None
     capture_module: ModuleType | None = None
+    resolver_module: ModuleType | None = None
     blocker = _ExcludedCalibrationIdentityImportBlocker()
     payload: bytes | None = None
     origins: list[dict[str, object]] | None = None
+    normalized_calibration_binding: dict[str, str] | None = None
+    calibration_authorization_sha256: str | None = None
     try:
         sys.meta_path.insert(0, blocker)
         namespace = _install_authenticated_recurquant_namespace(args.repository_root)
@@ -7010,12 +7107,36 @@ def _sealed_capture_calibration_identity(
             entry=bootstrap_source.entries[PARQUET_SOURCE_PATH],
         )
         namespace.experiment013_parquet = parquet_module
-        _load_exact_source_module(
+        resolver_module = _load_exact_source_module(
             IDENTITY_RESOLVER_MODULE,
             IDENTITY_RESOLVER_SOURCE_PATH,
             repository_root=args.repository_root,
             entry=bootstrap_source.entries[IDENTITY_RESOLVER_SOURCE_PATH],
         )
+        if getattr(resolver_module, "CALIBRATION_RUNNER_REVISION", None) != RUNNER_REVISION:
+            raise CalibrationRunError("authenticated identity resolver runner revision drifted")
+        if phase == "stage_a":
+            assert binding_bytes is not None
+            assert binding_sha256 is not None
+            try:
+                verified_binding = resolver_module.deserialize_stage_a_calibration_binding_artifact(
+                    binding_bytes,
+                    expected_file_sha256=binding_sha256,
+                )
+            except (TypeError, ValueError) as error:
+                raise CalibrationRunError(
+                    "Stage-A calibration binding authentication failed"
+                ) from error
+            normalized_calibration_binding = dict(verified_binding.binding)
+            calibration_authorization_sha256 = str(verified_binding.authorization_file_sha256)
+            if verified_binding.source_commit != requested_commit:
+                raise CalibrationRunError(
+                    "Stage-A calibration authorization source commit differs from H0"
+                )
+            if dict(verified_binding.execution_bindings) != bindings:
+                raise CalibrationRunError(
+                    "Stage-A calibration authorization execution bindings differ from capture"
+                )
         capture_module = _load_exact_source_module(
             CALIBRATION_IDENTITY_CAPTURE_MODULE,
             CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
@@ -7025,7 +7146,7 @@ def _sealed_capture_calibration_identity(
         if getattr(capture_module, "CAPTURE_VERSION", None) != (
             CALIBRATION_IDENTITY_CAPTURE_VERSION
         ):
-            raise CalibrationRunError("calibration identity capture version drifted")
+            raise CalibrationRunError(f"{context_prefix} identity capture version drifted")
         verified_source = source_module.verify_experiment013_source_manifest(
             bootstrap_source.manifest,
             repo_root=args.repository_root,
@@ -7038,9 +7159,9 @@ def _sealed_capture_calibration_identity(
             ruler_receipt_dir=ruler_receipt_dir,
         )
         captured = capture_module.capture_identity_input(
-            phase="calibration",
+            phase=phase,
             source=live_source,
-            calibration_binding=None,
+            calibration_binding=binding_bytes,
             execution_binding_artifacts=artifact_bytes,
             runtime_authentication_context={
                 "base_runtime_root": runtime_context.base_runtime_root,
@@ -7060,8 +7181,26 @@ def _sealed_capture_calibration_identity(
         ):
             raise CalibrationRunError("capture left an excluded runtime module loaded")
         _assert_capture_forbidden_modules_absent()
+        if phase == "stage_a":
+            assert binding_bytes is not None
+            assert binding_sha256 is not None
+            try:
+                resolver_module.validate_stage_a_identity_input_for_capture(
+                    captured,
+                    calibration_binding_artifact=binding_bytes,
+                    expected_calibration_binding_file_sha256=binding_sha256,
+                )
+            except (TypeError, ValueError) as error:
+                raise CalibrationRunError(
+                    "Stage-A identity input failed authenticated pre-finalization validation"
+                ) from error
         payload = canonical_json_bytes(captured)
-        _validate_calibration_identity_input_payload(payload, expected_bindings=bindings)
+        _validate_identity_input_payload(
+            payload,
+            phase=phase,
+            expected_bindings=bindings,
+            expected_calibration_binding=normalized_calibration_binding,
+        )
         origins = _capture_calibration_identity_module_origins(
             expected_origins=expected_origins,
             manifest=manifest,
@@ -7092,15 +7231,18 @@ def _sealed_capture_calibration_identity(
         )
         _revalidate_new_capture_artifact_path(
             output_snapshot,
-            context="calibration identity output",
+            context=f"{context_prefix} identity output",
         )
         _atomic_publish_new(
             output,
             payload,
             capture_path_snapshot=output_snapshot,
         )
-        if _read_stable_regular_bytes(output, context="published calibration identity") != payload:
-            raise CalibrationRunError("published calibration identity bytes changed")
+        if (
+            _read_stable_regular_bytes(output, context=f"published {context_prefix} identity")
+            != payload
+        ):
+            raise CalibrationRunError(f"published {context_prefix} identity bytes changed")
         repeated_source = source_module.verify_experiment013_source_manifest(
             bootstrap_source.manifest,
             repo_root=args.repository_root,
@@ -7115,8 +7257,13 @@ def _sealed_capture_calibration_identity(
             interpreter_path=interpreter_path,
             git_executable_path=runtime_context.git_executable_path,
         )
-        if _read_stable_regular_bytes(output, context="published calibration identity") != payload:
-            raise CalibrationRunError("calibration identity changed before receipt publication")
+        if (
+            _read_stable_regular_bytes(output, context=f"published {context_prefix} identity")
+            != payload
+        ):
+            raise CalibrationRunError(
+                f"{context_prefix} identity changed before receipt publication"
+            )
         reauthenticate_artifact_bytes()
         if blocker.attempts or any(
             name.split(".", 1)[0] in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
@@ -7125,8 +7272,12 @@ def _sealed_capture_calibration_identity(
             raise CalibrationRunError(
                 "excluded runtime module policy changed before receipt publication"
             )
-        receipt = {
-            "artifact_kind": CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND,
+        receipt: dict[str, object] = {
+            "artifact_kind": (
+                CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
+                if phase == "calibration"
+                else STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND
+            ),
             "capture_source": {
                 "path": CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
                 "sha256": capture_source_sha256,
@@ -7136,17 +7287,26 @@ def _sealed_capture_calibration_identity(
             "excluded_runtime_modules": list(CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES),
             "execution_bindings": bindings,
             "identity_input_file_sha256": sha256_bytes(payload),
-            "phase": "calibration",
+            "phase": phase,
             "publication_contract": (CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT),
             "runner_revision": RUNNER_REVISION,
-            "schema_version": CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
+            "schema_version": (
+                CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+                if phase == "calibration"
+                else STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
+            ),
             "source_commit": requested_commit,
             "status": CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS,
         }
+        if phase == "stage_a":
+            assert binding_sha256 is not None
+            assert calibration_authorization_sha256 is not None
+            receipt["calibration_binding_file_sha256"] = binding_sha256
+            receipt["calibration_authorization_file_sha256"] = calibration_authorization_sha256
         receipt_payload = canonical_json_bytes(receipt)
         _revalidate_new_capture_artifact_path(
             receipt_output_snapshot,
-            context="calibration identity capture provenance receipt",
+            context=f"{context_prefix} identity capture provenance receipt",
         )
         print(receipt_payload.decode("utf-8"), end="")
         return 0
@@ -7165,6 +7325,44 @@ def _sealed_capture_calibration_identity(
             "recurquant",
         ):
             sys.modules.pop(name, None)
+
+
+def _sealed_capture_calibration_identity(
+    arguments: Sequence[str],
+    *,
+    manifest: CalibrationRuntimeManifest,
+    runtime_context: SealedRuntimeContext,
+    authenticated_runtime: AuthenticatedRuntime,
+    interpreter_path: Path,
+) -> int:
+    if not arguments or arguments[0] != "capture-calibration-identity":
+        raise CalibrationRunError("sealed calibration identity capture command is missing")
+    return _sealed_capture_identity(
+        arguments,
+        manifest=manifest,
+        runtime_context=runtime_context,
+        authenticated_runtime=authenticated_runtime,
+        interpreter_path=interpreter_path,
+    )
+
+
+def _sealed_capture_stage_a_identity(
+    arguments: Sequence[str],
+    *,
+    manifest: CalibrationRuntimeManifest,
+    runtime_context: SealedRuntimeContext,
+    authenticated_runtime: AuthenticatedRuntime,
+    interpreter_path: Path,
+) -> int:
+    if not arguments or arguments[0] != "capture-stage-a-identity":
+        raise CalibrationRunError("sealed Stage-A identity capture command is missing")
+    return _sealed_capture_identity(
+        arguments,
+        manifest=manifest,
+        runtime_context=runtime_context,
+        authenticated_runtime=authenticated_runtime,
+        interpreter_path=interpreter_path,
+    )
 
 
 def _adapter_construction_context(
@@ -7345,23 +7543,23 @@ def _read_exact_regular_directory(
     return payloads
 
 
-def _load_authorization_identity_resolver() -> ModuleType:
-    """Load the metadata-only resolver used to verify the finalized custody chain."""
+def _load_authorization_identity_resolver(
+    bootstrap_source: BootstrapSource,
+) -> ModuleType:
+    """Load authorization resolver only from source-manifest-authenticated bytes."""
 
     module_name = "_recurquant_experiment013_identity_resolver_for_authorization"
-    if module_name in sys.modules:
-        raise CalibrationRunError("calibration authorization resolver was already loaded")
-    spec = importlib.util.spec_from_file_location(module_name, IDENTITY_RESOLVER_PATH)
-    if spec is None or spec.loader is None:
-        raise CalibrationRunError("cannot construct the calibration authorization resolver")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(module_name, None)
-        raise
-    return module
+    entry = bootstrap_source.entries.get(IDENTITY_RESOLVER_SOURCE_PATH)
+    if not isinstance(entry, Mapping):
+        raise CalibrationRunError(
+            "calibration authorization source manifest omits the identity resolver"
+        )
+    return _load_exact_source_module(
+        module_name,
+        IDENTITY_RESOLVER_SOURCE_PATH,
+        repository_root=REPOSITORY_ROOT,
+        entry=entry,
+    )
 
 
 def authorize_stage_a_calibration(
@@ -7484,7 +7682,17 @@ def authorize_stage_a_calibration(
             raise CalibrationRunError(f"{name} differs from its explicit SHA-256")
 
     owned_resolver = identity_resolver is None
-    resolver = _load_authorization_identity_resolver() if owned_resolver else identity_resolver
+    if owned_resolver:
+        bootstrap_source = _bootstrap_source_manifest(
+            repository_source_manifest_bytes,
+            repository_root=REPOSITORY_ROOT,
+            require_adapter=False,
+        )
+        if bootstrap_source.source_commit != expected_source_commit:
+            raise CalibrationRunError("repository source manifest differs from authorization H0")
+        resolver = _load_authorization_identity_resolver(bootstrap_source)
+    else:
+        resolver = identity_resolver
     try:
         core = resolver.deserialize_stage_a_calibration_core_binding_artifact(
             full[CORE_BINDING_FILENAME]
@@ -8119,9 +8327,9 @@ def sealed_main(
     """Run only after the stdlib bootstrap supplies explicit authenticated roots."""
 
     arguments = list(argv)
-    capture_mode = bool(arguments and arguments[0] == "capture-calibration-identity")
+    capture_mode = bool(arguments and arguments[0] in _IDENTITY_CAPTURE_COMMANDS)
     args = (
-        _parse_calibration_identity_capture_arguments(arguments)
+        _parse_identity_capture_arguments(arguments)
         if capture_mode
         else _parser().parse_args(arguments)
     )
@@ -8143,7 +8351,7 @@ def sealed_main(
         raise CalibrationRunError("sealed runtime manifest differs from the CLI binding")
     _preflight_official_runtime_distributions(authenticated)
     result = (
-        _sealed_capture_calibration_identity(
+        _sealed_capture_identity(
             arguments,
             manifest=manifest,
             runtime_context=runtime_context,

@@ -2,7 +2,8 @@
 """Authenticated one-run Experiment 013 Stage-A falsification screen.
 
 This evaluator is intentionally fail closed.  It authenticates the promoted
-resolver-v5 identity, the embedded eight-dependency calibration binding, the
+resolver-v6 Stage-A identity, its finalized capture provenance, the embedded
+eight-dependency calibration binding, the
 split-half pass, the complete H0 source inventory, the sealed runtime, the
 model tree, and the checked-in Parquet identity before reserving the one run.
 Only after an empty-diff seal commit wins an atomic HEAD compare-and-swap may
@@ -19,7 +20,6 @@ import contextlib
 import dataclasses
 import hashlib
 import importlib
-import importlib.util
 import json
 import math
 import os
@@ -46,9 +46,9 @@ RESOLVER_SOURCE_PATH: Final = "scripts/resolve_static_q468_identity.py"
 SOURCE_MODULE_PATH: Final = "src/recurquant/experiment013_source.py"
 STAGE_A_GATE_MODULE_PATH: Final = "src/recurquant/experiment013_stage_a.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v3"
-ATTEMPT_SCHEMA: Final = "recurquant.experiment013.stage-a-attempt.v2"
-IDENTITY_ATTEMPT_LOCK_SCHEMA: Final = "recurquant.experiment013.stage-a-identity-attempt-lock.v3"
+RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v4"
+ATTEMPT_SCHEMA: Final = "recurquant.experiment013.stage-a-attempt.v3"
+IDENTITY_ATTEMPT_LOCK_SCHEMA: Final = "recurquant.experiment013.stage-a-identity-attempt-lock.v4"
 IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
     {
         "schema",
@@ -65,6 +65,7 @@ IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
         "one_run_marker",
         "one_run_seal_message_sha256",
         "calibration_binding_file_sha256",
+        "stage_a_capture_provenance_receipt_file_sha256",
         "source_manifest_file_sha256",
         "stage_a_input_bundle_manifest_file_sha256",
         "execution_bindings",
@@ -77,9 +78,20 @@ IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
     }
 )
 EXECUTION_ARTIFACT_KIND: Final = "recurquant_experiment013_stage_a_execution"
-EXECUTION_ARTIFACT_SCHEMA: Final = 3
-IDENTITY_SCHEMA_VERSION: Final = 5
+EXECUTION_ARTIFACT_SCHEMA: Final = 4
+IDENTITY_SCHEMA_VERSION: Final = 6
 BINDING_SCHEMA_VERSION: Final = 4
+STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: Final = "stage_a_capture_provenance_receipt_file_sha256"
+STAGE_A_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_stage_a_identity_capture_provenance"
+)
+STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
+    "captured_under_authenticated_runtime_and_launcher_finalized"
+)
+STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
+)
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v10"
 ONE_RUN_MARKER: Final = "RecurQuant-One-Run: experiment013-stage-a-v1"
 CLAIM_BOUNDARY: Final = (
     "Stage A is a falsification screen only. Passage is not confirmation, selector "
@@ -249,6 +261,7 @@ class StageAStabilityFailure(StageAError):
 class StageAConfig:
     frozen_identity_path: Path
     calibration_binding_path: Path
+    stage_a_capture_provenance_receipt_path: Path
     repository_source_manifest_path: Path
     runtime_manifest_path: Path
     model_file_manifest_path: Path
@@ -264,6 +277,7 @@ class StageAConfig:
     expected_runtime_manifest_sha256: str
     expected_model_file_manifest_sha256: str
     expected_parquet_materialization_manifest_sha256: str
+    expected_stage_a_capture_provenance_receipt_sha256: str
     base_runtime_root: Path | None = None
     package_roots: Mapping[str, Path] = field(default_factory=dict)
     package_import_paths: Mapping[str, str] = field(default_factory=dict)
@@ -290,6 +304,8 @@ class BootstrapIdentity:
     canonical_evidence_sha256: str
     execution_bindings: Mapping[str, str]
     calibration_binding: Mapping[str, str]
+    identity_input_file_sha256: str
+    stage_a_capture_provenance_receipt_file_sha256: str
     expected_forward_count: int
 
 
@@ -306,6 +322,8 @@ class AuthenticatedStageA:
     bootstrap_identity: BootstrapIdentity
     identity: object
     binding: object
+    capture_provenance_receipt: object
+    capture_provenance_receipt_bytes: bytes
     dependency_bytes: Mapping[str, bytes]
     execution_artifact_bytes: Mapping[str, bytes]
     source_manifest: Mapping[str, object]
@@ -544,7 +562,7 @@ def _stable_file_bytes(path: Path, *, context: str) -> bytes:
 
 
 def bootstrap_stage_a_identity(data: bytes) -> BootstrapIdentity:
-    """Strict stdlib-only v5 promotion check performed before dependency imports."""
+    """Strict stdlib-only v6 promotion check performed before dependency imports."""
 
     root = _strict_json(data, context="frozen Stage-A identity")
     _exact_fields(root, {"canonical_evidence_sha256", "evidence"}, context="identity wrapper")
@@ -556,15 +574,27 @@ def bootstrap_stage_a_identity(data: bytes) -> BootstrapIdentity:
     if (
         type(evidence.get("schema_version")) is not int
         or evidence.get("schema_version") != IDENTITY_SCHEMA_VERSION
-        or evidence.get("identity_schema") != "recurquant.experiment013.identity-frozen.v5"
+        or evidence.get("identity_schema") != "recurquant.experiment013.identity-frozen.v6"
         or evidence.get("status") != "frozen"
         or evidence.get("phase") != "stage_a"
         or evidence.get("identity_only") is not True
         or evidence.get("promotion_required") is not False
     ):
-        raise StageAError("identity is not the promoted resolver-v5 Stage-A artifact")
+        raise StageAError("identity is not the promoted resolver-v6 Stage-A artifact")
     promotion = evidence.get("promotion")
-    if not isinstance(promotion, dict) or promotion.get("explicit") is not True:
+    if not isinstance(promotion, dict):
+        raise StageAError("Stage-A identity lacks an explicit promotion")
+    _exact_fields(
+        promotion,
+        {
+            "candidate_file_sha256",
+            "candidate_canonical_evidence_sha256",
+            "explicit",
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD,
+        },
+        context="Stage-A identity promotion",
+    )
+    if promotion.get("explicit") is not True:
         raise StageAError("Stage-A identity lacks an explicit promotion")
     canonical_hash = _require_sha256(
         root.get("canonical_evidence_sha256"), context="identity canonical evidence SHA-256"
@@ -587,6 +617,19 @@ def bootstrap_stage_a_identity(data: bytes) -> BootstrapIdentity:
         name: _require_sha256(calibration[name], context=f"calibration binding {name}")
         for name in sorted(BINDING_FIELDS)
     }
+    identity_input_file_sha256 = _require_sha256(
+        evidence.get("source_manifest_sha256"),
+        context="Stage-A identity input file SHA-256",
+    )
+    capture_provenance_sha256 = _require_sha256(
+        evidence.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD),
+        context="Stage-A capture provenance receipt file SHA-256",
+    )
+    if capture_provenance_sha256 != _require_sha256(
+        promotion.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD),
+        context="promoted Stage-A capture provenance receipt file SHA-256",
+    ):
+        raise StageAError("Stage-A promotion binds a different capture provenance receipt")
     records = evidence.get("records")
     if not isinstance(records, list) or len(records) != 12:
         raise StageAError("frozen Stage-A identity must contain exactly twelve records")
@@ -625,8 +668,118 @@ def bootstrap_stage_a_identity(data: bytes) -> BootstrapIdentity:
         canonical_evidence_sha256=canonical_hash,
         execution_bindings=MappingProxyType(normalized_execution),
         calibration_binding=MappingProxyType(normalized_calibration),
+        identity_input_file_sha256=identity_input_file_sha256,
+        stage_a_capture_provenance_receipt_file_sha256=capture_provenance_sha256,
         expected_forward_count=expected_forward_count,
     )
+
+
+def bootstrap_stage_a_capture_provenance_receipt(
+    data: bytes,
+    *,
+    expected_file_sha256: str,
+    calibration_binding_artifact: bytes,
+    identity: BootstrapIdentity,
+    expected_source_commit: str,
+) -> Mapping[str, object]:
+    """Verify the finalized flat receipt before imports, model paths, or protected rows."""
+
+    expected_sha256 = _require_sha256(
+        expected_file_sha256,
+        context="expected Stage-A capture provenance receipt SHA-256",
+    )
+    file_sha256 = sha256_bytes(data)
+    if (
+        file_sha256 != expected_sha256
+        or file_sha256 != identity.stage_a_capture_provenance_receipt_file_sha256
+    ):
+        raise StageAError("Stage-A capture provenance receipt differs from authenticated custody")
+    root = _strict_json(data, context="Stage-A capture provenance receipt")
+    _exact_fields(
+        root,
+        {
+            "artifact_kind",
+            "calibration_authorization_file_sha256",
+            "calibration_binding_file_sha256",
+            "capture_source",
+            "capture_version",
+            "critical_module_origins",
+            "excluded_runtime_modules",
+            "execution_bindings",
+            "identity_input_file_sha256",
+            "phase",
+            "publication_contract",
+            "runner_revision",
+            "schema_version",
+            "source_commit",
+            "status",
+        },
+        context="Stage-A capture provenance receipt",
+    )
+    if canonical_json_bytes(root) != data:
+        raise StageAError("Stage-A capture provenance receipt is not canonical JSON")
+    if (
+        root.get("artifact_kind") != STAGE_A_CAPTURE_PROVENANCE_KIND
+        or type(root.get("schema_version")) is not int
+        or root.get("schema_version") != 1
+        or type(root.get("capture_version")) is not int
+        or root.get("capture_version") != 6
+        or root.get("runner_revision") != STAGE_A_CAPTURE_RUNNER_REVISION
+        or root.get("phase") != "stage_a"
+        or root.get("status") != STAGE_A_CAPTURE_PROVENANCE_STATUS
+        or root.get("publication_contract") != STAGE_A_CAPTURE_PUBLICATION_CONTRACT
+    ):
+        raise StageAError("Stage-A capture provenance finalized envelope drifted")
+    source_commit = _require_sha1(
+        root.get("source_commit"), context="Stage-A capture provenance H0"
+    )
+    if source_commit != _require_sha1(
+        expected_source_commit, context="expected Stage-A capture provenance H0"
+    ):
+        raise StageAError("Stage-A capture provenance binds a different H0")
+    if (
+        _require_sha256(
+            root.get("identity_input_file_sha256"),
+            context="Stage-A capture provenance identity input SHA-256",
+        )
+        != identity.identity_input_file_sha256
+    ):
+        raise StageAError("Stage-A capture provenance binds a different identity input")
+    if _require_sha256(
+        root.get("calibration_binding_file_sha256"),
+        context="Stage-A capture provenance calibration binding SHA-256",
+    ) != sha256_bytes(calibration_binding_artifact):
+        raise StageAError("Stage-A capture provenance binds a different calibration binding")
+    if (
+        _require_sha256(
+            root.get("calibration_authorization_file_sha256"),
+            context="Stage-A capture provenance authorization SHA-256",
+        )
+        != identity.calibration_binding["calibration_authorization_file_sha256"]
+    ):
+        raise StageAError("Stage-A capture provenance binds a different authorization")
+    execution = root.get("execution_bindings")
+    if not isinstance(execution, Mapping):
+        raise StageAError("Stage-A capture provenance execution bindings are missing")
+    _exact_fields(execution, EXECUTION_BINDING_FIELDS, context="capture execution bindings")
+    normalized_execution = {
+        name: _require_sha256(execution[name], context=f"capture execution binding {name}")
+        for name in sorted(EXECUTION_BINDING_FIELDS)
+    }
+    if normalized_execution != dict(identity.execution_bindings):
+        raise StageAError("Stage-A capture provenance execution bindings drifted")
+    capture_source = root.get("capture_source")
+    if not isinstance(capture_source, Mapping):
+        raise StageAError("Stage-A capture provenance source record is missing")
+    _exact_fields(capture_source, {"path", "sha256"}, context="capture source record")
+    if capture_source.get("path") != CAPTURE_SOURCE_PATH:
+        raise StageAError("Stage-A capture provenance source path drifted")
+    _require_sha256(capture_source.get("sha256"), context="capture source SHA-256")
+    if not isinstance(root.get("critical_module_origins"), list):
+        raise StageAError("Stage-A capture provenance critical origins are missing")
+    if root.get("excluded_runtime_modules") != ["pkg_resources", "setuptools"]:
+        raise StageAError("Stage-A capture provenance exclusion inventory drifted")
+    return MappingProxyType(root)
 
 
 def _bootstrap_source_manifest(data: bytes) -> dict[str, object]:
@@ -768,36 +921,32 @@ def _load_exact_module(
     entries: Mapping[str, Mapping[str, object]],
 ) -> ModuleType:
     if name in sys.modules:
-        module = sys.modules[name]
-        raw_file = getattr(module, "__file__", None)
-        if raw_file is None:
-            raise StageAError(f"module {name} was preloaded without a source file")
-        path = Path(raw_file).resolve(strict=True)
-        expected = (repository_root / PurePosixPath(relative)).resolve(strict=True)
-        if path != expected or sha256_bytes(path.read_bytes()) != entries[relative]["raw_sha256"]:
-            raise StageAError(f"module {name} was preloaded from unauthenticated bytes")
-        return cast(ModuleType, module)
-    path = (repository_root / PurePosixPath(relative)).resolve(strict=True)
-    if (
-        sha256_bytes(_stable_file_bytes(path, context=f"module {name}"))
-        != entries[relative]["raw_sha256"]
-    ):
+        raise StageAError(f"module {name} name is already occupied before authenticated load")
+    resolved_root = repository_root.resolve(strict=True)
+    path = (resolved_root / PurePosixPath(relative)).resolve(strict=True)
+    try:
+        path.relative_to(resolved_root)
+    except ValueError as error:
+        raise StageAError(f"module source escapes repository root: {relative}") from error
+    authenticated_bytes = _stable_file_bytes(path, context=f"module {name}")
+    if sha256_bytes(authenticated_bytes) != entries[relative]["raw_sha256"]:
         raise StageAError(f"module source bytes drifted before load: {relative}")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise StageAError(f"cannot construct module spec for {relative}")
-    module = importlib.util.module_from_spec(spec)
+    try:
+        code = compile(authenticated_bytes, str(path), "exec", dont_inherit=True)
+    except (SyntaxError, ValueError) as error:
+        raise StageAError(f"authenticated module cannot compile: {relative}") from error
+    module = ModuleType(name)
+    module.__file__ = str(path)
+    module.__package__ = name.rpartition(".")[0]
+    module.__loader__ = None
+    module.__spec__ = None
+    module.__cached__ = None
     sys.modules[name] = module
     try:
-        spec.loader.exec_module(module)
+        exec(code, module.__dict__)
     except BaseException:
         sys.modules.pop(name, None)
         raise
-    if (
-        sha256_bytes(_stable_file_bytes(path, context=f"module {name}"))
-        != entries[relative]["raw_sha256"]
-    ):
-        raise StageAError(f"module source bytes drifted during load: {relative}")
     return module
 
 
@@ -1305,6 +1454,7 @@ def _seal_message_values(
     *,
     identity_file_sha256: str,
     calibration_binding_file_sha256: str,
+    stage_a_capture_provenance_receipt_file_sha256: str,
     source_manifest_file_sha256: str,
     input_bundle_manifest_file_sha256: str,
     expected_forward_count: int,
@@ -1314,6 +1464,8 @@ def _seal_message_values(
         f"{ONE_RUN_MARKER}\n"
         f"Stage-A-Identity: {identity_file_sha256}\n"
         f"Calibration-Binding: {calibration_binding_file_sha256}\n"
+        "Stage-A-Capture-Provenance: "
+        f"{stage_a_capture_provenance_receipt_file_sha256}\n"
         f"Source-Manifest: {source_manifest_file_sha256}\n"
         f"Stage-A-Input-Bundle: {input_bundle_manifest_file_sha256}\n"
         f"Expected-Forwards: {expected_forward_count}\n"
@@ -1328,6 +1480,9 @@ def _seal_message(authenticated: AuthenticatedStageA) -> str:
     return _seal_message_values(
         identity_file_sha256=authenticated.bootstrap_identity.file_sha256,
         calibration_binding_file_sha256=authenticated.binding.file_sha256,
+        stage_a_capture_provenance_receipt_file_sha256=(
+            authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+        ),
         source_manifest_file_sha256=authenticated.source_manifest_file_sha256,
         input_bundle_manifest_file_sha256=bundle_hash,
         expected_forward_count=authenticated.bootstrap_identity.expected_forward_count,
@@ -1424,6 +1579,9 @@ def reserve_one_run(config: StageAConfig, authenticated: AuthenticatedStageA) ->
         "one_run_marker": ONE_RUN_MARKER,
         "one_run_seal_message_sha256": sha256_bytes(message.encode("utf-8")),
         "calibration_binding_file_sha256": authenticated.binding.file_sha256,
+        STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+            authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+        ),
         "source_manifest_file_sha256": authenticated.source_manifest_file_sha256,
         "stage_a_input_bundle_manifest_file_sha256": _require_sha256(
             authenticated.input_bundle_manifest_file_sha256,
@@ -1464,6 +1622,9 @@ def reserve_one_run(config: StageAConfig, authenticated: AuthenticatedStageA) ->
         "identity_file_sha256": identity_file_sha256,
         "identity_scoped_attempt_lock_file_sha256": sha256_bytes(global_lock_bytes),
         "calibration_binding_file_sha256": authenticated.binding.file_sha256,
+        STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+            authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+        ),
         "source_manifest_file_sha256": authenticated.source_manifest_file_sha256,
         "stage_a_input_bundle_manifest_file_sha256": _require_sha256(
             authenticated.input_bundle_manifest_file_sha256,
@@ -2238,6 +2399,9 @@ def build_execution_artifact(
         "one_run_seal_message_sha256": receipt.get("one_run_seal_message_sha256"),
         "one_run_seal_tree": reservation.tree,
         "preseal_engine_smoke_sha256": preseal_smoke_sha256,
+        STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+            authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+        ),
         "stage_a_input_bundle_manifest_file_sha256": _require_sha256(
             authenticated.input_bundle_manifest_file_sha256,
             context="authenticated Stage-A input bundle manifest SHA-256",
@@ -2249,6 +2413,9 @@ def build_execution_artifact(
         "dependencies": {
             "stage_a_identity_file_sha256": authenticated.bootstrap_identity.file_sha256,
             "stage_a_calibration_binding_file_sha256": authenticated.binding.file_sha256,
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+                authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+            ),
             "repository_source_manifest_file_sha256": authenticated.source_manifest_file_sha256,
             "stage_a_input_bundle_manifest_file_sha256": _require_sha256(
                 authenticated.input_bundle_manifest_file_sha256,
@@ -2282,6 +2449,9 @@ def build_execution_artifact(
         payload,
         expected_identity_file_sha256=authenticated.bootstrap_identity.file_sha256,
         expected_calibration_binding_file_sha256=authenticated.binding.file_sha256,
+        expected_stage_a_capture_provenance_receipt_file_sha256=(
+            authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+        ),
         expected_h1_commit=reservation.h1_commit,
         expected_seal_commit=reservation.seal_commit,
         expected_source_commit=authenticated.source_commit,
@@ -2346,6 +2516,7 @@ def verify_execution_artifact(
     *,
     expected_identity_file_sha256: str,
     expected_calibration_binding_file_sha256: str,
+    expected_stage_a_capture_provenance_receipt_file_sha256: str,
     expected_h1_commit: str,
     expected_seal_commit: str,
     expected_source_commit: str,
@@ -2368,6 +2539,10 @@ def verify_execution_artifact(
     binding_hash = _require_sha256(
         expected_calibration_binding_file_sha256,
         context="expected Stage-A calibration binding file SHA-256",
+    )
+    capture_provenance_hash = _require_sha256(
+        expected_stage_a_capture_provenance_receipt_file_sha256,
+        context="expected Stage-A capture provenance receipt file SHA-256",
     )
     h1 = _require_sha1(expected_h1_commit, context="expected Stage-A H1 commit")
     seal = _require_sha1(expected_seal_commit, context="expected Stage-A seal commit")
@@ -2507,6 +2682,7 @@ def verify_execution_artifact(
         {
             "stage_a_identity_file_sha256",
             "stage_a_calibration_binding_file_sha256",
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD,
             "repository_source_manifest_file_sha256",
             "stage_a_input_bundle_manifest_file_sha256",
             "execution_bindings",
@@ -2517,8 +2693,9 @@ def verify_execution_artifact(
     if (
         dependencies.get("stage_a_identity_file_sha256") != identity_hash
         or dependencies.get("stage_a_calibration_binding_file_sha256") != binding_hash
+        or dependencies.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD) != capture_provenance_hash
     ):
-        raise StageAError("Stage-A result identity or calibration binding drifted")
+        raise StageAError("Stage-A result identity, binding, or capture provenance drifted")
     if dependencies.get("repository_source_manifest_file_sha256") != source_manifest_hash:
         raise StageAError("Stage-A result source manifest identity drifted")
     if dependencies.get("stage_a_input_bundle_manifest_file_sha256") != input_bundle_manifest_hash:
@@ -2555,6 +2732,7 @@ def verify_execution_artifact(
             "one_run_seal_message_sha256",
             "one_run_seal_tree",
             "preseal_engine_smoke_sha256",
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD,
             "stage_a_input_bundle_manifest_file_sha256",
         },
         context="Stage-A result one-run identity",
@@ -2570,6 +2748,7 @@ def verify_execution_artifact(
         or one_run.get("one_run_seal_message_sha256") != seal_message_hash
         or one_run.get("identity_scoped_attempt_lock_file_sha256") != attempt_lock_hash
         or one_run.get("stage_a_input_bundle_manifest_file_sha256") != input_bundle_manifest_hash
+        or one_run.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD) != capture_provenance_hash
     ):
         raise StageAError("Stage-A result one-run identity drifted")
     preseal_smoke = evidence.get("preseal_engine_smoke")
@@ -2975,6 +3154,10 @@ def publish_result(
             reservation.receipt.get("calibration_binding_file_sha256"),
             context="attempt calibration binding file SHA-256",
         ),
+        expected_stage_a_capture_provenance_receipt_file_sha256=_require_sha256(
+            reservation.receipt.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD),
+            context="attempt Stage-A capture provenance receipt SHA-256",
+        ),
         expected_h1_commit=reservation.h1_commit,
         expected_seal_commit=reservation.seal_commit,
         expected_source_commit=_require_sha1(
@@ -3347,11 +3530,22 @@ def authenticate_production(
     binding_bytes = _stable_file_bytes(
         config.calibration_binding_path, context="Stage-A calibration binding"
     )
+    capture_provenance_receipt_bytes = _stable_file_bytes(
+        config.stage_a_capture_provenance_receipt_path,
+        context="finalized Stage-A capture provenance receipt",
+    )
+    bootstrap_capture = bootstrap_stage_a_capture_provenance_receipt(
+        capture_provenance_receipt_bytes,
+        expected_file_sha256=(config.expected_stage_a_capture_provenance_receipt_sha256),
+        calibration_binding_artifact=binding_bytes,
+        identity=bootstrap,
+        expected_source_commit=config.source_commit,
+    )
     execution = _read_execution_artifacts(config)
     if {name: sha256_bytes(data) for name, data in execution.items()} != dict(
         bootstrap.execution_bindings
     ):
-        raise StageAError("one or more execution artifacts differ from identity v5")
+        raise StageAError("one or more execution artifacts differ from Stage-A identity v6")
     expected_cli = {
         "calibration_runtime_manifest_file_sha256": _require_sha256(
             config.expected_runtime_manifest_sha256, context="expected runtime manifest SHA-256"
@@ -3365,7 +3559,7 @@ def authenticate_production(
         ),
     }
     if any(bootstrap.execution_bindings[name] != digest for name, digest in expected_cli.items()):
-        raise StageAError("explicit expected execution-artifact digest differs from identity v5")
+        raise StageAError("explicit expected execution-artifact digest differs from identity v6")
     source_bootstrap = _bootstrap_source_manifest(
         execution["repository_source_manifest_file_sha256"]
     )
@@ -3373,8 +3567,12 @@ def authenticate_production(
         config.source_commit, context="explicit H0 source commit"
     ):
         raise StageAError("explicit H0 differs from the authenticated source manifest")
+    source_entries = _source_entries(source_bootstrap)
+    capture_source = cast(Mapping[str, object], bootstrap_capture["capture_source"])
+    if capture_source.get("sha256") != source_entries[CAPTURE_SOURCE_PATH]["raw_sha256"]:
+        raise StageAError("Stage-A capture provenance source differs from authenticated H0")
     _verify_source_bytes(source_bootstrap, config.repository_root)
-    entries = _source_entries(source_bootstrap)
+    entries = source_entries
     _install_source_namespace(config.repository_root)
     source_module = _load_exact_module(
         "recurquant.experiment013_source",
@@ -3408,6 +3606,12 @@ def authenticate_production(
         raise StageAError("source verifier returned a different H0 manifest")
     _assert_tracked_identity_bytes(config, identity_bytes)
     binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
+    capture_provenance_receipt = resolver.deserialize_stage_a_capture_provenance_receipt(
+        capture_provenance_receipt_bytes,
+        expected_file_sha256=config.expected_stage_a_capture_provenance_receipt_sha256,
+        calibration_binding_artifact=binding_bytes,
+        expected_identity_input_file_sha256=bootstrap.identity_input_file_sha256,
+    )
     if dict(binding.execution_bindings) != dict(bootstrap.execution_bindings):
         raise StageAError(
             "calibration authorization and Stage-A identity bind different execution artifacts"
@@ -3420,15 +3624,19 @@ def authenticate_production(
         != bootstrap.calibration_binding[_binding_field_for_dependency(name)]
         for name in BINDING_DEPENDENCY_NAMES
     ):
-        raise StageAError("identity v5 binding differs from authorized calibration dependencies")
+        raise StageAError("identity v6 binding differs from authorized calibration dependencies")
     if (
         binding.authorization_file_sha256
         != bootstrap.calibration_binding["calibration_authorization_file_sha256"]
     ):
-        raise StageAError("identity v5 differs from the calibration authorization receipt")
+        raise StageAError("identity v6 differs from the calibration authorization receipt")
     identity = resolver.deserialize_frozen_stage_a_identity_artifact(
         identity_bytes,
         calibration_binding_artifact=binding_bytes,
+        stage_a_capture_provenance_receipt=capture_provenance_receipt_bytes,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            config.expected_stage_a_capture_provenance_receipt_sha256
+        ),
         expected_file_sha256=bootstrap.file_sha256,
     )
     calibration = importlib.import_module("recurquant.static_q468_calibration")
@@ -3472,6 +3680,10 @@ def authenticate_production(
             config.input_bundle_root,
             frozen_stage_a_identity_artifact=identity_bytes,
             calibration_binding_artifact=binding_bytes,
+            stage_a_capture_provenance_receipt=capture_provenance_receipt_bytes,
+            expected_stage_a_capture_provenance_receipt_sha256=(
+                config.expected_stage_a_capture_provenance_receipt_sha256
+            ),
             execution_binding_artifacts=execution,
         )
         input_bundle_manifest_file_sha256 = _require_sha256(
@@ -3487,6 +3699,8 @@ def authenticate_production(
         bootstrap_identity=bootstrap,
         identity=identity,
         binding=binding,
+        capture_provenance_receipt=capture_provenance_receipt,
+        capture_provenance_receipt_bytes=capture_provenance_receipt_bytes,
         dependency_bytes=MappingProxyType(dependencies),
         execution_artifact_bytes=MappingProxyType(execution),
         source_manifest=MappingProxyType(normalized_source),
@@ -3519,6 +3733,46 @@ def reauthenticate_production(
     identity_bytes = _stable_file_bytes(config.frozen_identity_path, context="frozen identity")
     if sha256_bytes(identity_bytes) != previous.bootstrap_identity.file_sha256:
         raise StageAError("frozen Stage-A identity changed during evaluation")
+    binding_bytes = _stable_file_bytes(
+        config.calibration_binding_path,
+        context="Stage-A calibration binding",
+    )
+    receipt_bytes = _stable_file_bytes(
+        config.stage_a_capture_provenance_receipt_path,
+        context="finalized Stage-A capture provenance receipt",
+    )
+    if receipt_bytes != previous.capture_provenance_receipt_bytes:
+        raise StageAError("finalized Stage-A capture provenance changed during evaluation")
+    bootstrap_stage_a_capture_provenance_receipt(
+        receipt_bytes,
+        expected_file_sha256=config.expected_stage_a_capture_provenance_receipt_sha256,
+        calibration_binding_artifact=binding_bytes,
+        identity=previous.bootstrap_identity,
+        expected_source_commit=config.source_commit,
+    )
+    previous.resolver.deserialize_stage_a_calibration_binding_artifact(
+        binding_bytes,
+        expected_file_sha256=previous.binding.file_sha256,
+    )
+    repeated_receipt = previous.resolver.deserialize_stage_a_capture_provenance_receipt(
+        receipt_bytes,
+        expected_file_sha256=config.expected_stage_a_capture_provenance_receipt_sha256,
+        calibration_binding_artifact=binding_bytes,
+        expected_identity_input_file_sha256=(
+            previous.bootstrap_identity.identity_input_file_sha256
+        ),
+    )
+    if repeated_receipt != previous.capture_provenance_receipt:
+        raise StageAError("finalized Stage-A capture provenance reauthentication drifted")
+    previous.resolver.deserialize_frozen_stage_a_identity_artifact(
+        identity_bytes,
+        calibration_binding_artifact=binding_bytes,
+        stage_a_capture_provenance_receipt=receipt_bytes,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            config.expected_stage_a_capture_provenance_receipt_sha256
+        ),
+        expected_file_sha256=previous.bootstrap_identity.file_sha256,
+    )
     if reservation is None:
         _assert_tracked_identity_bytes(config, identity_bytes)
     else:
@@ -3548,18 +3802,15 @@ def reauthenticate_production(
     )
     if model != previous.authenticated_model_files:
         raise StageAError("authenticated model files changed during Stage A")
-    previous.resolver.deserialize_stage_a_calibration_binding_artifact(
-        _stable_file_bytes(config.calibration_binding_path, context="calibration binding"),
-        expected_file_sha256=previous.binding.file_sha256,
-    )
     if previous.input_bundle is None or previous.input_bundle_manifest_file_sha256 is None:
         raise StageAError("authenticated Stage-A input bundle is unavailable")
     bundle = previous.capture.authenticate_stage_a_input_bundle(
         config.input_bundle_root,
         frozen_stage_a_identity_artifact=identity_bytes,
-        calibration_binding_artifact=_stable_file_bytes(
-            config.calibration_binding_path,
-            context="calibration binding for Stage-A input bundle",
+        calibration_binding_artifact=binding_bytes,
+        stage_a_capture_provenance_receipt=receipt_bytes,
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            config.expected_stage_a_capture_provenance_receipt_sha256
         ),
         execution_binding_artifacts=execution,
     )
@@ -3662,6 +3913,13 @@ def materialize_production(config: StageAConfig, authenticated: AuthenticatedSta
         calibration_binding_artifact=_stable_file_bytes(
             config.calibration_binding_path, context="Stage-A calibration binding"
         ),
+        stage_a_capture_provenance_receipt=_stable_file_bytes(
+            config.stage_a_capture_provenance_receipt_path,
+            context="finalized Stage-A capture provenance receipt",
+        ),
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            config.expected_stage_a_capture_provenance_receipt_sha256
+        ),
         expected_frozen_stage_a_identity_file_sha256=(authenticated.bootstrap_identity.file_sha256),
         execution_binding_artifacts=dict(authenticated.execution_artifact_bytes),
         runtime_authentication_context=_runtime_context(config),
@@ -3684,6 +3942,10 @@ def prepare_inputs_production(config: StageAConfig) -> Mapping[str, object]:
         ruler_receipt_dir=config.ruler_root,
         frozen_stage_a_identity_artifact=identity_bytes,
         calibration_binding_artifact=binding_bytes,
+        stage_a_capture_provenance_receipt=(authenticated.capture_provenance_receipt_bytes),
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            config.expected_stage_a_capture_provenance_receipt_sha256
+        ),
         execution_binding_artifacts=dict(authenticated.execution_artifact_bytes),
         runtime_authentication_context=_runtime_context(config),
     )
@@ -3696,6 +3958,9 @@ def prepare_inputs_production(config: StageAConfig) -> Mapping[str, object]:
             ),
             "identity_file_sha256": authenticated.bootstrap_identity.file_sha256,
             "calibration_binding_file_sha256": authenticated.binding.file_sha256,
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+                authenticated.bootstrap_identity.stage_a_capture_provenance_receipt_file_sha256
+            ),
             "source_commit": authenticated.source_commit,
             "content_materialized": False,
             "model_instantiated": False,
@@ -4330,6 +4595,8 @@ def _authenticate_recovery_boundary(
         or receipt.get("automatic_retry_authorized") is not False
         or receipt.get("claim_boundary") != CLAIM_BOUNDARY
         or receipt.get("execution_bindings") != dict(bootstrap.execution_bindings)
+        or receipt.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD)
+        != bootstrap.stage_a_capture_provenance_receipt_file_sha256
         or receipt.get("expected_forward_count") != bootstrap.expected_forward_count
     ):
         raise StageAError("recovery receipt contract differs from the frozen identity")
@@ -4397,6 +4664,17 @@ def _authenticate_recovery_boundary(
         context="recovery receipt calibration binding SHA-256",
     ):
         raise StageAError("recovery calibration binding differs from the durable receipt")
+    capture_receipt_bytes = _stable_file_bytes(
+        config.stage_a_capture_provenance_receipt_path,
+        context="recovery finalized Stage-A capture provenance receipt",
+    )
+    bootstrap_capture = bootstrap_stage_a_capture_provenance_receipt(
+        capture_receipt_bytes,
+        expected_file_sha256=config.expected_stage_a_capture_provenance_receipt_sha256,
+        calibration_binding_artifact=binding_bytes,
+        identity=bootstrap,
+        expected_source_commit=config.source_commit,
+    )
     execution = _read_execution_artifacts(config)
     observed_execution = {name: sha256_bytes(data) for name, data in execution.items()}
     if observed_execution != dict(bootstrap.execution_bindings):
@@ -4412,6 +4690,13 @@ def _authenticate_recovery_boundary(
         context="recovery receipt Stage-A input bundle manifest SHA-256",
     )
     source = _bootstrap_source_manifest(execution["repository_source_manifest_file_sha256"])
+    recovery_source_entries = _source_entries(source)
+    recovery_capture_source = cast(Mapping[str, object], bootstrap_capture["capture_source"])
+    if (
+        recovery_capture_source.get("sha256")
+        != recovery_source_entries[CAPTURE_SOURCE_PATH]["raw_sha256"]
+    ):
+        raise StageAError("recovery capture provenance source differs from authenticated H0")
     source_commit = _require_sha1(source.get("source_commit"), context="recovery source commit")
     if source_commit != _require_sha1(
         config.source_commit, context="recovery CLI H0 commit"
@@ -4446,6 +4731,9 @@ def _authenticate_recovery_boundary(
     expected_message = _seal_message_values(
         identity_file_sha256=bootstrap.file_sha256,
         calibration_binding_file_sha256=binding_hash,
+        stage_a_capture_provenance_receipt_file_sha256=(
+            bootstrap.stage_a_capture_provenance_receipt_file_sha256
+        ),
         source_manifest_file_sha256=source_hash,
         input_bundle_manifest_file_sha256=input_bundle_hash,
         expected_forward_count=bootstrap.expected_forward_count,
@@ -4499,6 +4787,9 @@ def _authenticate_recovery_boundary(
         "one_run_marker": ONE_RUN_MARKER,
         "one_run_seal_message_sha256": sha256_bytes(expected_message),
         "calibration_binding_file_sha256": binding_hash,
+        STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: (
+            bootstrap.stage_a_capture_provenance_receipt_file_sha256
+        ),
         "source_manifest_file_sha256": source_hash,
         "stage_a_input_bundle_manifest_file_sha256": input_bundle_hash,
         "execution_bindings": dict(bootstrap.execution_bindings),
@@ -4568,6 +4859,9 @@ def _recover_lock_only_attempt(config: StageAConfig) -> None:
         "identity_file_sha256": lock.get("identity_file_sha256"),
         "identity_scoped_attempt_lock_file_sha256": sha256_bytes(lock_bytes),
         "calibration_binding_file_sha256": lock.get("calibration_binding_file_sha256"),
+        STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: lock.get(
+            STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD
+        ),
         "source_manifest_file_sha256": lock.get("source_manifest_file_sha256"),
         "stage_a_input_bundle_manifest_file_sha256": lock.get(
             "stage_a_input_bundle_manifest_file_sha256"
@@ -4655,6 +4949,10 @@ def recover_interrupted(config: StageAConfig) -> Mapping[str, object]:
             payload,
             expected_identity_file_sha256=bootstrap.file_sha256,
             expected_calibration_binding_file_sha256=binding_hash,
+            expected_stage_a_capture_provenance_receipt_file_sha256=_require_sha256(
+                receipt.get(STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD),
+                context="recovery receipt capture provenance SHA-256",
+            ),
             expected_h1_commit=h1,
             expected_seal_commit=authenticated_seal,
             expected_source_commit=_require_sha1(
@@ -4824,6 +5122,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--frozen-identity", required=True, type=Path)
     parser.add_argument("--stage-a-calibration-binding", required=True, type=Path)
+    parser.add_argument("--stage-a-capture-provenance-receipt", required=True, type=Path)
+    parser.add_argument(
+        "--expected-stage-a-capture-provenance-receipt-sha256",
+        required=True,
+    )
     parser.add_argument("--repository-source-manifest", required=True, type=Path)
     parser.add_argument("--runtime-manifest", required=True, type=Path)
     parser.add_argument("--expected-runtime-manifest-sha256", required=True)
@@ -4855,6 +5158,7 @@ def _config_from_args(
     return StageAConfig(
         frozen_identity_path=args.frozen_identity,
         calibration_binding_path=args.stage_a_calibration_binding,
+        stage_a_capture_provenance_receipt_path=(args.stage_a_capture_provenance_receipt),
         repository_source_manifest_path=args.repository_source_manifest,
         runtime_manifest_path=args.runtime_manifest,
         model_file_manifest_path=args.model_file_manifest,
@@ -4871,6 +5175,9 @@ def _config_from_args(
         expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
         expected_parquet_materialization_manifest_sha256=(
             args.expected_parquet_materialization_manifest_sha256
+        ),
+        expected_stage_a_capture_provenance_receipt_sha256=(
+            args.expected_stage_a_capture_provenance_receipt_sha256
         ),
         base_runtime_root=base_runtime_root,
         package_roots=MappingProxyType(dict(package_roots)),
