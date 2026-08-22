@@ -19,6 +19,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import string
@@ -28,7 +29,7 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Final
 
@@ -255,6 +256,7 @@ FISHER_BOUNDARY_FIELDS: Final = frozenset(
 FISHER_BOUNDARY_PAYLOAD_FIELDS: Final = FISHER_BOUNDARY_FIELDS - {"fisher_boundary_sha256"}
 CALIBRATION_BINDING_FIELDS: Final = frozenset(
     {
+        "calibration_authorization_file_sha256",
         "calibration_identity_file_sha256",
         "calibration_score_artifact_file_sha256",
         "comparator_score_artifact_file_sha256",
@@ -306,8 +308,148 @@ FROZEN_RECORD_FIELDS: Final = RECORD_FIELDS | {
     "anchor_positions_sha256",
 }
 STAGE_A_BINDING_ARTIFACT_KIND: Final = "recurquant_experiment013_stage_a_calibration_binding"
-STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION: Final = 3
-STAGE_A_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibration-binding-v3"
+STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION: Final = 4
+STAGE_A_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibration-binding-v4"
+STAGE_A_CORE_BINDING_ARTIFACT_KIND: Final = (
+    "recurquant_experiment013_stage_a_calibration_core_binding"
+)
+STAGE_A_CORE_BINDING_ARTIFACT_SCHEMA_VERSION: Final = 3
+STAGE_A_CORE_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibration-core-binding-v3"
+STAGE_A_CALIBRATION_AUTHORIZATION_ARTIFACT_KIND: Final = (
+    "recurquant_experiment013_stage_a_calibration_authorization"
+)
+STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION: Final = 1
+STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
+    "experiment-013-stage-a-calibration-authorization-v1"
+)
+STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
+CALIBRATION_RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
+CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 3
+CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v9"
+CALIBRATION_CAPTURE_PROVENANCE_KIND: Final = (
+    "recurquant_experiment013_calibration_identity_capture_provenance"
+)
+CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION: Final = 2
+CALIBRATION_CAPTURE_VERSION: Final = 6
+CALIBRATION_CAPTURE_PROVENANCE_STATUS: Final = (
+    "captured_under_authenticated_runtime_and_launcher_finalized"
+)
+CALIBRATION_CAPTURE_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
+)
+CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-complete-v1\n"
+FISHER_H1_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
+CALIBRATION_OUTPUT_FILENAMES: Final = MappingProxyType(
+    {
+        "calibration_score_artifact": "calibration-scores.json",
+        "comparator_score_artifact": "comparator-scores.json",
+        "split_half_stability_artifact": "split-half-stability.json",
+        "static_k27030_policy_artifact": "static-k27030-policy.json",
+        "static_k29334_policy_artifact": "static-k29334-policy.json",
+        "static_mse_k29334_policy_artifact": "static-mse-k29334-policy.json",
+        "static_fisher_k29334_policy_artifact": ("static-diagonal-fisher-h1-k29334-policy.json"),
+        "static_q48_policy_artifact": "static-q48-p14739-policy.json",
+        "calibration_core_binding_artifact": "stage-a-calibration-core-binding.json",
+    }
+)
+CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES: Final = frozenset(
+    {
+        "calibration_complete_marker",
+        "calibration_core_binding_artifact",
+        "calibration_run_report",
+        "calibration_runtime_manifest",
+        "capture_provenance_receipt",
+        "fisher_h1_smoke_complete_marker",
+        "fisher_h1_smoke_report",
+        "model_file_manifest",
+        "repository_source_manifest",
+        "static_q48_policy_artifact",
+    }
+)
+
+CALIBRATION_RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
+CALIBRATION_RUNTIME_MANIFEST_SCHEMA_VERSION: Final = 5
+CALIBRATION_MODEL_FILE_MANIFEST_KIND: Final = "recurquant_experiment013_model_file_manifest"
+CALIBRATION_MODEL_FILE_MANIFEST_SCHEMA_VERSION: Final = 1
+CALIBRATION_MODEL_FILE_MANIFEST_DERIVATION: Final = "huggingface-hub-pinned-tree-lfs-v1"
+CALIBRATION_MODEL_FILE_SELECTION_PROFILE: Final = "qwen35-config-index-safetensors-v1"
+CALIBRATION_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
+CALIBRATION_CAPTURE_CRITICAL_MODULE_DISTRIBUTIONS: Final = MappingProxyType(
+    {
+        "datasets": "datasets",
+        "fsspec": "fsspec",
+        "huggingface_hub": "huggingface-hub",
+        "numpy": "numpy",
+        "pyarrow": "pyarrow",
+        "tokenizers": "tokenizers",
+        "transformers": "transformers",
+    }
+)
+CALIBRATION_CAPTURE_EXCLUDED_RUNTIME_MODULES: Final = ("pkg_resources", "setuptools")
+CALIBRATION_QUERY_ENERGY_EMA: Final = MappingProxyType(
+    {
+        "decay_hex": (2.0 ** (-1.0 / 32.0)).hex(),
+        "epsilon_hex": (1.0e-6).hex(),
+        "prior": "uniform_1_over_key_rows",
+    }
+)
+CALIBRATION_CANONICAL_ADAPTER_REVISION: Final = "experiment-013-qwen35-live-adapter-v2"
+CALIBRATION_CANONICAL_ADAPTER_KERNEL_BACKEND: Final = "transformers_pure_torch_gated_delta_rule"
+CALIBRATION_CANONICAL_ADAPTER_MODEL_DTYPE: Final = "bfloat16"
+CALIBRATION_CANONICAL_TORCH_DISTRIBUTION_VERSION: Final = "2.13.0+cu130"
+CALIBRATION_CANONICAL_TORCH_RUNTIME_VERSION: Final = "2.13.0+cu130"
+CALIBRATION_CANONICAL_CUDA_RUNTIME_VERSION: Final = "13.0"
+CALIBRATION_CANONICAL_ADAPTER_QUERY_SHAPE: Final = (1, 1, 16, 128)
+CALIBRATION_CANONICAL_ADAPTER_STATE_SHAPE: Final = (1, 16, 128, 128)
+CALIBRATION_CANONICAL_ADAPTER_RECURRENT_LAYER_INDICES: Final = (
+    0,
+    1,
+    2,
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    12,
+    13,
+    14,
+    16,
+    17,
+    18,
+    20,
+    21,
+    22,
+)
+CALIBRATION_CANONICAL_ADAPTER_LOADING_DIAGNOSTICS: Final = frozenset(
+    {"error_msgs", "mismatched_keys", "missing_keys", "unexpected_keys"}
+)
+CALIBRATION_SEALED_LAUNCH_POLICY: Final = MappingProxyType(
+    {
+        "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
+        "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
+        "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
+        "dont_write_bytecode": 1,
+        "ignore_environment": 1,
+        "isolated": 1,
+        "no_site": 1,
+        "no_user_site": 1,
+        "package_path_mode": "authenticated-record-only-roots-v1",
+        "pycache_mode": "new-verified-empty-prefix-v1",
+        "safe_path": True,
+        "site_loaded": False,
+        "sys_path_mode": "staged-base-then-authenticated-packages-v1",
+        "utf8_mode": 1,
+        "virtualenv_hook_loaded": False,
+    }
+)
+CALIBRATION_CORE_DEPENDENCY_NAMES: Final = frozenset(
+    (
+        set(CALIBRATION_OUTPUT_FILENAMES)
+        - {"static_q48_policy_artifact", "calibration_core_binding_artifact"}
+    )
+    | {"frozen_identity_artifact"}
+)
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -1327,12 +1469,15 @@ def build_candidate(
     if source["model_weights_loaded"] is not False:
         raise ValueError("identity resolution must occur before model weights")
     expected_calibration_binding: dict[str, str] | None = None
+    authorized_execution_bindings: dict[str, str] | None = None
     if phase == "stage_a":
         if not isinstance(calibration_binding_artifact, bytes):
             raise ValueError("Stage A requires a verified calibration binding artifact")
-        expected_calibration_binding = dict(
-            deserialize_stage_a_calibration_binding_artifact(calibration_binding_artifact).binding
+        verified_binding = deserialize_stage_a_calibration_binding_artifact(
+            calibration_binding_artifact
         )
+        expected_calibration_binding = dict(verified_binding.binding)
+        authorized_execution_bindings = dict(verified_binding.execution_bindings)
     elif calibration_binding_artifact is not None:
         raise ValueError("calibration resolution forbids a Stage-A binding artifact")
     if set(expected_revisions) != set(DATASET_KEYS):
@@ -1355,6 +1500,11 @@ def build_candidate(
     ]
     if parquet_materialization_manifest_file_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
         raise ValueError("Parquet materialization manifest file SHA-256 drifted")
+    if (
+        authorized_execution_bindings is not None
+        and execution_bindings != authorized_execution_bindings
+    ):
+        raise ValueError("Stage-A execution bindings differ from calibration authorization")
     raw_records = require_sequence(source["records"], context="records")
     records = [
         _normalize_record(
@@ -1623,11 +1773,17 @@ def promote_candidate(
     if candidate_phase == "stage_a":
         if not isinstance(calibration_binding_artifact, bytes):
             raise ValueError("Stage-A promotion requires a verified calibration binding artifact")
-        verified_binding = deserialize_stage_a_calibration_binding_artifact(
+        verified_binding_artifact = deserialize_stage_a_calibration_binding_artifact(
             calibration_binding_artifact
-        ).binding
-        if candidate["evidence"]["calibration_binding"] != verified_binding:
+        )
+        if candidate["evidence"]["calibration_binding"] != verified_binding_artifact.binding:
             raise ValueError("Stage-A candidate differs from the verified calibration binding")
+        if candidate["evidence"]["execution_bindings"] != dict(
+            verified_binding_artifact.execution_bindings
+        ):
+            raise ValueError(
+                "Stage-A candidate execution bindings differ from calibration authorization"
+            )
     elif calibration_binding_artifact is not None:
         raise ValueError("calibration promotion forbids a Stage-A binding artifact")
     evidence = deepcopy(dict(candidate["evidence"]))
@@ -1674,7 +1830,7 @@ class FrozenCalibrationIdentityArtifact:
 
 @dataclass(frozen=True, slots=True)
 class FrozenStageAIdentityArtifact:
-    """Strictly verified frozen Stage-A identity and eight-file calibration binding."""
+    """Strictly verified frozen Stage-A identity and authorized calibration binding."""
 
     file_sha256: str
     canonical_evidence_sha256: str
@@ -1695,11 +1851,12 @@ class FrozenStageAIdentityArtifact:
 
 
 @dataclass(frozen=True, slots=True)
-class StageACalibrationBindingArtifact:
-    """Verified eight-field Stage-A binding and authenticated dependency hashes."""
+class StageACalibrationCoreBindingArtifact:
+    """Verified pre-authorization binding emitted by the full calibration run."""
 
     binding: Mapping[str, str]
     dependency_file_sha256: Mapping[str, str]
+    calibration_dependencies: Mapping[str, bytes]
     canonical_evidence_sha256: str
     file_sha256: str
 
@@ -1710,6 +1867,67 @@ class StageACalibrationBindingArtifact:
             "dependency_file_sha256",
             _deep_freeze(self.dependency_file_sha256),
         )
+        object.__setattr__(
+            self,
+            "calibration_dependencies",
+            _deep_freeze(self.calibration_dependencies),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StageACalibrationBindingArtifact:
+    """Verified post-calibration Stage-A binding and authenticated calibration bytes."""
+
+    binding: Mapping[str, str]
+    dependency_file_sha256: Mapping[str, str]
+    calibration_dependencies: Mapping[str, bytes]
+    authorization_file_sha256: str
+    execution_bindings: Mapping[str, str]
+    source_commit: str
+    canonical_evidence_sha256: str
+    file_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "binding", _deep_freeze(self.binding))
+        object.__setattr__(
+            self,
+            "dependency_file_sha256",
+            _deep_freeze(self.dependency_file_sha256),
+        )
+        object.__setattr__(
+            self,
+            "calibration_dependencies",
+            _deep_freeze(self.calibration_dependencies),
+        )
+        object.__setattr__(self, "execution_bindings", _deep_freeze(self.execution_bindings))
+
+
+@dataclass(frozen=True, slots=True)
+class StageACalibrationAuthorizationArtifact:
+    """Verified authorization over one finalized runner-v9 calibration chain."""
+
+    binding: Mapping[str, str]
+    calibration_dependencies: Mapping[str, bytes]
+    authorized_output_file_sha256: Mapping[str, str]
+    execution_bindings: Mapping[str, str]
+    source_commit: str
+    identity_input_manifest_sha256: str
+    canonical_evidence_sha256: str
+    file_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "binding", _deep_freeze(self.binding))
+        object.__setattr__(
+            self,
+            "calibration_dependencies",
+            _deep_freeze(self.calibration_dependencies),
+        )
+        object.__setattr__(
+            self,
+            "authorized_output_file_sha256",
+            _deep_freeze(self.authorized_output_file_sha256),
+        )
+        object.__setattr__(self, "execution_bindings", _deep_freeze(self.execution_bindings))
 
 
 def deserialize_frozen_calibration_identity_artifact(
@@ -2056,9 +2274,10 @@ def deserialize_frozen_stage_a_identity_artifact(
     ):
         raise ValueError("promoted Stage-A candidate file SHA-256 drifted")
 
-    verified_binding = deserialize_stage_a_calibration_binding_artifact(
+    verified_binding_artifact = deserialize_stage_a_calibration_binding_artifact(
         calibration_binding_artifact
-    ).binding
+    )
+    verified_binding = verified_binding_artifact.binding
     if candidate_evidence["calibration_binding"] != verified_binding:
         raise ValueError("frozen Stage-A identity differs from the verified calibration binding")
     records = tuple(dict(record) for record in candidate_evidence["records"])
@@ -2067,6 +2286,8 @@ def deserialize_frozen_stage_a_identity_artifact(
         context="frozen Stage-A tokenizer manifest SHA-256",
     )
     execution_bindings = _validate_execution_bindings(candidate_evidence["execution_bindings"])
+    if execution_bindings != dict(verified_binding_artifact.execution_bindings):
+        raise ValueError("frozen Stage-A execution bindings differ from calibration authorization")
     parquet_manifest_sha256 = execution_bindings["parquet_materialization_manifest_file_sha256"]
     if parquet_manifest_sha256 != PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256:
         raise ValueError("frozen Stage-A Parquet materialization manifest file SHA-256 drifted")
@@ -2440,7 +2661,7 @@ def _derive_stage_a_calibration_binding(
     return binding, dependency_hashes
 
 
-def build_stage_a_calibration_binding_artifact(
+def build_stage_a_calibration_core_binding_artifact(
     *,
     frozen_identity_artifact: bytes,
     calibration_score_artifact: bytes,
@@ -2451,7 +2672,7 @@ def build_stage_a_calibration_binding_artifact(
     static_fisher_k29334_policy_artifact: bytes,
     static_mse_k29334_policy_artifact: bytes,
 ) -> bytes:
-    """Build the eight-field Stage-A binding only from fully verified dependencies."""
+    """Build the pre-authorization core binding from verified calibration outputs."""
 
     dependencies = {
         "calibration_score_artifact": calibration_score_artifact,
@@ -2474,7 +2695,7 @@ def build_stage_a_calibration_binding_artifact(
         static_mse_k29334_policy_artifact=static_mse_k29334_policy_artifact,
     )
     evidence = {
-        "artifact_revision": STAGE_A_BINDING_ARTIFACT_REVISION,
+        "artifact_revision": STAGE_A_CORE_BINDING_ARTIFACT_REVISION,
         "binding": binding,
         "dependencies_base64": {
             name: _canonical_b64(value, context=name)
@@ -2483,30 +2704,30 @@ def build_stage_a_calibration_binding_artifact(
         "dependency_file_sha256": dependency_hashes,
     }
     document = {
-        "artifact_kind": STAGE_A_BINDING_ARTIFACT_KIND,
+        "artifact_kind": STAGE_A_CORE_BINDING_ARTIFACT_KIND,
         "canonical_evidence_sha256": sha256_bytes(canonical_json_bytes(evidence)),
         "evidence": evidence,
-        "schema_version": STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION,
+        "schema_version": STAGE_A_CORE_BINDING_ARTIFACT_SCHEMA_VERSION,
     }
     return canonical_json_bytes(document)
 
 
-def deserialize_stage_a_calibration_binding_artifact(
+def deserialize_stage_a_calibration_core_binding_artifact(
     data: bytes,
     *,
     expected_file_sha256: str | None = None,
-) -> StageACalibrationBindingArtifact:
-    """Strictly reverify every embedded dependency of a Stage-A binding artifact."""
+) -> StageACalibrationCoreBindingArtifact:
+    """Strictly reverify every dependency of a pre-authorization core binding."""
 
     if not isinstance(data, bytes):
-        raise TypeError("Stage-A calibration binding artifact must be bytes")
+        raise TypeError("Stage-A calibration core binding artifact must be bytes")
     file_sha256 = sha256_bytes(data)
     if expected_file_sha256 is not None and file_sha256 != require_sha256(
         expected_file_sha256,
-        context="expected Stage-A binding file SHA-256",
+        context="expected Stage-A core binding file SHA-256",
     ):
-        raise ValueError("Stage-A calibration binding file SHA-256 mismatch")
-    root = _json_without_duplicate_keys(data, context="Stage-A calibration binding")
+        raise ValueError("Stage-A calibration core binding file SHA-256 mismatch")
+    root = _json_without_duplicate_keys(data, context="Stage-A calibration core binding")
     require_exact_fields(
         root,
         frozenset(
@@ -2517,16 +2738,16 @@ def deserialize_stage_a_calibration_binding_artifact(
                 "schema_version",
             }
         ),
-        context="Stage-A calibration binding wrapper",
+        context="Stage-A calibration core binding wrapper",
     )
     if canonical_json_bytes(root) != data:
-        raise ValueError("Stage-A calibration binding bytes are not canonical JSON")
+        raise ValueError("Stage-A calibration core binding bytes are not canonical JSON")
     if (
-        root["artifact_kind"] != STAGE_A_BINDING_ARTIFACT_KIND
-        or root["schema_version"] != STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION
+        root["artifact_kind"] != STAGE_A_CORE_BINDING_ARTIFACT_KIND
+        or root["schema_version"] != STAGE_A_CORE_BINDING_ARTIFACT_SCHEMA_VERSION
     ):
-        raise ValueError("Stage-A calibration binding kind or schema drifted")
-    evidence = require_mapping(root["evidence"], context="Stage-A binding evidence")
+        raise ValueError("Stage-A calibration core binding kind or schema drifted")
+    evidence = require_mapping(root["evidence"], context="Stage-A core binding evidence")
     require_exact_fields(
         evidence,
         frozenset(
@@ -2537,36 +2758,25 @@ def deserialize_stage_a_calibration_binding_artifact(
                 "dependency_file_sha256",
             }
         ),
-        context="Stage-A binding evidence",
+        context="Stage-A core binding evidence",
     )
-    if evidence["artifact_revision"] != STAGE_A_BINDING_ARTIFACT_REVISION:
-        raise ValueError("Stage-A calibration binding revision drifted")
+    if evidence["artifact_revision"] != STAGE_A_CORE_BINDING_ARTIFACT_REVISION:
+        raise ValueError("Stage-A calibration core binding revision drifted")
     canonical_evidence_sha256 = require_sha256(
         root["canonical_evidence_sha256"],
-        context="Stage-A binding canonical evidence SHA-256",
+        context="Stage-A core binding canonical evidence SHA-256",
     )
     if canonical_evidence_sha256 != sha256_bytes(canonical_json_bytes(evidence)):
-        raise ValueError("Stage-A binding canonical evidence SHA-256 drifted")
+        raise ValueError("Stage-A core binding canonical evidence SHA-256 drifted")
     encoded_dependencies = require_mapping(
         evidence["dependencies_base64"],
-        context="Stage-A binding dependencies",
+        context="Stage-A core binding dependencies",
     )
-    dependency_names = frozenset(
-        {
-            "calibration_score_artifact",
-            "comparator_score_artifact",
-            "frozen_identity_artifact",
-            "split_half_stability_artifact",
-            "static_fisher_k29334_policy_artifact",
-            "static_k27030_policy_artifact",
-            "static_k29334_policy_artifact",
-            "static_mse_k29334_policy_artifact",
-        }
-    )
+    dependency_names = CALIBRATION_CORE_DEPENDENCY_NAMES
     require_exact_fields(
         encoded_dependencies,
         dependency_names,
-        context="Stage-A binding dependencies",
+        context="Stage-A core binding dependencies",
     )
     dependencies = {
         name: _decode_canonical_b64(
@@ -2577,12 +2787,12 @@ def deserialize_stage_a_calibration_binding_artifact(
     }
     recorded_dependency_hashes = require_mapping(
         evidence["dependency_file_sha256"],
-        context="Stage-A binding dependency hashes",
+        context="Stage-A core binding dependency hashes",
     )
     require_exact_fields(
         recorded_dependency_hashes,
         dependency_names,
-        context="Stage-A binding dependency hashes",
+        context="Stage-A core binding dependency hashes",
     )
     normalized_dependency_hashes = {
         name: require_sha256(
@@ -2610,9 +2820,1501 @@ def deserialize_stage_a_calibration_binding_artifact(
         raise ValueError("Stage-A calibration binding fields drifted")
     if normalized_dependency_hashes != dependency_hashes:
         raise ValueError("Stage-A calibration dependency hashes drifted")
-    return StageACalibrationBindingArtifact(
+    return StageACalibrationCoreBindingArtifact(
         binding=binding,
         dependency_file_sha256=dependency_hashes,
+        calibration_dependencies=dependencies,
+        canonical_evidence_sha256=canonical_evidence_sha256,
+        file_sha256=file_sha256,
+    )
+
+
+def _deserialize_runner_v9_report(
+    data: bytes,
+    *,
+    context: str,
+    expected_status: str,
+) -> Mapping[str, Any]:
+    root = _json_without_duplicate_keys(data, context=context)
+    require_exact_fields(
+        root,
+        frozenset(
+            {
+                "artifact_kind",
+                "canonical_evidence_sha256",
+                "evidence",
+                "schema_version",
+            }
+        ),
+        context=f"{context} wrapper",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError(f"{context} bytes are not canonical JSON")
+    if (
+        root["artifact_kind"] != CALIBRATION_RUN_REPORT_KIND
+        or root["schema_version"] != CALIBRATION_RUN_REPORT_SCHEMA_VERSION
+    ):
+        raise ValueError(f"{context} kind or schema drifted")
+    evidence = require_mapping(root["evidence"], context=f"{context} evidence")
+    require_exact_fields(
+        evidence,
+        frozenset(
+            {
+                "artifacts",
+                "calibration",
+                "identity",
+                "model_files",
+                "prerequisites",
+                "query_energy_ema",
+                "repository",
+                "runner_revision",
+                "runtime",
+                "stability",
+                "status",
+            }
+        ),
+        context=f"{context} evidence",
+    )
+    canonical_evidence_sha256 = require_sha256(
+        root["canonical_evidence_sha256"],
+        context=f"{context} canonical evidence SHA-256",
+    )
+    if canonical_evidence_sha256 != sha256_bytes(canonical_json_bytes(evidence)):
+        raise ValueError(f"{context} canonical evidence SHA-256 drifted")
+    if (
+        evidence["runner_revision"] != CALIBRATION_RUNNER_REVISION
+        or evidence["status"] != expected_status
+    ):
+        raise ValueError(f"{context} runner revision or status drifted")
+    return evidence
+
+
+def _canonical_relative_posix_path(value: object, *, context: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{context} must be a non-empty canonical path")
+    if "\\" in value or "\0" in value or "\n" in value or "\r" in value:
+        raise ValueError(f"{context} must be a single-line POSIX path")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or not path.parts
+        or path.parts[0].endswith(":")
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.as_posix() != value
+    ):
+        raise ValueError(f"{context} must be a canonical relative POSIX path")
+    return value
+
+
+def _deserialize_repository_source_manifest(data: bytes) -> dict[str, Any]:
+    from recurquant.experiment013_source import (
+        canonical_experiment013_source_manifest_bytes,
+        validate_experiment013_source_manifest,
+    )
+
+    root = _json_without_duplicate_keys(data, context="authorization repository source manifest")
+    normalized = validate_experiment013_source_manifest(root)
+    if canonical_experiment013_source_manifest_bytes(normalized) != data:
+        raise ValueError("authorization repository source manifest bytes are not canonical")
+    paths = require_sequence(
+        normalized["paths"], context="authorization repository source-manifest paths"
+    )
+    return {
+        "canonical_manifest_sha256": require_sha256(
+            normalized["canonical_manifest_sha256"],
+            context="authorization repository canonical manifest SHA-256",
+        ),
+        "file_sha256": sha256_bytes(data),
+        "paths": {
+            str(require_mapping(item, context="authorization source path")["path"]): dict(item)
+            for item in paths
+        },
+        "source_commit": require_exact_revision(
+            normalized["source_commit"], context="authorization source-manifest H0"
+        ),
+    }
+
+
+def _runtime_root_name(value: object, *, context: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value) is None:
+        raise ValueError(f"{context} is not a canonical runtime-root name")
+    return value
+
+
+def _normalized_distribution_name(value: object, *, context: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{context} is not a canonical distribution name")
+    normalized = re.sub(r"[-_.]+", "-", value).lower()
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]*", normalized) is None or normalized != value:
+        raise ValueError(f"{context} is not a normalized distribution name")
+    return normalized
+
+
+def _deserialize_calibration_runtime_manifest(data: bytes) -> dict[str, Any]:
+    root = _json_without_duplicate_keys(data, context="authorization calibration runtime manifest")
+    require_exact_fields(
+        root,
+        frozenset(
+            {
+                "artifact_kind",
+                "base_runtime_root",
+                "base_sys_path",
+                "distributions",
+                "git_executable",
+                "interpreter",
+                "launch_policy",
+                "machine",
+                "package_roots",
+                "python",
+                "runtime_trees",
+                "schema_version",
+            }
+        ),
+        context="authorization calibration runtime manifest",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError("authorization calibration runtime manifest bytes are not canonical")
+    if (
+        root["artifact_kind"] != CALIBRATION_RUNTIME_MANIFEST_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != CALIBRATION_RUNTIME_MANIFEST_SCHEMA_VERSION
+    ):
+        raise ValueError("authorization calibration runtime manifest kind or schema drifted")
+    launch_policy = require_mapping(
+        root["launch_policy"], context="authorization runtime launch policy"
+    )
+    if dict(launch_policy) != dict(CALIBRATION_SEALED_LAUNCH_POLICY):
+        raise ValueError("authorization calibration runtime launch policy drifted")
+
+    git = require_mapping(root["git_executable"], context="authorization runtime Git receipt")
+    require_exact_fields(
+        git,
+        frozenset({"absolute_path_sha256", "sha256", "size_bytes"}),
+        context="authorization runtime Git receipt",
+    )
+    require_sha256(git["absolute_path_sha256"], context="runtime Git path SHA-256")
+    require_sha256(git["sha256"], context="runtime Git executable SHA-256")
+    require_int(git["size_bytes"], context="runtime Git executable size", minimum=1)
+
+    python = require_mapping(root["python"], context="authorization runtime Python receipt")
+    require_exact_fields(
+        python,
+        frozenset({"abi_flags", "cache_tag", "implementation", "version"}),
+        context="authorization runtime Python receipt",
+    )
+    if not isinstance(python["abi_flags"], str):
+        raise ValueError("authorization runtime Python ABI flags are invalid")
+    for name in ("cache_tag", "implementation", "version"):
+        if (
+            not isinstance(python[name], str)
+            or not python[name]
+            or python[name] != python[name].strip()
+        ):
+            raise ValueError(f"authorization runtime Python {name} is invalid")
+
+    machine = require_mapping(root["machine"], context="authorization runtime machine receipt")
+    require_exact_fields(
+        machine,
+        frozenset({"architecture", "byteorder", "machine", "pointer_bits", "system"}),
+        context="authorization runtime machine receipt",
+    )
+    for name in ("architecture", "machine", "system"):
+        if (
+            not isinstance(machine[name], str)
+            or not machine[name]
+            or machine[name] != machine[name].strip()
+        ):
+            raise ValueError(f"authorization runtime machine {name} is invalid")
+    if machine["byteorder"] not in {"little", "big"}:
+        raise ValueError("authorization runtime machine byte order is invalid")
+    require_int(machine["pointer_bits"], context="runtime machine pointer bits", minimum=1)
+
+    base_root = _runtime_root_name(
+        root["base_runtime_root"], context="authorization base runtime root"
+    )
+    if base_root != "base-runtime":
+        raise ValueError("authorization base runtime root drifted")
+    base_sys_path = require_sequence(
+        root["base_sys_path"], context="authorization runtime base sys.path"
+    )
+    normalized_base_sys_path: list[str] = []
+    for item in base_sys_path:
+        normalized_base_sys_path.append(
+            "."
+            if item == "."
+            else _canonical_relative_posix_path(item, context="runtime base sys.path entry")
+        )
+    if not normalized_base_sys_path or len(
+        {item.casefold() for item in normalized_base_sys_path}
+    ) != len(normalized_base_sys_path):
+        raise ValueError("authorization runtime base sys.path is not non-empty and unique")
+
+    raw_roots = require_sequence(
+        root["package_roots"], context="authorization runtime package roots"
+    )
+    package_import_paths: dict[str, str] = {}
+    for index, raw in enumerate(raw_roots):
+        item = require_mapping(raw, context=f"authorization package_roots[{index}]")
+        require_exact_fields(
+            item,
+            frozenset({"import_path", "name"}),
+            context=f"authorization package_roots[{index}]",
+        )
+        name = _runtime_root_name(item["name"], context="authorization package root name")
+        import_path = _canonical_relative_posix_path(
+            item["import_path"], context=f"authorization package root {name} import path"
+        )
+        if name in package_import_paths or name == base_root:
+            raise ValueError("authorization runtime package root inventory is not unique")
+        package_import_paths[name] = import_path
+    if not package_import_paths or list(package_import_paths) != sorted(package_import_paths):
+        raise ValueError("authorization runtime package roots must be non-empty and sorted")
+
+    raw_trees = require_sequence(root["runtime_trees"], context="authorization runtime trees")
+    expected_tree_names = [base_root, *package_import_paths]
+    trees: dict[str, dict[str, tuple[str, int]]] = {}
+    tree_kinds: dict[str, str] = {}
+    for tree_index, raw_tree in enumerate(raw_trees):
+        tree = require_mapping(raw_tree, context=f"authorization runtime_trees[{tree_index}]")
+        require_exact_fields(
+            tree,
+            frozenset({"files", "kind", "name"}),
+            context=f"authorization runtime_trees[{tree_index}]",
+        )
+        name = _runtime_root_name(tree["name"], context="authorization runtime tree name")
+        if tree["kind"] not in {"base-runtime", "packages"}:
+            raise ValueError("authorization runtime tree kind is invalid")
+        files: dict[str, tuple[str, int]] = {}
+        raw_files = require_sequence(
+            tree["files"], context=f"authorization runtime tree {name} files"
+        )
+        for file_index, raw_file in enumerate(raw_files):
+            item = require_mapping(
+                raw_file, context=f"authorization runtime tree {name} files[{file_index}]"
+            )
+            require_exact_fields(
+                item,
+                frozenset({"path", "sha256", "size_bytes"}),
+                context=f"authorization runtime tree {name} files[{file_index}]",
+            )
+            path = _canonical_relative_posix_path(
+                item["path"], context=f"authorization runtime tree {name} path"
+            )
+            if path.casefold() in {existing.casefold() for existing in files}:
+                raise ValueError("authorization runtime tree paths are not unique")
+            files[path] = (
+                require_sha256(item["sha256"], context=f"runtime tree {name} file SHA-256"),
+                require_int(item["size_bytes"], context=f"runtime tree {name} file size"),
+            )
+        if not files or list(files) != sorted(files):
+            raise ValueError("authorization runtime tree files must be non-empty and sorted")
+        trees[name] = files
+        tree_kinds[name] = str(tree["kind"])
+    if list(trees) != expected_tree_names:
+        raise ValueError("authorization runtime tree order or inventory drifted")
+    if tree_kinds[base_root] != "base-runtime" or any(
+        tree_kinds[name] != "packages" for name in package_import_paths
+    ):
+        raise ValueError("authorization runtime tree kinds drifted")
+
+    interpreter = require_mapping(root["interpreter"], context="authorization runtime interpreter")
+    require_exact_fields(
+        interpreter,
+        frozenset({"relative_path", "root", "sha256", "size_bytes"}),
+        context="authorization runtime interpreter",
+    )
+    interpreter_path = _canonical_relative_posix_path(
+        interpreter["relative_path"], context="authorization runtime interpreter path"
+    )
+    interpreter_record = (
+        require_sha256(interpreter["sha256"], context="runtime interpreter SHA-256"),
+        require_int(interpreter["size_bytes"], context="runtime interpreter size", minimum=1),
+    )
+    if interpreter["root"] != base_root or trees[base_root].get(interpreter_path) != (
+        interpreter_record
+    ):
+        raise ValueError("authorization runtime interpreter differs from the base tree")
+
+    raw_distributions = require_sequence(
+        root["distributions"], context="authorization runtime distributions"
+    )
+    distributions: dict[str, dict[str, Any]] = {}
+    owned: dict[str, set[str]] = {name: set() for name in package_import_paths}
+    for index, raw in enumerate(raw_distributions):
+        item = require_mapping(raw, context=f"authorization runtime distributions[{index}]")
+        require_exact_fields(
+            item,
+            frozenset({"files", "name", "package_root", "version"}),
+            context=f"authorization runtime distributions[{index}]",
+        )
+        name = _normalized_distribution_name(
+            item["name"], context=f"authorization runtime distributions[{index}].name"
+        )
+        version = item["version"]
+        if not isinstance(version, str) or not version or version != version.strip():
+            raise ValueError(f"authorization runtime distribution {name} version is invalid")
+        package_root = _runtime_root_name(
+            item["package_root"], context=f"authorization runtime distribution {name} root"
+        )
+        if package_root not in owned:
+            raise ValueError(f"authorization runtime distribution {name} has an unknown root")
+        raw_files = require_sequence(
+            item["files"], context=f"authorization runtime distribution {name} files"
+        )
+        files = [
+            _canonical_relative_posix_path(
+                path, context=f"authorization runtime distribution {name} file"
+            )
+            for path in raw_files
+        ]
+        if (
+            not files
+            or files != sorted(files)
+            or len({path.casefold() for path in files}) != len(files)
+            or owned[package_root].intersection(files)
+        ):
+            raise ValueError(f"authorization runtime distribution {name} file inventory is invalid")
+        owned[package_root].update(files)
+        if name in distributions:
+            raise ValueError("authorization runtime distributions are not unique")
+        distributions[name] = {
+            "files": tuple(files),
+            "package_root": package_root,
+            "version": version,
+        }
+    if not distributions or list(distributions) != sorted(distributions):
+        raise ValueError("authorization runtime distributions must be non-empty and sorted")
+    for name in package_import_paths:
+        if owned[name] != set(trees[name]):
+            raise ValueError(
+                f"authorization runtime package tree {name} differs from RECORD ownership"
+            )
+    return {
+        "distribution_count": len(distributions),
+        "distributions": distributions,
+        "file_count": sum(len(files) for files in trees.values()),
+        "file_sha256": sha256_bytes(data),
+        "package_import_paths": package_import_paths,
+        "packages": {name: item["version"] for name, item in distributions.items()},
+        "python_version": python["version"],
+        "trees": trees,
+    }
+
+
+def _deserialize_model_file_manifest(data: bytes) -> dict[str, Any]:
+    root = _json_without_duplicate_keys(data, context="authorization model file manifest")
+    require_exact_fields(
+        root,
+        frozenset(
+            {
+                "artifact_kind",
+                "files",
+                "hub_tree_manifest_sha256",
+                "metadata_derivation",
+                "model_id",
+                "revision",
+                "schema_version",
+                "selection_profile",
+                "transformers_version",
+            }
+        ),
+        context="authorization model file manifest",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError("authorization model file manifest bytes are not canonical")
+    if (
+        root["artifact_kind"] != CALIBRATION_MODEL_FILE_MANIFEST_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != CALIBRATION_MODEL_FILE_MANIFEST_SCHEMA_VERSION
+        or root["metadata_derivation"] != CALIBRATION_MODEL_FILE_MANIFEST_DERIVATION
+        or root["selection_profile"] != CALIBRATION_MODEL_FILE_SELECTION_PROFILE
+    ):
+        raise ValueError("authorization model file manifest contract drifted")
+    model_id = require_string(root["model_id"], context="authorization model ID")
+    revision = require_exact_revision(root["revision"], context="authorization model revision")
+    if len(revision) != 40:
+        raise ValueError("authorization model revision must be a SHA-1")
+    transformers_version = root["transformers_version"]
+    if (
+        not isinstance(transformers_version, str)
+        or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", transformers_version) is None
+    ):
+        raise ValueError("authorization Transformers version must be exact semver")
+    raw_files = require_sequence(root["files"], context="authorization model files")
+    names: list[str] = []
+    tree_payload: list[dict[str, object]] = []
+    for index, raw in enumerate(raw_files):
+        item = require_mapping(raw, context=f"authorization model files[{index}]")
+        require_exact_fields(
+            item,
+            frozenset(
+                {"git_blob_oid", "lfs_sha256", "lfs_size_bytes", "name", "sha256", "size_bytes"}
+            ),
+            context=f"authorization model files[{index}]",
+        )
+        name = _canonical_relative_posix_path(
+            item["name"], context=f"authorization model files[{index}].name"
+        )
+        if "/" in name or (
+            name not in {"config.json", "model.safetensors.index.json"}
+            and re.fullmatch(
+                r"(?:model(?:-[0-9]+-of-[0-9]+)?|model\.safetensors-[0-9]+-of-[0-9]+)"
+                r"\.safetensors",
+                name,
+            )
+            is None
+        ):
+            raise ValueError("authorization model file falls outside the selection profile")
+        require_int(item["size_bytes"], context=f"authorization model file {name} size", minimum=1)
+        git_blob_oid = require_exact_revision(
+            item["git_blob_oid"], context=f"authorization model file {name} Git blob"
+        )
+        if len(git_blob_oid) != 40:
+            raise ValueError("authorization model Git blob must be SHA-1")
+        is_weight = name.endswith(".safetensors")
+        if is_weight:
+            lfs_sha256 = require_sha256(
+                item["lfs_sha256"], context=f"authorization model file {name} LFS SHA-256"
+            )
+            file_sha256 = require_sha256(
+                item["sha256"], context=f"authorization model file {name} SHA-256"
+            )
+            lfs_size = require_int(
+                item["lfs_size_bytes"],
+                context=f"authorization model file {name} LFS size",
+                minimum=1,
+            )
+            if lfs_sha256 != file_sha256 or lfs_size != item["size_bytes"]:
+                raise ValueError("authorization model LFS identity drifted")
+        elif any(item[name] is not None for name in ("lfs_sha256", "lfs_size_bytes", "sha256")):
+            raise ValueError("authorization ordinary model metadata must use null LFS fields")
+        names.append(name)
+        tree_payload.append(
+            {
+                "git_blob_oid": git_blob_oid,
+                "lfs_sha256": item["lfs_sha256"],
+                "lfs_size_bytes": item["lfs_size_bytes"],
+                "name": name,
+            }
+        )
+    if (
+        not names
+        or names != sorted(names)
+        or len({name.casefold() for name in names}) != len(names)
+        or "config.json" not in names
+        or "model.safetensors.index.json" not in names
+        or not any(name.endswith(".safetensors") for name in names)
+    ):
+        raise ValueError("authorization model file inventory is incomplete or non-canonical")
+    hub_tree_sha256 = require_sha256(
+        root["hub_tree_manifest_sha256"], context="authorization model Hub tree SHA-256"
+    )
+    if hub_tree_sha256 != sha256_bytes(canonical_json_bytes(tree_payload)):
+        raise ValueError("authorization model Hub tree metadata hash drifted")
+    return {
+        "file_count": len(names),
+        "file_sha256": sha256_bytes(data),
+        "hub_tree_manifest_sha256": hub_tree_sha256,
+        "model_id": model_id,
+        "revision": revision,
+        "transformers_version": transformers_version,
+    }
+
+
+def _deserialize_capture_provenance_receipt(
+    data: bytes,
+    *,
+    source_manifest: Mapping[str, Any],
+    runtime_manifest: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    root = _json_without_duplicate_keys(data, context="calibration capture provenance receipt")
+    require_exact_fields(
+        root,
+        frozenset(
+            {
+                "artifact_kind",
+                "capture_source",
+                "capture_version",
+                "critical_module_origins",
+                "excluded_runtime_modules",
+                "execution_bindings",
+                "identity_input_file_sha256",
+                "phase",
+                "publication_contract",
+                "runner_revision",
+                "schema_version",
+                "source_commit",
+                "status",
+            }
+        ),
+        context="calibration capture provenance receipt",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError("calibration capture provenance receipt is not canonical JSON")
+    if (
+        root["artifact_kind"] != CALIBRATION_CAPTURE_PROVENANCE_KIND
+        or root["schema_version"] != CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION
+        or root["capture_version"] != CALIBRATION_CAPTURE_VERSION
+        or root["phase"] != "calibration"
+        or root["publication_contract"] != CALIBRATION_CAPTURE_PUBLICATION_CONTRACT
+        or root["runner_revision"] != CALIBRATION_RUNNER_REVISION
+        or root["status"] != CALIBRATION_CAPTURE_PROVENANCE_STATUS
+    ):
+        raise ValueError("calibration capture provenance identity drifted")
+    require_exact_revision(root["source_commit"], context="capture provenance source commit")
+    if len(str(root["source_commit"])) != 40:
+        raise ValueError("capture provenance source commit must be a SHA-1 H0")
+    require_sha256(
+        root["identity_input_file_sha256"],
+        context="capture provenance identity input SHA-256",
+    )
+    _validate_execution_bindings(root["execution_bindings"])
+    capture_source = require_mapping(
+        root["capture_source"], context="capture provenance source record"
+    )
+    require_exact_fields(
+        capture_source,
+        frozenset({"path", "sha256"}),
+        context="capture provenance source record",
+    )
+    if capture_source["path"] != CALIBRATION_CAPTURE_SOURCE_PATH:
+        raise ValueError("capture provenance source path drifted")
+    source_paths = require_mapping(
+        source_manifest["paths"], context="authorization repository source paths"
+    )
+    source_entry = require_mapping(
+        source_paths.get(CALIBRATION_CAPTURE_SOURCE_PATH),
+        context="capture source manifest entry",
+    )
+    if require_sha256(
+        capture_source["sha256"], context="capture provenance source SHA-256"
+    ) != require_sha256(
+        source_entry.get("raw_sha256"), context="capture source-manifest entry SHA-256"
+    ):
+        raise ValueError("capture provenance source differs from the repository manifest")
+    origins = require_sequence(
+        root["critical_module_origins"], context="capture provenance critical module origins"
+    )
+    expected_modules = sorted(CALIBRATION_CAPTURE_CRITICAL_MODULE_DISTRIBUTIONS)
+    if [item.get("module") if isinstance(item, Mapping) else None for item in origins] != (
+        expected_modules
+    ):
+        raise ValueError("capture provenance critical module inventory is not exact and sorted")
+    distributions = require_mapping(
+        runtime_manifest["distributions"], context="authorization runtime distributions"
+    )
+    package_import_paths = require_mapping(
+        runtime_manifest["package_import_paths"], context="authorization package import paths"
+    )
+    trees = require_mapping(runtime_manifest["trees"], context="authorization runtime trees")
+    for raw_origin in origins:
+        origin = require_mapping(raw_origin, context="capture provenance critical module origin")
+        require_exact_fields(
+            origin,
+            frozenset(
+                {
+                    "distribution",
+                    "module",
+                    "package_root",
+                    "relative_path",
+                    "sha256",
+                    "size_bytes",
+                    "version",
+                }
+            ),
+            context="capture provenance critical module origin",
+        )
+        module = str(origin["module"])
+        distribution_name = CALIBRATION_CAPTURE_CRITICAL_MODULE_DISTRIBUTIONS[module]
+        if origin["distribution"] != distribution_name:
+            raise ValueError(f"capture provenance distribution mapping drifted: {module}")
+        distribution = require_mapping(
+            distributions.get(distribution_name),
+            context=f"capture provenance runtime distribution {distribution_name}",
+        )
+        package_root = _runtime_root_name(
+            origin["package_root"], context=f"capture provenance {module} package root"
+        )
+        relative_path = _canonical_relative_posix_path(
+            origin["relative_path"], context=f"capture provenance {module} relative path"
+        )
+        if package_root != distribution.get("package_root") or origin[
+            "version"
+        ] != distribution.get("version"):
+            raise ValueError(f"capture provenance distribution identity drifted: {module}")
+        import_path = package_import_paths.get(package_root)
+        if not isinstance(import_path, str):
+            raise ValueError(f"capture provenance package root is not importable: {module}")
+        try:
+            module_relative = PurePosixPath(relative_path).relative_to(PurePosixPath(import_path))
+        except ValueError as error:
+            raise ValueError(
+                f"capture provenance module is outside its import root: {module}"
+            ) from error
+        if not module_relative.parts or module_relative.parts[0] != module:
+            raise ValueError(f"capture provenance module path is shadowed: {module}")
+        distribution_files = distribution.get("files")
+        if not isinstance(distribution_files, Sequence) or relative_path not in distribution_files:
+            raise ValueError(f"capture provenance module lacks RECORD ownership: {module}")
+        tree = require_mapping(
+            trees.get(package_root), context=f"capture provenance runtime tree {package_root}"
+        )
+        expected_file = tree.get(relative_path)
+        actual_file = (
+            require_sha256(origin["sha256"], context=f"capture provenance {module} file SHA-256"),
+            require_int(origin["size_bytes"], context=f"capture provenance {module} file size"),
+        )
+        if expected_file != actual_file:
+            raise ValueError(f"capture provenance module differs from runtime tree: {module}")
+    excluded = require_sequence(
+        root["excluded_runtime_modules"], context="capture provenance excluded modules"
+    )
+    if tuple(excluded) != CALIBRATION_CAPTURE_EXCLUDED_RUNTIME_MODULES:
+        raise ValueError("capture provenance excluded module inventory drifted")
+    return root
+
+
+def _exact_json_value(value: object, expected: object, *, context: str) -> None:
+    try:
+        actual_bytes = canonical_json_bytes(value)
+        expected_bytes = canonical_json_bytes(expected)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{context} is not canonical JSON data") from error
+    if actual_bytes != expected_bytes:
+        raise ValueError(f"{context} drifted")
+
+
+def _canonical_nonnegative_float_hex(value: object, *, context: str) -> float:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{context} must be a canonical float hex string")
+    try:
+        decoded = float.fromhex(value)
+    except ValueError as error:
+        raise ValueError(f"{context} must be a canonical float hex string") from error
+    if not math.isfinite(decoded) or decoded < 0.0 or decoded.hex() != value:
+        raise ValueError(f"{context} must be a finite canonical non-negative float hex")
+    return decoded
+
+
+def _runner_stability_receipt(stability: object) -> dict[str, object]:
+    checks = getattr(stability, "checks", None)
+    shifts = getattr(stability, "layer_mean_bitwidth_shifts", None)
+    passed = getattr(stability, "passed", None)
+    spearman = getattr(stability, "spearman_average_ties", None)
+    jaccard = getattr(stability, "q8_jaccard", None)
+    if (
+        not isinstance(checks, Sequence)
+        or not isinstance(shifts, Sequence)
+        or not isinstance(passed, bool)
+        or not isinstance(jaccard, float)
+        or (spearman is not None and not isinstance(spearman, float))
+    ):
+        raise ValueError("verified split-half stability result is incomplete")
+    return {
+        "checks": [{"name": str(name), "passed": bool(ok)} for name, ok in checks],
+        "layer_mean_bitwidth_shifts": [
+            {"layer_index": int(layer), "shift_hex": float(shift).hex()} for layer, shift in shifts
+        ],
+        "passed": passed,
+        "q8_jaccard_hex": jaccard.hex(),
+        "spearman_average_ties_hex": None if spearman is None else spearman.hex(),
+    }
+
+
+def _calibration_count_receipt(
+    records: Sequence[Mapping[str, Any]], *, smoke: bool
+) -> dict[str, int]:
+    selected = records[:1] if smoke else records
+    if not selected:
+        raise ValueError("authorization frozen identity has no calibration records")
+    token_count = 0
+    post_token_anchor_count = 0
+    fisher_boundary_count = 0
+    for index, record in enumerate(selected):
+        sequence_length = require_int(
+            record.get("sequence_length"),
+            context=f"authorization calibration record {index} sequence length",
+            minimum=1,
+        )
+        boundary = require_mapping(
+            record.get("fisher_boundary"),
+            context=f"authorization calibration record {index} Fisher boundary",
+        )
+        positions = require_sequence(
+            boundary.get("boundary_positions"),
+            context=f"authorization calibration record {index} Fisher positions",
+        )
+        if not positions:
+            raise ValueError("authorization calibration record has no Fisher H=1 positions")
+        token_count += sequence_length
+        post_token_anchor_count += len(anchor_positions(sequence_length))
+        fisher_boundary_count += len(positions)
+    return {
+        "expected_fisher_step_count": fisher_boundary_count,
+        "fisher_boundary_count": fisher_boundary_count,
+        "observed_fisher_step_count": fisher_boundary_count,
+        "post_token_anchor_count": post_token_anchor_count,
+        "sequence_count": len(selected),
+        "token_count": token_count,
+    }
+
+
+def _frozen_token_sequence_manifest_sha256(
+    records: Sequence[Mapping[str, Any]],
+) -> str:
+    commitments: list[dict[str, object]] = []
+    for index, record in enumerate(records):
+        commitments.append(
+            {
+                "identity_record_sha256": require_sha256(
+                    record.get("identity_record_sha256"),
+                    context=f"authorization calibration record {index} identity SHA-256",
+                ),
+                "prompt_token_ids_sha256": require_sha256(
+                    record.get("prompt_token_ids_sha256"),
+                    context=f"authorization calibration record {index} prompt-token SHA-256",
+                ),
+                "sequence_length": require_int(
+                    record.get("sequence_length"),
+                    context=f"authorization calibration record {index} sequence length",
+                    minimum=1,
+                ),
+                "sequence_token_ids_sha256": require_sha256(
+                    record.get("sequence_token_ids_sha256"),
+                    context=f"authorization calibration record {index} sequence-token SHA-256",
+                ),
+                "target_token_ids_sha256": require_sha256(
+                    record.get("target_token_ids_sha256"),
+                    context=f"authorization calibration record {index} target-token SHA-256",
+                ),
+            }
+        )
+    return sha256_bytes(canonical_json_bytes(commitments))
+
+
+def _validate_runner_runtime_receipt(
+    value: object,
+    *,
+    context: str,
+    runtime_manifest: Mapping[str, Any],
+    model_manifest: Mapping[str, Any],
+    identity_input_manifest_sha256: str,
+    records: Sequence[Mapping[str, Any]],
+    fisher_step_count: int,
+) -> Mapping[str, Any]:
+    runtime = require_mapping(value, context=context)
+    require_exact_fields(
+        runtime,
+        frozenset(
+            {
+                "adapter",
+                "authenticated_distribution_count",
+                "authenticated_file_count",
+                "cuda_available",
+                "cuda_runtime",
+                "elapsed_seconds_hex",
+                "gpu",
+                "packages",
+                "platform",
+                "python",
+                "runtime_manifest_file_sha256",
+                "torch",
+            }
+        ),
+        context=context,
+    )
+    expected_packages = runtime_manifest["packages"]
+    if (
+        type(runtime["authenticated_distribution_count"]) is not int
+        or runtime["authenticated_distribution_count"] != runtime_manifest["distribution_count"]
+        or type(runtime["authenticated_file_count"]) is not int
+        or runtime["authenticated_file_count"] != runtime_manifest["file_count"]
+        or runtime["runtime_manifest_file_sha256"] != runtime_manifest["file_sha256"]
+        or runtime["packages"] != expected_packages
+        or runtime["python"] != runtime_manifest["python_version"]
+        or not isinstance(expected_packages, Mapping)
+        or expected_packages.get("torch") != CALIBRATION_CANONICAL_TORCH_DISTRIBUTION_VERSION
+        or runtime["torch"] != CALIBRATION_CANONICAL_TORCH_RUNTIME_VERSION
+        or runtime["cuda_available"] is not True
+        or runtime["cuda_runtime"] != CALIBRATION_CANONICAL_CUDA_RUNTIME_VERSION
+        or not isinstance(runtime["platform"], str)
+        or not runtime["platform"]
+    ):
+        raise ValueError(f"{context} identity drifted")
+    _canonical_nonnegative_float_hex(
+        runtime["elapsed_seconds_hex"], context=f"{context} elapsed seconds"
+    )
+
+    gpu = require_mapping(runtime["gpu"], context=f"{context} GPU")
+    require_exact_fields(
+        gpu,
+        frozenset(
+            {"capability", "device_index", "name", "peak_allocated_bytes", "peak_reserved_bytes"}
+        ),
+        context=f"{context} GPU",
+    )
+    device_index = require_int(gpu["device_index"], context=f"{context} GPU device index")
+    capability = require_sequence(gpu["capability"], context=f"{context} GPU capability")
+    if (
+        len(capability) != 2
+        or type(capability[0]) is not int
+        or capability[0] <= 0
+        or type(capability[1]) is not int
+        or capability[1] < 0
+        or not isinstance(gpu["name"], str)
+        or not gpu["name"]
+    ):
+        raise ValueError(f"{context} GPU identity drifted")
+    peak_allocated = require_int(
+        gpu["peak_allocated_bytes"], context=f"{context} GPU peak allocated bytes"
+    )
+    peak_reserved = require_int(
+        gpu["peak_reserved_bytes"], context=f"{context} GPU peak reserved bytes"
+    )
+    if peak_reserved < peak_allocated:
+        raise ValueError(f"{context} GPU peak counters are inconsistent")
+
+    adapter = require_mapping(runtime["adapter"], context=f"{context} adapter")
+    require_exact_fields(
+        adapter,
+        frozenset(
+            {
+                "adapter_revision",
+                "capture_input_sha256",
+                "device",
+                "fisher_step_count",
+                "kernel_backend",
+                "materialization_attempted",
+                "materialized_sequence_count",
+                "model_dtype",
+                "model_id",
+                "model_loaded",
+                "model_loading_diagnostic_counts",
+                "model_revision",
+                "query_shape",
+                "recurrent_layer_indices",
+                "state_shape",
+                "token_sequence_manifest_sha256",
+                "transformers_version",
+            }
+        ),
+        context=f"{context} adapter",
+    )
+    diagnostics = require_mapping(
+        adapter["model_loading_diagnostic_counts"], context=f"{context} model diagnostics"
+    )
+    require_exact_fields(
+        diagnostics,
+        CALIBRATION_CANONICAL_ADAPTER_LOADING_DIAGNOSTICS,
+        context=f"{context} model diagnostics",
+    )
+    if any(type(value) is not int or value != 0 for value in diagnostics.values()):
+        raise ValueError(f"{context} model diagnostics are not empty")
+    if (
+        adapter["adapter_revision"] != CALIBRATION_CANONICAL_ADAPTER_REVISION
+        or adapter["kernel_backend"] != CALIBRATION_CANONICAL_ADAPTER_KERNEL_BACKEND
+        or adapter["model_dtype"] != CALIBRATION_CANONICAL_ADAPTER_MODEL_DTYPE
+        or adapter["model_id"] != model_manifest["model_id"]
+        or adapter["model_revision"] != model_manifest["revision"]
+        or adapter["transformers_version"] != model_manifest["transformers_version"]
+        or adapter["device"] != f"cuda:{device_index}"
+        or type(adapter["fisher_step_count"]) is not int
+        or adapter["fisher_step_count"] != fisher_step_count
+        or adapter["materialization_attempted"] is not True
+        or type(adapter["materialized_sequence_count"]) is not int
+        or adapter["materialized_sequence_count"] != len(records)
+        or adapter["model_loaded"] is not True
+        or adapter["query_shape"] != list(CALIBRATION_CANONICAL_ADAPTER_QUERY_SHAPE)
+        or adapter["recurrent_layer_indices"]
+        != list(CALIBRATION_CANONICAL_ADAPTER_RECURRENT_LAYER_INDICES)
+        or adapter["state_shape"] != list(CALIBRATION_CANONICAL_ADAPTER_STATE_SHAPE)
+        or adapter["capture_input_sha256"] != identity_input_manifest_sha256
+        or adapter["token_sequence_manifest_sha256"]
+        != _frozen_token_sequence_manifest_sha256(records)
+    ):
+        raise ValueError(f"{context} adapter identity drifted")
+    return runtime
+
+
+def _validate_runner_v9_receipts(
+    *,
+    full_report: Mapping[str, Any],
+    smoke_report: Mapping[str, Any],
+    identity: FrozenCalibrationIdentityArtifact,
+    identity_input_manifest_sha256: str,
+    execution_bindings: Mapping[str, str],
+    repository_source_manifest: Mapping[str, Any],
+    runtime_manifest: Mapping[str, Any],
+    model_manifest: Mapping[str, Any],
+    expected_full_stability: Mapping[str, Any],
+) -> None:
+    expected_identity = {
+        "canonical_evidence_sha256": identity.canonical_evidence_sha256,
+        "execution_bindings": dict(execution_bindings),
+        "file_sha256": identity.file_sha256,
+        "identity_input_manifest_sha256": identity_input_manifest_sha256,
+        "tokenizer_manifest_sha256": identity.tokenizer_manifest_sha256,
+    }
+    expected_repository = {
+        "source_commit": repository_source_manifest["source_commit"],
+        "source_manifest_file_sha256": repository_source_manifest["file_sha256"],
+        "source_manifest_sha256": repository_source_manifest["canonical_manifest_sha256"],
+    }
+    expected_model = {
+        "file_count": model_manifest["file_count"],
+        "hub_tree_manifest_sha256": model_manifest["hub_tree_manifest_sha256"],
+        "manifest_file_sha256": model_manifest["file_sha256"],
+        "model_id": model_manifest["model_id"],
+        "revision": model_manifest["revision"],
+        "transformers_version": model_manifest["transformers_version"],
+    }
+    full_counts = _calibration_count_receipt(identity.records, smoke=False)
+    smoke_counts = _calibration_count_receipt(identity.records, smoke=True)
+    _exact_json_value(full_report["identity"], expected_identity, context="full identity receipt")
+    _exact_json_value(smoke_report["identity"], expected_identity, context="smoke identity receipt")
+    _exact_json_value(
+        full_report["repository"], expected_repository, context="full repository receipt"
+    )
+    _exact_json_value(
+        smoke_report["repository"], expected_repository, context="smoke repository receipt"
+    )
+    _exact_json_value(full_report["model_files"], expected_model, context="full model receipt")
+    _exact_json_value(smoke_report["model_files"], expected_model, context="smoke model receipt")
+    _exact_json_value(
+        full_report["query_energy_ema"],
+        CALIBRATION_QUERY_ENERGY_EMA,
+        context="full query-energy contract",
+    )
+    _exact_json_value(
+        smoke_report["query_energy_ema"],
+        CALIBRATION_QUERY_ENERGY_EMA,
+        context="smoke query-energy contract",
+    )
+    _exact_json_value(full_report["calibration"], full_counts, context="full calibration counters")
+    _exact_json_value(
+        smoke_report["calibration"], smoke_counts, context="smoke calibration counters"
+    )
+    _exact_json_value(
+        full_report["stability"], expected_full_stability, context="full stability receipt"
+    )
+    _exact_json_value(
+        smoke_report["stability"],
+        {"checks": [], "evaluated": False, "passed": None, "scope": "smoke_only"},
+        context="smoke stability receipt",
+    )
+    full_runtime = _validate_runner_runtime_receipt(
+        full_report["runtime"],
+        context="full runtime receipt",
+        runtime_manifest=runtime_manifest,
+        model_manifest=model_manifest,
+        identity_input_manifest_sha256=identity_input_manifest_sha256,
+        records=identity.records,
+        fisher_step_count=full_counts["expected_fisher_step_count"],
+    )
+    smoke_runtime = _validate_runner_runtime_receipt(
+        smoke_report["runtime"],
+        context="smoke runtime receipt",
+        runtime_manifest=runtime_manifest,
+        model_manifest=model_manifest,
+        identity_input_manifest_sha256=identity_input_manifest_sha256,
+        records=identity.records,
+        fisher_step_count=smoke_counts["expected_fisher_step_count"],
+    )
+    parity_fields = {
+        "authenticated_distribution_count",
+        "authenticated_file_count",
+        "cuda_available",
+        "cuda_runtime",
+        "packages",
+        "platform",
+        "python",
+        "runtime_manifest_file_sha256",
+        "torch",
+    }
+    if any(full_runtime[name] != smoke_runtime[name] for name in parity_fields):
+        raise ValueError("full and smoke runtime identity receipts differ")
+    full_gpu = require_mapping(full_runtime["gpu"], context="full runtime GPU")
+    smoke_gpu = require_mapping(smoke_runtime["gpu"], context="smoke runtime GPU")
+    if any(full_gpu[name] != smoke_gpu[name] for name in ("capability", "device_index", "name")):
+        raise ValueError("full and smoke GPU identity receipts differ")
+    full_adapter = dict(require_mapping(full_runtime["adapter"], context="full adapter"))
+    smoke_adapter = dict(require_mapping(smoke_runtime["adapter"], context="smoke adapter"))
+    full_adapter.pop("fisher_step_count")
+    smoke_adapter.pop("fisher_step_count")
+    if full_adapter != smoke_adapter:
+        raise ValueError("full and smoke adapter identity receipts differ")
+
+
+def _derive_stage_a_calibration_authorization(
+    dependencies: Mapping[str, bytes],
+) -> tuple[
+    dict[str, str],
+    dict[str, bytes],
+    dict[str, str],
+    dict[str, object],
+]:
+    require_exact_fields(
+        dependencies,
+        CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES,
+        context="calibration authorization dependencies",
+    )
+    if dependencies["calibration_complete_marker"] != CALIBRATION_COMPLETE_BYTES:
+        raise ValueError("calibration completion marker drifted")
+    if dependencies["fisher_h1_smoke_complete_marker"] != FISHER_H1_SMOKE_COMPLETE_BYTES:
+        raise ValueError("Fisher H=1 smoke completion marker drifted")
+
+    core = deserialize_stage_a_calibration_core_binding_artifact(
+        dependencies["calibration_core_binding_artifact"]
+    )
+    calibration_dependencies = dict(core.calibration_dependencies)
+    identity_bytes = calibration_dependencies["frozen_identity_artifact"]
+    identity = deserialize_frozen_calibration_identity_artifact(identity_bytes)
+    identity_root = _json_without_duplicate_keys(
+        identity_bytes, context="authorization frozen calibration identity"
+    )
+    identity_evidence = require_mapping(
+        identity_root["evidence"], context="authorization frozen identity evidence"
+    )
+    identity_input_manifest_sha256 = require_sha256(
+        identity_evidence["source_manifest_sha256"],
+        context="authorization identity input manifest SHA-256",
+    )
+    execution_bindings = dict(identity.execution_bindings)
+    if set(execution_bindings) != EXECUTION_BINDING_FIELDS:
+        raise ValueError("authorization frozen identity execution bindings drifted")
+
+    repository_source_manifest = _deserialize_repository_source_manifest(
+        dependencies["repository_source_manifest"]
+    )
+    runtime_manifest = _deserialize_calibration_runtime_manifest(
+        dependencies["calibration_runtime_manifest"]
+    )
+    model_manifest = _deserialize_model_file_manifest(dependencies["model_file_manifest"])
+    embedded_execution_hashes = {
+        "calibration_runtime_manifest_file_sha256": runtime_manifest["file_sha256"],
+        "model_file_manifest_file_sha256": model_manifest["file_sha256"],
+        "repository_source_manifest_file_sha256": repository_source_manifest["file_sha256"],
+    }
+    if any(
+        execution_bindings[name] != digest for name, digest in embedded_execution_hashes.items()
+    ):
+        raise ValueError("authorization execution manifests differ from the frozen identity")
+
+    from recurquant.static_q468 import (
+        FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        FROZEN_STATIC_Q48_PROMOTIONS,
+        PRIMARY_MODEL_ID,
+        PRIMARY_MODEL_REVISION,
+        PRIMARY_TOKENIZER_ID,
+        PRIMARY_TOKENIZER_REVISION,
+        STATIC_Q48_COMPARATOR_METHOD,
+        build_static_rht_q48_policy,
+        deserialize_static_rht_q48_policy,
+        deserialize_static_rht_q468_policy,
+        serialize_static_rht_q48_policy,
+    )
+    from recurquant.static_q468_calibration import (
+        deserialize_calibration_score_artifact,
+        deserialize_frozen_split_half_stability_artifact,
+    )
+
+    if (
+        model_manifest["model_id"] != PRIMARY_MODEL_ID
+        or model_manifest["revision"] != PRIMARY_MODEL_REVISION
+        or model_manifest["transformers_version"] != TRANSFORMERS_VERSION
+    ):
+        raise ValueError("authorization model manifest differs from the frozen model contract")
+
+    h0_policy = deserialize_static_rht_q468_policy(
+        calibration_dependencies["static_k29334_policy_artifact"]
+    )
+    source_commit = require_exact_revision(
+        h0_policy.source_commit, context="verified K29334 policy H0"
+    )
+    if len(source_commit) != 40:
+        raise ValueError("verified K29334 policy H0 must be a SHA-1")
+    if repository_source_manifest["source_commit"] != source_commit:
+        raise ValueError("repository source-manifest H0 differs from the verified core policies")
+    q48 = deserialize_static_rht_q48_policy(dependencies["static_q48_policy_artifact"])
+    if (
+        q48.identity_artifact_sha256 != identity.file_sha256
+        or q48.tokenizer_manifest_sha256 != identity.tokenizer_manifest_sha256
+        or q48.model_id != PRIMARY_MODEL_ID
+        or q48.model_revision != PRIMARY_MODEL_REVISION
+        or q48.tokenizer_id != PRIMARY_TOKENIZER_ID
+        or q48.tokenizer_revision != PRIMARY_TOKENIZER_REVISION
+        or q48.source_commit != source_commit
+    ):
+        raise ValueError("Q48 policy differs from the frozen calibration identity")
+    scores = deserialize_calibration_score_artifact(
+        calibration_dependencies["calibration_score_artifact"]
+    )
+    expected_q48 = build_static_rht_q48_policy(
+        scores.aggregate.d4,
+        scores.aggregate.d8,
+        geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        promoted_rows=FROZEN_STATIC_Q48_PROMOTIONS,
+        calibration_manifest_sha256=scores.aggregate.sequence_score_manifest_sha256,
+        identity_artifact_sha256=identity.file_sha256,
+        tokenizer_manifest_sha256=identity.tokenizer_manifest_sha256,
+        source_commit=source_commit,
+        method_id=STATIC_Q48_COMPARATOR_METHOD,
+    )
+    if serialize_static_rht_q48_policy(expected_q48) != dependencies["static_q48_policy_artifact"]:
+        raise ValueError("Q48 policy bytes differ from deterministic P14739 reconstruction")
+
+    authorized_output_file_sha256 = {
+        filename: sha256_bytes(
+            dependencies[role]
+            if role in {"static_q48_policy_artifact", "calibration_core_binding_artifact"}
+            else calibration_dependencies[role]
+        )
+        for role, filename in sorted(CALIBRATION_OUTPUT_FILENAMES.items())
+    }
+    full_report = _deserialize_runner_v9_report(
+        dependencies["calibration_run_report"],
+        context="full calibration run report",
+        expected_status="passed",
+    )
+    artifacts = require_mapping(
+        full_report["artifacts"], context="full calibration artifact inventory"
+    )
+    if dict(artifacts) != authorized_output_file_sha256:
+        raise ValueError("full calibration report artifact inventory drifted")
+
+    capture_receipt_sha256 = sha256_bytes(dependencies["capture_provenance_receipt"])
+    smoke_report_sha256 = sha256_bytes(dependencies["fisher_h1_smoke_report"])
+    prerequisites = require_mapping(
+        full_report["prerequisites"], context="full calibration prerequisites"
+    )
+    if prerequisites != {
+        "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+        "fisher_h1_smoke_report_file_sha256": smoke_report_sha256,
+    }:
+        raise ValueError("full calibration prerequisite binding drifted")
+
+    smoke_report = _deserialize_runner_v9_report(
+        dependencies["fisher_h1_smoke_report"],
+        context="Fisher H=1 smoke report",
+        expected_status="fisher_h1_smoke_passed",
+    )
+    if smoke_report["artifacts"] != {}:
+        raise ValueError("Fisher H=1 smoke report unexpectedly authorizes outputs")
+    if smoke_report["prerequisites"] != {
+        "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+        "fisher_h1_smoke_report_file_sha256": None,
+    }:
+        raise ValueError("Fisher H=1 smoke prerequisite binding drifted")
+    split = deserialize_frozen_split_half_stability_artifact(
+        calibration_dependencies["split_half_stability_artifact"]
+    )
+    _validate_runner_v9_receipts(
+        full_report=full_report,
+        smoke_report=smoke_report,
+        identity=identity,
+        identity_input_manifest_sha256=identity_input_manifest_sha256,
+        execution_bindings=execution_bindings,
+        repository_source_manifest=repository_source_manifest,
+        runtime_manifest=runtime_manifest,
+        model_manifest=model_manifest,
+        expected_full_stability=_runner_stability_receipt(split.stability),
+    )
+
+    capture = _deserialize_capture_provenance_receipt(
+        dependencies["capture_provenance_receipt"],
+        source_manifest=repository_source_manifest,
+        runtime_manifest=runtime_manifest,
+    )
+    if (
+        capture["source_commit"] != source_commit
+        or capture["identity_input_file_sha256"] != identity_input_manifest_sha256
+        or capture["execution_bindings"] != execution_bindings
+    ):
+        raise ValueError("capture provenance receipt differs from H0/identity bindings")
+
+    bindings: dict[str, object] = {
+        "calibration_core_binding_file_sha256": core.file_sha256,
+        "calibration_run_report_file_sha256": sha256_bytes(dependencies["calibration_run_report"]),
+        "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+        "execution_bindings": execution_bindings,
+        "fisher_h1_smoke_report_file_sha256": smoke_report_sha256,
+        "frozen_calibration_identity_file_sha256": identity.file_sha256,
+        "identity_input_manifest_sha256": identity_input_manifest_sha256,
+        "source_commit": source_commit,
+        "static_q48_policy_file_sha256": sha256_bytes(dependencies["static_q48_policy_artifact"]),
+    }
+    return (
+        dict(core.binding),
+        calibration_dependencies,
+        authorized_output_file_sha256,
+        bindings,
+    )
+
+
+def build_stage_a_calibration_authorization_artifact(
+    *,
+    calibration_run_report: bytes,
+    calibration_complete_marker: bytes,
+    capture_provenance_receipt: bytes,
+    fisher_h1_smoke_report: bytes,
+    fisher_h1_smoke_complete_marker: bytes,
+    calibration_core_binding_artifact: bytes,
+    calibration_runtime_manifest: bytes,
+    model_file_manifest: bytes,
+    repository_source_manifest: bytes,
+    static_q48_policy_artifact: bytes,
+) -> bytes:
+    """Authorize Stage A only after the complete runner-v9 chain is finalized."""
+
+    dependencies = {
+        "calibration_complete_marker": calibration_complete_marker,
+        "calibration_core_binding_artifact": calibration_core_binding_artifact,
+        "calibration_run_report": calibration_run_report,
+        "calibration_runtime_manifest": calibration_runtime_manifest,
+        "capture_provenance_receipt": capture_provenance_receipt,
+        "fisher_h1_smoke_complete_marker": fisher_h1_smoke_complete_marker,
+        "fisher_h1_smoke_report": fisher_h1_smoke_report,
+        "model_file_manifest": model_file_manifest,
+        "repository_source_manifest": repository_source_manifest,
+        "static_q48_policy_artifact": static_q48_policy_artifact,
+    }
+    _binding, _calibration_dependencies, output_hashes, bindings = (
+        _derive_stage_a_calibration_authorization(dependencies)
+    )
+    dependency_hashes = {name: sha256_bytes(value) for name, value in sorted(dependencies.items())}
+    evidence = {
+        "artifact_revision": STAGE_A_CALIBRATION_AUTHORIZATION_REVISION,
+        "authorized_output_file_sha256": output_hashes,
+        "bindings": bindings,
+        "dependencies_base64": {
+            name: _canonical_b64(value, context=name)
+            for name, value in sorted(dependencies.items())
+        },
+        "dependency_file_sha256": dependency_hashes,
+        "status": STAGE_A_CALIBRATION_AUTHORIZATION_STATUS,
+    }
+    document = {
+        "artifact_kind": STAGE_A_CALIBRATION_AUTHORIZATION_ARTIFACT_KIND,
+        "canonical_evidence_sha256": sha256_bytes(canonical_json_bytes(evidence)),
+        "evidence": evidence,
+        "schema_version": STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION,
+    }
+    return canonical_json_bytes(document)
+
+
+def deserialize_stage_a_calibration_authorization_artifact(
+    data: bytes,
+    *,
+    expected_file_sha256: str | None = None,
+) -> StageACalibrationAuthorizationArtifact:
+    """Strictly rederive a post-calibration Stage-A authorization artifact."""
+
+    if not isinstance(data, bytes):
+        raise TypeError("Stage-A calibration authorization artifact must be bytes")
+    file_sha256 = sha256_bytes(data)
+    if expected_file_sha256 is not None and file_sha256 != require_sha256(
+        expected_file_sha256,
+        context="expected calibration authorization file SHA-256",
+    ):
+        raise ValueError("Stage-A calibration authorization file SHA-256 mismatch")
+    root = _json_without_duplicate_keys(data, context="Stage-A calibration authorization")
+    require_exact_fields(
+        root,
+        frozenset({"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"}),
+        context="Stage-A calibration authorization wrapper",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError("Stage-A calibration authorization is not canonical JSON")
+    if (
+        root["artifact_kind"] != STAGE_A_CALIBRATION_AUTHORIZATION_ARTIFACT_KIND
+        or root["schema_version"] != STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION
+    ):
+        raise ValueError("Stage-A calibration authorization kind or schema drifted")
+    evidence = require_mapping(root["evidence"], context="calibration authorization evidence")
+    require_exact_fields(
+        evidence,
+        frozenset(
+            {
+                "artifact_revision",
+                "authorized_output_file_sha256",
+                "bindings",
+                "dependencies_base64",
+                "dependency_file_sha256",
+                "status",
+            }
+        ),
+        context="calibration authorization evidence",
+    )
+    if (
+        evidence["artifact_revision"] != STAGE_A_CALIBRATION_AUTHORIZATION_REVISION
+        or evidence["status"] != STAGE_A_CALIBRATION_AUTHORIZATION_STATUS
+    ):
+        raise ValueError("Stage-A calibration authorization revision or status drifted")
+    canonical_evidence_sha256 = require_sha256(
+        root["canonical_evidence_sha256"],
+        context="calibration authorization canonical evidence SHA-256",
+    )
+    if canonical_evidence_sha256 != sha256_bytes(canonical_json_bytes(evidence)):
+        raise ValueError("calibration authorization canonical evidence SHA-256 drifted")
+    encoded = require_mapping(
+        evidence["dependencies_base64"], context="calibration authorization dependencies"
+    )
+    hashes = require_mapping(
+        evidence["dependency_file_sha256"], context="calibration authorization hashes"
+    )
+    require_exact_fields(
+        encoded,
+        CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES,
+        context="calibration authorization dependencies",
+    )
+    require_exact_fields(
+        hashes,
+        CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES,
+        context="calibration authorization hashes",
+    )
+    dependencies = {
+        name: _decode_canonical_b64(
+            encoded[name], context=f"calibration authorization dependency {name}"
+        )
+        for name in sorted(CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES)
+    }
+    normalized_hashes = {
+        name: require_sha256(
+            hashes[name], context=f"calibration authorization dependency {name} SHA-256"
+        )
+        for name in sorted(CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES)
+    }
+    if normalized_hashes != {
+        name: sha256_bytes(value) for name, value in sorted(dependencies.items())
+    }:
+        raise ValueError("calibration authorization dependency bytes differ from their hashes")
+    binding, calibration_dependencies, output_hashes, bindings = (
+        _derive_stage_a_calibration_authorization(dependencies)
+    )
+    if evidence["authorized_output_file_sha256"] != output_hashes:
+        raise ValueError("calibration authorization output inventory drifted")
+    if evidence["bindings"] != bindings:
+        raise ValueError("calibration authorization custody bindings drifted")
+    execution_bindings = require_mapping(
+        bindings["execution_bindings"], context="calibration authorization execution bindings"
+    )
+    return StageACalibrationAuthorizationArtifact(
+        binding=binding,
+        calibration_dependencies=calibration_dependencies,
+        authorized_output_file_sha256=output_hashes,
+        execution_bindings=dict(execution_bindings),
+        source_commit=str(bindings["source_commit"]),
+        identity_input_manifest_sha256=str(bindings["identity_input_manifest_sha256"]),
+        canonical_evidence_sha256=canonical_evidence_sha256,
+        file_sha256=file_sha256,
+    )
+
+
+def build_stage_a_calibration_binding_artifact(
+    *,
+    calibration_authorization_artifact: bytes,
+) -> bytes:
+    """Build the only Stage-A-eligible binding from a verified authorization."""
+
+    authorization = deserialize_stage_a_calibration_authorization_artifact(
+        calibration_authorization_artifact
+    )
+    binding = dict(authorization.binding)
+    binding["calibration_authorization_file_sha256"] = authorization.file_sha256
+    dependency_hashes = {
+        "calibration_authorization_artifact": authorization.file_sha256,
+    }
+    evidence = {
+        "artifact_revision": STAGE_A_BINDING_ARTIFACT_REVISION,
+        "binding": binding,
+        "dependencies_base64": {
+            "calibration_authorization_artifact": _canonical_b64(
+                calibration_authorization_artifact,
+                context="calibration_authorization_artifact",
+            )
+        },
+        "dependency_file_sha256": dependency_hashes,
+    }
+    document = {
+        "artifact_kind": STAGE_A_BINDING_ARTIFACT_KIND,
+        "canonical_evidence_sha256": sha256_bytes(canonical_json_bytes(evidence)),
+        "evidence": evidence,
+        "schema_version": STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION,
+    }
+    return canonical_json_bytes(document)
+
+
+def deserialize_stage_a_calibration_binding_artifact(
+    data: bytes,
+    *,
+    expected_file_sha256: str | None = None,
+) -> StageACalibrationBindingArtifact:
+    """Require and reverify the embedded post-calibration authorization chain."""
+
+    if not isinstance(data, bytes):
+        raise TypeError("Stage-A calibration binding artifact must be bytes")
+    file_sha256 = sha256_bytes(data)
+    if expected_file_sha256 is not None and file_sha256 != require_sha256(
+        expected_file_sha256, context="expected Stage-A binding file SHA-256"
+    ):
+        raise ValueError("Stage-A calibration binding file SHA-256 mismatch")
+    root = _json_without_duplicate_keys(data, context="Stage-A calibration binding")
+    require_exact_fields(
+        root,
+        frozenset({"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"}),
+        context="Stage-A calibration binding wrapper",
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError("Stage-A calibration binding bytes are not canonical JSON")
+    if (
+        root["artifact_kind"] != STAGE_A_BINDING_ARTIFACT_KIND
+        or root["schema_version"] != STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION
+    ):
+        raise ValueError("Stage-A calibration binding kind or schema drifted")
+    evidence = require_mapping(root["evidence"], context="Stage-A binding evidence")
+    require_exact_fields(
+        evidence,
+        frozenset(
+            {"artifact_revision", "binding", "dependencies_base64", "dependency_file_sha256"}
+        ),
+        context="Stage-A binding evidence",
+    )
+    if evidence["artifact_revision"] != STAGE_A_BINDING_ARTIFACT_REVISION:
+        raise ValueError("Stage-A calibration binding revision drifted")
+    canonical_evidence_sha256 = require_sha256(
+        root["canonical_evidence_sha256"], context="Stage-A binding canonical evidence SHA-256"
+    )
+    if canonical_evidence_sha256 != sha256_bytes(canonical_json_bytes(evidence)):
+        raise ValueError("Stage-A binding canonical evidence SHA-256 drifted")
+    dependency_name = "calibration_authorization_artifact"
+    encoded = require_mapping(evidence["dependencies_base64"], context="Stage-A dependencies")
+    hashes = require_mapping(evidence["dependency_file_sha256"], context="Stage-A hashes")
+    expected_names = frozenset({dependency_name})
+    require_exact_fields(encoded, expected_names, context="Stage-A dependencies")
+    require_exact_fields(hashes, expected_names, context="Stage-A hashes")
+    authorization_bytes = _decode_canonical_b64(
+        encoded[dependency_name], context="Stage-A calibration authorization dependency"
+    )
+    authorization_hash = require_sha256(
+        hashes[dependency_name], context="Stage-A calibration authorization SHA-256"
+    )
+    if sha256_bytes(authorization_bytes) != authorization_hash:
+        raise ValueError("Stage-A calibration authorization bytes differ from their hash")
+    authorization = deserialize_stage_a_calibration_authorization_artifact(
+        authorization_bytes,
+        expected_file_sha256=authorization_hash,
+    )
+    binding = dict(authorization.binding)
+    binding["calibration_authorization_file_sha256"] = authorization_hash
+    if evidence["binding"] != binding:
+        raise ValueError("Stage-A calibration binding fields drifted")
+    return StageACalibrationBindingArtifact(
+        binding=binding,
+        dependency_file_sha256={dependency_name: authorization_hash},
+        calibration_dependencies=dict(authorization.calibration_dependencies),
+        authorization_file_sha256=authorization_hash,
+        execution_bindings=dict(authorization.execution_bindings),
+        source_commit=authorization.source_commit,
         canonical_evidence_sha256=canonical_evidence_sha256,
         file_sha256=file_sha256,
     )
@@ -2700,6 +4402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.calibration_binding is None:
                 raise ValueError("Stage-A promotion requires --calibration-binding")
             calibration_binding_artifact = args.calibration_binding.read_bytes()
+            deserialize_stage_a_calibration_binding_artifact(calibration_binding_artifact)
         elif args.calibration_binding is not None:
             raise ValueError("calibration promotion forbids --calibration-binding")
         expected_hash = require_sha256(
@@ -2735,16 +4438,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     if any(value is None for value in revisions.values()):
         raise ValueError("all four dataset revision arguments are mandatory")
-    source = _json_without_duplicate_keys(args.input.read_bytes(), context="identity input")
-    if source.get("phase") != args.phase:
-        raise ValueError("input phase does not match --phase")
     calibration_binding_artifact: bytes | None = None
     if args.phase == "stage_a":
         if args.calibration_binding is None:
             raise ValueError("Stage A requires --calibration-binding")
         calibration_binding_artifact = args.calibration_binding.read_bytes()
+        deserialize_stage_a_calibration_binding_artifact(calibration_binding_artifact)
     elif args.calibration_binding is not None:
         raise ValueError("--calibration-binding is valid only for Stage A")
+    source = _json_without_duplicate_keys(args.input.read_bytes(), context="identity input")
+    if source.get("phase") != args.phase:
+        raise ValueError("input phase does not match --phase")
     candidate = build_candidate(
         source,
         expected_revisions=revisions,  # type: ignore[arg-type]

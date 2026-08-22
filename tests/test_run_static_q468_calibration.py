@@ -1280,7 +1280,7 @@ class FakeBackend:
             static_mse_k29334=b"mse-k29334",
             static_fisher_k29334=b"fisher-k29334",
             static_q48=b"q48",
-            stage_a_binding=b"binding",
+            calibration_core_binding=b"binding",
             stability=stability,
         )
         return runner.FinalizationResult(
@@ -1698,7 +1698,7 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
         runner.MSE_K29334_FILENAME,
         runner.FISHER_K29334_FILENAME,
         runner.Q48_FILENAME,
-        runner.BINDING_FILENAME,
+        runner.CORE_BINDING_FILENAME,
         runner.REPORT_FILENAME,
         runner.COMPLETE_FILENAME,
     }
@@ -1746,6 +1746,220 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
         ),
         "fisher_h1_smoke_report_file_sha256": digest(config.prior_fisher_h1_smoke_report_bytes),
     }
+
+
+def test_post_calibration_authorizer_requires_exact_inputs_and_publishes_v4_pair(
+    tmp_path: Path,
+) -> None:
+    source_commit = "a" * 40
+    calibration_dir = tmp_path / "calibration"
+    smoke_dir = tmp_path / "smoke"
+    calibration_dir.mkdir()
+    smoke_dir.mkdir()
+    frozen_identity = b"frozen-identity"
+    receipt = b"capture-receipt"
+    full_payloads = {
+        runner.SCORE_FILENAME: b"score",
+        runner.COMPARATOR_SCORE_FILENAME: b"comparators",
+        runner.SPLIT_FILENAME: b"split",
+        runner.K27030_FILENAME: b"k27030",
+        runner.K29334_FILENAME: b"k29334",
+        runner.MSE_K29334_FILENAME: b"mse",
+        runner.FISHER_K29334_FILENAME: b"fisher",
+        runner.Q48_FILENAME: b"q48",
+        runner.CORE_BINDING_FILENAME: b"core-binding",
+        runner.REPORT_FILENAME: b"full-report",
+        runner.COMPLETE_FILENAME: runner.CALIBRATION_COMPLETE_BYTES,
+    }
+    for name, payload in full_payloads.items():
+        (calibration_dir / name).write_bytes(payload)
+    smoke_report = b"smoke-report"
+    (smoke_dir / runner.FISHER_SMOKE_REPORT_FILENAME).write_bytes(smoke_report)
+    (smoke_dir / runner.FISHER_SMOKE_COMPLETE_FILENAME).write_bytes(
+        runner.FISHER_SMOKE_COMPLETE_BYTES
+    )
+    receipt_path = tmp_path / "capture-receipt.json"
+    identity_path = tmp_path / "frozen-identity.json"
+    source_manifest_path = tmp_path / "repository-source-manifest.json"
+    runtime_manifest_path = tmp_path / "calibration-runtime-manifest.json"
+    model_manifest_path = tmp_path / "model-file-manifest.json"
+    source_manifest = b"repository-source-manifest"
+    runtime_manifest = b"calibration-runtime-manifest"
+    model_manifest = b"model-file-manifest"
+    receipt_path.write_bytes(receipt)
+    identity_path.write_bytes(frozen_identity)
+    source_manifest_path.write_bytes(source_manifest)
+    runtime_manifest_path.write_bytes(runtime_manifest)
+    model_manifest_path.write_bytes(model_manifest)
+    authorization_bytes = b"authorization"
+    binding_bytes = b"authorized-binding"
+
+    class FakeResolver:
+        @staticmethod
+        def deserialize_stage_a_calibration_core_binding_artifact(data: bytes) -> Any:
+            assert data == full_payloads[runner.CORE_BINDING_FILENAME]
+            return SimpleNamespace(
+                calibration_dependencies={"frozen_identity_artifact": frozen_identity}
+            )
+
+        @staticmethod
+        def build_stage_a_calibration_authorization_artifact(**kwargs: bytes) -> bytes:
+            assert kwargs["calibration_run_report"] == full_payloads[runner.REPORT_FILENAME]
+            assert kwargs["capture_provenance_receipt"] == receipt
+            assert kwargs["fisher_h1_smoke_report"] == smoke_report
+            assert kwargs["calibration_complete_marker"] == runner.CALIBRATION_COMPLETE_BYTES
+            assert kwargs["repository_source_manifest"] == source_manifest
+            assert kwargs["calibration_runtime_manifest"] == runtime_manifest
+            assert kwargs["model_file_manifest"] == model_manifest
+            return authorization_bytes
+
+        @staticmethod
+        def deserialize_stage_a_calibration_authorization_artifact(data: bytes) -> Any:
+            assert data == authorization_bytes
+            return SimpleNamespace(source_commit=source_commit)
+
+        @staticmethod
+        def build_stage_a_calibration_binding_artifact(**kwargs: bytes) -> bytes:
+            assert kwargs == {"calibration_authorization_artifact": authorization_bytes}
+            return binding_bytes
+
+        @staticmethod
+        def deserialize_stage_a_calibration_binding_artifact(data: bytes) -> Any:
+            assert data == binding_bytes
+            return SimpleNamespace(
+                authorization_file_sha256=runner.sha256_bytes(authorization_bytes)
+            )
+
+    output_dir = tmp_path / "authorized"
+    result = runner.authorize_stage_a_calibration(
+        calibration_output_dir=calibration_dir,
+        fisher_h1_smoke_output_dir=smoke_dir,
+        capture_provenance_receipt_path=receipt_path,
+        expected_capture_provenance_receipt_sha256=runner.sha256_bytes(receipt),
+        frozen_identity_path=identity_path,
+        expected_frozen_identity_sha256=runner.sha256_bytes(frozen_identity),
+        repository_source_manifest_path=source_manifest_path,
+        expected_repository_source_manifest_sha256=runner.sha256_bytes(source_manifest),
+        runtime_manifest_path=runtime_manifest_path,
+        expected_runtime_manifest_sha256=runner.sha256_bytes(runtime_manifest),
+        model_file_manifest_path=model_manifest_path,
+        expected_model_file_manifest_sha256=runner.sha256_bytes(model_manifest),
+        expected_full_run_report_sha256=runner.sha256_bytes(full_payloads[runner.REPORT_FILENAME]),
+        expected_fisher_h1_smoke_report_sha256=runner.sha256_bytes(smoke_report),
+        source_commit=source_commit,
+        output_dir=output_dir,
+        identity_resolver=FakeResolver(),
+    )
+
+    assert result["status"] == "authorized_for_stage_a"
+    assert {item.name for item in output_dir.iterdir()} == {
+        runner.AUTHORIZATION_FILENAME,
+        runner.BINDING_FILENAME,
+        runner.AUTHORIZATION_COMPLETE_FILENAME,
+    }
+    assert (output_dir / runner.AUTHORIZATION_FILENAME).read_bytes() == authorization_bytes
+    assert (output_dir / runner.BINDING_FILENAME).read_bytes() == binding_bytes
+    assert (output_dir / runner.AUTHORIZATION_COMPLETE_FILENAME).read_bytes() == (
+        runner.AUTHORIZATION_COMPLETE_BYTES
+    )
+
+    (calibration_dir / "unexpected.txt").write_bytes(b"extra")
+    with pytest.raises(runner.CalibrationRunError, match="inventory drifted"):
+        runner.authorize_stage_a_calibration(
+            calibration_output_dir=calibration_dir,
+            fisher_h1_smoke_output_dir=smoke_dir,
+            capture_provenance_receipt_path=receipt_path,
+            expected_capture_provenance_receipt_sha256=runner.sha256_bytes(receipt),
+            frozen_identity_path=identity_path,
+            expected_frozen_identity_sha256=runner.sha256_bytes(frozen_identity),
+            repository_source_manifest_path=source_manifest_path,
+            expected_repository_source_manifest_sha256=runner.sha256_bytes(source_manifest),
+            runtime_manifest_path=runtime_manifest_path,
+            expected_runtime_manifest_sha256=runner.sha256_bytes(runtime_manifest),
+            model_file_manifest_path=model_manifest_path,
+            expected_model_file_manifest_sha256=runner.sha256_bytes(model_manifest),
+            expected_full_run_report_sha256=runner.sha256_bytes(
+                full_payloads[runner.REPORT_FILENAME]
+            ),
+            expected_fisher_h1_smoke_report_sha256=runner.sha256_bytes(smoke_report),
+            source_commit=source_commit,
+            output_dir=tmp_path / "forbidden-output",
+            identity_resolver=FakeResolver(),
+        )
+
+
+def test_post_calibration_authorizer_cli_forwards_all_authenticated_manifests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+
+    def fake_authorize(**kwargs: object) -> dict[str, object]:
+        received.update(kwargs)
+        return {"status": "authorized_for_stage_a"}
+
+    monkeypatch.setattr(runner, "authorize_stage_a_calibration", fake_authorize)
+    paths = {
+        "calibration_output_dir": tmp_path / "calibration",
+        "fisher_h1_smoke_output_dir": tmp_path / "smoke",
+        "capture_provenance_receipt_path": tmp_path / "capture.json",
+        "frozen_identity_path": tmp_path / "identity.json",
+        "repository_source_manifest_path": tmp_path / "source.json",
+        "runtime_manifest_path": tmp_path / "runtime.json",
+        "model_file_manifest_path": tmp_path / "model.json",
+        "output_dir": tmp_path / "authorization",
+    }
+    arguments = [
+        "authorize-stage-a-calibration",
+        "--calibration-output-dir",
+        str(paths["calibration_output_dir"]),
+        "--fisher-h1-smoke-output-dir",
+        str(paths["fisher_h1_smoke_output_dir"]),
+        "--capture-provenance-receipt",
+        str(paths["capture_provenance_receipt_path"]),
+        "--expected-capture-provenance-receipt-sha256",
+        "1" * 64,
+        "--frozen-identity",
+        str(paths["frozen_identity_path"]),
+        "--expected-frozen-identity-sha256",
+        "2" * 64,
+        "--repository-source-manifest",
+        str(paths["repository_source_manifest_path"]),
+        "--expected-repository-source-manifest-sha256",
+        "3" * 64,
+        "--runtime-manifest",
+        str(paths["runtime_manifest_path"]),
+        "--expected-runtime-manifest-sha256",
+        "4" * 64,
+        "--model-file-manifest",
+        str(paths["model_file_manifest_path"]),
+        "--expected-model-file-manifest-sha256",
+        "5" * 64,
+        "--expected-full-run-report-sha256",
+        "6" * 64,
+        "--expected-fisher-h1-smoke-report-sha256",
+        "7" * 64,
+        "--source-commit",
+        "8" * 40,
+        "--output-dir",
+        str(paths["output_dir"]),
+    ]
+
+    assert runner._capture_manifest_mode(arguments) == 0
+
+    assert received == {
+        **paths,
+        "expected_capture_provenance_receipt_sha256": "1" * 64,
+        "expected_frozen_identity_sha256": "2" * 64,
+        "expected_repository_source_manifest_sha256": "3" * 64,
+        "expected_runtime_manifest_sha256": "4" * 64,
+        "expected_model_file_manifest_sha256": "5" * 64,
+        "expected_full_run_report_sha256": "6" * 64,
+        "expected_fisher_h1_smoke_report_sha256": "7" * 64,
+        "source_commit": "8" * 40,
+    }
+    assert json.loads(capsys.readouterr().out) == {"status": "authorized_for_stage_a"}
 
 
 def test_fisher_h1_smoke_runs_first_frozen_sequence_and_publishes_only_receipt(

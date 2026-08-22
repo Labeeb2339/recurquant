@@ -12,6 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -292,7 +293,11 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
                 binding={
                     key: _hash(f"binding-{key}")
                     for key in sorted(resolver.CALIBRATION_BINDING_FIELDS)
-                }
+                },
+                execution_bindings={
+                    field: capture.sha256_bytes(payload)
+                    for field, payload in sorted(FIXTURE_EXECUTION_ARTIFACTS.items())
+                },
             )
         return strict_binding_decoder(data)
 
@@ -1329,21 +1334,40 @@ def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies() ->
         FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
         STATIC_Q468_DIAG_EMPIRICAL_FISHER_H1_METHOD,
     )
-    binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
-        frozen_identity_artifact=identity_bytes,
-        calibration_score_artifact=score_bytes,
-        split_half_stability_artifact=split_bytes,
-        static_k27030_policy_artifact=policy27030_bytes,
-        static_k29334_policy_artifact=policy29334_bytes,
-        comparator_score_artifact=comparator_bytes,
-        static_fisher_k29334_policy_artifact=fisher_policy_bytes,
-        static_mse_k29334_policy_artifact=mse_policy_bytes,
+    core_dependencies = {
+        "frozen_identity_artifact": identity_bytes,
+        "calibration_score_artifact": score_bytes,
+        "split_half_stability_artifact": split_bytes,
+        "static_k27030_policy_artifact": policy27030_bytes,
+        "static_k29334_policy_artifact": policy29334_bytes,
+        "comparator_score_artifact": comparator_bytes,
+        "static_fisher_k29334_policy_artifact": fisher_policy_bytes,
+        "static_mse_k29334_policy_artifact": mse_policy_bytes,
+    }
+    core_bytes = resolver.build_stage_a_calibration_core_binding_artifact(**core_dependencies)
+    core = resolver.deserialize_stage_a_calibration_core_binding_artifact(core_bytes)
+    authorization_bytes = b"verified-post-calibration-authorization"
+    authorization = SimpleNamespace(
+        binding=dict(core.binding),
+        calibration_dependencies=core_dependencies,
+        execution_bindings=dict(identity.execution_bindings),
+        source_commit="f" * 40,
+        file_sha256=resolver.sha256_bytes(authorization_bytes),
     )
+    with patch.object(
+        resolver,
+        "deserialize_stage_a_calibration_authorization_artifact",
+        return_value=authorization,
+    ):
+        binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
+            calibration_authorization_artifact=authorization_bytes
+        )
+        verified = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
+        normalized = capture._normalize_calibration_binding(binding_bytes)
 
-    verified = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
-
-    assert capture._normalize_calibration_binding(binding_bytes) == verified.binding
+    assert normalized == verified.binding
     assert verified.binding == {
+        "calibration_authorization_file_sha256": resolver.sha256_bytes(authorization_bytes),
         "calibration_identity_file_sha256": identity.file_sha256,
         "calibration_score_artifact_file_sha256": resolver.sha256_bytes(score_bytes),
         "split_half_stability_artifact_file_sha256": resolver.sha256_bytes(split_bytes),
@@ -1355,19 +1379,25 @@ def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies() ->
     }
 
     tampered = json.loads(binding_bytes)
-    encoded_policy = tampered["evidence"]["dependencies_base64"]["static_k29334_policy_artifact"]
-    policy_payload = bytearray(base64.b64decode(encoded_policy))
-    policy_payload[0] ^= 1
-    tampered["evidence"]["dependencies_base64"]["static_k29334_policy_artifact"] = base64.b64encode(
-        policy_payload
-    ).decode("ascii")
+    encoded_authorization = tampered["evidence"]["dependencies_base64"][
+        "calibration_authorization_artifact"
+    ]
+    authorization_payload = bytearray(base64.b64decode(encoded_authorization))
+    authorization_payload[0] ^= 1
+    tampered["evidence"]["dependencies_base64"]["calibration_authorization_artifact"] = (
+        base64.b64encode(authorization_payload).decode("ascii")
+    )
     tampered["canonical_evidence_sha256"] = resolver.sha256_bytes(
         resolver.canonical_json_bytes(tampered["evidence"])
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="authorization bytes differ"):
         resolver.deserialize_stage_a_calibration_binding_artifact(
             resolver.canonical_json_bytes(tampered)
         )
+
+    # The pre-authorization core is intentionally not accepted by capture.
+    with pytest.raises(ValueError, match="kind or schema drifted"):
+        capture._normalize_calibration_binding(core_bytes)
 
 
 def test_stage_a_capture_uses_exact_schedules_and_token_caps() -> None:
@@ -2179,6 +2209,53 @@ def test_calibration_binding_requires_verified_artifact_and_is_normalized() -> N
                 key: _hash(f"binding-{key}") for key in resolver.CALIBRATION_BINDING_FIELDS
             },  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize("binding", [b"legacy-binding", b"{}\n", b"tampered-binding"])
+def test_invalid_stage_a_binding_fails_before_runtime_or_source_access(binding: bytes) -> None:
+    source = FakeSource()
+    source.runtime_authentication_context = lambda: pytest.fail(  # type: ignore[method-assign]
+        "runtime provider must not be touched before binding verification"
+    )
+
+    with pytest.raises(ValueError):
+        capture.capture_identity_input(
+            phase="stage_a",
+            source=source,
+            calibration_binding=binding,
+        )
+
+    assert source.accesses == []
+
+
+def test_stage_a_authorization_execution_mismatch_fails_before_source_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = FakeSource()
+    wrong = {
+        field: capture.sha256_bytes(payload)
+        for field, payload in sorted(FIXTURE_EXECUTION_ARTIFACTS.items())
+    }
+    wrong["model_file_manifest_file_sha256"] = _hash("wrong-authorized-model-manifest")
+    monkeypatch.setattr(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        lambda _data: SimpleNamespace(
+            binding={
+                key: _hash(f"binding-{key}") for key in sorted(resolver.CALIBRATION_BINDING_FIELDS)
+            },
+            execution_bindings=wrong,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="differ from the calibration authorization"):
+        capture.capture_identity_input(
+            phase="stage_a",
+            source=source,
+            calibration_binding=b"valid-but-cross-chain-binding",
+        )
+
+    assert source.accesses == []
 
 
 def test_execution_bindings_are_derived_from_verified_artifact_bytes() -> None:

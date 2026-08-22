@@ -609,7 +609,7 @@ def test_run_rejects_device_runtime_drift_after_evaluation() -> None:
 def test_reconstruction_has_no_q48_or_uniform_supplied_dependency(monkeypatch: Any) -> None:
     dependencies = {name: name.encode() for name in stage_a.BINDING_DEPENDENCY_NAMES}
     dependencies["extra_q48_policy"] = b"forbidden"
-    with pytest.raises(stage_a.StageAError, match="exact eight"):
+    with pytest.raises(stage_a.StageAError, match="exact authorized"):
         stage_a.reconstruct_stage_a_methods(
             dependency_bytes=dependencies,
             frozen_stage_a_identity=object(),
@@ -674,6 +674,94 @@ def test_reconstruction_has_no_q48_or_uniform_supplied_dependency(monkeypatch: A
     assert origins[stage_a.Q48_METHOD] == "reconstructed_candidate_scores_p14739"
     assert origins[stage_a.UNIFORM_Q4_METHOD] == "reconstructed_candidate_scores_k0"
     assert origins[stage_a.UNIFORM_Q8_METHOD] == "reconstructed_candidate_scores_k8"
+
+
+def test_authorization_execution_mismatch_fails_before_model_file_touch(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    h0 = "1" * 40
+    identity_path = tmp_path / "identity.json"
+    binding_path = tmp_path / "binding.json"
+    identity_bytes = b"identity"
+    binding_bytes = b"binding"
+    execution = {
+        "repository_source_manifest_file_sha256": b"source",
+        "calibration_runtime_manifest_file_sha256": b"runtime",
+        "model_file_manifest_file_sha256": b"model",
+        "parquet_materialization_manifest_file_sha256": b"parquet",
+    }
+    execution_hashes = {name: stage_a.sha256_bytes(payload) for name, payload in execution.items()}
+    wrong_authorized = dict(execution_hashes)
+    wrong_authorized["model_file_manifest_file_sha256"] = _digest("wrong-model-chain")
+    bootstrap = SimpleNamespace(
+        execution_bindings=MappingProxyType(execution_hashes),
+        calibration_binding=MappingProxyType({}),
+        file_sha256=_digest("identity"),
+    )
+    config = SimpleNamespace(
+        frozen_identity_path=identity_path,
+        calibration_binding_path=binding_path,
+        expected_runtime_manifest_sha256=execution_hashes[
+            "calibration_runtime_manifest_file_sha256"
+        ],
+        expected_model_file_manifest_sha256=execution_hashes["model_file_manifest_file_sha256"],
+        expected_parquet_materialization_manifest_sha256=execution_hashes[
+            "parquet_materialization_manifest_file_sha256"
+        ],
+        source_commit=h0,
+        repository_root=tmp_path,
+        git_executable_path=tmp_path / "git.exe",
+    )
+    source_bootstrap = {"document": {}, "source_commit": h0}
+    source_module = SimpleNamespace(
+        validate_experiment013_source_manifest=lambda _document: {"source_commit": h0},
+        verify_experiment013_source_manifest=lambda normalized, *_args, **_kwargs: normalized,
+    )
+    model_touched = False
+
+    class FakeRunner:
+        @staticmethod
+        def authenticate_local_model_files(*_args: object, **_kwargs: object) -> None:
+            nonlocal model_touched
+            model_touched = True
+            raise AssertionError("model files must not be touched")
+
+    resolver = SimpleNamespace(
+        deserialize_stage_a_calibration_binding_artifact=lambda _data: SimpleNamespace(
+            execution_bindings=wrong_authorized,
+            source_commit=h0,
+        )
+    )
+
+    monkeypatch.setattr(stage_a, "_assert_output_paths_isolated", lambda _config: None)
+    monkeypatch.setattr(stage_a, "bootstrap_stage_a_identity", lambda _data: bootstrap)
+    monkeypatch.setattr(stage_a, "_read_execution_artifacts", lambda _config: execution)
+    monkeypatch.setattr(stage_a, "_bootstrap_source_manifest", lambda _data: source_bootstrap)
+    monkeypatch.setattr(stage_a, "_verify_source_bytes", lambda *_args: None)
+    monkeypatch.setattr(stage_a, "_source_entries", lambda _source: {})
+    monkeypatch.setattr(stage_a, "_install_source_namespace", lambda _root: None)
+    monkeypatch.setattr(stage_a, "_assert_tracked_identity_bytes", lambda *_args: None)
+
+    def stable_bytes(path: Path, *, context: str) -> bytes:
+        del context
+        return identity_bytes if path == identity_path else binding_bytes
+
+    monkeypatch.setattr(stage_a, "_stable_file_bytes", stable_bytes)
+
+    def load_module(_name: str, relative_path: str, **_kwargs: object) -> object:
+        if relative_path == stage_a.SOURCE_MODULE_PATH:
+            return source_module
+        if relative_path == stage_a.CALIBRATION_RUNNER_SOURCE_PATH:
+            return FakeRunner()
+        if relative_path == stage_a.RESOLVER_SOURCE_PATH:
+            return resolver
+        raise AssertionError(f"unexpected module load: {relative_path}")
+
+    monkeypatch.setattr(stage_a, "_load_exact_module", load_module)
+    with pytest.raises(stage_a.StageAError, match="different execution artifacts"):
+        stage_a.authenticate_production(config, require_input_bundle=False)
+
+    assert model_touched is False
 
 
 def _run(root: Path, *args: str, input_bytes: bytes | None = None) -> str:

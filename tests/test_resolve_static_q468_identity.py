@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from recurquant import static_q468
+from recurquant import experiment013_source, static_q468
 from recurquant import static_q468_calibration as calibration
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +34,7 @@ REVISIONS = {
 }
 FIXTURE_BINDING_ARTIFACT = b"verified-stage-a-binding-fixture"
 FIXTURE_BINDING = {
+    "calibration_authorization_file_sha256": resolver.sha256_bytes(b"calibration-authorization"),
     "calibration_identity_file_sha256": resolver.sha256_bytes(b"calibration-file"),
     "calibration_score_artifact_file_sha256": resolver.sha256_bytes(b"calibration-scores"),
     "comparator_score_artifact_file_sha256": resolver.sha256_bytes(b"comparator-scores"),
@@ -110,7 +111,9 @@ def _fake_policy(
 @contextmanager
 def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
     geometry = static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY
-    identity_bytes = b"frozen-identity-v5"
+    identity_bytes = resolver.canonical_json_bytes(
+        {"evidence": {"source_manifest_sha256": _hash("identity-input-manifest")}}
+    )
     score_bytes = b"candidate-calibration-scores"
     split_bytes = b"split-half-stability"
     comparator_bytes = b"combined-comparator-scores"
@@ -141,20 +144,36 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
     k27030_codes = _exact_code_vector(static_q468.FROZEN_STATIC_Q468_ABLATION_STEPS)
     k29334_codes = _exact_code_vector(static_q468.FROZEN_STATIC_Q468_PRIMARY_STEPS)
 
+    authorization_record = {
+        "fisher_boundary": {
+            "boundary_positions": list(resolver.anchor_positions(15)),
+        },
+        "identity_record_sha256": _hash("authorization-identity-record"),
+        "prompt_token_ids_sha256": _hash("authorization-prompt-tokens"),
+        "sequence_length": 17,
+        "sequence_token_ids_sha256": _hash("authorization-sequence-tokens"),
+        "target_token_ids_sha256": _hash("authorization-target-tokens"),
+    }
     identity = SimpleNamespace(
         file_sha256=identity_sha256,
         canonical_evidence_sha256=_hash("identity-canonical-evidence"),
-        records=({},),
+        records=(authorization_record,),
         assignment=(),
         assignment_sha256=_hash("identity-assignment"),
         tokenizer_manifest_sha256=tokenizer_manifest_sha256,
+        execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS),
     )
+    candidate_row = torch.arange(geometry.total_rows, dtype=torch.float64)
+    candidate_d4 = ((candidate_row + 2) % 1_009) / 1_009
+    candidate_d8 = ((candidate_row + 11) % 1_013) / 1_013
     candidate_scores = SimpleNamespace(
         artifact_kind=calibration.CALIBRATION_SCORE_ARTIFACT_KIND,
         file_sha256=resolver.sha256_bytes(score_bytes),
         calibration_identity_sha256=identity_sha256,
         calibration_scores_sha256=candidate_score_sha256,
         aggregate=SimpleNamespace(
+            d4=candidate_d4,
+            d8=candidate_d8,
             identity_record_manifest_sha256=identity_record_manifest_sha256,
             sequence_score_manifest_sha256=candidate_sequence_manifest_sha256,
         ),
@@ -191,6 +210,17 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
         ),
         half_b_aggregate=SimpleNamespace(
             identity_record_manifest_sha256=_hash("half-b-record-manifest")
+        ),
+        stability=SimpleNamespace(
+            checks=(
+                ("spearman_at_least_0_70", True),
+                ("q8_jaccard_at_least_0_50", True),
+                ("every_layer_mean_bitwidth_shift_at_most_0_25", True),
+            ),
+            layer_mean_bitwidth_shifts=((0, 0.125),),
+            passed=True,
+            q8_jaccard=0.75,
+            spearman_average_ties=0.875,
         ),
     )
 
@@ -304,6 +334,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
         policies=policies,
         policy_bytes=policy_bytes,
         identity_record_manifest_sha256=identity_record_manifest_sha256,
+        source_commit_h0=source_commit_h0,
     )
     with (
         patch.object(
@@ -363,6 +394,440 @@ def _reauthenticated_binding_bytes(document: dict[str, Any]) -> bytes:
         resolver.canonical_json_bytes(document["evidence"])
     )
     return resolver.canonical_json_bytes(document)
+
+
+def _authorization_source_manifest(source_commit: str) -> bytes:
+    payload: dict[str, Any] = {
+        "schema": experiment013_source.EXPERIMENT013_SOURCE_MANIFEST_SCHEMA,
+        "profile": experiment013_source.EXPERIMENT013_SOURCE_MANIFEST_PROFILE,
+        "object_format": "sha1",
+        "source_commit": source_commit,
+        "git_executable": {"sha256": _hash("git-executable"), "size_bytes": 100},
+        "repository_binding": {
+            "schema": experiment013_source.EXPERIMENT013_REPOSITORY_BINDING_SCHEMA,
+            "worktree_layout": "primary",
+            **{name: True for name in experiment013_source._TRUE_BINDING_FIELDS},
+        },
+        "paths": [
+            {
+                "git_blob_oid": _hash(f"git-blob-{path}")[:40],
+                "index_blob_oid": _hash(f"git-blob-{path}")[:40],
+                "mode": "100644",
+                "path": path,
+                "raw_sha256": (
+                    _hash("capture-source")
+                    if path == resolver.CALIBRATION_CAPTURE_SOURCE_PATH
+                    else _hash(f"source-bytes-{path}")
+                ),
+                "worktree_blob_oid": _hash(f"git-blob-{path}")[:40],
+            }
+            for path in experiment013_source.EXPERIMENT013_SOURCE_PATHS
+        ],
+    }
+    payload["canonical_manifest_sha256"] = (
+        experiment013_source.canonical_experiment013_source_manifest_sha256(payload)
+    )
+    return experiment013_source.canonical_experiment013_source_manifest_bytes(payload)
+
+
+def _authorization_runtime_manifest() -> tuple[bytes, list[dict[str, object]]]:
+    module_to_distribution = dict(resolver.CALIBRATION_CAPTURE_CRITICAL_MODULE_DISTRIBUTIONS)
+    root_name = "calibration-packages"
+    import_path = "Lib/site-packages"
+    distribution_modules = {
+        distribution: module for module, distribution in module_to_distribution.items()
+    }
+    distribution_modules["torch"] = "torch"
+    runtime_files = [
+        {
+            "path": f"{import_path}/{module}/__init__.py",
+            "sha256": _hash(f"runtime-file-{module}"),
+            "size_bytes": 100 + index,
+        }
+        for index, module in enumerate(sorted(distribution_modules.values()))
+    ]
+    runtime_files.sort(key=lambda item: str(item["path"]))
+    distributions = []
+    for distribution in sorted(distribution_modules):
+        module = distribution_modules[distribution]
+        distributions.append(
+            {
+                "files": [f"{import_path}/{module}/__init__.py"],
+                "name": distribution,
+                "package_root": root_name,
+                "version": (
+                    resolver.CALIBRATION_CANONICAL_TORCH_DISTRIBUTION_VERSION
+                    if distribution == "torch"
+                    else resolver.TRANSFORMERS_VERSION
+                    if distribution == "transformers"
+                    else "1.0.0"
+                ),
+            }
+        )
+    document = {
+        "artifact_kind": resolver.CALIBRATION_RUNTIME_MANIFEST_KIND,
+        "base_runtime_root": "base-runtime",
+        "base_sys_path": ["."],
+        "distributions": distributions,
+        "git_executable": {
+            "absolute_path_sha256": _hash("runtime-git-path"),
+            "sha256": _hash("runtime-git"),
+            "size_bytes": 200,
+        },
+        "interpreter": {
+            "relative_path": "python.exe",
+            "root": "base-runtime",
+            "sha256": _hash("runtime-python"),
+            "size_bytes": 300,
+        },
+        "launch_policy": dict(resolver.CALIBRATION_SEALED_LAUNCH_POLICY),
+        "machine": {
+            "architecture": "64bit",
+            "byteorder": "little",
+            "machine": "AMD64",
+            "pointer_bits": 64,
+            "system": "Windows",
+        },
+        "package_roots": [{"import_path": import_path, "name": root_name}],
+        "python": {
+            "abi_flags": "",
+            "cache_tag": "cpython-313",
+            "implementation": "CPython",
+            "version": "3.13.7",
+        },
+        "runtime_trees": [
+            {
+                "files": [
+                    {
+                        "path": "python.exe",
+                        "sha256": _hash("runtime-python"),
+                        "size_bytes": 300,
+                    }
+                ],
+                "kind": "base-runtime",
+                "name": "base-runtime",
+            },
+            {"files": runtime_files, "kind": "packages", "name": root_name},
+        ],
+        "schema_version": resolver.CALIBRATION_RUNTIME_MANIFEST_SCHEMA_VERSION,
+    }
+    by_path = {str(item["path"]): item for item in runtime_files}
+    by_distribution = {str(item["name"]): item for item in distributions}
+    origins = []
+    for module in sorted(module_to_distribution):
+        distribution = module_to_distribution[module]
+        path = f"{import_path}/{module}/__init__.py"
+        file = by_path[path]
+        dist = by_distribution[distribution]
+        origins.append(
+            {
+                "distribution": distribution,
+                "module": module,
+                "package_root": root_name,
+                "relative_path": path,
+                "sha256": file["sha256"],
+                "size_bytes": file["size_bytes"],
+                "version": dist["version"],
+            }
+        )
+    return resolver.canonical_json_bytes(document), origins
+
+
+def _authorization_model_manifest() -> bytes:
+    files = [
+        {
+            "git_blob_oid": "1" * 40,
+            "lfs_sha256": None,
+            "lfs_size_bytes": None,
+            "name": "config.json",
+            "sha256": None,
+            "size_bytes": 100,
+        },
+        {
+            "git_blob_oid": "2" * 40,
+            "lfs_sha256": _hash("model-weight"),
+            "lfs_size_bytes": 1_000,
+            "name": "model-00001-of-00001.safetensors",
+            "sha256": _hash("model-weight"),
+            "size_bytes": 1_000,
+        },
+        {
+            "git_blob_oid": "3" * 40,
+            "lfs_sha256": None,
+            "lfs_size_bytes": None,
+            "name": "model.safetensors.index.json",
+            "sha256": None,
+            "size_bytes": 200,
+        },
+    ]
+    tree_payload = [
+        {
+            "git_blob_oid": item["git_blob_oid"],
+            "lfs_sha256": item["lfs_sha256"],
+            "lfs_size_bytes": item["lfs_size_bytes"],
+            "name": item["name"],
+        }
+        for item in files
+    ]
+    return resolver.canonical_json_bytes(
+        {
+            "artifact_kind": resolver.CALIBRATION_MODEL_FILE_MANIFEST_KIND,
+            "files": files,
+            "hub_tree_manifest_sha256": resolver.sha256_bytes(
+                resolver.canonical_json_bytes(tree_payload)
+            ),
+            "metadata_derivation": resolver.CALIBRATION_MODEL_FILE_MANIFEST_DERIVATION,
+            "model_id": static_q468.PRIMARY_MODEL_ID,
+            "revision": static_q468.PRIMARY_MODEL_REVISION,
+            "schema_version": resolver.CALIBRATION_MODEL_FILE_MANIFEST_SCHEMA_VERSION,
+            "selection_profile": resolver.CALIBRATION_MODEL_FILE_SELECTION_PROFILE,
+            "transformers_version": resolver.TRANSFORMERS_VERSION,
+        }
+    )
+
+
+def _runner_report_bytes(
+    *,
+    identity: SimpleNamespace,
+    identity_input_manifest_sha256: str,
+    repository_source_manifest: bytes,
+    runtime_manifest: bytes,
+    model_manifest: bytes,
+    artifacts: dict[str, str],
+    capture_receipt_sha256: str,
+    smoke_report_sha256: str | None,
+    status: str,
+) -> bytes:
+    smoke = status == "fisher_h1_smoke_passed"
+    source = resolver._deserialize_repository_source_manifest(repository_source_manifest)
+    runtime = resolver._deserialize_calibration_runtime_manifest(runtime_manifest)
+    model = resolver._deserialize_model_file_manifest(model_manifest)
+    counts = resolver._calibration_count_receipt(identity.records, smoke=smoke)
+    gpu = {
+        "capability": [9, 0],
+        "device_index": 0,
+        "name": "Fixture GPU",
+        "peak_allocated_bytes": 200 if smoke else 400,
+        "peak_reserved_bytes": 300 if smoke else 500,
+    }
+    adapter = {
+        "adapter_revision": resolver.CALIBRATION_CANONICAL_ADAPTER_REVISION,
+        "capture_input_sha256": identity_input_manifest_sha256,
+        "device": "cuda:0",
+        "fisher_step_count": counts["expected_fisher_step_count"],
+        "kernel_backend": resolver.CALIBRATION_CANONICAL_ADAPTER_KERNEL_BACKEND,
+        "materialization_attempted": True,
+        "materialized_sequence_count": len(identity.records),
+        "model_dtype": resolver.CALIBRATION_CANONICAL_ADAPTER_MODEL_DTYPE,
+        "model_id": model["model_id"],
+        "model_loaded": True,
+        "model_loading_diagnostic_counts": {
+            name: 0 for name in sorted(resolver.CALIBRATION_CANONICAL_ADAPTER_LOADING_DIAGNOSTICS)
+        },
+        "model_revision": model["revision"],
+        "query_shape": list(resolver.CALIBRATION_CANONICAL_ADAPTER_QUERY_SHAPE),
+        "recurrent_layer_indices": list(
+            resolver.CALIBRATION_CANONICAL_ADAPTER_RECURRENT_LAYER_INDICES
+        ),
+        "state_shape": list(resolver.CALIBRATION_CANONICAL_ADAPTER_STATE_SHAPE),
+        "token_sequence_manifest_sha256": resolver._frozen_token_sequence_manifest_sha256(
+            identity.records
+        ),
+        "transformers_version": model["transformers_version"],
+    }
+    evidence = {
+        "artifacts": artifacts,
+        "calibration": counts,
+        "identity": {
+            "canonical_evidence_sha256": identity.canonical_evidence_sha256,
+            "execution_bindings": dict(identity.execution_bindings),
+            "file_sha256": identity.file_sha256,
+            "identity_input_manifest_sha256": identity_input_manifest_sha256,
+            "tokenizer_manifest_sha256": identity.tokenizer_manifest_sha256,
+        },
+        "model_files": {
+            "file_count": model["file_count"],
+            "hub_tree_manifest_sha256": model["hub_tree_manifest_sha256"],
+            "manifest_file_sha256": model["file_sha256"],
+            "model_id": model["model_id"],
+            "revision": model["revision"],
+            "transformers_version": model["transformers_version"],
+        },
+        "prerequisites": {
+            "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+            "fisher_h1_smoke_report_file_sha256": smoke_report_sha256,
+        },
+        "query_energy_ema": dict(resolver.CALIBRATION_QUERY_ENERGY_EMA),
+        "repository": {
+            "source_commit": source["source_commit"],
+            "source_manifest_file_sha256": source["file_sha256"],
+            "source_manifest_sha256": source["canonical_manifest_sha256"],
+        },
+        "runner_revision": resolver.CALIBRATION_RUNNER_REVISION,
+        "runtime": {
+            "adapter": adapter,
+            "authenticated_distribution_count": runtime["distribution_count"],
+            "authenticated_file_count": runtime["file_count"],
+            "cuda_available": True,
+            "cuda_runtime": resolver.CALIBRATION_CANONICAL_CUDA_RUNTIME_VERSION,
+            "elapsed_seconds_hex": (1.0 if smoke else 2.0).hex(),
+            "gpu": gpu,
+            "packages": runtime["packages"],
+            "platform": "Windows-11-fixture",
+            "python": runtime["python_version"],
+            "runtime_manifest_file_sha256": runtime["file_sha256"],
+            "torch": resolver.CALIBRATION_CANONICAL_TORCH_RUNTIME_VERSION,
+        },
+        "stability": (
+            {"checks": [], "evaluated": False, "passed": None, "scope": "smoke_only"}
+            if smoke
+            else resolver._runner_stability_receipt(identity.split.stability)
+        ),
+        "status": status,
+    }
+    return resolver.canonical_json_bytes(
+        {
+            "artifact_kind": resolver.CALIBRATION_RUN_REPORT_KIND,
+            "canonical_evidence_sha256": resolver.sha256_bytes(
+                resolver.canonical_json_bytes(evidence)
+            ),
+            "evidence": evidence,
+            "schema_version": resolver.CALIBRATION_RUN_REPORT_SCHEMA_VERSION,
+        }
+    )
+
+
+@contextmanager
+def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace]:
+    identity_input_manifest_sha256 = _hash("identity-input-manifest")
+    source_manifest = _authorization_source_manifest(fixture.source_commit_h0)
+    runtime_manifest, origins = _authorization_runtime_manifest()
+    model_manifest = _authorization_model_manifest()
+    fixture.identity.execution_bindings = {
+        "calibration_runtime_manifest_file_sha256": resolver.sha256_bytes(runtime_manifest),
+        "model_file_manifest_file_sha256": resolver.sha256_bytes(model_manifest),
+        "parquet_materialization_manifest_file_sha256": (
+            resolver.PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
+        ),
+        "repository_source_manifest_file_sha256": resolver.sha256_bytes(source_manifest),
+    }
+    fixture.identity.split = fixture.split
+    core_bytes = resolver.build_stage_a_calibration_core_binding_artifact(**fixture.dependencies)
+    q48 = static_q468.build_static_rht_q48_policy(
+        fixture.candidate_scores.aggregate.d4,
+        fixture.candidate_scores.aggregate.d8,
+        geometry=static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        promoted_rows=static_q468.FROZEN_STATIC_Q48_PROMOTIONS,
+        calibration_manifest_sha256=(
+            fixture.candidate_scores.aggregate.sequence_score_manifest_sha256
+        ),
+        identity_artifact_sha256=fixture.identity.file_sha256,
+        tokenizer_manifest_sha256=fixture.identity.tokenizer_manifest_sha256,
+        source_commit=fixture.source_commit_h0,
+        method_id=static_q468.STATIC_Q48_COMPARATOR_METHOD,
+    )
+    q48_bytes = static_q468.serialize_static_rht_q48_policy(q48)
+    receipt = resolver.canonical_json_bytes(
+        {
+            "artifact_kind": resolver.CALIBRATION_CAPTURE_PROVENANCE_KIND,
+            "capture_source": {
+                "path": "scripts/capture_static_q468_identity_input.py",
+                "sha256": _hash("capture-source"),
+            },
+            "capture_version": resolver.CALIBRATION_CAPTURE_VERSION,
+            "critical_module_origins": origins,
+            "excluded_runtime_modules": list(resolver.CALIBRATION_CAPTURE_EXCLUDED_RUNTIME_MODULES),
+            "execution_bindings": dict(fixture.identity.execution_bindings),
+            "identity_input_file_sha256": identity_input_manifest_sha256,
+            "phase": "calibration",
+            "publication_contract": resolver.CALIBRATION_CAPTURE_PUBLICATION_CONTRACT,
+            "runner_revision": resolver.CALIBRATION_RUNNER_REVISION,
+            "schema_version": resolver.CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION,
+            "source_commit": fixture.source_commit_h0,
+            "status": resolver.CALIBRATION_CAPTURE_PROVENANCE_STATUS,
+        }
+    )
+    smoke = _runner_report_bytes(
+        identity=fixture.identity,
+        identity_input_manifest_sha256=identity_input_manifest_sha256,
+        repository_source_manifest=source_manifest,
+        runtime_manifest=runtime_manifest,
+        model_manifest=model_manifest,
+        artifacts={},
+        capture_receipt_sha256=resolver.sha256_bytes(receipt),
+        smoke_report_sha256=None,
+        status="fisher_h1_smoke_passed",
+    )
+    output_hashes = {
+        filename: resolver.sha256_bytes(
+            core_bytes
+            if role == "calibration_core_binding_artifact"
+            else q48_bytes
+            if role == "static_q48_policy_artifact"
+            else fixture.dependencies[role]
+        )
+        for role, filename in resolver.CALIBRATION_OUTPUT_FILENAMES.items()
+    }
+    full_report = _runner_report_bytes(
+        identity=fixture.identity,
+        identity_input_manifest_sha256=identity_input_manifest_sha256,
+        repository_source_manifest=source_manifest,
+        runtime_manifest=runtime_manifest,
+        model_manifest=model_manifest,
+        artifacts=output_hashes,
+        capture_receipt_sha256=resolver.sha256_bytes(receipt),
+        smoke_report_sha256=resolver.sha256_bytes(smoke),
+        status="passed",
+    )
+    kwargs = {
+        "calibration_run_report": full_report,
+        "calibration_complete_marker": resolver.CALIBRATION_COMPLETE_BYTES,
+        "capture_provenance_receipt": receipt,
+        "fisher_h1_smoke_report": smoke,
+        "fisher_h1_smoke_complete_marker": resolver.FISHER_H1_SMOKE_COMPLETE_BYTES,
+        "calibration_core_binding_artifact": core_bytes,
+        "calibration_runtime_manifest": runtime_manifest,
+        "model_file_manifest": model_manifest,
+        "repository_source_manifest": source_manifest,
+        "static_q48_policy_artifact": q48_bytes,
+    }
+    artifact = resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+    yield SimpleNamespace(
+        artifact=artifact,
+        kwargs=kwargs,
+        output_hashes=output_hashes,
+        receipt=receipt,
+        smoke=smoke,
+        full_report=full_report,
+        core=core_bytes,
+        model_manifest=model_manifest,
+        runtime_manifest=runtime_manifest,
+        source_manifest=source_manifest,
+    )
+
+
+def _rechain_authorization_receipt(
+    authorization: SimpleNamespace, receipt: bytes
+) -> dict[str, bytes]:
+    smoke = json.loads(authorization.smoke)
+    smoke["evidence"]["prerequisites"]["capture_provenance_receipt_file_sha256"] = (
+        resolver.sha256_bytes(receipt)
+    )
+    smoke_bytes = _reauthenticated_binding_bytes(smoke)
+    full = json.loads(authorization.full_report)
+    full["evidence"]["prerequisites"] = {
+        "capture_provenance_receipt_file_sha256": resolver.sha256_bytes(receipt),
+        "fisher_h1_smoke_report_file_sha256": resolver.sha256_bytes(smoke_bytes),
+    }
+    kwargs = dict(authorization.kwargs)
+    kwargs.update(
+        {
+            "calibration_run_report": _reauthenticated_binding_bytes(full),
+            "capture_provenance_receipt": receipt,
+            "fisher_h1_smoke_report": smoke_bytes,
+        }
+    )
+    return kwargs
 
 
 def _datasets() -> list[dict[str, Any]]:
@@ -583,7 +1048,9 @@ def _stage_a_source() -> dict[str, Any]:
 def _build_candidate(source: dict[str, Any]) -> dict[str, Any]:
     if source.get("phase") != "stage_a":
         return resolver.build_candidate(source, expected_revisions=REVISIONS)
-    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
     with patch.object(
         resolver,
         "deserialize_stage_a_calibration_binding_artifact",
@@ -739,7 +1206,9 @@ def test_v4_input_candidate_and_frozen_schemas_are_rejected() -> None:
 
     candidate = _build_candidate(_stage_a_source())
     candidate_hash = resolver.sha256_bytes(resolver.canonical_json_bytes(candidate))
-    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
     with patch.object(
         resolver,
         "deserialize_stage_a_calibration_binding_artifact",
@@ -803,10 +1272,30 @@ def test_stage_a_candidate_requires_and_matches_a_verified_binding_artifact() ->
         _build_candidate(source)
 
 
-def test_stage_a_binding_v3_round_trips_exact_eight_embedded_dependencies() -> None:
+def test_stage_a_candidate_rejects_cross_chain_execution_bindings() -> None:
+    source = _stage_a_source()
+    wrong_execution = dict(FIXTURE_EXECUTION_BINDINGS)
+    wrong_execution["model_file_manifest_file_sha256"] = _hash("wrong-model-chain")
+    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING), execution_bindings=wrong_execution)
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        pytest.raises(ValueError, match="differ from calibration authorization"),
+    ):
+        resolver.build_candidate(
+            source,
+            expected_revisions=REVISIONS,
+            calibration_binding_artifact=FIXTURE_BINDING_ARTIFACT,
+        )
+
+
+def test_stage_a_core_binding_v3_round_trips_exact_eight_embedded_dependencies() -> None:
     with _binding_v3_fixture() as fixture:
-        artifact = resolver.build_stage_a_calibration_binding_artifact(**fixture.dependencies)
-        decoded = resolver.deserialize_stage_a_calibration_binding_artifact(artifact)
+        artifact = resolver.build_stage_a_calibration_core_binding_artifact(**fixture.dependencies)
+        decoded = resolver.deserialize_stage_a_calibration_core_binding_artifact(artifact)
 
     document = json.loads(artifact)
     expected_dependencies = {
@@ -819,13 +1308,15 @@ def test_stage_a_binding_v3_round_trips_exact_eight_embedded_dependencies() -> N
         "static_k29334_policy_artifact",
         "static_mse_k29334_policy_artifact",
     }
-    assert resolver.STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION == 3
-    assert resolver.STAGE_A_BINDING_ARTIFACT_REVISION.endswith("-v3")
+    assert resolver.STAGE_A_CORE_BINDING_ARTIFACT_SCHEMA_VERSION == 3
+    assert resolver.STAGE_A_CORE_BINDING_ARTIFACT_REVISION.endswith("-v3")
     assert document["schema_version"] == 3
     assert document["evidence"]["artifact_revision"].endswith("-v3")
     assert set(document["evidence"]["dependencies_base64"]) == expected_dependencies
     assert set(document["evidence"]["dependency_file_sha256"]) == expected_dependencies
-    assert set(decoded.binding) == resolver.CALIBRATION_BINDING_FIELDS
+    assert set(decoded.binding) == resolver.CALIBRATION_BINDING_FIELDS - {
+        "calibration_authorization_file_sha256"
+    }
     assert decoded.binding["comparator_score_artifact_file_sha256"] == resolver.sha256_bytes(
         fixture.dependencies["comparator_score_artifact"]
     )
@@ -843,22 +1334,22 @@ def test_stage_a_binding_v3_round_trips_exact_eight_embedded_dependencies() -> N
         decoded.file_sha256 = "0" * 64
 
 
-def test_stage_a_binding_rejects_v2_missing_extra_and_one_byte_dependency_tamper() -> None:
+def test_stage_a_core_binding_rejects_v2_missing_extra_and_dependency_tamper() -> None:
     with _binding_v3_fixture() as fixture:
-        artifact = resolver.build_stage_a_calibration_binding_artifact(**fixture.dependencies)
+        artifact = resolver.build_stage_a_calibration_core_binding_artifact(**fixture.dependencies)
 
         legacy = json.loads(artifact)
         legacy["schema_version"] = 2
         legacy["evidence"]["artifact_revision"] = "experiment-013-stage-a-calibration-binding-v2"
         with pytest.raises(ValueError, match="kind or schema drifted"):
-            resolver.deserialize_stage_a_calibration_binding_artifact(
+            resolver.deserialize_stage_a_calibration_core_binding_artifact(
                 _reauthenticated_binding_bytes(legacy)
             )
 
         missing = json.loads(artifact)
         del missing["evidence"]["dependencies_base64"]["comparator_score_artifact"]
         with pytest.raises(ValueError, match="dependencies fields drifted"):
-            resolver.deserialize_stage_a_calibration_binding_artifact(
+            resolver.deserialize_stage_a_calibration_core_binding_artifact(
                 _reauthenticated_binding_bytes(missing)
             )
 
@@ -867,7 +1358,7 @@ def test_stage_a_binding_rejects_v2_missing_extra_and_one_byte_dependency_tamper
             b"forbidden", context="fixture"
         )
         with pytest.raises(ValueError, match="dependencies fields drifted"):
-            resolver.deserialize_stage_a_calibration_binding_artifact(
+            resolver.deserialize_stage_a_calibration_core_binding_artifact(
                 _reauthenticated_binding_bytes(extra)
             )
 
@@ -881,9 +1372,191 @@ def test_stage_a_binding_rejects_v2_missing_extra_and_one_byte_dependency_tamper
             resolver._canonical_b64(changed, context="fixture")
         )
         with pytest.raises(ValueError, match="dependency bytes differ"):
-            resolver.deserialize_stage_a_calibration_binding_artifact(
+            resolver.deserialize_stage_a_calibration_core_binding_artifact(
                 _reauthenticated_binding_bytes(tampered)
             )
+
+
+def test_post_calibration_authorization_and_v4_binding_round_trip() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        verified_authorization = resolver.deserialize_stage_a_calibration_authorization_artifact(
+            authorization.artifact
+        )
+        binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
+            calibration_authorization_artifact=authorization.artifact
+        )
+        verified_binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
+
+    document = json.loads(binding_bytes)
+    assert resolver.STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION == 4
+    assert document["schema_version"] == 4
+    assert document["evidence"]["artifact_revision"].endswith("-v4")
+    assert set(document["evidence"]["dependencies_base64"]) == {
+        "calibration_authorization_artifact"
+    }
+    assert verified_authorization.authorized_output_file_sha256 == authorization.output_hashes
+    assert verified_authorization.source_commit == fixture.source_commit_h0
+    assert set(verified_binding.binding) == resolver.CALIBRATION_BINDING_FIELDS
+    assert verified_binding.binding["calibration_authorization_file_sha256"] == (
+        resolver.sha256_bytes(authorization.artifact)
+    )
+    assert dict(verified_binding.calibration_dependencies) == fixture.dependencies
+
+
+def test_post_calibration_authorization_rejects_chain_and_marker_tamper() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        wrong_marker = dict(authorization.kwargs)
+        wrong_marker["calibration_complete_marker"] = b"not-complete\n"
+        with pytest.raises(ValueError, match="completion marker drifted"):
+            resolver.build_stage_a_calibration_authorization_artifact(**wrong_marker)
+
+        wrong_report = json.loads(authorization.full_report)
+        wrong_report["evidence"]["artifacts"]["calibration-scores.json"] = "0" * 64
+        wrong_report["canonical_evidence_sha256"] = resolver.sha256_bytes(
+            resolver.canonical_json_bytes(wrong_report["evidence"])
+        )
+        report_kwargs = dict(authorization.kwargs)
+        report_kwargs["calibration_run_report"] = resolver.canonical_json_bytes(wrong_report)
+        with pytest.raises(ValueError, match="artifact inventory drifted"):
+            resolver.build_stage_a_calibration_authorization_artifact(**report_kwargs)
+
+        wrong_receipt = json.loads(authorization.receipt)
+        wrong_receipt["source_commit"] = "b" * 40
+        receipt_kwargs = dict(authorization.kwargs)
+        receipt_kwargs["capture_provenance_receipt"] = resolver.canonical_json_bytes(wrong_receipt)
+        with pytest.raises(ValueError, match="prerequisite binding drifted"):
+            resolver.build_stage_a_calibration_authorization_artifact(**receipt_kwargs)
+
+
+def test_authorization_distinguishes_repository_digest_from_identity_input_hash() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        report = json.loads(authorization.full_report)["evidence"]
+        assert (
+            report["repository"]["source_manifest_sha256"]
+            != (report["identity"]["identity_input_manifest_sha256"])
+        )
+        verified = resolver.deserialize_stage_a_calibration_authorization_artifact(
+            authorization.artifact
+        )
+    assert verified.source_commit == fixture.source_commit_h0
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda report: report["evidence"]["calibration"].update({"sequence_count": 999}),
+            "full calibration counters drifted",
+        ),
+        (
+            lambda report: report["evidence"].update({"query_energy_ema": {"forged": True}}),
+            "full query-energy contract drifted",
+        ),
+        (
+            lambda report: report["evidence"]["model_files"].update({"file_count": 999}),
+            "full model receipt drifted",
+        ),
+        (
+            lambda report: report["evidence"]["runtime"]["adapter"].update(
+                {"query_shape": [1, 1, 1, 1]}
+            ),
+            "full runtime receipt adapter identity drifted",
+        ),
+        (
+            lambda report: report["evidence"]["runtime"].update({"cuda_runtime": "forged"}),
+            "full runtime receipt identity drifted",
+        ),
+    ],
+)
+def test_authorization_rejects_rehashed_impossible_runner_receipts(
+    mutation: Any, message: str
+) -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        report = json.loads(authorization.full_report)
+        mutation(report)
+        kwargs = dict(authorization.kwargs)
+        kwargs["calibration_run_report"] = _reauthenticated_binding_bytes(report)
+        with pytest.raises(ValueError, match=message):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+def test_authorization_rejects_full_smoke_runtime_identity_parity_drift() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        smoke = json.loads(authorization.smoke)
+        smoke["evidence"]["runtime"]["platform"] = "forged-but-nonempty-platform"
+        smoke_bytes = _reauthenticated_binding_bytes(smoke)
+        full = json.loads(authorization.full_report)
+        full["evidence"]["prerequisites"]["fisher_h1_smoke_report_file_sha256"] = (
+            resolver.sha256_bytes(smoke_bytes)
+        )
+        kwargs = dict(authorization.kwargs)
+        kwargs["fisher_h1_smoke_report"] = smoke_bytes
+        kwargs["calibration_run_report"] = _reauthenticated_binding_bytes(full)
+        with pytest.raises(ValueError, match="full and smoke runtime identity receipts differ"):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+@pytest.mark.parametrize("mutation", ["capture_source", "origins", "excluded"])
+def test_authorization_rejects_rehashed_capture_provenance_forgery(mutation: str) -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        receipt = json.loads(authorization.receipt)
+        if mutation == "capture_source":
+            receipt["capture_source"]["sha256"] = _hash("forged-capture-source")
+            message = "source differs from the repository manifest"
+        elif mutation == "origins":
+            receipt["critical_module_origins"] = [{}]
+            message = "critical module inventory is not exact"
+        else:
+            receipt["excluded_runtime_modules"] = []
+            message = "excluded module inventory drifted"
+        kwargs = _rechain_authorization_receipt(
+            authorization, resolver.canonical_json_bytes(receipt)
+        )
+        with pytest.raises(ValueError, match=message):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+def test_authorization_rejects_q48_h0_and_allocation_drift() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        common = {
+            "geometry": static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+            "promoted_rows": static_q468.FROZEN_STATIC_Q48_PROMOTIONS,
+            "calibration_manifest_sha256": (
+                fixture.candidate_scores.aggregate.sequence_score_manifest_sha256
+            ),
+            "identity_artifact_sha256": fixture.identity.file_sha256,
+            "tokenizer_manifest_sha256": fixture.identity.tokenizer_manifest_sha256,
+            "method_id": static_q468.STATIC_Q48_COMPARATOR_METHOD,
+        }
+        wrong_h0 = static_q468.build_static_rht_q48_policy(
+            fixture.candidate_scores.aggregate.d4,
+            fixture.candidate_scores.aggregate.d8,
+            source_commit="b" * 40,
+            **common,
+        )
+        kwargs = dict(authorization.kwargs)
+        kwargs["static_q48_policy_artifact"] = static_q468.serialize_static_rht_q48_policy(wrong_h0)
+        with pytest.raises(ValueError, match="Q48 policy differs"):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+        wrong_allocation = static_q468.build_static_rht_q48_policy(
+            fixture.candidate_scores.aggregate.d4.flip(0),
+            fixture.candidate_scores.aggregate.d8,
+            source_commit=fixture.source_commit_h0,
+            **common,
+        )
+        kwargs["static_q48_policy_artifact"] = static_q468.serialize_static_rht_q48_policy(
+            wrong_allocation
+        )
+        with pytest.raises(ValueError, match="deterministic P14739 reconstruction"):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+def test_final_stage_a_binding_rejects_core_binding_without_authorization() -> None:
+    with _binding_v3_fixture() as fixture:
+        core = resolver.build_stage_a_calibration_core_binding_artifact(**fixture.dependencies)
+    with pytest.raises(ValueError, match="kind or schema drifted"):
+        resolver.deserialize_stage_a_calibration_binding_artifact(core)
 
 
 def test_stage_a_binding_rejects_cross_profile_policy_swap() -> None:
@@ -896,7 +1569,7 @@ def test_stage_a_binding_rejects_cross_profile_policy_swap() -> None:
             "static_fisher_k29334_policy_artifact"
         ]
         with pytest.raises(ValueError, match="does not satisfy its frozen K29334 geometry"):
-            resolver.build_stage_a_calibration_binding_artifact(**dependencies)
+            resolver.build_stage_a_calibration_core_binding_artifact(**dependencies)
 
 
 @pytest.mark.parametrize(
@@ -979,7 +1652,7 @@ def test_stage_a_binding_rederives_every_comparator_policy_contract(
         policy = fixture.policies[static_q468.STATIC_Q468_MSE_METHOD]
         mutation(fixture, policy)
         with pytest.raises(ValueError, match=message):
-            resolver.build_stage_a_calibration_binding_artifact(**fixture.dependencies)
+            resolver.build_stage_a_calibration_core_binding_artifact(**fixture.dependencies)
 
 
 def test_stage_a_binding_rejects_incomplete_comparator_identity_manifest() -> None:
@@ -991,7 +1664,7 @@ def test_stage_a_binding_rejects_incomplete_comparator_identity_manifest() -> No
             "incomplete-comparator-identity-record-manifest"
         )
         with pytest.raises(ValueError, match="complete frozen identity"):
-            resolver.build_stage_a_calibration_binding_artifact(**fixture.dependencies)
+            resolver.build_stage_a_calibration_core_binding_artifact(**fixture.dependencies)
 
 
 def test_raw_content_and_unknown_fields_fail_closed() -> None:
@@ -1302,7 +1975,9 @@ def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[st
     binding_path = tmp_path / "binding.json"
     binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
 
-    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
     with patch.object(
         resolver,
         "deserialize_stage_a_calibration_binding_artifact",
@@ -1356,7 +2031,9 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
         REVISIONS["humaneval_plus"],
     ]
 
-    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
     with patch.object(
         resolver,
         "deserialize_stage_a_calibration_binding_artifact",
@@ -1396,7 +2073,9 @@ def test_stage_a_promotion_requires_the_verified_binding_artifact() -> None:
     with pytest.raises(ValueError, match="promotion requires a verified calibration binding"):
         resolver.promote_candidate(candidate, candidate_file_sha256=candidate_hash)
 
-    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
     with patch.object(
         resolver,
         "deserialize_stage_a_calibration_binding_artifact",
@@ -1414,7 +2093,9 @@ def test_stage_a_promotion_requires_the_verified_binding_artifact() -> None:
 def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() -> None:
     candidate = _build_candidate(_stage_a_source())
     candidate_hash = resolver.sha256_bytes(resolver.canonical_json_bytes(candidate))
-    verified = SimpleNamespace(binding=dict(FIXTURE_BINDING))
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
     with patch.object(
         resolver,
         "deserialize_stage_a_calibration_binding_artifact",
@@ -1475,7 +2156,10 @@ def test_frozen_stage_a_decoder_reauthenticates_promotion_records_and_binding() 
         patch.object(
             resolver,
             "deserialize_stage_a_calibration_binding_artifact",
-            return_value=SimpleNamespace(binding=wrong_binding),
+            return_value=SimpleNamespace(
+                binding=wrong_binding,
+                execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS),
+            ),
         ),
         pytest.raises(ValueError, match="differs from the verified calibration binding"),
     ):
@@ -1578,7 +2262,17 @@ def test_noncanonical_candidate_bytes_cannot_be_promoted(tmp_path: Path) -> None
     binding_path = tmp_path / "binding.json"
     binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
 
-    with pytest.raises(ValueError, match="not canonical resolver JSON"):
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        pytest.raises(ValueError, match="not canonical resolver JSON"),
+    ):
         resolver.main(
             [
                 "--phase",
@@ -1630,7 +2324,17 @@ def test_candidate_wrong_hash_cannot_be_promoted(tmp_path: Path) -> None:
     binding_path = tmp_path / "binding.json"
     binding_path.write_bytes(FIXTURE_BINDING_ARTIFACT)
 
-    with pytest.raises(ValueError, match="does not match explicit promotion hash"):
+    verified = SimpleNamespace(
+        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+    )
+    with (
+        patch.object(
+            resolver,
+            "deserialize_stage_a_calibration_binding_artifact",
+            return_value=verified,
+        ),
+        pytest.raises(ValueError, match="does not match explicit promotion hash"),
+    ):
         resolver.main(
             [
                 "--phase",
@@ -1639,6 +2343,76 @@ def test_candidate_wrong_hash_cannot_be_promoted(tmp_path: Path) -> None:
                 str(candidate_path),
                 "--output",
                 str(tmp_path / "frozen" / "identity.json"),
+                "--promote",
+                "--calibration-binding",
+                str(binding_path),
+                "--expected-candidate-sha256",
+                "0" * 64,
+            ]
+        )
+
+
+def test_stage_a_cli_verifies_binding_before_reading_identity_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path = tmp_path / "protected-stage-a-input.json"
+    input_path.write_bytes(b"must-not-be-read")
+    binding_path = tmp_path / "invalid-binding.json"
+    binding_path.write_bytes(b"not-a-binding")
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.resolve() == input_path.resolve():
+            raise AssertionError("Stage-A input was read before binding verification")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    with pytest.raises(ValueError, match="Stage-A calibration binding must be strict JSON"):
+        resolver.main(
+            [
+                "--phase",
+                "stage_a",
+                "--input",
+                str(input_path),
+                "--calibration-binding",
+                str(binding_path),
+                "--dry-run",
+                "--mbpp-revision",
+                resolver.MBPP_REVISION,
+                "--pg19-revision",
+                resolver.PG19_REVISION,
+                "--ruler-revision",
+                resolver.RULER_REVISION,
+                "--humaneval-plus-revision",
+                resolver.HUMANEVAL_PLUS_REVISION,
+            ]
+        )
+
+
+def test_stage_a_promotion_cli_verifies_binding_before_reading_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate_path = tmp_path / "protected-stage-a-candidate.json"
+    candidate_path.write_bytes(b"must-not-be-read")
+    binding_path = tmp_path / "invalid-binding.json"
+    binding_path.write_bytes(b"not-a-binding")
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.resolve() == candidate_path.resolve():
+            raise AssertionError("Stage-A candidate was read before binding verification")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    with pytest.raises(ValueError, match="Stage-A calibration binding must be strict JSON"):
+        resolver.main(
+            [
+                "--phase",
+                "stage_a",
+                "--input",
+                str(candidate_path),
+                "--output",
+                str(tmp_path / "frozen-stage-a-identity.json"),
                 "--promote",
                 "--calibration-binding",
                 str(binding_path),

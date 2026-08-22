@@ -2909,6 +2909,16 @@ def _capture_identity_input_with_tokens(
         raise ValueError("Stage A requires a frozen calibration binding")
     if phase == "calibration" and calibration_binding is not None:
         raise ValueError("calibration capture forbids a Stage-A binding")
+    normalized_calibration_binding: dict[str, str] | None = None
+    authorized_execution_bindings: dict[str, str] | None = None
+    if phase == "stage_a":
+        if not isinstance(calibration_binding, bytes):
+            raise ValueError("Stage-A calibration binding must be a verified artifact byte string")
+        verified_calibration_binding = resolver.deserialize_stage_a_calibration_binding_artifact(
+            calibration_binding
+        )
+        normalized_calibration_binding = dict(verified_calibration_binding.binding)
+        authorized_execution_bindings = dict(verified_calibration_binding.execution_bindings)
 
     if runtime_authentication_context is None:
         runtime_provider = getattr(source, "runtime_authentication_context", None)
@@ -2935,6 +2945,13 @@ def _capture_identity_input_with_tokens(
         runtime_context=runtime_context,
         **authentication_kwargs,
     )
+    if (
+        authorized_execution_bindings is not None
+        and dict(authentication.bindings) != authorized_execution_bindings
+    ):
+        if sys.modules.get(_CALIBRATION_RUNNER_MODULE_NAME) is authentication.runner:
+            sys.modules.pop(_CALIBRATION_RUNNER_MODULE_NAME, None)
+        raise ValueError("Stage-A execution artifacts differ from the calibration authorization")
     try:
         before = _validate_heads(source.source_heads(), context="pre-capture")
         material = source.tokenizer_material()
@@ -3005,7 +3022,8 @@ def _capture_identity_input_with_tokens(
             "model_weights_loaded": False,
         }
         if phase == "stage_a":
-            result["calibration_binding"] = _normalize_calibration_binding(calibration_binding)
+            assert normalized_calibration_binding is not None
+            result["calibration_binding"] = normalized_calibration_binding
         expected_revisions = dict(resolver.FROZEN_DATASET_REVISIONS)
         resolver.build_candidate(
             result,

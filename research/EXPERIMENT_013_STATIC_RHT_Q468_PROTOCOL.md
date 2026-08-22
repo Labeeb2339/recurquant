@@ -1084,6 +1084,71 @@ result, quality result, deployment result, novelty result, or breakthrough
 claim. No H0 tag, identity recapture, promotion, model staging, protected run,
 or result publication is authorized by this working copy.
 
+Twenty-first pre-H0 custody amendment candidate: 2026-08-23. The passing full
+calibration directory now emits
+`stage-a-calibration-core-binding.json`, a schema-v3 core binding that is part
+of the runner-v9 report's artifact inventory but is deliberately ineligible
+for Stage A. After that directory and the earlier Fisher H=1 smoke directory
+are finalized, the metadata-only `authorize-stage-a-calibration` procedure
+requires their exact closed inventories, explicit SHA-256 values for the full
+report, smoke report, capture receipt, frozen calibration identity, repository
+source manifest, calibration-runtime manifest, and model-file manifest, and
+the explicit H0. It accepts no model root, protected input, or CUDA option.
+
+The resulting schema-v1 authorization artifact embeds and reauthenticates the
+full runner-v9 report, launcher-finalized capture receipt, Fisher smoke report
+and marker, calibration completion marker, core binding, Q48 convenience
+policy, and the exact source/runtime/model manifest bytes. The full report
+must bind the exact hashes of all nine calibration outputs. Its repository
+receipt uses the source manifest's canonical self-digest, which is distinct
+from the frozen identity input's source-manifest SHA-256. Its identity,
+repository, runtime, model-manifest, Parquet-manifest, capture-receipt, and
+smoke-report commitments must agree with those embedded manifests and the
+frozen identity.
+
+Authorization rederives the exact six calibration counters from the frozen
+records and Fisher boundaries; the frozen query-energy constants; the exact
+model receipt; the runtime-distribution and complete-file counts; Torch,
+CUDA, GPU and reviewed-adapter receipts; full/smoke identity parity; the smoke-
+only stability receipt; and the full split-half stability record. The capture
+receipt's source hash must equal the H0 source-manifest entry, its excluded
+modules must be exact, and all seven sorted critical-module origins must match
+runtime-tree bytes and distribution RECORD ownership. The Q48 convenience
+policy must share the core policies' H0 and byte-equal deterministic
+reconstruction from the bound candidate scores at exact `P=14739`; a
+self-consistent alternative allocation is rejected. The procedure atomically
+publishes that authorization, a schema-v4 Stage-A binding containing it, and a
+distinct completion marker in a new directory; it never alters the finalized
+calibration or smoke directories.
+
+Only the schema-v4 binding is Stage-A eligible. Its resolved nine-field
+identity binding includes the authorization artifact SHA-256 in addition to
+the eight calibration dependency hashes. Identity capture and promotion
+strictly deserialize that receipt. Stage-A capture verifies it before runtime,
+source, tokenizer, or dataset providers are called, and both capture and the
+resolver require the authorization execution bindings to equal the Stage-A
+identity input's execution bindings. The non-promotion resolver CLI verifies
+the binding before reading `--input`; the promotion CLI does the same before
+reading candidate bytes. The Stage-A screen compares the
+authorization H0 and execution bindings with the Stage-A source and identity
+immediately after binding verification and before any model-root access.
+Opaque input staging binds the complete schema-v4 binding file; launcher
+preflight, reservation, seal, and final result evidence continue to bind that
+complete file hash. A schema-v3 core binding, missing authorization, changed
+marker, changed prerequisite, changed output byte, cross-chain execution
+binding, or rewrapped dependency fails closed.
+
+This amendment does not create a launcher-finalized provenance receipt for the
+later live Stage-A identity-capture operation itself. That separate receipt
+must bind the Stage-A capture child, source/runtime/schema-v4 binding,
+postconditions, cache reauthentication, owned scratch/pycache cleanup, and
+host-side no-overwrite publication before live Stage-A identity capture or
+promotion is authorized. Therefore the next permitted operation after a green
+metadata-only test audit is creation and verification of the post-calibration
+authorization and schema-v4 binding; no H0 tag, live Stage-A identity capture,
+promotion, model staging, Stage-A run, protected read, or result publication is
+authorized by this working-copy amendment.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -1593,12 +1658,15 @@ repeats it inside `_official_main`.
 Passing that precondition does not authenticate any receipt body; phase-scoped
 point-of-use verification remains mandatory.
 
-Stage-A resolution additionally consumes one strictly decoded
-`experiment-013-stage-a-calibration-binding-v3` artifact. The resolved Stage-A
-identity binds these eight dependency files directly, not merely semantic IDs
-copied from a caller:
+Stage-A resolution consumes one strictly decoded
+`experiment-013-stage-a-calibration-binding-v4` artifact. That artifact embeds
+the post-calibration authorization receipt; the receipt embeds the schema-v3
+core binding and its calibration dependencies. The resolved Stage-A identity
+binds the authorization artifact plus these eight dependency files directly,
+not merely semantic IDs copied from a caller:
 
 ```text
+calibration_authorization_file_sha256
 calibration_identity_file_sha256
 calibration_score_artifact_file_sha256
 split_half_stability_artifact_file_sha256
@@ -1612,19 +1680,21 @@ static_mse_k29334_policy_file_sha256
 The comparator-score dependency is one strict canonical artifact containing
 exactly the unweighted-MSE and diagonal empirical-Fisher H=1 aggregates, their
 selector-specific sequence manifests, and their exact K29334 allocations. It
-is combined only to keep the dependency inventory at eight files; the two
+keeps the calibration dependency inventory at eight files; the two
 profiles retain separate score hashes, position manifests, and policy
 bindings. A policy file without its matching embedded comparator scores is not
 verifiable and fails closed.
 
 The static Q4/Q8 comparator is deterministically reconstructed inside the
 authenticated Stage-A evaluator from the bound candidate score artifact at
-the frozen `P=14739` promotion count. A separately published convenience copy
-is not a ninth trusted dependency and may not be accepted without exact
-reconstruction equality.
+the frozen `P=14739` promotion count. Its separately published convenience
+copy is authenticated as a full-calibration output by the authorization
+receipt, but it is not supplied to Stage-A method reconstruction and may not
+replace reconstruction from the bound scores.
 
-Changing any byte in any dependency requires a new binding artifact and a new
-Stage-A identity candidate.
+Changing any byte in the finalized calibration, smoke, or capture chain
+requires a new authorization, schema-v4 binding, and Stage-A identity
+candidate.
 
 ### Stage A: multi-workload falsification
 

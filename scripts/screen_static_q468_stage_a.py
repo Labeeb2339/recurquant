@@ -15,7 +15,6 @@ selector-superiority result, a deployment result, or a breakthrough claim.
 from __future__ import annotations
 
 import argparse
-import base64
 import contextlib
 import dataclasses
 import hashlib
@@ -80,7 +79,7 @@ IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
 EXECUTION_ARTIFACT_KIND: Final = "recurquant_experiment013_stage_a_execution"
 EXECUTION_ARTIFACT_SCHEMA: Final = 3
 IDENTITY_SCHEMA_VERSION: Final = 5
-BINDING_SCHEMA_VERSION: Final = 3
+BINDING_SCHEMA_VERSION: Final = 4
 ONE_RUN_MARKER: Final = "RecurQuant-One-Run: experiment013-stage-a-v1"
 CLAIM_BOUNDARY: Final = (
     "Stage A is a falsification screen only. Passage is not confirmation, selector "
@@ -207,6 +206,7 @@ BINDING_DEPENDENCY_NAMES: Final = frozenset(
 )
 BINDING_FIELDS: Final = frozenset(
     {
+        "calibration_authorization_file_sha256",
         "calibration_identity_file_sha256",
         "calibration_score_artifact_file_sha256",
         "comparator_score_artifact_file_sha256",
@@ -801,34 +801,20 @@ def _load_exact_module(
     return module
 
 
-def _decode_binding_dependencies(data: bytes) -> dict[str, bytes]:
-    root = _strict_json(data, context="Stage-A calibration binding")
-    if root.get("schema_version") != BINDING_SCHEMA_VERSION:
-        raise StageAError("Stage-A calibration binding is not schema v3")
-    evidence = root.get("evidence")
-    if not isinstance(evidence, dict):
-        raise StageAError("Stage-A calibration binding evidence is missing")
-    encoded = evidence.get("dependencies_base64")
-    hashes = evidence.get("dependency_file_sha256")
-    if not isinstance(encoded, dict) or not isinstance(hashes, dict):
-        raise StageAError("Stage-A calibration binding dependencies are missing")
-    _exact_fields(encoded, BINDING_DEPENDENCY_NAMES, context="binding dependencies")
-    _exact_fields(hashes, BINDING_DEPENDENCY_NAMES, context="binding dependency hashes")
+def _decode_binding_dependencies(binding: object) -> dict[str, bytes]:
+    """Use only dependencies released by the resolver's v4 authorization verifier."""
+
+    raw = getattr(binding, "calibration_dependencies", None)
+    if not isinstance(raw, Mapping) or set(raw) != BINDING_DEPENDENCY_NAMES:
+        raise StageAError(
+            "Stage-A calibration binding did not release the exact authorized dependencies"
+        )
     result: dict[str, bytes] = {}
     for name in sorted(BINDING_DEPENDENCY_NAMES):
-        value = encoded[name]
-        if not isinstance(value, str):
-            raise StageAError(f"binding dependency {name} is not base64 text")
-        try:
-            decoded = base64.b64decode(value, validate=True)
-        except ValueError as error:
-            raise StageAError(f"binding dependency {name} is not canonical base64") from error
-        if base64.b64encode(decoded).decode("ascii") != value:
-            raise StageAError(f"binding dependency {name} base64 is not canonical")
-        expected = _require_sha256(hashes[name], context=f"binding dependency {name} hash")
-        if sha256_bytes(decoded) != expected:
-            raise StageAError(f"binding dependency {name} bytes differ from their hash")
-        result[name] = decoded
+        value = raw[name]
+        if not isinstance(value, bytes):
+            raise StageAError(f"authorized calibration dependency {name} is not bytes")
+        result[name] = value
     return result
 
 
@@ -854,7 +840,7 @@ def reconstruct_stage_a_methods(
     """Reconstruct uniform and Q48 policies only from bound candidate scores."""
 
     if set(dependency_bytes) != BINDING_DEPENDENCY_NAMES:
-        raise StageAError("Stage-A reconstruction requires the exact eight dependencies")
+        raise StageAError("Stage-A reconstruction requires the exact authorized dependencies")
     static = importlib.import_module("recurquant.static_q468")
     calibration = importlib.import_module("recurquant.static_q468_calibration")
     scores = calibration.deserialize_calibration_score_artifact(
@@ -3422,13 +3408,24 @@ def authenticate_production(
         raise StageAError("source verifier returned a different H0 manifest")
     _assert_tracked_identity_bytes(config, identity_bytes)
     binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
-    dependencies = _decode_binding_dependencies(binding_bytes)
+    if dict(binding.execution_bindings) != dict(bootstrap.execution_bindings):
+        raise StageAError(
+            "calibration authorization and Stage-A identity bind different execution artifacts"
+        )
+    if binding.source_commit != source_bootstrap["source_commit"]:
+        raise StageAError("calibration authorization and Stage-A source manifest bind different H0")
+    dependencies = _decode_binding_dependencies(binding)
     if any(
         sha256_bytes(dependencies[name])
         != bootstrap.calibration_binding[_binding_field_for_dependency(name)]
         for name in BINDING_DEPENDENCY_NAMES
     ):
-        raise StageAError("identity v5 eight-field binding differs from embedded dependencies")
+        raise StageAError("identity v5 binding differs from authorized calibration dependencies")
+    if (
+        binding.authorization_file_sha256
+        != bootstrap.calibration_binding["calibration_authorization_file_sha256"]
+    ):
+        raise StageAError("identity v5 differs from the calibration authorization receipt")
     identity = resolver.deserialize_frozen_stage_a_identity_artifact(
         identity_bytes,
         calibration_binding_artifact=binding_bytes,

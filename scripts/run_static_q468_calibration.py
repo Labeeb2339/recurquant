@@ -21,6 +21,7 @@ import csv
 import hashlib
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import math
 import os
@@ -177,9 +178,16 @@ K29334_FILENAME: Final = "static-k29334-policy.json"
 MSE_K29334_FILENAME: Final = "static-mse-k29334-policy.json"
 FISHER_K29334_FILENAME: Final = "static-diagonal-fisher-h1-k29334-policy.json"
 Q48_FILENAME: Final = "static-q48-p14739-policy.json"
+CORE_BINDING_FILENAME: Final = "stage-a-calibration-core-binding.json"
 BINDING_FILENAME: Final = "stage-a-calibration-binding.json"
+AUTHORIZATION_FILENAME: Final = "stage-a-calibration-authorization.json"
+AUTHORIZATION_COMPLETE_FILENAME: Final = "STAGE_A_CALIBRATION_AUTHORIZED"
+AUTHORIZATION_COMPLETE_BYTES: Final = (
+    b"recurquant-experiment013-stage-a-calibration-authorized-v1\n"
+)
 REPORT_FILENAME: Final = "calibration-run-report.json"
 COMPLETE_FILENAME: Final = "CALIBRATION_COMPLETE"
+CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-complete-v1\n"
 FISHER_SMOKE_REPORT_FILENAME: Final = "fisher-h1-smoke-report.json"
 FISHER_SMOKE_COMPLETE_FILENAME: Final = "FISHER_H1_SMOKE_COMPLETE"
 FISHER_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
@@ -1057,7 +1065,7 @@ class CalibrationArtifacts:
     static_mse_k29334: bytes
     static_fisher_k29334: bytes
     static_q48: bytes
-    stage_a_binding: bytes
+    calibration_core_binding: bytes
     stability: Mapping[str, object]
 
 
@@ -5464,7 +5472,7 @@ class Experiment013Backend:
         deserialize_static_rht_q468_policy(mse_k29334_bytes)
         deserialize_static_rht_q468_policy(fisher_k29334_bytes)
         deserialize_static_rht_q48_policy(q48_bytes)
-        binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
+        binding_bytes = resolver.build_stage_a_calibration_core_binding_artifact(
             frozen_identity_artifact=identity.artifact_bytes,
             calibration_score_artifact=score_bytes,
             split_half_stability_artifact=split_bytes,
@@ -5474,7 +5482,7 @@ class Experiment013Backend:
             static_fisher_k29334_policy_artifact=fisher_k29334_bytes,
             static_mse_k29334_policy_artifact=mse_k29334_bytes,
         )
-        resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
+        resolver.deserialize_stage_a_calibration_core_binding_artifact(binding_bytes)
         return FinalizationResult(
             passed=True,
             stability=stability,
@@ -5487,7 +5495,7 @@ class Experiment013Backend:
                 static_mse_k29334=mse_k29334_bytes,
                 static_fisher_k29334=fisher_k29334_bytes,
                 static_q48=q48_bytes,
-                stage_a_binding=binding_bytes,
+                calibration_core_binding=binding_bytes,
                 stability=stability,
             ),
         )
@@ -6032,7 +6040,11 @@ def _publish_output_directory(
     *,
     complete_filename: str = COMPLETE_FILENAME,
 ) -> None:
-    if complete_filename not in {COMPLETE_FILENAME, FISHER_SMOKE_COMPLETE_FILENAME}:
+    if complete_filename not in {
+        COMPLETE_FILENAME,
+        FISHER_SMOKE_COMPLETE_FILENAME,
+        AUTHORIZATION_COMPLETE_FILENAME,
+    }:
         raise ValueError("completion marker is not a frozen Experiment 013 marker")
     resolved = Path(os.path.abspath(output_dir))
     parent = resolved.parent
@@ -6042,11 +6054,17 @@ def _publish_output_directory(
     prefix = f".{resolved.name}.staging-"
     staging = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
     owned_staging = True
-    # The Stage-A binding and completion marker are deliberately last. The
+    # Custody receipts and the completion marker are deliberately last. The
     # public directory appears only after every dependency is durable.
-    ordered = [name for name in sorted(payloads) if name not in {REPORT_FILENAME, BINDING_FILENAME}]
+    ordered = [
+        name
+        for name in sorted(payloads)
+        if name not in {REPORT_FILENAME, AUTHORIZATION_FILENAME, BINDING_FILENAME}
+    ]
     if REPORT_FILENAME in payloads:
         ordered.append(REPORT_FILENAME)
+    if AUTHORIZATION_FILENAME in payloads:
+        ordered.append(AUTHORIZATION_FILENAME)
     if BINDING_FILENAME in payloads:
         ordered.append(BINDING_FILENAME)
     try:
@@ -6054,11 +6072,11 @@ def _publish_output_directory(
             _atomic_publish_new(staging / name, payloads[name])
         _atomic_publish_new(
             staging / complete_filename,
-            (
-                FISHER_SMOKE_COMPLETE_BYTES
-                if complete_filename == FISHER_SMOKE_COMPLETE_FILENAME
-                else b"recurquant-experiment013-calibration-complete-v1\n"
-            ),
+            {
+                COMPLETE_FILENAME: CALIBRATION_COMPLETE_BYTES,
+                FISHER_SMOKE_COMPLETE_FILENAME: FISHER_SMOKE_COMPLETE_BYTES,
+                AUTHORIZATION_COMPLETE_FILENAME: AUTHORIZATION_COMPLETE_BYTES,
+            }[complete_filename],
         )
         if resolved.exists():
             raise FileExistsError(f"refusing to overwrite existing calibration output: {resolved}")
@@ -6446,7 +6464,7 @@ def run_calibration(
         MSE_K29334_FILENAME: artifacts.static_mse_k29334,
         FISHER_K29334_FILENAME: artifacts.static_fisher_k29334,
         Q48_FILENAME: artifacts.static_q48,
-        BINDING_FILENAME: artifacts.stage_a_binding,
+        CORE_BINDING_FILENAME: artifacts.calibration_core_binding,
     }
     report = _report_bytes(
         status="passed",
@@ -7285,10 +7303,253 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _read_exact_regular_directory(
+    directory: Path,
+    *,
+    expected_filenames: set[str],
+    context: str,
+) -> dict[str, bytes]:
+    root = Path(os.path.abspath(directory))
+    try:
+        before = root.lstat()
+    except OSError as exc:
+        raise CalibrationRunError(f"{context} is unavailable") from exc
+    if _is_link_or_reparse(root) or not stat.S_ISDIR(before.st_mode):
+        raise CalibrationRunError(f"{context} must be a regular non-link directory")
+    try:
+        names = {item.name for item in root.iterdir()}
+    except OSError as exc:
+        raise CalibrationRunError(f"cannot enumerate {context}") from exc
+    if names != expected_filenames:
+        raise CalibrationRunError(
+            f"{context} inventory drifted; missing={sorted(expected_filenames - names)}, "
+            f"extra={sorted(names - expected_filenames)}"
+        )
+    payloads = {
+        name: _read_stable_regular_bytes(root / name, context=f"{context} {name}")
+        for name in sorted(expected_filenames)
+    }
+    try:
+        after = root.lstat()
+        repeated_names = {item.name for item in root.iterdir()}
+    except OSError as exc:
+        raise CalibrationRunError(f"cannot reauthenticate {context}") from exc
+    if (
+        _is_link_or_reparse(root)
+        or not stat.S_ISDIR(after.st_mode)
+        or before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or names != repeated_names
+    ):
+        raise CalibrationRunError(f"{context} changed while it was authenticated")
+    return payloads
+
+
+def _load_authorization_identity_resolver() -> ModuleType:
+    """Load the metadata-only resolver used to verify the finalized custody chain."""
+
+    module_name = "_recurquant_experiment013_identity_resolver_for_authorization"
+    if module_name in sys.modules:
+        raise CalibrationRunError("calibration authorization resolver was already loaded")
+    spec = importlib.util.spec_from_file_location(module_name, IDENTITY_RESOLVER_PATH)
+    if spec is None or spec.loader is None:
+        raise CalibrationRunError("cannot construct the calibration authorization resolver")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def authorize_stage_a_calibration(
+    *,
+    calibration_output_dir: Path,
+    fisher_h1_smoke_output_dir: Path,
+    capture_provenance_receipt_path: Path,
+    expected_capture_provenance_receipt_sha256: str,
+    frozen_identity_path: Path,
+    expected_frozen_identity_sha256: str,
+    repository_source_manifest_path: Path,
+    expected_repository_source_manifest_sha256: str,
+    runtime_manifest_path: Path,
+    expected_runtime_manifest_sha256: str,
+    model_file_manifest_path: Path,
+    expected_model_file_manifest_sha256: str,
+    expected_full_run_report_sha256: str,
+    expected_fisher_h1_smoke_report_sha256: str,
+    source_commit: str,
+    output_dir: Path,
+    identity_resolver: Any | None = None,
+) -> dict[str, object]:
+    """Publish the post-calibration receipt and only Stage-A-eligible binding."""
+
+    expected_source_commit = _git_revision(source_commit, context="authorization H0")
+    expected_full_report = _sha256(
+        expected_full_run_report_sha256,
+        context="expected full calibration report SHA-256",
+    )
+    expected_smoke_report = _sha256(
+        expected_fisher_h1_smoke_report_sha256,
+        context="expected Fisher H=1 smoke report SHA-256",
+    )
+    expected_receipt = _sha256(
+        expected_capture_provenance_receipt_sha256,
+        context="expected capture provenance receipt SHA-256",
+    )
+    expected_identity = _sha256(
+        expected_frozen_identity_sha256,
+        context="expected frozen calibration identity SHA-256",
+    )
+    expected_repository_source_manifest = _sha256(
+        expected_repository_source_manifest_sha256,
+        context="expected repository source manifest SHA-256",
+    )
+    expected_runtime_manifest = _sha256(
+        expected_runtime_manifest_sha256,
+        context="expected calibration runtime manifest SHA-256",
+    )
+    expected_model_manifest = _sha256(
+        expected_model_file_manifest_sha256,
+        context="expected model file manifest SHA-256",
+    )
+    full_filenames = {
+        SCORE_FILENAME,
+        COMPARATOR_SCORE_FILENAME,
+        SPLIT_FILENAME,
+        K27030_FILENAME,
+        K29334_FILENAME,
+        MSE_K29334_FILENAME,
+        FISHER_K29334_FILENAME,
+        Q48_FILENAME,
+        CORE_BINDING_FILENAME,
+        REPORT_FILENAME,
+        COMPLETE_FILENAME,
+    }
+    full = _read_exact_regular_directory(
+        calibration_output_dir,
+        expected_filenames=full_filenames,
+        context="finalized full calibration output",
+    )
+    smoke = _read_exact_regular_directory(
+        fisher_h1_smoke_output_dir,
+        expected_filenames={FISHER_SMOKE_REPORT_FILENAME, FISHER_SMOKE_COMPLETE_FILENAME},
+        context="finalized Fisher H=1 smoke output",
+    )
+    receipt_bytes = _read_stable_regular_bytes(
+        capture_provenance_receipt_path,
+        context="finalized calibration capture provenance receipt",
+    )
+    frozen_identity_bytes = _read_stable_regular_bytes(
+        frozen_identity_path,
+        context="frozen calibration identity for authorization",
+    )
+    repository_source_manifest_bytes = _read_stable_regular_bytes(
+        repository_source_manifest_path,
+        context="repository source manifest for authorization",
+    )
+    runtime_manifest_bytes = _read_stable_regular_bytes(
+        runtime_manifest_path,
+        context="calibration runtime manifest for authorization",
+    )
+    model_file_manifest_bytes = _read_stable_regular_bytes(
+        model_file_manifest_path,
+        context="model file manifest for authorization",
+    )
+    observed = {
+        "capture provenance receipt": (sha256_bytes(receipt_bytes), expected_receipt),
+        "frozen calibration identity": (sha256_bytes(frozen_identity_bytes), expected_identity),
+        "repository source manifest": (
+            sha256_bytes(repository_source_manifest_bytes),
+            expected_repository_source_manifest,
+        ),
+        "calibration runtime manifest": (
+            sha256_bytes(runtime_manifest_bytes),
+            expected_runtime_manifest,
+        ),
+        "model file manifest": (
+            sha256_bytes(model_file_manifest_bytes),
+            expected_model_manifest,
+        ),
+        "full calibration report": (sha256_bytes(full[REPORT_FILENAME]), expected_full_report),
+        "Fisher H=1 smoke report": (
+            sha256_bytes(smoke[FISHER_SMOKE_REPORT_FILENAME]),
+            expected_smoke_report,
+        ),
+    }
+    for name, (actual, expected) in observed.items():
+        if actual != expected:
+            raise CalibrationRunError(f"{name} differs from its explicit SHA-256")
+
+    owned_resolver = identity_resolver is None
+    resolver = _load_authorization_identity_resolver() if owned_resolver else identity_resolver
+    try:
+        core = resolver.deserialize_stage_a_calibration_core_binding_artifact(
+            full[CORE_BINDING_FILENAME]
+        )
+        embedded_identity = core.calibration_dependencies["frozen_identity_artifact"]
+        if embedded_identity != frozen_identity_bytes:
+            raise CalibrationRunError(
+                "calibration core binding embeds a different frozen calibration identity"
+            )
+        authorization = resolver.build_stage_a_calibration_authorization_artifact(
+            calibration_run_report=full[REPORT_FILENAME],
+            calibration_complete_marker=full[COMPLETE_FILENAME],
+            capture_provenance_receipt=receipt_bytes,
+            fisher_h1_smoke_report=smoke[FISHER_SMOKE_REPORT_FILENAME],
+            fisher_h1_smoke_complete_marker=smoke[FISHER_SMOKE_COMPLETE_FILENAME],
+            calibration_core_binding_artifact=full[CORE_BINDING_FILENAME],
+            calibration_runtime_manifest=runtime_manifest_bytes,
+            model_file_manifest=model_file_manifest_bytes,
+            repository_source_manifest=repository_source_manifest_bytes,
+            static_q48_policy_artifact=full[Q48_FILENAME],
+        )
+        verified_authorization = resolver.deserialize_stage_a_calibration_authorization_artifact(
+            authorization
+        )
+        if verified_authorization.source_commit != expected_source_commit:
+            raise CalibrationRunError("calibration authorization differs from explicit H0")
+        binding = resolver.build_stage_a_calibration_binding_artifact(
+            calibration_authorization_artifact=authorization
+        )
+        verified_binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding)
+        if verified_binding.authorization_file_sha256 != sha256_bytes(authorization):
+            raise CalibrationRunError("Stage-A binding lost its authorization dependency")
+    except CalibrationRunError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CalibrationRunError(str(exc)) from exc
+    finally:
+        if owned_resolver:
+            sys.modules.pop(resolver.__name__, None)
+
+    _publish_output_directory(
+        output_dir,
+        {
+            AUTHORIZATION_FILENAME: authorization,
+            BINDING_FILENAME: binding,
+        },
+        complete_filename=AUTHORIZATION_COMPLETE_FILENAME,
+    )
+    return {
+        "artifact_sha256": {
+            AUTHORIZATION_FILENAME: sha256_bytes(authorization),
+            BINDING_FILENAME: sha256_bytes(binding),
+        },
+        "authorized_calibration_output_dir": str(Path(calibration_output_dir).resolve()),
+        "output_dir": str(Path(output_dir).resolve()),
+        "source_commit": expected_source_commit,
+        "status": "authorized_for_stage_a",
+    }
+
+
 def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
     if not arguments or arguments[0] not in {
         "capture-source-manifest",
         "capture-runtime-manifest",
+        "authorize-stage-a-calibration",
         "capture-model-manifest",
         "prepare-runtime",
         "stage-model",
@@ -7302,7 +7563,27 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         prog=f"{Path(__file__).name} {command}",
         allow_abbrev=False,
     )
-    if command == "prepare-runtime":
+    if command == "authorize-stage-a-calibration":
+        parser.add_argument("--calibration-output-dir", required=True, type=Path)
+        parser.add_argument("--fisher-h1-smoke-output-dir", required=True, type=Path)
+        parser.add_argument("--capture-provenance-receipt", required=True, type=Path)
+        parser.add_argument(
+            "--expected-capture-provenance-receipt-sha256",
+            required=True,
+        )
+        parser.add_argument("--frozen-identity", required=True, type=Path)
+        parser.add_argument("--expected-frozen-identity-sha256", required=True)
+        parser.add_argument("--repository-source-manifest", required=True, type=Path)
+        parser.add_argument("--expected-repository-source-manifest-sha256", required=True)
+        parser.add_argument("--runtime-manifest", required=True, type=Path)
+        parser.add_argument("--expected-runtime-manifest-sha256", required=True)
+        parser.add_argument("--model-file-manifest", required=True, type=Path)
+        parser.add_argument("--expected-model-file-manifest-sha256", required=True)
+        parser.add_argument("--expected-full-run-report-sha256", required=True)
+        parser.add_argument("--expected-fisher-h1-smoke-report-sha256", required=True)
+        parser.add_argument("--source-commit", required=True)
+        parser.add_argument("--output-dir", required=True, type=Path)
+    elif command == "prepare-runtime":
         parser.add_argument("--git-executable", required=True, type=Path)
         parser.add_argument("--source-python", required=True, type=Path)
         parser.add_argument("--requirements", required=True, type=Path)
@@ -7370,6 +7651,31 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         parser.add_argument("--revision", required=True)
         parser.add_argument("--transformers-version", required=True)
     args = parser.parse_args(arguments[1:])
+    if command == "authorize-stage-a-calibration":
+        details = authorize_stage_a_calibration(
+            calibration_output_dir=args.calibration_output_dir,
+            fisher_h1_smoke_output_dir=args.fisher_h1_smoke_output_dir,
+            capture_provenance_receipt_path=args.capture_provenance_receipt,
+            expected_capture_provenance_receipt_sha256=(
+                args.expected_capture_provenance_receipt_sha256
+            ),
+            frozen_identity_path=args.frozen_identity,
+            expected_frozen_identity_sha256=args.expected_frozen_identity_sha256,
+            repository_source_manifest_path=args.repository_source_manifest,
+            expected_repository_source_manifest_sha256=(
+                args.expected_repository_source_manifest_sha256
+            ),
+            runtime_manifest_path=args.runtime_manifest,
+            expected_runtime_manifest_sha256=args.expected_runtime_manifest_sha256,
+            model_file_manifest_path=args.model_file_manifest,
+            expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
+            expected_full_run_report_sha256=args.expected_full_run_report_sha256,
+            expected_fisher_h1_smoke_report_sha256=(args.expected_fisher_h1_smoke_report_sha256),
+            source_commit=args.source_commit,
+            output_dir=args.output_dir,
+        )
+        print(canonical_json_bytes(details).decode("utf-8"), end="")
+        return 0
     if command == "prepare-runtime":
         details = prepare_calibration_runtime(
             git_executable_path=args.git_executable,
