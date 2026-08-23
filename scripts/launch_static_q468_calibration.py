@@ -35,7 +35,7 @@ BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v12"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 3
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
@@ -98,8 +98,10 @@ _WINDOWS_RESERVED_NAMES: Final = frozenset(
 )
 EXECUTABLE_CUSTODY_MODE: Final = "platform-held-launch-handles-v1"
 SEALED_LAUNCH_POLICY: Final = {
-    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
-    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
+    "cache_confinement_mode": (
+        "private-scratch-plus-explicit-dataset-and-capture-hub-root-v2"
+    ),
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
     "executable_custody_mode": EXECUTABLE_CUSTODY_MODE,
@@ -2262,6 +2264,49 @@ def _verified_dataset_cache_root(
     return root
 
 
+def _verified_capture_hub_cache_root(dataset_cache_root: Path) -> Path:
+    """Authenticate the exact persistent Hub endpoint used only by capture children."""
+
+    cache = _verified_dataset_cache_root(dataset_cache_root, runtime_roots=())
+    candidate = cache / "hub"
+    _non_link_directory_identity_chain(candidate, context="capture Hub cache root")
+    root = _absolute_directory(candidate, context="capture Hub cache root")
+    if root.parent != cache:
+        raise SealedLaunchError("capture Hub cache root escaped the dataset cache root")
+    return root
+
+
+def _prepare_capture_hub_cache_root(dataset_cache_root: Path) -> Path:
+    """Create the fixed capture Hub endpoint without accepting a creation race."""
+
+    cache = _verified_dataset_cache_root(dataset_cache_root, runtime_roots=())
+    candidate = cache / "hub"
+    if not os.path.lexists(candidate):
+        try:
+            os.mkdir(candidate, mode=0o700)
+        except FileExistsError as exc:
+            raise SealedLaunchError(
+                "capture Hub cache root appeared during creation"
+            ) from exc
+        except OSError as exc:
+            raise SealedLaunchError("cannot create capture Hub cache root") from exc
+    return _verified_capture_hub_cache_root(cache)
+
+
+def _verify_capture_hub_cache_identity(
+    dataset_cache_root: Path,
+    *,
+    expected_identity: tuple[tuple[str, int, int, int], ...],
+) -> Path:
+    root = _verified_capture_hub_cache_root(dataset_cache_root)
+    if (
+        _non_link_directory_identity_chain(root, context="capture Hub cache root")
+        != expected_identity
+    ):
+        raise SealedLaunchError("capture Hub cache root identity changed")
+    return root
+
+
 def _non_link_directory_identity_chain(
     path: Path,
     *,
@@ -2400,13 +2445,16 @@ def _sealed_environment(
     *,
     scratch_directory: Path,
     dataset_cache_root: Path,
+    capture_profile: bool = False,
 ) -> dict[str, str]:
     scratch = _absolute_directory(scratch_directory, context="sealed scratch directory")
     cache = _verified_dataset_cache_root(dataset_cache_root, runtime_roots=())
     private_home = scratch / "private-home"
     xdg_cache = scratch / "xdg-cache"
     hf_home = scratch / "huggingface"
-    hf_hub_cache = hf_home / "hub"
+    hf_hub_cache = (
+        _verified_capture_hub_cache_root(cache) if capture_profile else hf_home / "hub"
+    )
     hf_assets_cache = hf_home / "assets"
     hf_xet_cache = hf_home / "xet"
     hf_modules_cache = hf_home / "modules"
@@ -2581,8 +2629,8 @@ _reserved = {
     *{"lpt" + str(i) for i in range(1, 10)},
 }
 _policy = {
-    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
-    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
+    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-and-capture-hub-root-v2",
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
     "executable_custody_mode": "platform-held-launch-handles-v1",
@@ -3024,7 +3072,7 @@ def _smoke(options):
             or type(receipt_root["capture_version"]) is not int
             or receipt_root["capture_version"] != 6
             or receipt_root["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v11"
+            != "experiment-013-static-q468-calibration-runner-v12"
             or receipt_root["phase"] != "calibration"
             or receipt_root["publication_contract"]
             != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
@@ -3047,7 +3095,7 @@ def _smoke(options):
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
             or evidence.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v11"
+            != "experiment-013-static-q468-calibration-runner-v12"
             or evidence.get("prerequisites") != {
                 "capture_provenance_receipt_file_sha256": receipt_sha256,
                 "fisher_h1_smoke_report_file_sha256": None,
@@ -3405,6 +3453,15 @@ _cache_root = _directory(_cache_raw, "dataset cache root")
 _cache_identity = _directory_chain(_cache_raw, "dataset cache root")
 _private_home = _scratch / "private-home"
 _hf_home = _scratch / "huggingface"
+if _capture_profile:
+    _hf_hub_raw = _cache_root / "hub"
+    _hf_hub_identity = _directory_chain(_hf_hub_raw, "capture Hub cache root")
+    _hf_hub_cache = _directory(_hf_hub_raw, "capture Hub cache root")
+    if _hf_hub_cache.parent != _cache_root:
+        _fail("capture Hub cache root escaped the dataset cache root")
+else:
+    _hf_hub_cache = _hf_home / "hub"
+    _hf_hub_identity = None
 _torch_home = _scratch / "torch"
 _datasets_cache = _cache_root / "datasets"
 _expected_environment = {
@@ -3415,7 +3472,7 @@ _expected_environment = {
     "HF_DATASETS_DOWNLOADED_DATASETS_PATH": str(_datasets_cache / "downloads"),
     "HF_DATASETS_EXTRACTED_DATASETS_PATH": str(_datasets_cache / "downloads" / "extracted"),
     "HF_HOME": str(_hf_home),
-    "HF_HUB_CACHE": str(_hf_home / "hub"),
+    "HF_HUB_CACHE": str(_hf_hub_cache),
     "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
     "HF_HUB_DISABLE_TELEMETRY": "1",
     "HF_HUB_DISABLE_UPDATE_CHECK": "1",
@@ -3425,7 +3482,7 @@ _expected_environment = {
     "HF_XET_CACHE": str(_hf_home / "xet"),
     "HOME": str(_private_home),
     "HUGGINGFACE_ASSETS_CACHE": str(_hf_home / "assets"),
-    "HUGGINGFACE_HUB_CACHE": str(_hf_home / "hub"),
+    "HUGGINGFACE_HUB_CACHE": str(_hf_hub_cache),
     "LANG": "C",
     "LC_ALL": "C",
     "PYTORCH_KERNEL_CACHE_PATH": str(_torch_home / "kernels"),
@@ -3549,6 +3606,20 @@ try:
     finally:
         _primary = _s.exception()
         _postcondition_failures = []
+        if _capture_profile:
+            try:
+                _repeated_hub_raw = _cache_root / "hub"
+                _repeated_hub_identity = _directory_chain(
+                    _repeated_hub_raw, "capture Hub cache root")
+                _repeated_hub = _directory(
+                    _repeated_hub_raw, "capture Hub cache root")
+                if (_repeated_hub.parent != _cache_root
+                        or _repeated_hub_identity != _hf_hub_identity):
+                    raise RuntimeError("capture Hub cache root identity changed")
+            except Exception as error:
+                _postcondition_failures.append(
+                    ("capture Hub cache root reauthentication", error)
+                )
         try:
             if any(_pycache.iterdir()):
                 raise RuntimeError("sealed pycache prefix changed during calibration")
@@ -3682,6 +3753,14 @@ def _launch_with_custody(
         dataset_cache_root,
         context="dataset cache root",
     )
+    capture_hub_cache_root: Path | None = None
+    capture_hub_cache_identity: tuple[tuple[str, int, int, int], ...] | None = None
+    if capture_profile:
+        capture_hub_cache_root = _prepare_capture_hub_cache_root(dataset_cache_root)
+        capture_hub_cache_identity = _non_link_directory_identity_chain(
+            capture_hub_cache_root,
+            context="capture Hub cache root",
+        )
     capture_output_snapshot: CaptureArtifactSnapshot | None = None
     capture_receipt_snapshot: CaptureArtifactSnapshot | None = None
     if capture_profile:
@@ -3749,6 +3828,7 @@ def _launch_with_custody(
             "env": _sealed_environment(
                 scratch_directory=scratch,
                 dataset_cache_root=dataset_cache_root,
+                capture_profile=capture_profile,
             ),
             "input": SEALED_BOOTSTRAP_BYTES,
         }
@@ -3761,6 +3841,17 @@ def _launch_with_custody(
         else:
             completed = subprocess.run(command, **run_arguments)
         child_returncode = int(completed.returncode)
+        if capture_profile:
+            assert capture_hub_cache_identity is not None
+            try:
+                _verify_capture_hub_cache_identity(
+                    dataset_cache_root,
+                    expected_identity=capture_hub_cache_identity,
+                )
+            except Exception as exc:
+                secondary_failures.append(
+                    ("capture Hub cache root immediate reauthentication", exc)
+                )
         try:
             _verify_empty_pycache(pycache)
         except Exception as exc:
@@ -3861,6 +3952,11 @@ def _launch_with_custody(
     if capture_profile and child_returncode == 0:
         assert capture_output_snapshot is not None
         assert capture_receipt_snapshot is not None
+        assert capture_hub_cache_identity is not None
+        _verify_capture_hub_cache_identity(
+            dataset_cache_root,
+            expected_identity=capture_hub_cache_identity,
+        )
         final_bindings, final_source, _runner_path = _verify_bound_artifacts(
             runner_options,
             runtime_manifest_path=args.runtime_manifest,
@@ -3943,6 +4039,10 @@ def _launch_with_custody(
             context=f"{capture_context} identity output",
             expect_absent=False,
         )
+        _verify_capture_hub_cache_identity(
+            dataset_cache_root,
+            expected_identity=capture_hub_cache_identity,
+        )
         _atomic_publish_capture_receipt(capture_receipt_snapshot, candidate)
         published_receipt = _revalidate_capture_artifact_snapshot(
             capture_receipt_snapshot,
@@ -3963,6 +4063,10 @@ def _launch_with_custody(
             source_manifest=source_manifest,
             phase=capture_phase,
             stage_a_binding_envelope=stage_a_binding_envelope,
+        )
+        _verify_capture_hub_cache_identity(
+            dataset_cache_root,
+            expected_identity=capture_hub_cache_identity,
         )
         post_publication_identity = _revalidate_capture_artifact_snapshot(
             capture_output_snapshot,

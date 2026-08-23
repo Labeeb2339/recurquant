@@ -1,10 +1,12 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound fifth replacement-H0 candidate. Calibration runner v11 and
-> runtime-manifest v6 now bind held executable custody around every sealed
-> launch; Stage-A runner v5 carries the finalized receipt through the one-run custody
-> chain. No replacement H0, identity recapture, protected execution, or quality
-> result has been authorized; not yet re-preregistered.**
+> **Status: unbound sixth replacement-H0 candidate. Calibration runner v12 adds
+> capture-only Torch-availability isolation and a fixed external Hub-cache
+> subroot while preserving runtime-manifest schema v6 and Stage-A runner v5.
+> The fifth replacement H0 was retired after its first sealed identity capture
+> failed closed. No identity was published or promoted, no model weight was
+> downloaded or opened, and no calibration or quality result exists; not yet
+> re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -22,7 +24,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current fifth replacement-H0 candidate amended: 2026-08-23
+Current sixth replacement-H0 candidate amended: 2026-08-23
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -1289,6 +1291,167 @@ authorize protected data access, model staging/loading, Fisher smoke,
 calibration, Stage-A execution, quality publication, deployment, novelty, or a
 breakthrough claim.
 
+Twenty-fourth replacement-H0 capture-isolation and RULER-custody amendment
+candidate: 2026-08-23. Source commit
+`fe88548ec58c4547456360d45fffdca3fba8ccf9` and tag
+`experiment013-h0-fe88548` became the fifth replacement H0 after their focused,
+full, and CI verification passed. A fresh repository-source manifest and a
+fresh runtime-manifest-v6 environment were bound to that H0. Its first official
+sealed calibration-identity capture then failed closed. Transformers 5.14.1
+used an availability path that imported Torch and its descendants during the
+tokenizer-only capture process; the existing postcondition detected those
+forbidden model/CUDA modules and rejected the run. Independently, the standard
+Hugging Face Hub cache layout created an internal snapshot-to-blob symbolic
+link under the launcher-owned scratch tree, so strict scratch cleanup also
+refused completion. These are capture-containment defects, not scientific
+results or infrastructure interruptions.
+
+The failed attempt published neither its calibration identity-input file nor
+its schema-v2 capture-provenance receipt. It created no candidate or frozen
+identity, no H1, no model root, no Fisher smoke or calibration artifact, and no
+quality result. No model weight was downloaded, opened, hashed, or loaded. The
+preserved incident scratch root is exactly
+`C:\Users\Labeeb\AppData\Local\Temp\recurquant-exp013-sealed-scratch-xw7c42_d`.
+Its observed Hub link was the dataset snapshot `README.md` pointing relatively
+to the corresponding content-addressed blob; the tree is retained as incident
+evidence and must not be adopted as an experimental cache or silently deleted
+by an official retry. The H0 commit, tag, source manifest, runtime manifest,
+failed command, absent outputs, and scratch root remain historical evidence,
+but H0 `fe88548ec58c4547456360d45fffdca3fba8ccf9` is retired and non-authorizing.
+It permits no retry, identity promotion, H1, model staging, protected access,
+Fisher smoke, calibration, or Stage-A execution.
+
+Calibration runner v12 repairs only the identity-capture boundary. Around the
+entire capture call it hides top-level `torch` from the pinned Transformers
+`importlib.util.find_spec` availability probe and installs an independent
+meta-path blocker that fails any real import of Torch or another forbidden
+model/CUDA module. The exact ordered meta-path is held in a mutation-rejecting
+scope with that blocker once at index zero. Guarded `__import__` and
+`_find_and_load` entrypoints reject an import before finder dispatch if the
+topology or either entrypoint changed, including a transient or self-removing
+preceding finder. Installed-distribution metadata is not hidden.
+Activation requires that the hidden module is not already loaded. The scoped
+`importlib.util.find_spec` replacement, guarded import entrypoints, exact
+meta-path topology must remain identity-equal throughout capture. All guarded
+import state must be restored exactly in `finally`, and every forbidden module
+must remain absent; preloading, a direct import attempt, policy mutation,
+restoration failure, or post-capture residue fails closed. This is not a general
+environment override: it applies only to the tokenizer-and-dataset identity-
+capture command. Model staging, Fisher smoke, calibration, and Stage A retain
+their ordinary authenticated Torch contract.
+
+The capture profile also assigns both Hub-cache environment variables to the
+single exact subroot `<authenticated --cache-root>/hub`. The outer launcher and
+stdlib-only bootstrap must derive and exact-compare that same absolute path.
+The explicit cache root and its ancestors remain subject to the existing
+non-redirected directory-identity checks. The link-bearing, content-addressed
+Hub cache is routed below that authenticated external `hub` endpoint rather
+than the owned scratch tree; its contents and link targets are not recursively
+custody-checked. `HF_HOME`, token state, assets, Xet, modules, ordinary home,
+and every other private cache remain under owned scratch and must still clean
+to empty. Ordinary calibration does not receive this capture-only Hub routing.
+The sealed bootstrap policy advances to
+`stdlib-only-exact-runner-and-capture-v3` and cache confinement to
+`private-scratch-plus-explicit-dataset-and-capture-hub-root-v2`.
+Runtime-manifest schema v6 is
+unchanged, but its exact launch-policy value changes, so the retired H0 runtime
+cannot be rebound and a fresh no-overwrite runtime manifest is mandatory.
+
+For reuse of the fixed RULER v7 batch, the sole authoritative bundle is exactly
+21 shallow regular non-link, non-reparse files: canonical
+`generation-manifest.json` plus the 20 named receipt files. The generation-
+manifest file SHA-256 is frozen as
+`979f91848b6c0692160419c3e5e9ee555aa94d9e7add3092067f003ea0543e80` and
+must be enforced as an explicit expected value, not merely copied into a later
+identity. The authenticated generation manifest binds every accepted receipt
+filename, size, SHA-256, command, validation payload, producer source manifest,
+runtime, launcher, and pinned RULER identity. The 20 raw sibling roots and their
+100 producer files remain archived producer diagnostics only. They are not
+scientific inputs, are not authorization evidence, must not be read by identity
+capture, and need not replay-authenticate for this reuse decision.
+
+This rule explicitly supersedes the Thirteenth and Sixteenth amendments wherever
+they require replay or authentication of those 100 raw files. It also
+supersedes the Thirteenth amendment's requirement that the current capture and
+resolver Git blob OIDs equal the old batch-producing capture blob
+`43e64f3f4f72256de8eb58f3f4cd9068ef3fe305` and resolver blob
+`dd579415f694d5900e1abdc0f46af358b2a8628b`. The producer identities remain
+authenticated from the exact frozen generation manifest. Current consumer
+capture and resolver bytes instead must equal their entries in the replacement
+H0 repository-source manifest; their security repairs do not require RULER
+regeneration. Any contradiction with the earlier raw-replay or consumer-blob-
+equality language is resolved in favor of this Twenty-fourth amendment.
+
+Phase isolation remains exact. Calibration may parse the complete generation
+manifest and authenticate its public 20-file commitment table, but it opens,
+base64-decodes, and semantically validates only the 16 calibration receipt
+files. The four separate Stage-A receipt bodies remain unopened; their embedded
+protected values in the complete manifest remain uninterpreted strings and
+objects during calibration. Stage-A capture later opens and semantically
+validates exactly its four receipts and must not open the 16 calibration
+receipts. A generic replay of all raw producer files or all 20 receipt bodies is
+therefore forbidden rather than an additional integrity check.
+
+Before calibration content access, the sealed chain must snapshot the exact
+shallow 21-name inventory and regular non-link/non-reparse file types without
+opening receipt bodies, then authenticate the generation-manifest size and
+SHA-256. It may next open and hash only the active phase's receipt bodies:
+exactly 16 for calibration, each matched by size and SHA-256 to its embedded
+manifest commitment. The four Stage-A receipt names, sizes, and hashes remain
+authenticated only as uninterpreted commitments in the frozen generation
+manifest until Stage A; calibration must not open or hash those four files.
+After capture returns, and before a capture-provenance receipt can authorize
+identity verification or promotion, the chain must repeat and exact-compare the
+shallow name/type inventory, generation-manifest size and SHA-256, and only the
+same 16 active receipt sizes and SHA-256 values. Stage-A capture applies the
+dual rule to its four receipt bodies while leaving the 16 calibration bodies
+unopened. Any inventory drift or active-phase byte drift fails closed; an
+identity input left by such a failure is non-authorizing and may not be
+promoted.
+
+Runner revision advances from v11 to v12. Capture procedure v6, resolver
+procedure v6, identity-input/candidate/frozen schema v5, runtime-manifest schema
+v6, capture-provenance schema v2, RULER launcher v7, RULER generation-manifest
+schema v2, and Stage-A runner v5 remain unchanged. The repair changes no record
+selection, tokenizer files or token spans, model contract, Q4/Q6/Q8 policy,
+Fisher boundary, byte budget, metric, statistical gate, or claim boundary.
+
+The chain must now restart from a clean descendant containing this amendment,
+runner v12, both containment repairs, the authoritative-RULER check, the
+pre/post bundle custody check, and their regressions. Only after focused, full,
+and CI verification may that descendant be tagged as the sixth replacement H0.
+It then requires a fresh H0-scoped repository-source-manifest path, a fresh
+no-overwrite runtime root and manifest bound to the changed launch policy, and
+fresh absent identity-input and capture-provenance output paths. The retired
+H0 source/runtime/capture paths may not be renamed, copied, adopted, or rebound.
+Before H1, the new promoted identity must pass the complete frozen-identity
+contract and, relative to retired identity file SHA-256
+`40c434d038879608093fc8f74b66893062e4f52a0e1db9d33b40ac9fa411be90`,
+must differ at exactly these six JSON pointers and nowhere else:
+
+```text
+/canonical_evidence_sha256
+/evidence/execution_bindings/calibration_runtime_manifest_file_sha256
+/evidence/execution_bindings/repository_source_manifest_file_sha256
+/evidence/promotion/candidate_canonical_evidence_sha256
+/evidence/promotion/candidate_file_sha256
+/evidence/source_manifest_sha256
+```
+
+All 160 records, content-manifest SHA-256
+`ee72483a8f8b4370c9e667e4287747e5bc358aeb0265a58167140f4e780a7b29`,
+split-assignment SHA-256
+`a42cf4b332cc8cf58b27709d7d261fc03a356b27ec1c9ccd56914d99e60c1797`,
+tokenizer file-manifest SHA-256
+`e48bffe3aeaf5436b23f349a4517ebc8c8f965cd60b9566014191a7e7938f2ef`,
+and every other scientific/content field must remain byte-identical. Only that
+verified promoted identity may be committed as the sole H1 tree change. Until
+the replacement H0, fresh source/runtime/capture chain, six-pointer diff, and
+H1 are complete, no model staging or protected execution is authorized. This
+amendment is containment and provenance work only; it is not a calibration,
+quality, adoption, novelty, deployment, state-of-the-art, or breakthrough
+result.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -1701,7 +1864,7 @@ Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
 H0 resolver, and consumes the complete record inventory through calibration-
-runner v11's identity view. It requires the exact receipt and runtime inputs
+runner v12's identity view. It requires the exact receipt and runtime inputs
 `--capture-provenance-receipt`,
 `--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
 `--expected-runtime-manifest-sha256`. It accepts no H1, model manifest, Hub,

@@ -17,6 +17,7 @@ load model weights or data.
 from __future__ import annotations
 
 import argparse
+import builtins
 import csv
 import hashlib
 import importlib
@@ -66,7 +67,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v12"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -220,6 +221,9 @@ RULER_RECEIPT_DIRECTORY_FILENAMES: Final = (
     "retrieval__niah_multivalue__l4096__s12340.json",
     "retrieval__niah_single_1__l4096__s12339.json",
 )
+RULER_GENERATION_MANIFEST_FILE_SHA256: Final = (
+    "979f91848b6c0692160419c3e5e9ee555aa94d9e7add3092067f003ea0543e80"
+)
 CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS: Final = {
     "datasets": "datasets",
     "fsspec": "fsspec",
@@ -235,6 +239,7 @@ CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES: Final = (
     "torch",
     "transformers.modeling_utils",
 )
+CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES: Final = ("torch",)
 CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES: Final = (
     "pkg_resources",
     "setuptools",
@@ -254,8 +259,10 @@ _FORBIDDEN_RUNTIME_FILENAMES: Final = frozenset(
     {"pyvenv.cfg", "sitecustomize.py", "usercustomize.py"}
 )
 SEALED_LAUNCH_POLICY: Final = {
-    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v2",
-    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-root-v1",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
+    "cache_confinement_mode": (
+        "private-scratch-plus-explicit-dataset-and-capture-hub-root-v2"
+    ),
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
     "executable_custody_mode": "platform-held-launch-handles-v1",
@@ -2520,6 +2527,26 @@ def _verify_ruler_receipt_directory_precondition(path: Path) -> Path:
     if repeated_root != root or repeated_components != component_identities or after != before:
         raise CalibrationRunError("RULER receipt directory changed while it was validated")
     return root
+
+
+def _capture_hub_cache_root_precondition(path: Path) -> Path:
+    """Bind the explicit Hub endpoint already authenticated by the sealed launcher."""
+
+    cache_root = Path(os.path.abspath(path))
+    hub_root, _component_identities = _require_existing_regular_directory(
+        cache_root / "hub",
+        context="capture Hub cache root",
+    )
+    if hub_root.parent != cache_root:
+        raise CalibrationRunError("capture Hub cache root escaped the explicit cache root")
+    environment = {name.upper(): value for name, value in os.environ.items()}
+    expected = str(hub_root)
+    if (
+        environment.get("HF_HUB_CACHE") != expected
+        or environment.get("HUGGINGFACE_HUB_CACHE") != expected
+    ):
+        raise CalibrationRunError("capture Hub cache environment differs from its endpoint")
+    return hub_root
 
 
 def _normalized_absolute_path_sha256(path: Path) -> str:
@@ -6888,6 +6915,466 @@ class _ExcludedCalibrationIdentityImportBlocker:
         return None
 
 
+def _module_matches_prefixes(fullname: str, prefixes: Sequence[str]) -> bool:
+    return any(
+        fullname == prefix or fullname.startswith(f"{prefix}.") for prefix in prefixes
+    )
+
+
+class _ForbiddenCalibrationIdentityImportBlocker:
+    """Reject real imports of every model/CUDA surface during identity capture."""
+
+    def __init__(self) -> None:
+        self.attempts: list[str] = []
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: object = None,
+        target: object = None,
+    ) -> None:
+        del path, target
+        if _module_matches_prefixes(
+            fullname,
+            CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
+        ):
+            self.attempts.append(fullname)
+            raise CalibrationRunError(
+                f"capture attempted forbidden model/CUDA import: {fullname}"
+            )
+        return None
+
+
+class _GuardedCalibrationIdentityMetaPath(Sequence[object]):
+    """A fixed import-finder topology that records and rejects mutation attempts."""
+
+    def __init__(self, entries: Sequence[object]) -> None:
+        self._entries = tuple(entries)
+        self.mutation_attempts: list[str] = []
+
+    def __getitem__(self, index: int | slice) -> object:
+        return self._entries[index]
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def _reject(self, operation: str) -> None:
+        self.mutation_attempts.append(operation)
+        raise CalibrationRunError(
+            f"capture import-finder topology mutation was attempted: {operation}"
+        )
+
+    def __delitem__(self, key: object) -> None:
+        del key
+        self._reject("delete")
+
+    def __iadd__(self, values: object) -> _GuardedCalibrationIdentityMetaPath:
+        del values
+        self._reject("in-place add")
+
+    def __imul__(self, count: object) -> _GuardedCalibrationIdentityMetaPath:
+        del count
+        self._reject("in-place multiply")
+
+    def __setitem__(self, key: object, value: object) -> None:
+        del key, value
+        self._reject("assignment")
+
+    def append(self, value: object) -> None:
+        del value
+        self._reject("append")
+
+    def clear(self) -> None:
+        self._reject("clear")
+
+    def extend(self, values: object) -> None:
+        del values
+        self._reject("extend")
+
+    def insert(self, index: int, value: object) -> None:
+        del index, value
+        self._reject("insert")
+
+    def pop(self, index: int = -1) -> object:
+        del index
+        self._reject("pop")
+
+    def remove(self, value: object) -> None:
+        del value
+        self._reject("remove")
+
+    def reverse(self) -> None:
+        self._reject("reverse")
+
+    def sort(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        self._reject("sort")
+
+
+class _CalibrationIdentityImportIsolation:
+    """Hide Torch availability probes while hard-stopping actual Torch imports."""
+
+    def __init__(self) -> None:
+        self.availability_probes: list[str] = []
+        self.blocker = _ForbiddenCalibrationIdentityImportBlocker()
+        self._original_find_spec: Callable[..., object] | None = None
+        self._scoped_find_spec: Callable[..., object] | None = None
+        self._original_import: Callable[..., object] | None = None
+        self._scoped_import: Callable[..., object] | None = None
+        self._bootstrap_module: ModuleType | None = None
+        self._original_find_and_load: Callable[..., object] | None = None
+        self._scoped_find_and_load: Callable[..., object] | None = None
+        self._original_meta_path: list[object] | None = None
+        self._original_meta_path_topology: tuple[object, ...] | None = None
+        self._guarded_meta_path: _GuardedCalibrationIdentityMetaPath | None = None
+
+    def _forbidden_import(self, fullname: object) -> bool:
+        return isinstance(fullname, str) and _module_matches_prefixes(
+            fullname,
+            CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
+        )
+
+    def _assert_guard_state(self) -> None:
+        guarded = self._guarded_meta_path
+        scoped_find_spec = self._scoped_find_spec
+        scoped_import = self._scoped_import
+        bootstrap = self._bootstrap_module
+        scoped_find_and_load = self._scoped_find_and_load
+        if (
+            guarded is None
+            or scoped_find_spec is None
+            or scoped_import is None
+            or bootstrap is None
+            or scoped_find_and_load is None
+        ):
+            raise CalibrationRunError("capture import isolation is not active")
+        if sys.meta_path is not guarded:
+            raise CalibrationRunError("capture import-finder topology object changed")
+        if (
+            not guarded
+            or guarded[0] is not self.blocker
+            or sum(item is self.blocker for item in guarded) != 1
+            or tuple(guarded) != (
+                self.blocker,
+                *(self._original_meta_path_topology or ()),
+            )
+        ):
+            raise CalibrationRunError("capture import-finder topology/order changed")
+        if guarded.mutation_attempts:
+            raise CalibrationRunError(
+                "capture import-finder topology mutation was attempted: "
+                f"{sorted(guarded.mutation_attempts)}"
+            )
+        if importlib.util.find_spec is not scoped_find_spec:
+            raise CalibrationRunError("capture availability isolation changed during execution")
+        if builtins.__import__ is not scoped_import:
+            raise CalibrationRunError("capture guarded import entrypoint changed during execution")
+        if getattr(bootstrap, "_find_and_load", None) is not scoped_find_and_load:
+            raise CalibrationRunError("capture import loader entrypoint changed during execution")
+
+    def _guard_import_request(self, fullname: object) -> None:
+        self._assert_guard_state()
+        if self._forbidden_import(fullname):
+            assert isinstance(fullname, str)
+            self.blocker.attempts.append(fullname)
+            raise CalibrationRunError(
+                f"capture attempted forbidden model/CUDA import: {fullname}"
+            )
+
+    def activate(self) -> None:
+        if any(
+            item is not None
+            for item in (
+                self._original_find_spec,
+                self._scoped_find_spec,
+                self._original_import,
+                self._scoped_import,
+                self._bootstrap_module,
+                self._original_find_and_load,
+                self._scoped_find_and_load,
+                self._original_meta_path,
+                self._original_meta_path_topology,
+                self._guarded_meta_path,
+            )
+        ):
+            raise CalibrationRunError("capture import isolation was activated twice")
+        preloaded = sorted(
+            name
+            for name in sys.modules
+            if _module_matches_prefixes(
+                name,
+                CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES,
+            )
+        )
+        if preloaded:
+            raise CalibrationRunError(
+                f"capture availability-hidden module was preloaded: {preloaded}"
+            )
+        original_find_spec = importlib.util.find_spec
+        original_import = builtins.__import__
+        bootstrap = getattr(importlib, "_bootstrap", None)
+        original_find_and_load = getattr(bootstrap, "_find_and_load", None)
+        if not isinstance(sys.meta_path, list) or not callable(original_find_and_load):
+            raise CalibrationRunError("capture import machinery is unavailable")
+        original_meta_path = sys.meta_path
+        original_meta_path_topology = tuple(original_meta_path)
+        guarded_meta_path = _GuardedCalibrationIdentityMetaPath(
+            (self.blocker, *original_meta_path_topology)
+        )
+
+        def scoped_find_spec(fullname: str, package: str | None = None) -> object:
+            self._assert_guard_state()
+            if _module_matches_prefixes(
+                fullname,
+                CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES,
+            ):
+                self.availability_probes.append(fullname)
+                return None
+            return original_find_spec(fullname, package)
+
+        def scoped_import(
+            name: str,
+            globals: object = None,
+            locals: object = None,
+            fromlist: object = (),
+            level: int = 0,
+        ) -> object:
+            self._guard_import_request(name if level == 0 else None)
+            return original_import(name, globals, locals, fromlist, level)
+
+        def scoped_find_and_load(name: str, import_: object) -> object:
+            self._guard_import_request(name)
+            return original_find_and_load(name, import_)
+
+        self._original_find_spec = original_find_spec
+        self._scoped_find_spec = scoped_find_spec
+        self._original_import = original_import
+        self._scoped_import = scoped_import
+        self._bootstrap_module = bootstrap
+        self._original_find_and_load = original_find_and_load
+        self._scoped_find_and_load = scoped_find_and_load
+        self._original_meta_path = original_meta_path
+        self._original_meta_path_topology = original_meta_path_topology
+        self._guarded_meta_path = guarded_meta_path
+        try:
+            sys.meta_path = guarded_meta_path
+            importlib.util.find_spec = scoped_find_spec  # type: ignore[assignment]
+            bootstrap._find_and_load = scoped_find_and_load  # type: ignore[attr-defined]
+            builtins.__import__ = scoped_import  # type: ignore[assignment]
+            self._assert_guard_state()
+        except BaseException as error:
+            self.restore(primary_error=error)
+            raise
+
+    def assert_intact(self) -> None:
+        self._assert_guard_state()
+        if self.blocker.attempts:
+            raise CalibrationRunError(
+                "capture attempted forbidden model/CUDA imports: "
+                f"{sorted(self.blocker.attempts)}"
+            )
+
+    def restore(self, *, primary_error: BaseException | None) -> None:
+        failures: list[str] = []
+        original_find_spec = self._original_find_spec
+        scoped_find_spec = self._scoped_find_spec
+        original_import = self._original_import
+        scoped_import = self._scoped_import
+        bootstrap = self._bootstrap_module
+        original_find_and_load = self._original_find_and_load
+        scoped_find_and_load = self._scoped_find_and_load
+        original_meta_path = self._original_meta_path
+        original_meta_path_topology = self._original_meta_path_topology
+        guarded_meta_path = self._guarded_meta_path
+        state = (
+            original_find_spec,
+            scoped_find_spec,
+            original_import,
+            scoped_import,
+            bootstrap,
+            original_find_and_load,
+            scoped_find_and_load,
+            original_meta_path,
+            original_meta_path_topology,
+            guarded_meta_path,
+        )
+        if all(item is None for item in state):
+            return
+        if original_find_spec is None or scoped_find_spec is None:
+            failures.append("capture availability isolation state was incomplete")
+        else:
+            if importlib.util.find_spec is not scoped_find_spec:
+                failures.append("capture availability isolation changed before restoration")
+            importlib.util.find_spec = original_find_spec  # type: ignore[assignment]
+        if original_import is None or scoped_import is None:
+            failures.append("capture guarded import state was incomplete")
+        else:
+            if builtins.__import__ is not scoped_import:
+                failures.append("capture guarded import changed before restoration")
+            builtins.__import__ = original_import  # type: ignore[assignment]
+        if (
+            bootstrap is None
+            or original_find_and_load is None
+            or scoped_find_and_load is None
+        ):
+            failures.append("capture import loader state was incomplete")
+        else:
+            if getattr(bootstrap, "_find_and_load", None) is not scoped_find_and_load:
+                failures.append("capture import loader changed before restoration")
+            bootstrap._find_and_load = original_find_and_load  # type: ignore[attr-defined]
+        if (
+            original_meta_path is None
+            or original_meta_path_topology is None
+            or guarded_meta_path is None
+        ):
+            failures.append("capture import-finder topology state was incomplete")
+        else:
+            if sys.meta_path is not guarded_meta_path:
+                failures.append("capture import-finder topology object changed before restoration")
+            elif tuple(guarded_meta_path) != (
+                self.blocker,
+                *original_meta_path_topology,
+            ):
+                failures.append("capture import-finder topology/order changed before restoration")
+            if guarded_meta_path.mutation_attempts:
+                failures.append("capture import-finder topology mutation was attempted")
+            if tuple(original_meta_path) != original_meta_path_topology:
+                failures.append("saved capture import-finder topology changed")
+                original_meta_path[:] = list(original_meta_path_topology)
+            sys.meta_path = original_meta_path
+        if self.blocker.attempts:
+            failures.append(
+                "capture attempted forbidden model/CUDA imports before restoration: "
+                f"{sorted(self.blocker.attempts)}"
+            )
+        self._original_find_spec = None
+        self._scoped_find_spec = None
+        self._original_import = None
+        self._scoped_import = None
+        self._bootstrap_module = None
+        self._original_find_and_load = None
+        self._scoped_find_and_load = None
+        self._original_meta_path = None
+        self._original_meta_path_topology = None
+        self._guarded_meta_path = None
+        if failures:
+            error = CalibrationRunError("; ".join(failures))
+            if primary_error is None:
+                raise error
+            add_note = getattr(primary_error, "add_note", None)
+            if callable(add_note):
+                add_note(str(error))
+
+
+def _snapshot_phase_ruler_file_metadata(
+    *,
+    capture_module: ModuleType,
+    live_source: object,
+    phase: str,
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, int],
+    tuple[tuple[str, str, int], ...],
+]:
+    """Hash only the generation manifest and this phase's receipt bodies."""
+
+    if phase not in {"calibration", "stage_a"}:
+        raise CalibrationRunError("RULER metadata snapshot phase is invalid")
+    required_provider = getattr(capture_module, "required_ruler_receipts", None)
+    generation_reader = getattr(live_source, "ruler_generation_manifest_bytes", None)
+    receipt_reader = getattr(live_source, "ruler_receipt_bytes", None)
+    if not callable(required_provider) or not callable(generation_reader) or not callable(
+        receipt_reader
+    ):
+        raise CalibrationRunError("authenticated RULER metadata surface is incomplete")
+    required = required_provider()
+    if not isinstance(required, tuple) or len(required) != 20:
+        raise CalibrationRunError("authenticated RULER receipt schedule is not exact")
+    fields = {
+        "category",
+        "config",
+        "configured_length",
+        "filename",
+        "phase",
+        "sample_index",
+        "seed",
+    }
+    normalized: list[dict[str, object]] = []
+    for raw in required:
+        if not isinstance(raw, Mapping) or set(raw) != fields:
+            raise CalibrationRunError("authenticated RULER receipt schedule fields drifted")
+        item_phase = raw["phase"]
+        category = raw["category"]
+        config = raw["config"]
+        filename = raw["filename"]
+        configured_length = raw["configured_length"]
+        seed = raw["seed"]
+        sample_index = raw["sample_index"]
+        if (
+            item_phase not in {"calibration", "stage_a"}
+            or not isinstance(category, str)
+            or not category
+            or not isinstance(config, str)
+            or not config
+            or not isinstance(filename, str)
+            or not filename
+            or Path(filename).name != filename
+            or isinstance(configured_length, bool)
+            or not isinstance(configured_length, int)
+            or configured_length <= 0
+            or isinstance(seed, bool)
+            or not isinstance(seed, int)
+            or seed < 0
+            or sample_index != 0
+        ):
+            raise CalibrationRunError("authenticated RULER receipt schedule value drifted")
+        normalized.append(dict(raw))
+    names = tuple(
+        sorted(
+            ["generation-manifest.json", *(str(item["filename"]) for item in normalized)]
+        )
+    )
+    if (
+        len(names) != 21
+        or len({name.casefold() for name in names}) != 21
+        or names != tuple(sorted(RULER_RECEIPT_DIRECTORY_FILENAMES))
+    ):
+        raise CalibrationRunError("authenticated RULER 21-file inventory drifted")
+    phase_items = sorted(
+        (item for item in normalized if item["phase"] == phase),
+        key=lambda item: str(item["filename"]),
+    )
+    expected_count = 16 if phase == "calibration" else 4
+    if len(phase_items) != expected_count:
+        raise CalibrationRunError("authenticated RULER phase receipt count drifted")
+
+    generation_bytes = generation_reader()
+    if not isinstance(generation_bytes, bytes) or not generation_bytes:
+        raise CalibrationRunError("RULER generation manifest bytes are unavailable")
+    generation_sha256 = sha256_bytes(generation_bytes)
+    if generation_sha256 != RULER_GENERATION_MANIFEST_FILE_SHA256:
+        raise CalibrationRunError("RULER generation manifest file SHA-256 drifted")
+
+    receipt_records: list[tuple[str, str, int]] = []
+    for item in phase_items:
+        receipt_bytes = receipt_reader(
+            category=str(item["category"]),
+            config=str(item["config"]),
+            configured_length=int(item["configured_length"]),
+            seed=int(item["seed"]),
+        )
+        if not isinstance(receipt_bytes, bytes) or not receipt_bytes:
+            raise CalibrationRunError("RULER phase receipt bytes are unavailable")
+        receipt_records.append(
+            (
+                str(item["filename"]),
+                sha256_bytes(receipt_bytes),
+                len(receipt_bytes),
+            )
+        )
+    return names, (generation_sha256, len(generation_bytes)), tuple(receipt_records)
+
+
 def _assert_capture_forbidden_modules_absent() -> None:
     loaded = sorted(
         name
@@ -7087,12 +7574,15 @@ def _sealed_capture_identity(
     capture_module: ModuleType | None = None
     resolver_module: ModuleType | None = None
     blocker = _ExcludedCalibrationIdentityImportBlocker()
+    import_isolation = _CalibrationIdentityImportIsolation()
     payload: bytes | None = None
     origins: list[dict[str, object]] | None = None
     normalized_calibration_binding: dict[str, str] | None = None
     calibration_authorization_sha256: str | None = None
+    preexisting_policy_modules = frozenset(sys.modules)
     try:
         sys.meta_path.insert(0, blocker)
+        import_isolation.activate()
         namespace = _install_authenticated_recurquant_namespace(args.repository_root)
         source_module = _load_exact_source_module(
             CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
@@ -7155,9 +7645,15 @@ def _sealed_capture_identity(
         )
         if verified_source != bootstrap_source.manifest:
             raise CalibrationRunError("capture source verifier returned different evidence")
+        capture_hub_cache_root = _capture_hub_cache_root_precondition(args.cache_root)
         live_source = capture_module.LiveCaptureSource(
-            cache_dir=args.cache_root,
+            cache_dir=capture_hub_cache_root,
             ruler_receipt_dir=ruler_receipt_dir,
+        )
+        ruler_file_snapshot = _snapshot_phase_ruler_file_metadata(
+            capture_module=capture_module,
+            live_source=live_source,
+            phase=phase,
         )
         captured = capture_module.capture_identity_input(
             phase=phase,
@@ -7172,6 +7668,13 @@ def _sealed_capture_identity(
                 "package_import_paths": dict(runtime_context.package_import_paths),
             },
         )
+        repeated_ruler_file_snapshot = _snapshot_phase_ruler_file_metadata(
+            capture_module=capture_module,
+            live_source=live_source,
+            phase=phase,
+        )
+        if repeated_ruler_file_snapshot != ruler_file_snapshot:
+            raise CalibrationRunError("phase-scoped RULER files changed during capture")
         if blocker.attempts:
             raise CalibrationRunError(
                 f"capture attempted excluded runtime imports: {sorted(blocker.attempts)}"
@@ -7182,6 +7685,7 @@ def _sealed_capture_identity(
         ):
             raise CalibrationRunError("capture left an excluded runtime module loaded")
         _assert_capture_forbidden_modules_absent()
+        import_isolation.assert_intact()
         if phase == "stage_a":
             assert binding_bytes is not None
             assert binding_sha256 is not None
@@ -7273,6 +7777,7 @@ def _sealed_capture_identity(
             raise CalibrationRunError(
                 "excluded runtime module policy changed before receipt publication"
             )
+        import_isolation.assert_intact()
         receipt: dict[str, object] = {
             "artifact_kind": (
                 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
@@ -7312,20 +7817,33 @@ def _sealed_capture_identity(
         print(receipt_payload.decode("utf-8"), end="")
         return 0
     finally:
-        if blocker in sys.meta_path:
-            sys.meta_path.remove(blocker)
-        for name in tuple(sys.modules):
-            if name.split(".", 1)[0] in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES:
+        try:
+            import_isolation.restore(primary_error=sys.exception())
+        finally:
+            if blocker in sys.meta_path:
+                sys.meta_path.remove(blocker)
+            for name in tuple(sys.modules):
+                if (
+                    name not in preexisting_policy_modules
+                    and (
+                        name.split(".", 1)[0]
+                        in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
+                        or _module_matches_prefixes(
+                            name,
+                            CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
+                        )
+                    )
+                ):
+                    sys.modules.pop(name, None)
+            for name in (
+                CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
+                CALIBRATION_IDENTITY_CAPTURE_MODULE,
+                IDENTITY_RESOLVER_MODULE,
+                CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+                CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
+                "recurquant",
+            ):
                 sys.modules.pop(name, None)
-        for name in (
-            CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
-            CALIBRATION_IDENTITY_CAPTURE_MODULE,
-            IDENTITY_RESOLVER_MODULE,
-            CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
-            CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
-            "recurquant",
-        ):
-            sys.modules.pop(name, None)
 
 
 def _sealed_capture_calibration_identity(

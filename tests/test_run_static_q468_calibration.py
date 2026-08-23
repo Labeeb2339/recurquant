@@ -7,7 +7,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -701,6 +701,10 @@ def prepared_fake_sealed_capture(
     capture_source_path.write_bytes(b"authenticated unchanged capture source\n")
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
+    capture_hub_cache_root = cache_root / "hub"
+    capture_hub_cache_root.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(capture_hub_cache_root))
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(capture_hub_cache_root))
     ruler_root = ruler_receipt_directory(tmp_path / "ruler-receipts")
     runtime_bytes, origins = capture_provenance_runtime_manifest_bytes()
     model_bytes = model_manifest_bytes(staged_model_files())
@@ -813,7 +817,9 @@ def prepared_fake_sealed_capture(
         },
     )
     observations: dict[str, object] = {
+        "capture_hub_cache_root": capture_hub_cache_root,
         "runtime_authentications": 0,
+        "ruler_reads": [],
         "source_verifications": 0,
     }
 
@@ -855,6 +861,9 @@ def prepared_fake_sealed_capture(
 
     def capture_identity_input(**kwargs: object) -> dict[str, object]:
         observations["capture_kwargs"] = dict(kwargs)
+        during_capture = observations.get("during_capture")
+        if callable(during_capture):
+            during_capture()
         result = {
             "datasets": {},
             "execution_bindings": bindings,
@@ -868,10 +877,67 @@ def prepared_fake_sealed_capture(
             result["calibration_binding"] = binding_values
         return result
 
+    receipt_names = [
+        name
+        for name in runner.RULER_RECEIPT_DIRECTORY_FILENAMES
+        if name != "generation-manifest.json"
+    ]
+    required_ruler: list[dict[str, object]] = []
+    ruler_payloads: dict[tuple[str, str, int, int], bytes] = {}
+    ruler_filenames: dict[tuple[str, str, int, int], str] = {}
+    for index, filename in enumerate(receipt_names):
+        category, config, raw_length, raw_seed = filename.removesuffix(".json").split("__")
+        key = (category, config, int(raw_length.removeprefix("l")), int(raw_seed.removeprefix("s")))
+        required_ruler.append(
+            {
+                "category": category,
+                "config": config,
+                "configured_length": key[2],
+                "filename": filename,
+                "phase": "calibration" if index < 16 else "stage_a",
+                "sample_index": 0,
+                "seed": key[3],
+            }
+        )
+        ruler_payloads[key] = f"fixture receipt {filename}\n".encode()
+        ruler_filenames[key] = filename
+    generation_manifest_bytes = b"fixture generation manifest\n"
+    observations["required_ruler"] = tuple(required_ruler)
+    observations["ruler_payloads"] = ruler_payloads
+    observations["generation_manifest_bytes"] = generation_manifest_bytes
+
+    class FakeLiveCaptureSource:
+        def __init__(self, **kwargs: object) -> None:
+            self.arguments = kwargs
+            observations["live_source"] = self
+
+        def ruler_generation_manifest_bytes(self) -> bytes:
+            reads = observations["ruler_reads"]
+            assert isinstance(reads, list)
+            reads.append("generation-manifest.json")
+            value = observations["generation_manifest_bytes"]
+            assert isinstance(value, bytes)
+            return value
+
+        def ruler_receipt_bytes(
+            self,
+            *,
+            category: str,
+            config: str,
+            configured_length: int,
+            seed: int,
+        ) -> bytes:
+            key = (category, config, configured_length, seed)
+            reads = observations["ruler_reads"]
+            assert isinstance(reads, list)
+            reads.append(ruler_filenames[key])
+            return ruler_payloads[key]
+
     capture_module = SimpleNamespace(
         CAPTURE_VERSION=runner.CALIBRATION_IDENTITY_CAPTURE_VERSION,
-        LiveCaptureSource=lambda **kwargs: SimpleNamespace(**kwargs),
+        LiveCaptureSource=FakeLiveCaptureSource,
         capture_identity_input=capture_identity_input,
+        required_ruler_receipts=lambda: tuple(required_ruler),
     )
 
     def load_module(
@@ -918,6 +984,16 @@ def prepared_fake_sealed_capture(
         runner,
         "CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES",
         ("never_present_capture_dependency",),
+    )
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        ("never_present_capture_model_runtime",),
+    )
+    monkeypatch.setattr(
+        runner,
+        "RULER_GENERATION_MANIFEST_FILE_SHA256",
+        digest(generation_manifest_bytes),
     )
     authenticated = SimpleNamespace(manifest_file_sha256=manifest.file_sha256)
     return arguments, authenticated, manifest, runtime_context, observations
@@ -1047,6 +1123,11 @@ def test_sealed_capture_emits_receipt_candidate_without_publishing_it(
     assert receipt["status"] == runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
     assert observations["runtime_authentications"] == 2
     assert observations["source_verifications"] == 3
+    live_source = observations["live_source"]
+    assert live_source.arguments["cache_dir"] == observations["capture_hub_cache_root"]
+    assert live_source.arguments["cache_dir"] != Path(
+        arguments[arguments.index("--cache-root") + 1]
+    )
     capture_kwargs = observations["capture_kwargs"]
     assert isinstance(capture_kwargs, dict)
     assert capture_kwargs["phase"] == "calibration"
@@ -1058,6 +1139,17 @@ def test_sealed_capture_emits_receipt_candidate_without_publishing_it(
     assert runtime_authentication_context["package_runtime_roots"] == dict(
         runtime_context.package_roots
     )
+    required_ruler = observations["required_ruler"]
+    assert isinstance(required_ruler, tuple)
+    calibration_names = sorted(
+        str(item["filename"]) for item in required_ruler if item["phase"] == "calibration"
+    )
+    assert observations["ruler_reads"] == [
+        "generation-manifest.json",
+        *calibration_names,
+        "generation-manifest.json",
+        *calibration_names,
+    ]
 
 
 def test_sealed_stage_a_capture_authenticates_binding_and_emits_only_candidate(
@@ -1102,6 +1194,132 @@ def test_sealed_stage_a_capture_authenticates_binding_and_emits_only_candidate(
     )
     assert "model_root" not in capture_kwargs
     assert observations["stage_a_pre_finalization_input"] is not None
+    required_ruler = observations["required_ruler"]
+    assert isinstance(required_ruler, tuple)
+    stage_a_names = sorted(
+        str(item["filename"]) for item in required_ruler if item["phase"] == "stage_a"
+    )
+    assert observations["ruler_reads"] == [
+        "generation-manifest.json",
+        *stage_a_names,
+        "generation-manifest.json",
+        *stage_a_names,
+    ]
+
+
+def test_sealed_capture_rejects_hub_environment_that_bypasses_authenticated_endpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch)
+    )
+    cache_root = Path(arguments[arguments.index("--cache-root") + 1])
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_root))
+
+    with (
+        isolated_sealed_capture_modules(),
+        pytest.raises(runner.CalibrationRunError, match="Hub cache environment"),
+    ):
+        runner._sealed_capture_calibration_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=tmp_path / "python.exe",
+        )
+
+    assert "live_source" not in observations
+    assert not (tmp_path / "identity-input.json").exists()
+    assert not (tmp_path / "capture-provenance.json").exists()
+
+
+@pytest.mark.parametrize("mutation", ["generation-manifest", "phase-receipt"])
+def test_sealed_capture_rejects_phase_scoped_ruler_file_mutation(
+    mutation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch)
+    )
+    required_ruler = observations["required_ruler"]
+    payloads = observations["ruler_payloads"]
+    assert isinstance(required_ruler, tuple)
+    assert isinstance(payloads, dict)
+
+    def mutate() -> None:
+        if mutation == "generation-manifest":
+            observations["generation_manifest_bytes"] = b"changed generation manifest\n"
+            return
+        selected = next(item for item in required_ruler if item["phase"] == "calibration")
+        key = (
+            selected["category"],
+            selected["config"],
+            selected["configured_length"],
+            selected["seed"],
+        )
+        payloads[key] = b"changed phase receipt\n"
+
+    observations["during_capture"] = mutate
+    with (
+        isolated_sealed_capture_modules(),
+        pytest.raises(runner.CalibrationRunError, match="RULER files changed|SHA-256 drifted"),
+    ):
+        runner._sealed_capture_calibration_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=tmp_path / "python.exe",
+        )
+
+    assert not (tmp_path / "identity-input.json").exists()
+    assert not (tmp_path / "capture-provenance.json").exists()
+    assert capsys.readouterr().out == ""
+
+
+def test_sealed_capture_does_not_open_or_hash_other_phase_ruler_bodies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch)
+    )
+    required_ruler = observations["required_ruler"]
+    payloads = observations["ruler_payloads"]
+    assert isinstance(required_ruler, tuple)
+    assert isinstance(payloads, dict)
+    other = next(item for item in required_ruler if item["phase"] == "stage_a")
+    other_key = (
+        other["category"],
+        other["config"],
+        other["configured_length"],
+        other["seed"],
+    )
+
+    def mutate_other_phase() -> None:
+        payloads[other_key] = b"changed other-phase receipt\n"
+
+    observations["during_capture"] = mutate_other_phase
+    with isolated_sealed_capture_modules():
+        assert (
+            runner._sealed_capture_calibration_identity(
+                arguments,
+                manifest=manifest,
+                runtime_context=runtime_context,
+                authenticated_runtime=authenticated,
+                interpreter_path=tmp_path / "python.exe",
+            )
+            == 0
+        )
+    capsys.readouterr()
+
+    reads = observations["ruler_reads"]
+    assert isinstance(reads, list)
+    assert str(other["filename"]) not in reads
 
 
 def test_sealed_stage_a_capture_rejects_binding_digest_before_live_source(
@@ -1336,6 +1554,430 @@ def test_capture_excluded_import_blocker_is_a_hard_stop_without_partial_module()
         blocker.find_spec(module_name)
     assert blocker.attempts == [module_name]
     assert module_name not in sys.modules
+
+
+def test_capture_import_isolation_hides_probe_blocks_import_and_restores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_forbidden_probe_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES",
+        (module_name,),
+    )
+    original_find_spec = importlib.util.find_spec
+    isolation = runner._CalibrationIdentityImportIsolation()
+
+    isolation.activate()
+    try:
+        assert importlib.util.find_spec(module_name) is None
+        with pytest.raises(runner.CalibrationRunError, match="forbidden model/CUDA import"):
+            __import__(module_name)
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="attempted forbidden model/CUDA imports",
+        ):
+            isolation.assert_intact()
+        assert isolation.availability_probes == [module_name]
+        assert isolation.blocker.attempts == [module_name]
+        assert module_name not in sys.modules
+    finally:
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="attempted forbidden model/CUDA imports before restoration",
+        ):
+            isolation.restore(primary_error=None)
+
+    assert importlib.util.find_spec is original_find_spec
+    assert isolation.blocker not in sys.meta_path
+
+
+def test_capture_import_isolation_rejects_a_swallowed_forbidden_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_swallowed_forbidden_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES",
+        (module_name,),
+    )
+    isolation = runner._CalibrationIdentityImportIsolation()
+
+    isolation.activate()
+    try:
+        with suppress(runner.CalibrationRunError):
+            __import__(module_name)
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="attempted forbidden model/CUDA imports",
+        ):
+            isolation.assert_intact()
+    finally:
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="attempted forbidden model/CUDA imports before restoration",
+        ):
+            isolation.restore(primary_error=None)
+
+
+def test_capture_import_isolation_restores_after_primary_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_restore_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    original_find_spec = importlib.util.find_spec
+    isolation = runner._CalibrationIdentityImportIsolation()
+
+    with pytest.raises(RuntimeError, match="injected capture failure"):
+        try:
+            isolation.activate()
+            raise RuntimeError("injected capture failure")
+        finally:
+            isolation.restore(primary_error=sys.exception())
+
+    assert importlib.util.find_spec is original_find_spec
+    assert isolation.blocker not in sys.meta_path
+
+
+def test_capture_import_isolation_prevents_transient_preceding_finder_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_transient_finder_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES",
+        (module_name,),
+    )
+    original_meta_path = sys.meta_path
+    original_import = builtins.__import__
+    bootstrap = runner.importlib._bootstrap
+    original_find_and_load = bootstrap._find_and_load
+    isolation = runner._CalibrationIdentityImportIsolation()
+
+    class SelfRemovingFinder:
+        called = False
+
+        def find_spec(
+            self,
+            fullname: str,
+            path: object = None,
+            target: object = None,
+        ) -> None:
+            del path, target
+            if fullname == module_name:
+                self.called = True
+                sys.meta_path = [item for item in sys.meta_path if item is not self]
+            return None
+
+    isolation.activate()
+    retained_import = isolation._original_import
+    assert callable(retained_import)
+    finder = SelfRemovingFinder()
+    primary_error: BaseException | None = None
+    try:
+        sys.meta_path = [finder, *sys.meta_path]
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="import-finder topology object changed",
+        ) as captured:
+            retained_import(module_name)
+        primary_error = captured.value
+        assert finder.called is False
+        assert module_name not in sys.modules
+    finally:
+        isolation.restore(primary_error=primary_error)
+
+    assert sys.meta_path is original_meta_path
+    assert builtins.__import__ is original_import
+    assert bootstrap._find_and_load is original_find_and_load
+    assert isolation.blocker not in sys.meta_path
+    assert primary_error is not None
+    assert any(
+        "topology object changed before restoration" in note
+        for note in getattr(primary_error, "__notes__", ())
+    )
+
+
+def test_capture_import_isolation_rejects_reassigned_empty_meta_path_via_importlib(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_empty_meta_path_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES",
+        (module_name,),
+    )
+    original_meta_path = sys.meta_path
+    isolation = runner._CalibrationIdentityImportIsolation()
+    primary_error: BaseException | None = None
+
+    isolation.activate()
+    try:
+        sys.meta_path = []
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="import-finder topology object changed",
+        ) as captured:
+            importlib.import_module(module_name)
+        primary_error = captured.value
+        assert module_name not in sys.modules
+    finally:
+        isolation.restore(primary_error=primary_error)
+
+    assert sys.meta_path is original_meta_path
+    assert primary_error is not None
+
+
+def test_capture_import_isolation_meta_path_is_not_a_list_subclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_tuple_meta_path_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    isolation = runner._CalibrationIdentityImportIsolation()
+
+    isolation.activate()
+    try:
+        sealed_meta_path = sys.meta_path
+        before = tuple(sealed_meta_path)
+        assert not isinstance(sealed_meta_path, list)
+        with pytest.raises(TypeError):
+            list.insert(sealed_meta_path, 0, object())  # type: ignore[arg-type]
+        assert tuple(sealed_meta_path) == before
+        isolation.assert_intact()
+    finally:
+        isolation.restore(primary_error=sys.exception())
+
+
+def test_capture_import_isolation_restores_mutated_detached_original_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_detached_meta_path_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    original_meta_path = sys.meta_path
+    original_topology = tuple(original_meta_path)
+    isolation = runner._CalibrationIdentityImportIsolation()
+    primary_error = runner.CalibrationRunError("injected primary capture failure")
+
+    isolation.activate()
+    original_meta_path.insert(0, object())
+    isolation.restore(primary_error=primary_error)
+
+    assert sys.meta_path is original_meta_path
+    assert tuple(sys.meta_path) == original_topology
+    assert any(
+        "saved capture import-finder topology changed" in note
+        for note in getattr(primary_error, "__notes__", ())
+    )
+
+
+def test_capture_import_isolation_partial_activation_failure_restores_every_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_partial_activation_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    original_meta_path = sys.meta_path
+    original_find_spec = importlib.util.find_spec
+    original_import = builtins.__import__
+    bootstrap = runner.importlib._bootstrap
+    original_find_and_load = bootstrap._find_and_load
+    isolation = runner._CalibrationIdentityImportIsolation()
+
+    monkeypatch.setattr(
+        isolation,
+        "_assert_guard_state",
+        lambda: (_ for _ in ()).throw(
+            runner.CalibrationRunError("injected activation failure")
+        ),
+    )
+
+    with pytest.raises(runner.CalibrationRunError, match="injected activation failure"):
+        isolation.activate()
+
+    assert sys.meta_path is original_meta_path
+    assert importlib.util.find_spec is original_find_spec
+    assert builtins.__import__ is original_import
+    assert bootstrap._find_and_load is original_find_and_load
+    isolation.restore(primary_error=None)
+
+
+def test_capture_import_isolation_records_and_rejects_meta_path_mutation_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_guarded_meta_path_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    isolation = runner._CalibrationIdentityImportIsolation()
+    primary_error: BaseException | None = None
+
+    isolation.activate()
+    try:
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="topology mutation was attempted: insert",
+        ) as captured:
+            sys.meta_path.insert(0, object())
+        primary_error = captured.value
+        with pytest.raises(
+            runner.CalibrationRunError,
+            match="topology mutation was attempted",
+        ):
+            isolation.assert_intact()
+    finally:
+        isolation.restore(primary_error=primary_error)
+
+    assert isolation.blocker not in sys.meta_path
+    assert primary_error is not None
+    assert any(
+        "topology mutation was attempted" in note
+        for note in getattr(primary_error, "__notes__", ())
+    )
+
+
+def test_capture_import_isolation_latches_self_removing_finder_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "recurquant_capture_self_removing_finder_fixture"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (module_name,),
+    )
+    original_meta_path = sys.meta_path
+
+    class SelfRemovingFinder:
+        called = False
+        swallowed = False
+
+        def find_spec(
+            self,
+            fullname: str,
+            path: object = None,
+            target: object = None,
+        ) -> None:
+            del path, target
+            if fullname == module_name:
+                self.called = True
+                try:
+                    sys.meta_path.remove(self)
+                except runner.CalibrationRunError:
+                    self.swallowed = True
+            return None
+
+    finder = SelfRemovingFinder()
+    original_meta_path.insert(0, finder)
+    isolation = runner._CalibrationIdentityImportIsolation()
+    primary_error: BaseException | None = None
+    try:
+        isolation.activate()
+        try:
+            with suppress(ModuleNotFoundError):
+                importlib.import_module(module_name)
+            assert finder.called is True
+            assert finder.swallowed is True
+            with pytest.raises(
+                runner.CalibrationRunError,
+                match="topology mutation was attempted",
+            ) as captured:
+                isolation.assert_intact()
+            primary_error = captured.value
+        finally:
+            isolation.restore(primary_error=primary_error)
+    finally:
+        if finder in original_meta_path:
+            original_meta_path.remove(finder)
+
+    assert sys.meta_path is original_meta_path
+    assert primary_error is not None
+    assert any(
+        "topology mutation was attempted" in note
+        for note in getattr(primary_error, "__notes__", ())
+    )
+
+
+def test_sealed_capture_restoration_error_cannot_skip_other_policy_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, authenticated, manifest, runtime_context, _observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch)
+    )
+    original_restore = runner._CalibrationIdentityImportIsolation.restore
+    module_names = (
+        runner.CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
+        runner.CALIBRATION_IDENTITY_CAPTURE_MODULE,
+        runner.IDENTITY_RESOLVER_MODULE,
+        runner.CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+        runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
+        "recurquant",
+    )
+    preexisting = {name: sys.modules.get(name) for name in module_names}
+
+    def fail_after_restore(
+        self: runner._CalibrationIdentityImportIsolation,
+        *,
+        primary_error: BaseException | None,
+    ) -> None:
+        original_restore(self, primary_error=primary_error)
+        raise runner.CalibrationRunError("injected restoration failure")
+
+    monkeypatch.setattr(runner._CalibrationIdentityImportIsolation, "restore", fail_after_restore)
+
+    with isolated_sealed_capture_modules():
+        with pytest.raises(runner.CalibrationRunError, match="injected restoration failure"):
+            runner._sealed_capture_calibration_identity(
+                arguments,
+                manifest=manifest,
+                runtime_context=runtime_context,
+                authenticated_runtime=authenticated,
+                interpreter_path=tmp_path / "python.exe",
+            )
+        assert not any(
+            isinstance(item, runner._ExcludedCalibrationIdentityImportBlocker)
+            for item in sys.meta_path
+        )
+        for name in module_names:
+            assert name not in sys.modules
+
+    assert {name: sys.modules.get(name) for name in module_names} == preexisting
 
 
 @pytest.mark.parametrize(

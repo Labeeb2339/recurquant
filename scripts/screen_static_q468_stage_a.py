@@ -91,7 +91,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v11"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v12"
 ONE_RUN_MARKER: Final = "RecurQuant-One-Run: experiment013-stage-a-v1"
 CLAIM_BOUNDARY: Final = (
     "Stage A is a falsification screen only. Passage is not confirmation, selector "

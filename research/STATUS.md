@@ -115,20 +115,28 @@ prior art through Nemotron 3 Ultra and ReplaySSM. Even a future protocol pass
 would not by itself support a first, novelty, speed, deployment,
 state-of-the-art, or breakthrough claim.
 
-Experiment 013 is a separate, still-unexecuted static RHT-Q468 comparison. Its
-pre-H0 candidate now requires Windows-held launch handles for the exact staged
-Python and canonical Git executables, a second authentication pass while those
-handles are live, runtime-manifest schema v6, calibration runner v11, and
-Stage-A runner v5. The policy blocks new data-write and delete/rename opens for
-those two executable paths while the sealed child chain and launcher-side
-finalization run. It does not attest Python/Git DLLs, the Windows loader, the
-kernel, or privileged host administration.
+Experiment 013 is a separate, scientifically unexecuted static RHT-Q468
+comparison. Source commit `fe88548ec58c4547456360d45fffdca3fba8ccf9`
+became its fifth replacement H0, with a fresh source manifest and schema-v6
+runtime. Its first sealed tokenizer-and-dataset identity capture failed closed:
+Transformers 5.14.1 imported Torch across the capture-only model/CUDA boundary,
+and the standard Hub cache created an internal symlink under strict owned
+scratch. No identity input or provenance receipt was published, no identity was
+promoted, and that H0 is now retired and non-authorizing. No model weight was
+downloaded or opened, and no Fisher, calibration, Stage-A, or quality result
+exists. There is no breakthrough result.
 
-No live Experiment 013 calibration, Stage-A result, quality result, or H0-bound
-artifact is committed here. The exact source revision must pass focused, full,
-and CI verification and receive its H0 tag before a fresh runtime/source chain,
-model staging, Fisher smoke, calibration, or Stage-A execution is authorized.
-See
+The sixth replacement-H0 working copy advances only the calibration runner to
+v12. It adds scoped Torch-availability isolation for identity capture, routes
+the capture-only Hub cache to the exact authenticated external `cache-root/hub`
+subroot, and narrows authoritative reusable RULER custody to the exact frozen
+generation manifest plus 20 regular receipt files. Runtime-manifest schema v6,
+capture and resolver procedure v6, identity schemas v5, capture-provenance
+schema v2, and Stage-A runner v5 remain unchanged. The next gate is a clean,
+fully verified and tagged replacement H0, followed by fresh H0-scoped source,
+runtime, and capture paths and an exact six-pointer retired-identity diff before
+any H1. Model staging, Fisher smoke, calibration, and Stage A remain
+unauthorized. See
 [`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8

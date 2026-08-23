@@ -511,9 +511,16 @@ def _run_embedded_manifest_boundary(
         str(scratch),
         *fixture["runner_arguments"],
     ]
+    capture_profile = bool(
+        fixture["runner_arguments"]
+        and fixture["runner_arguments"][0] in launcher._CAPTURE_COMMANDS
+    )
+    if capture_profile:
+        launcher._prepare_capture_hub_cache_root(fixture["cache_root"])
     environment = launcher._sealed_environment(
         scratch_directory=scratch,
         dataset_cache_root=fixture["cache_root"],
+        capture_profile=capture_profile,
     )
     if extra_environment:
         environment.update(extra_environment)
@@ -1031,12 +1038,24 @@ def test_capture_receipt_is_published_only_after_postconditions_and_cleanup(
     candidate = _capture_candidate(fixture, identity_bytes)
     temporary_roots: list[Path] = []
     original_publish = launcher._atomic_publish_capture_receipt
+    original_verify_hub = launcher._verify_capture_hub_cache_identity
+    hub_reauthentications: list[Path] = []
+
+    def verify_hub_wrapper(*args: Any, **kwargs: Any) -> Path:
+        result = original_verify_hub(*args, **kwargs)
+        hub_reauthentications.append(result)
+        return result
 
     def run_wrapper(
         command: list[str],
         **kwargs: Any,
     ) -> subprocess.CompletedProcess[bytes]:
         assert kwargs["stdout"] == subprocess.PIPE
+        assert kwargs["env"]["HF_HUB_CACHE"] == str(fixture["cache_root"] / "hub")
+        assert kwargs["env"]["HUGGINGFACE_HUB_CACHE"] == str(
+            fixture["cache_root"] / "hub"
+        )
+        assert kwargs["env"]["HF_HOME"] == str(Path(command[15]) / "huggingface")
         assert not fixture["receipt_output"].exists()
         temporary_roots.extend((Path(command[13]), Path(command[15])))
         fixture["identity_output"].write_bytes(identity_bytes)
@@ -1047,6 +1066,7 @@ def test_capture_receipt_is_published_only_after_postconditions_and_cleanup(
         payload: bytes,
     ) -> None:
         assert temporary_roots and all(not path.exists() for path in temporary_roots)
+        assert len(hub_reauthentications) >= 2
         assert fixture["identity_output"].read_bytes() == identity_bytes
         assert not fixture["receipt_output"].exists()
         if os.name == "nt":
@@ -1056,9 +1076,15 @@ def test_capture_receipt_is_published_only_after_postconditions_and_cleanup(
 
     monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
     monkeypatch.setattr(launcher, "_atomic_publish_capture_receipt", publish_wrapper)
+    monkeypatch.setattr(
+        launcher,
+        "_verify_capture_hub_cache_identity",
+        verify_hub_wrapper,
+    )
 
     assert launcher.launch(fixture["capture_host_arguments"]) == 0
     assert fixture["receipt_output"].read_bytes() == candidate
+    assert len(hub_reauthentications) == 4
     summary = json.loads(capsys.readouterr().out)
     assert summary == {
         "capture_provenance_receipt_file_sha256": _sha256(candidate),
@@ -1637,6 +1663,8 @@ def test_sealed_environment_omits_auth_network_and_compute_modifiers(
     assert environment["TZ"] == "UTC"
     assert environment["HOME"] == environment["USERPROFILE"] == str(scratch / "private-home")
     assert environment["HF_HOME"] == str(scratch / "huggingface")
+    assert environment["HF_HUB_CACHE"] == str(scratch / "huggingface" / "hub")
+    assert environment["HUGGINGFACE_HUB_CACHE"] == str(scratch / "huggingface" / "hub")
     assert environment["TORCH_HOME"] == str(scratch / "torch")
     assert environment["HF_DATASETS_CACHE"] == str(cache_root / "datasets")
     assert environment["HF_DATASETS_DOWNLOADED_DATASETS_PATH"] == str(
@@ -1653,6 +1681,164 @@ def test_sealed_environment_omits_auth_network_and_compute_modifiers(
         "HF_HUB_DISABLE_UPDATE_CHECK": "1",
         "HF_HUB_DISABLE_XET": "1",
     }.items() <= environment.items()
+    assert not (cache_root / "hub").exists()
+
+
+def test_capture_environment_routes_only_hub_cache_to_explicit_cache_root(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    cache_root = tmp_path / "dataset-cache"
+    cache_root.mkdir()
+    hub_root = launcher._prepare_capture_hub_cache_root(cache_root)
+
+    environment = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=cache_root,
+        capture_profile=True,
+    )
+
+    assert environment["HF_HUB_CACHE"] == str(cache_root / "hub")
+    assert environment["HUGGINGFACE_HUB_CACHE"] == str(cache_root / "hub")
+    assert environment["HF_HOME"] == str(scratch / "huggingface")
+    assert environment["HF_ASSETS_CACHE"] == str(scratch / "huggingface" / "assets")
+    assert environment["HF_XET_CACHE"] == str(scratch / "huggingface" / "xet")
+    assert environment["HF_MODULES_CACHE"] == str(scratch / "huggingface" / "modules")
+    assert environment["HF_TOKEN_PATH"] == str(scratch / "huggingface" / "token")
+    assert environment["TRANSFORMERS_CACHE"] == str(scratch / "transformers")
+    assert hub_root == cache_root / "hub"
+    assert hub_root.is_dir()
+
+
+def test_capture_hub_cache_root_rejects_a_link(tmp_path: Path) -> None:
+    cache_root = tmp_path / "dataset-cache"
+    cache_root.mkdir()
+    outside = tmp_path / "outside-hub"
+    outside.mkdir()
+    try:
+        (cache_root / "hub").symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks are unavailable: {error}")
+
+    with pytest.raises(launcher.SealedLaunchError, match="link or reparse"):
+        launcher._prepare_capture_hub_cache_root(cache_root)
+
+
+def test_capture_hub_cache_root_rejects_a_creation_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_root = tmp_path / "dataset-cache"
+    cache_root.mkdir()
+    outside = tmp_path / "outside-hub"
+    outside.mkdir()
+    candidate = cache_root / "hub"
+    original_mkdir = launcher.os.mkdir
+
+    def racing_mkdir(path: object, mode: int = 0o777, **kwargs: Any) -> None:
+        if Path(path) == candidate:
+            try:
+                candidate.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                pytest.skip(f"directory symlinks are unavailable: {error}")
+            raise FileExistsError(str(candidate))
+        original_mkdir(path, mode, **kwargs)
+
+    monkeypatch.setattr(launcher.os, "mkdir", racing_mkdir)
+
+    with pytest.raises(launcher.SealedLaunchError, match="appeared during creation"):
+        launcher._prepare_capture_hub_cache_root(cache_root)
+
+
+def test_capture_hub_cache_root_rejects_identity_replacement(tmp_path: Path) -> None:
+    cache_root = tmp_path / "dataset-cache"
+    cache_root.mkdir()
+    hub_root = launcher._prepare_capture_hub_cache_root(cache_root)
+    identity = launcher._non_link_directory_identity_chain(
+        hub_root,
+        context="capture Hub cache root",
+    )
+    archived = cache_root / "hub-original"
+    hub_root.rename(archived)
+    hub_root.mkdir()
+
+    with pytest.raises(launcher.SealedLaunchError, match="identity changed"):
+        launcher._verify_capture_hub_cache_identity(
+            cache_root,
+            expected_identity=identity,
+        )
+
+
+def test_capture_hub_cache_replacement_prevents_receipt_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+
+    def run_wrapper(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        hub_root = fixture["cache_root"] / "hub"
+        hub_root.rename(fixture["cache_root"] / "hub-original")
+        hub_root.mkdir()
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+
+    with pytest.raises(launcher.SealedLaunchError, match="capture Hub cache root"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert not fixture["receipt_output"].exists()
+
+
+def test_capture_hub_cache_replacement_immediately_before_receipt_prevents_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+    validate = launcher._validate_capture_provenance_candidate
+    replaced = False
+
+    def run_wrapper(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[bytes]:
+        fixture["identity_output"].write_bytes(identity_bytes)
+        return subprocess.CompletedProcess(command, 0, stdout=candidate)
+
+    def validate_and_replace_hub(*args: Any, **kwargs: Any) -> None:
+        nonlocal replaced
+        validate(*args, **kwargs)
+        if not replaced:
+            hub_root = fixture["cache_root"] / "hub"
+            hub_root.rename(fixture["cache_root"] / "hub-original")
+            hub_root.mkdir()
+            replaced = True
+
+    monkeypatch.setattr(launcher.subprocess, "run", run_wrapper)
+    monkeypatch.setattr(
+        launcher,
+        "_validate_capture_provenance_candidate",
+        validate_and_replace_hub,
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="capture Hub cache root"):
+        launcher.launch(fixture["capture_host_arguments"])
+    assert not fixture["receipt_output"].exists()
+
+
+def test_embedded_bootstrap_binds_capture_hub_root_before_and_after_runner() -> None:
+    assert (
+        '_hf_hub_identity = _directory_chain(_hf_hub_raw, "capture Hub cache root")'
+        in launcher.SEALED_BOOTSTRAP
+    )
+    assert "_repeated_hub_identity != _hf_hub_identity" in launcher.SEALED_BOOTSTRAP
 
 
 def test_private_home_prevents_literal_tilde_runtime_writes(tmp_path: Path) -> None:
@@ -1722,6 +1908,25 @@ def test_embedded_bootstrap_rejects_an_extra_credential_variable(tmp_path: Path)
 
     assert completed.returncode != 0
     assert b"sealed child environment differs from the private cache contract" in completed.stderr
+
+
+@pytest.mark.parametrize("stage_a", [False, True])
+def test_embedded_capture_profiles_accept_explicit_hub_cache_contract(
+    tmp_path: Path,
+    stage_a: bool,
+) -> None:
+    fixture = _capture_fixture(tmp_path, stage_a=stage_a)
+
+    completed = _run_embedded_manifest_boundary(
+        fixture,
+        pycache=tmp_path / "capture-environment-pycache",
+    )
+
+    assert completed.returncode != 0
+    assert b"sealed child environment differs from the private cache contract" not in (
+        completed.stderr
+    )
+    assert b"point-used interpreter path drifted" in completed.stderr
 
 
 def test_help_does_not_require_the_runner_separator(capsys: pytest.CaptureFixture[str]) -> None:
