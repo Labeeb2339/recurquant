@@ -67,7 +67,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v13"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v14"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -307,6 +307,23 @@ def canonical_json_bytes(value: object) -> bytes:
         ).encode("utf-8")
         + b"\n"
     )
+
+
+def _write_exact_stdout_bytes(payload: bytes) -> None:
+    """Write custody bytes without platform newline translation."""
+
+    if not isinstance(payload, bytes):
+        raise TypeError("stdout payload must be bytes")
+    try:
+        stdout = sys.stdout
+        stdout.flush()
+        binary_stdout = stdout.buffer
+        written = binary_stdout.write(payload)
+        binary_stdout.flush()
+    except (AttributeError, OSError, ValueError) as exc:
+        raise CalibrationRunError("binary stdout custody is unavailable") from exc
+    if type(written) is not int or written != len(payload):
+        raise CalibrationRunError("binary stdout custody write was incomplete")
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -8069,7 +8086,7 @@ def _sealed_capture_identity(
             receipt_output_snapshot,
             context=f"{context_prefix} identity capture provenance receipt",
         )
-        print(receipt_payload.decode("utf-8"), end="")
+        _write_exact_stdout_bytes(receipt_payload)
         return 0
     finally:
         try:

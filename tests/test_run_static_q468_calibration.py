@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -1097,6 +1098,110 @@ def test_capture_provenance_receipt_rejects_noncanonical_or_missing_receipt(
     Path(arguments["receipt_path"]).unlink()
     with pytest.raises(runner.CalibrationRunError, match="unavailable"):
         runner._authenticate_calibration_identity_capture_provenance(**arguments)
+
+
+def test_exact_stdout_bytes_bypasses_text_newline_translation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TranslatingTextStream:
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+            self.text_writes: list[str] = []
+
+        def write(self, value: str) -> int:
+            self.text_writes.append(value)
+            translated = value.replace("\n", "\r\n").encode("utf-8")
+            self.buffer.write(translated)
+            return len(value)
+
+        def flush(self) -> None:
+            pass
+
+    stream = TranslatingTextStream()
+    monkeypatch.setattr(sys, "stdout", stream)
+    payload = b'{"status":"canonical"}\n'
+
+    runner._write_exact_stdout_bytes(payload)
+
+    assert stream.text_writes == []
+    assert stream.buffer.getvalue() == payload
+
+
+def test_exact_stdout_bytes_rejects_incomplete_binary_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ShortBinaryStream(io.BytesIO):
+        def write(self, value: bytes) -> int:
+            return super().write(value[:-1])
+
+    class TextStream:
+        def __init__(self) -> None:
+            self.buffer = ShortBinaryStream()
+
+        def flush(self) -> None:
+            pass
+
+    monkeypatch.setattr(sys, "stdout", TextStream())
+
+    with pytest.raises(runner.CalibrationRunError, match="incomplete"):
+        runner._write_exact_stdout_bytes(b'{"status":"canonical"}\n')
+
+
+def test_exact_stdout_bytes_rejects_unavailable_binary_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TextOnlyStream:
+        def flush(self) -> None:
+            pass
+
+    monkeypatch.setattr(sys, "stdout", TextOnlyStream())
+
+    with pytest.raises(runner.CalibrationRunError, match="binary stdout custody"):
+        runner._write_exact_stdout_bytes(b'{"status":"canonical"}\n')
+
+
+def test_exact_stdout_bytes_rejects_binary_flush_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingFlushStream(io.BytesIO):
+        def flush(self) -> None:
+            raise OSError("simulated flush failure")
+
+    class TextStream:
+        def __init__(self) -> None:
+            self.buffer = FailingFlushStream()
+
+        def flush(self) -> None:
+            pass
+
+    monkeypatch.setattr(sys, "stdout", TextStream())
+
+    with pytest.raises(runner.CalibrationRunError, match="binary stdout custody"):
+        runner._write_exact_stdout_bytes(b'{"status":"canonical"}\n')
+
+
+def test_exact_stdout_bytes_survives_real_windows_pipe_translation() -> None:
+    code = f"""
+import importlib.util
+import sys
+from pathlib import Path
+
+script = Path({str(SCRIPT)!r})
+spec = importlib.util.spec_from_file_location('isolated_binary_stdout_runner', script)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module._write_exact_stdout_bytes(b'{{"status":"canonical"}}\\n')
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code],
+        cwd=SCRIPT.parents[1],
+        check=True,
+        capture_output=True,
+    )
+
+    assert completed.stdout == b'{"status":"canonical"}\n'
+    assert completed.stderr == b""
 
 
 def test_sealed_capture_emits_receipt_candidate_without_publishing_it(

@@ -1514,6 +1514,75 @@ exact six-pointer-only diff from the retired identity. Until all of those gates
 pass, no identity promotion, model staging, protected execution, or scientific
 claim is authorized.
 
+Twenty-sixth replacement-H0 canonical-stdout amendment candidate: 2026-08-23.
+Source commit `10ce582659e0d273adc294b593ce078b39265011` and lightweight
+tag `experiment013-h0-10ce582` became the seventh replacement H0 after the
+focused and full suites, package gates, exact GitHub CI run `32612241548`, and
+fresh prerequisite verification passed. Its repository-source-manifest file
+SHA-256 is
+`94ab62b546f1cbaa530e7be7034caa6b3869e87c483da869829610c1c5d37327`
+with canonical self-hash
+`9b36bd6d776b4d0b12d77acedb9637419da400d653717eadb49ff46da6ba162b`;
+its fresh runtime-manifest file SHA-256 is
+`0d710149bc04c0170dc2f99531247a458b9d155336433cbd3e93d94cb824cb26`;
+and its metadata-only model-manifest file SHA-256 is
+`586d9c7e520f3bbd99ecef30663bf07d283eb14622475c58891becd8e033b05c`.
+Those are prerequisite artifacts, not identity or scientific results. No model
+weight was downloaded or opened.
+
+The sole official sealed calibration-identity capture under that H0 completed
+its child-side record construction and atomically published a canonical
+schema-v5 identity input: 288,838 bytes, 160 records, file SHA-256
+`4b9aadbe7afcb1d33f77ea8244570aac9784a75edf21cb461470b37a8ce1f459`,
+and `model_weights_loaded=false`. The runner then emitted its canonical
+schema-v2 capture-provenance candidate with text-mode `print`. On Windows, the
+stdout pipe translated the candidate's single terminal LF to CRLF. The outer
+launcher retained its exact byte contract and failed closed with
+`SealedLaunchError: capture provenance candidate is not canonical JSON` before
+publishing the final provenance receipt. That rejection is correct and must not
+be weakened by newline normalization or tolerance for trailing bytes.
+
+The identity input is failed-attempt evidence only. Its finalized provenance
+receipt is absent, so it cannot be verified, promoted, renamed, copied, adopted,
+or rebound into another chain. It created no candidate or frozen identity, H1,
+staged model root, Fisher smoke, calibration artifact, Stage-A artifact, quality
+result, or scientific claim. New owned scratch and pycache were cleaned; only
+the separately preserved fifth-H0 scratch remains. H0
+`10ce582659e0d273adc294b593ce078b39265011` and tag
+`experiment013-h0-10ce582` are retired and non-authorizing, with no capture
+retry permitted under either.
+
+Before an eighth replacement H0 may exist, a clean descendant must advance the
+calibration runner from v13 to v14 and write the already-canonical provenance
+payload through binary stdout without platform newline translation. The write
+must be exact and flushed; an unavailable binary stream, non-integer or partial
+write, flush failure, child failure, or cleanup failure must fail closed. Tests
+must exercise a translating text stream, a real Windows pipe, unavailable and
+failing binary streams, and the outer launcher's rejection of CRLF and every
+extra byte. The launcher must continue comparing the exact canonical bytes and
+must not normalize them.
+
+This repair changes only runner revision and output transport. Bootstrap mode
+`stdlib-only-exact-runner-and-capture-v3`, cache-confinement mode
+`private-scratch-plus-explicit-dataset-and-capture-hub-root-v2`, capture and
+resolver procedure v6, identity-input/candidate/frozen schema v5, runtime-
+manifest schema v6, capture-provenance schema v2, RULER launcher v7, RULER
+generation-manifest schema v2, publication contract v1, and Stage-A runner v5
+remain unchanged. No record selection, tokenizer byte or span, model contract,
+Q4/Q6/Q8 policy, Fisher boundary, byte budget, metric, statistical gate, or
+claim boundary changes.
+
+Only after focused, full, package, and exact-commit CI verification may that
+clean descendant be tagged as the eighth replacement H0. It must use entirely
+fresh, H0-scoped, no-overwrite repository-source, runtime, model-metadata,
+identity-input, and provenance paths and repeat every prerequisite gate. The
+seventh-H0 input and artifacts cannot authorize or substitute for any step.
+Exactly one official sealed metadata-only capture is then permitted. Before H1,
+the promoted identity must pass the complete frozen-identity contract and the
+Twenty-fourth amendment's exact six-pointer-only diff from the retired identity.
+Until then, model staging, protected access, Fisher smoke, calibration, Stage A,
+and every breakthrough or scientific-result claim remain unauthorized.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the

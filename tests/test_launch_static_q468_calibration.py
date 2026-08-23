@@ -903,6 +903,24 @@ def test_capture_candidate_authenticates_exact_source_runtime_and_bindings(
         )
 
 
+def test_capture_candidate_rejects_text_translation_and_trailing_bytes(
+    tmp_path: Path,
+) -> None:
+    fixture = _capture_fixture(tmp_path)
+    identity_bytes = launcher._canonical_json_bytes({"identity": "fixture"})
+    candidate = _capture_candidate(fixture, identity_bytes)
+
+    for mutated_candidate in (candidate[:-1] + b"\r\n", candidate + b" "):
+        with pytest.raises(launcher.SealedLaunchError, match="not canonical JSON"):
+            launcher._validate_capture_provenance_candidate(
+                mutated_candidate,
+                bindings=fixture["bindings"],
+                identity_input_file_sha256=_sha256(identity_bytes),
+                runtime_manifest=fixture["runtime_manifest"],
+                source_manifest=fixture["source_manifest"],
+            )
+
+
 def test_stage_a_capture_candidate_binds_v4_authorization_and_exact_chain(
     tmp_path: Path,
 ) -> None:

@@ -1681,7 +1681,7 @@ def test_finalized_stage_a_capture_provenance_round_trips_exact_flat_contract() 
         "status",
     }
     assert capture.document["capture_version"] == 6
-    assert capture.document["runner_revision"].endswith("-v13")
+    assert capture.document["runner_revision"].endswith("-v14")
     assert verified.file_sha256 == capture.receipt_sha256
     assert verified.identity_input_file_sha256 == capture.identity_input_file_sha256
     assert verified.calibration_binding_file_sha256 == resolver.sha256_bytes(capture.binding_bytes)

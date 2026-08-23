@@ -116,29 +116,32 @@ would not by itself support a first, novelty, speed, deployment,
 state-of-the-art, or breakthrough claim.
 
 Experiment 013 is a separate, scientifically unexecuted static RHT-Q468
-comparison. Source commit `f8dc9d1066bd9f6df666e74816d704ceeb1f38da`
-and tag `experiment013-h0-f8dc9d1` became its sixth replacement H0 after CI,
-repository-source, fresh runtime, and metadata-only model-manifest gates passed.
-Its sole official sealed identity capture then failed closed during the
-Datasets/Pandas import chain: authenticated `six.py` line 1003 executed
-`sys.meta_path.append(_importer)` for its `_SixMetaPathImporter` instance,
-which violated runner v12's
-exact capture-time import-topology guard. No identity input or provenance
-receipt was published, the owned scratch root was cleaned, and that H0 and tag
-are retired and non-authorizing with no retry permitted. No model weight was
-downloaded or opened, and no Fisher, calibration, Stage-A, or quality result
-exists. There is no breakthrough result.
+comparison. Source commit `10ce582659e0d273adc294b593ce078b39265011`
+and tag `experiment013-h0-10ce582` became its seventh replacement H0 after
+focused, full, package, exact-commit CI, repository-source, fresh runtime, and
+metadata-only model-manifest gates passed. Its sole official sealed identity
+capture atomically published a canonical schema-v5 input with 160 records and
+`model_weights_loaded=false`, but Windows text-mode stdout translated the
+schema-v2 provenance candidate's terminal LF to CRLF. The outer launcher
+correctly failed closed with `capture provenance candidate is not canonical
+JSON` before receipt publication. The input is historical, non-authorizing
+evidence; no candidate or frozen identity and no H1 exist. The owned scratch and
+pycache were cleaned. The H0 and tag are retired with no retry permitted. No
+model weight was downloaded or opened, and no Fisher, calibration, Stage-A, or
+quality result exists. There is no breakthrough result.
 
-The seventh replacement-H0 amendment candidate advances the calibration runner
-to v13 and must narrowly handle the authenticated `six.py` importer behavior
-without admitting general, reordered, transient, self-removing, or
-unauthenticated `sys.meta_path` mutation. Capture and resolver procedure v6,
-identity schemas v5, runtime-manifest schema v6, capture-provenance schema v2,
-and Stage-A runner v5 remain unchanged. The next gate is focused, full, and CI
-verification of a clean descendant, followed by a seventh H0 and entirely fresh
-H0-scoped source, runtime, model-metadata, identity-input, and provenance paths.
-An exact six-pointer retired-identity diff is still required before any H1.
-Model staging, Fisher smoke, calibration, and Stage A remain unauthorized. See
+The eighth replacement-H0 amendment candidate advances only the calibration
+runner from v13 to v14. It writes the already-canonical provenance bytes through
+binary stdout and fails closed on an unavailable stream, partial write, or flush
+failure; the outer launcher continues to reject CRLF and any extra byte. Capture
+and resolver procedure v6, identity schemas v5, runtime-manifest schema v6,
+capture-provenance schema v2, launch-policy values, publication contract, and
+Stage-A runner v5 remain unchanged. The next gate is focused, full, package, and
+CI verification of a clean descendant, followed by an eighth H0 and entirely
+fresh H0-scoped source, runtime, model-metadata, identity-input, and provenance
+paths. An exact six-pointer retired-identity diff is still required before any
+H1. Model staging, Fisher smoke, calibration, and Stage A remain unauthorized.
+See
 [`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
