@@ -1,11 +1,12 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound sixth replacement-H0 candidate. Calibration runner v12 adds
-> capture-only Torch-availability isolation and a fixed external Hub-cache
-> subroot while preserving runtime-manifest schema v6 and Stage-A runner v5.
-> The fifth replacement H0 was retired after its first sealed identity capture
-> failed closed. No identity was published or promoted, no model weight was
-> downloaded or opened, and no calibration or quality result exists; not yet
+> **Status: unbound seventh replacement-H0 amendment candidate. The sixth
+> replacement H0 passed CI plus source, runtime, and model-metadata gates, but
+> its sole official sealed identity capture failed closed when authenticated
+> `six.py` mutated `sys.meta_path` during the Datasets/Pandas import path. That
+> H0 and tag are retired and non-authorizing, with no retry permitted. No
+> identity or provenance receipt was published, no model weight was downloaded
+> or opened, and no calibration or quality result exists; not yet
 > re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
@@ -24,7 +25,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current sixth replacement-H0 candidate amended: 2026-08-23
+Current seventh replacement-H0 amendment candidate amended: 2026-08-23
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -1452,6 +1453,67 @@ amendment is containment and provenance work only; it is not a calibration,
 quality, adoption, novelty, deployment, state-of-the-art, or breakthrough
 result.
 
+Twenty-fifth replacement-H0 authenticated-import-topology amendment candidate:
+2026-08-23. Source commit
+`f8dc9d1066bd9f6df666e74816d704ceeb1f38da` and tag
+`experiment013-h0-f8dc9d1` became the sixth replacement H0 after CI, repository-
+source-manifest verification, fresh runtime preparation and verification, and
+fresh model-metadata-manifest capture and verification passed. The source,
+runtime, and metadata-only model artifacts were therefore valid prerequisites,
+not identity or scientific results. No model weight was downloaded or opened.
+
+The sole official sealed calibration-identity capture under that H0 failed
+closed on the pinned, authenticated runtime import path. During the
+Datasets/Pandas import chain, authenticated `six.py` line 1003 executed
+`sys.meta_path.append(_importer)`, where `_importer` was its
+`_SixMetaPathImporter` instance. Runner v12's capture guard recorded and
+rejected that attempted append before the topology changed. This is a
+capture-containment compatibility defect:
+the observed append came from authenticated dependency code, but the current
+policy has no preregistered safe treatment for it. It is not a dataset,
+tokenizer, calibration, quality, or model result.
+
+The failed child published neither an identity-input file nor its schema-v2
+launcher-finalized capture-provenance receipt. It created no candidate or
+frozen identity, no H1, no model root, no Fisher smoke or calibration artifact,
+and no Stage-A or quality result. No staged model root was created. The launcher
+completed cleanup of its owned
+scratch root; unlike the prior fifth-H0 incident, no failed owned-scratch tree
+is preserved for reuse or inspection. The commit, tag, green prerequisite
+artifacts, failed command, and absent outputs remain historical evidence only.
+H0 `f8dc9d1066bd9f6df666e74816d704ceeb1f38da` and tag
+`experiment013-h0-f8dc9d1` are retired and non-authorizing. They permit no
+capture retry, identity promotion, H1, model staging, protected access, Fisher
+smoke, calibration, or Stage-A execution, and their H0-scoped paths may not be
+renamed, copied, adopted, or rebound into a replacement chain.
+
+Before a seventh replacement H0 may exist, a clean descendant must record and
+implement a narrow treatment for this authenticated `six.py` importer behavior
+without generally permitting `sys.meta_path` mutation. Its regression must
+exercise the pinned Datasets/Pandas import path that reaches `six.py` line 1003,
+while the existing adversarial cases for preceding, transient, self-removing,
+reordered, replaced, or unauthenticated finders continue to fail closed. The
+Torch-availability isolation, actual forbidden-import blocker, exact restoration
+requirements, external authenticated Hub-cache routing, and phase-scoped RULER
+custody remain mandatory. Any resulting runner or launch-policy revision must
+advance consistently across runner, launcher, resolver, runtime manifest, and
+their verifiers and tests. The repair advances the calibration runner from v12
+to v13. Capture procedure v6, resolver procedure v6, identity-input/candidate/
+frozen schema v5, runtime-manifest schema v6, capture-provenance schema v2,
+RULER launcher v7, RULER generation-manifest schema v2, and Stage-A runner v5
+remain unchanged.
+
+Only after focused, full, and CI verification may that clean descendant be
+tagged as the seventh replacement H0. The chain must then use fresh H0-scoped,
+no-overwrite repository-source, runtime, model-metadata, identity-input, and
+capture-provenance paths. It must repeat every source, runtime, immutable model-
+metadata, RULER-custody, and capture gate; success may not be inferred from the
+sixth H0's green prerequisites. Before H1, the promoted identity must still
+pass the complete frozen-identity contract and the Twenty-fourth amendment's
+exact six-pointer-only diff from the retired identity. Until all of those gates
+pass, no identity promotion, model staging, protected execution, or scientific
+claim is authorized.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -1863,8 +1925,8 @@ the identity authorization commit and may not be relabelled as source commit.
 Before committing H1, the exact promoted identity bytes in their ignored,
 no-overwrite precommit location must pass `verify-frozen-identity-contract`.
 That read-only command authenticates H0 and its source manifest, loads the exact
-H0 resolver, and consumes the complete record inventory through calibration-
-runner v12's identity view. It requires the exact receipt and runtime inputs
+H0 resolver, and consumes the complete record inventory through the active
+frozen calibration runner's identity view. It requires the exact receipt and runtime inputs
 `--capture-provenance-receipt`,
 `--expected-capture-provenance-receipt-sha256`, `--runtime-manifest`, and
 `--expected-runtime-manifest-sha256`. It accepts no H1, model manifest, Hub,

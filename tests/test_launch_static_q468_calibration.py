@@ -56,8 +56,11 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         distribution_name,
     ) in launcher.CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS.items():
         dist_info_name = f"{distribution_name.replace('-', '_')}-1.0.dist-info"
+        module_relative_path = (
+            f"{module_name}.py" if module_name == "six" else f"{module_name}/__init__.py"
+        )
         _write(
-            import_root / module_name / "__init__.py",
+            import_root / module_relative_path,
             f"NAME = {module_name!r}\n".encode(),
         )
         _write(
@@ -69,7 +72,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
             (
                 f"{dist_info_name}/METADATA,,\n"
                 f"{dist_info_name}/RECORD,,\n"
-                f"{module_name}/__init__.py,,\n"
+                f"{module_relative_path},,\n"
             ).encode(),
         )
 
@@ -430,7 +433,11 @@ def _capture_candidate(fixture: dict[str, Any], identity_bytes: bytes) -> bytes:
     for module_name in sorted(launcher.CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS):
         distribution_name = launcher.CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS[module_name]
         distribution = distributions[distribution_name]
-        relative_path = f"Lib/site-packages/{module_name}/__init__.py"
+        relative_path = (
+            "Lib/site-packages/six.py"
+            if module_name == "six"
+            else f"Lib/site-packages/{module_name}/__init__.py"
+        )
         file_record = runtime_trees[distribution["package_root"]][relative_path]
         origins.append(
             {
@@ -2345,10 +2352,14 @@ def test_authenticated_stdin_loader_rejects_modified_payload() -> None:
     assert b"sealed bootstrap stdin authentication failed" in completed.stderr
 
 
-def test_bootstrap_rejects_preloaded_sensitive_module(tmp_path: Path) -> None:
+@pytest.mark.parametrize("module_name", ["_virtualenv", "six"])
+def test_bootstrap_rejects_preloaded_sensitive_module(
+    tmp_path: Path,
+    module_name: str,
+) -> None:
     pycache = tmp_path / "empty-pycache"
     pycache.mkdir()
-    prefix = "import sys; sys.modules['_virtualenv'] = object()\n"
+    prefix = f"import sys; sys.modules[{module_name!r}] = object()\n"
     payload = (prefix + launcher.SEALED_BOOTSTRAP).encode("utf-8")
     completed = subprocess.run(
         [

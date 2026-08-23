@@ -116,27 +116,29 @@ would not by itself support a first, novelty, speed, deployment,
 state-of-the-art, or breakthrough claim.
 
 Experiment 013 is a separate, scientifically unexecuted static RHT-Q468
-comparison. Source commit `fe88548ec58c4547456360d45fffdca3fba8ccf9`
-became its fifth replacement H0, with a fresh source manifest and schema-v6
-runtime. Its first sealed tokenizer-and-dataset identity capture failed closed:
-Transformers 5.14.1 imported Torch across the capture-only model/CUDA boundary,
-and the standard Hub cache created an internal symlink under strict owned
-scratch. No identity input or provenance receipt was published, no identity was
-promoted, and that H0 is now retired and non-authorizing. No model weight was
+comparison. Source commit `f8dc9d1066bd9f6df666e74816d704ceeb1f38da`
+and tag `experiment013-h0-f8dc9d1` became its sixth replacement H0 after CI,
+repository-source, fresh runtime, and metadata-only model-manifest gates passed.
+Its sole official sealed identity capture then failed closed during the
+Datasets/Pandas import chain: authenticated `six.py` line 1003 executed
+`sys.meta_path.append(_importer)` for its `_SixMetaPathImporter` instance,
+which violated runner v12's
+exact capture-time import-topology guard. No identity input or provenance
+receipt was published, the owned scratch root was cleaned, and that H0 and tag
+are retired and non-authorizing with no retry permitted. No model weight was
 downloaded or opened, and no Fisher, calibration, Stage-A, or quality result
 exists. There is no breakthrough result.
 
-The sixth replacement-H0 working copy advances only the calibration runner to
-v12. It adds scoped Torch-availability isolation for identity capture, routes
-the capture-only Hub cache to the exact authenticated external `cache-root/hub`
-subroot, and narrows authoritative reusable RULER custody to the exact frozen
-generation manifest plus 20 regular receipt files. Runtime-manifest schema v6,
-capture and resolver procedure v6, identity schemas v5, capture-provenance
-schema v2, and Stage-A runner v5 remain unchanged. The next gate is a clean,
-fully verified and tagged replacement H0, followed by fresh H0-scoped source,
-runtime, and capture paths and an exact six-pointer retired-identity diff before
-any H1. Model staging, Fisher smoke, calibration, and Stage A remain
-unauthorized. See
+The seventh replacement-H0 amendment candidate advances the calibration runner
+to v13 and must narrowly handle the authenticated `six.py` importer behavior
+without admitting general, reordered, transient, self-removing, or
+unauthenticated `sys.meta_path` mutation. Capture and resolver procedure v6,
+identity schemas v5, runtime-manifest schema v6, capture-provenance schema v2,
+and Stage-A runner v5 remain unchanged. The next gate is focused, full, and CI
+verification of a clean descendant, followed by a seventh H0 and entirely fresh
+H0-scoped source, runtime, model-metadata, identity-input, and provenance paths.
+An exact six-pointer retired-identity diff is still required before any H1.
+Model staging, Fisher smoke, calibration, and Stage A remain unauthorized. See
 [`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8

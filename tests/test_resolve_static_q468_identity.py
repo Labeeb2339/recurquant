@@ -444,7 +444,11 @@ def _authorization_runtime_manifest() -> tuple[bytes, list[dict[str, object]]]:
     distribution_modules["torch"] = "torch"
     runtime_files = [
         {
-            "path": f"{import_path}/{module}/__init__.py",
+            "path": (
+                f"{import_path}/six.py"
+                if module == "six"
+                else f"{import_path}/{module}/__init__.py"
+            ),
             "sha256": _hash(f"runtime-file-{module}"),
             "size_bytes": 100 + index,
         }
@@ -454,9 +458,14 @@ def _authorization_runtime_manifest() -> tuple[bytes, list[dict[str, object]]]:
     distributions = []
     for distribution in sorted(distribution_modules):
         module = distribution_modules[distribution]
+        module_path = (
+            f"{import_path}/six.py"
+            if module == "six"
+            else f"{import_path}/{module}/__init__.py"
+        )
         distributions.append(
             {
-                "files": [f"{import_path}/{module}/__init__.py"],
+                "files": [module_path],
                 "name": distribution,
                 "package_root": root_name,
                 "version": (
@@ -520,7 +529,11 @@ def _authorization_runtime_manifest() -> tuple[bytes, list[dict[str, object]]]:
     origins = []
     for module in sorted(module_to_distribution):
         distribution = module_to_distribution[module]
-        path = f"{import_path}/{module}/__init__.py"
+        path = (
+            f"{import_path}/six.py"
+            if module == "six"
+            else f"{import_path}/{module}/__init__.py"
+        )
         file = by_path[path]
         dist = by_distribution[distribution]
         origins.append(
@@ -1668,7 +1681,7 @@ def test_finalized_stage_a_capture_provenance_round_trips_exact_flat_contract() 
         "status",
     }
     assert capture.document["capture_version"] == 6
-    assert capture.document["runner_revision"].endswith("-v12")
+    assert capture.document["runner_revision"].endswith("-v13")
     assert verified.file_sha256 == capture.receipt_sha256
     assert verified.identity_input_file_sha256 == capture.identity_input_file_sha256
     assert verified.calibration_binding_file_sha256 == resolver.sha256_bytes(capture.binding_bytes)

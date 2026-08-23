@@ -35,7 +35,7 @@ BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v12"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v13"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 3
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
@@ -74,6 +74,7 @@ CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS: Final = {
     "huggingface_hub": "huggingface-hub",
     "numpy": "numpy",
     "pyarrow": "pyarrow",
+    "six": "six",
     "tokenizers": "tokenizers",
     "transformers": "transformers",
 }
@@ -2076,7 +2077,11 @@ def _validate_capture_provenance_candidate(
             raise SealedLaunchError(
                 "capture provenance candidate origin is outside its import root"
             ) from exc
-        if not module_relative.parts or module_relative.parts[0] != module_name:
+        if not module_relative.parts or (
+            module_relative != PurePosixPath("six.py")
+            if module_name == "six"
+            else module_relative.parts[0] != module_name
+        ):
             raise SealedLaunchError("capture provenance candidate module is shadowed")
         runtime_file = trees.get(package_root, {}).get(relative_path)
         if runtime_file != {
@@ -2583,7 +2588,7 @@ _sensitive = {
     "_recurquant_experiment013_calibration_runner_for_capture",
     "recurquant_experiment013_identity_resolver",
     "datasets", "fsspec", "huggingface_hub", "numpy", "pkg_resources",
-    "pyarrow", "setuptools", "tokenizers", "torch", "transformers",
+    "pyarrow", "setuptools", "six", "tokenizers", "torch", "transformers",
     "_recurquant_experiment013_sealed_runner",
 }
 if _sensitive.intersection(_s.modules):
@@ -3072,7 +3077,7 @@ def _smoke(options):
             or type(receipt_root["capture_version"]) is not int
             or receipt_root["capture_version"] != 6
             or receipt_root["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v12"
+            != "experiment-013-static-q468-calibration-runner-v13"
             or receipt_root["phase"] != "calibration"
             or receipt_root["publication_contract"]
             != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
@@ -3095,7 +3100,7 @@ def _smoke(options):
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
             or evidence.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v12"
+            != "experiment-013-static-q468-calibration-runner-v13"
             or evidence.get("prerequisites") != {
                 "capture_provenance_receipt_file_sha256": receipt_sha256,
                 "fisher_h1_smoke_report_file_sha256": None,

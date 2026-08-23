@@ -67,7 +67,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v12"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v13"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -230,6 +230,7 @@ CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS: Final = {
     "huggingface_hub": "huggingface-hub",
     "numpy": "numpy",
     "pyarrow": "pyarrow",
+    "six": "six",
     "tokenizers": "tokenizers",
     "transformers": "transformers",
 }
@@ -1068,6 +1069,22 @@ class SealedRuntimeContext:
     package_import_paths: Mapping[str, str]
     git_executable_path: Path
     pycache_prefix: Path
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedCaptureSix:
+    """Exact six module/importer state admitted before capture isolation."""
+
+    module: ModuleType
+    module_spec: object
+    importer: object
+    importer_type: type
+    origin_path: Path
+    origin_sha256: str
+    origin_size_bytes: int
+    meta_path: list[object]
+    topology_before_import: tuple[object, ...]
+    topology_with_importer: tuple[object, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2113,7 +2130,7 @@ def _authenticate_calibration_identity_capture_provenance_bytes_unchecked(
             raise CalibrationRunError(
                 f"capture provenance module is outside its import root: {module_name}"
             ) from exc
-        if not module_relative.parts or module_relative.parts[0] != module_name:
+        if not _runtime_module_relative_origin_matches(module_name, module_relative):
             raise CalibrationRunError(f"capture provenance module path is shadowed: {module_name}")
         if relative_path not in distribution.files:
             raise CalibrationRunError(
@@ -6735,6 +6752,17 @@ def _revalidate_new_capture_artifact_path(
         raise FileExistsError(f"refusing to overwrite existing {context}: {snapshot.path}")
 
 
+def _runtime_module_relative_origin_matches(
+    module_name: str,
+    module_relative: PurePosixPath,
+) -> bool:
+    if not module_relative.parts:
+        return False
+    if module_name == "six":
+        return module_relative == PurePosixPath("six.py")
+    return module_relative.parts[0] == module_name
+
+
 def _runtime_module_origin_record(
     *,
     module_name: str,
@@ -6779,7 +6807,7 @@ def _runtime_module_origin_record(
         raise CalibrationRunError(
             f"critical module origin is outside its authenticated import root: {module_name}"
         ) from exc
-    if not module_relative.parts or module_relative.parts[0] != module_name:
+    if not _runtime_module_relative_origin_matches(module_name, module_relative):
         raise CalibrationRunError(f"critical module is shadowed: {module_name}")
     if canonical_relative not in distribution.files:
         raise CalibrationRunError(
@@ -6896,6 +6924,189 @@ def _capture_calibration_identity_module_origins(
             )
         )
     return origins
+
+
+def _is_six_meta_path_importer(value: object) -> bool:
+    return (
+        type(value).__name__ == "_SixMetaPathImporter"
+        and type(value).__module__ == "six"
+        and getattr(value, "name", None) == "six"
+    )
+
+
+def _assert_authenticated_capture_six(
+    binding: AuthenticatedCaptureSix,
+    *,
+    hash_origin: bool,
+) -> None:
+    module = binding.module
+    if sys.modules.get("six") is not module:
+        raise CalibrationRunError("authenticated six module identity changed")
+    if getattr(module, "__spec__", None) is not binding.module_spec:
+        raise CalibrationRunError("authenticated six module specification changed")
+    raw_file = getattr(module, "__file__", None)
+    raw_origin = getattr(binding.module_spec, "origin", None)
+    if not isinstance(raw_file, str) or not isinstance(raw_origin, str):
+        raise CalibrationRunError("authenticated six module origin is missing")
+    try:
+        declared_file = Path(raw_file).resolve(strict=True)
+        declared_origin = Path(raw_origin).resolve(strict=True)
+    except OSError as exc:
+        raise CalibrationRunError("authenticated six module origin is unavailable") from exc
+    if declared_file != binding.origin_path or declared_origin != binding.origin_path:
+        raise CalibrationRunError("authenticated six module origin changed")
+    if getattr(module, "_importer", None) is not binding.importer:
+        raise CalibrationRunError("authenticated six importer identity changed")
+    if (
+        type(binding.importer) is not binding.importer_type
+        or not _is_six_meta_path_importer(binding.importer)
+    ):
+        raise CalibrationRunError("authenticated six importer contract changed")
+    if sum(item is binding.importer for item in sys.meta_path) != 1:
+        raise CalibrationRunError("authenticated six importer topology changed")
+    if hash_origin:
+        try:
+            digest, size = _stream_file_sha256(binding.origin_path)
+        except OSError as exc:
+            raise CalibrationRunError(
+                "authenticated six source became unavailable during capture"
+            ) from exc
+        if digest != binding.origin_sha256 or size != binding.origin_size_bytes:
+            raise CalibrationRunError("authenticated six source changed during capture")
+
+
+def _preload_authenticated_capture_six(
+    *,
+    expected_origin: Path,
+    manifest: CalibrationRuntimeManifest,
+    runtime_context: SealedRuntimeContext,
+) -> AuthenticatedCaptureSix:
+    """Load exact six bytes and admit only its single documented importer append."""
+
+    if "six" in sys.modules or any(name.startswith("six.") for name in sys.modules):
+        raise CalibrationRunError("calibration identity six module was preloaded")
+    if not isinstance(sys.meta_path, list):
+        raise CalibrationRunError("capture six preload requires mutable import topology")
+    if any(_is_six_meta_path_importer(item) for item in sys.meta_path):
+        raise CalibrationRunError("capture import topology already contains a six importer")
+    original_meta_path = sys.meta_path
+    topology_before_import = tuple(original_meta_path)
+    forbidden_blocker = _ForbiddenCalibrationIdentityImportBlocker()
+    origin_path = Path(expected_origin).resolve(strict=True)
+    origin_record = _runtime_module_origin_record(
+        module_name="six",
+        origin_path=origin_path,
+        manifest=manifest,
+        runtime_context=runtime_context,
+    )
+    source_bytes = _read_stable_regular_bytes(
+        origin_path,
+        context="authenticated capture six source",
+    )
+    source_sha256 = sha256_bytes(source_bytes)
+    source_size = len(source_bytes)
+    if (
+        source_sha256 != origin_record["sha256"]
+        or source_size != origin_record["size_bytes"]
+    ):
+        raise CalibrationRunError("authenticated capture six source drifted before import")
+    try:
+        code = compile(source_bytes, str(origin_path), "exec", dont_inherit=True)
+    except (SyntaxError, ValueError) as exc:
+        raise CalibrationRunError("cannot compile authenticated capture six source") from exc
+    module = ModuleType("six")
+    module.__file__ = str(origin_path)
+    module.__package__ = ""
+    module.__loader__ = None
+    module.__spec__ = importlib.machinery.ModuleSpec(
+        "six",
+        loader=None,
+        origin=str(origin_path),
+    )
+    sys.modules["six"] = module
+    try:
+        original_meta_path.insert(0, forbidden_blocker)
+        if tuple(original_meta_path) != (forbidden_blocker, *topology_before_import):
+            raise CalibrationRunError("capture six preload blocker topology changed")
+        exec(code, module.__dict__)
+        importer = getattr(module, "_importer", None)
+        if sys.meta_path is not original_meta_path or tuple(original_meta_path) != (
+            forbidden_blocker,
+            *topology_before_import,
+            importer,
+        ):
+            raise CalibrationRunError(
+                "authenticated six import changed meta-path beyond its exact importer append"
+            )
+        if forbidden_blocker.attempts:
+            raise CalibrationRunError(
+                "authenticated six attempted forbidden model/CUDA imports: "
+                f"{sorted(forbidden_blocker.attempts)}"
+            )
+        if not _is_six_meta_path_importer(importer):
+            raise CalibrationRunError("authenticated six did not install its exact importer")
+        del original_meta_path[0]
+        topology_with_importer = tuple(original_meta_path)
+        if topology_with_importer != (*topology_before_import, importer):
+            raise CalibrationRunError("capture six preload blocker removal changed topology")
+        repeated_record = _runtime_module_origin_record(
+            module_name="six",
+            origin_path=origin_path,
+            manifest=manifest,
+            runtime_context=runtime_context,
+        )
+        if repeated_record != origin_record:
+            raise CalibrationRunError("authenticated six runtime origin changed on import")
+        binding = AuthenticatedCaptureSix(
+            module=module,
+            module_spec=module.__spec__,
+            importer=importer,
+            importer_type=type(importer),
+            origin_path=origin_path,
+            origin_sha256=source_sha256,
+            origin_size_bytes=source_size,
+            meta_path=original_meta_path,
+            topology_before_import=topology_before_import,
+            topology_with_importer=topology_with_importer,
+        )
+        _assert_authenticated_capture_six(binding, hash_origin=True)
+        _assert_capture_forbidden_modules_absent()
+        return binding
+    except BaseException:
+        for name in tuple(sys.modules):
+            if name == "six" or name.startswith("six."):
+                sys.modules.pop(name, None)
+        original_meta_path[:] = list(topology_before_import)
+        sys.meta_path = original_meta_path
+        raise
+
+
+def _restore_authenticated_capture_six(
+    binding: AuthenticatedCaptureSix,
+    *,
+    primary_error: BaseException | None,
+) -> None:
+    failures: list[str] = []
+    try:
+        _assert_authenticated_capture_six(binding, hash_origin=True)
+    except CalibrationRunError as error:
+        failures.append(str(error))
+    if sys.meta_path is not binding.meta_path:
+        failures.append("authenticated six meta-path object changed before restoration")
+    elif tuple(binding.meta_path) != binding.topology_with_importer:
+        failures.append("authenticated six meta-path topology changed before restoration")
+    for name in tuple(sys.modules):
+        if name == "six" or name.startswith("six."):
+            sys.modules.pop(name, None)
+    binding.meta_path[:] = list(binding.topology_before_import)
+    sys.meta_path = binding.meta_path
+    if failures:
+        error = CalibrationRunError("; ".join(failures))
+        if primary_error is None:
+            raise error
+        add_note = getattr(primary_error, "add_note", None)
+        if callable(add_note):
+            add_note(str(error))
 
 
 class _ExcludedCalibrationIdentityImportBlocker:
@@ -7027,6 +7238,7 @@ class _CalibrationIdentityImportIsolation:
         self._original_meta_path: list[object] | None = None
         self._original_meta_path_topology: tuple[object, ...] | None = None
         self._guarded_meta_path: _GuardedCalibrationIdentityMetaPath | None = None
+        self._authenticated_six: AuthenticatedCaptureSix | None = None
 
     def _forbidden_import(self, fullname: object) -> bool:
         return isinstance(fullname, str) and _module_matches_prefixes(
@@ -7065,6 +7277,11 @@ class _CalibrationIdentityImportIsolation:
                 "capture import-finder topology mutation was attempted: "
                 f"{sorted(guarded.mutation_attempts)}"
             )
+        if self._authenticated_six is not None:
+            _assert_authenticated_capture_six(
+                self._authenticated_six,
+                hash_origin=False,
+            )
         if importlib.util.find_spec is not scoped_find_spec:
             raise CalibrationRunError("capture availability isolation changed during execution")
         if builtins.__import__ is not scoped_import:
@@ -7081,7 +7298,11 @@ class _CalibrationIdentityImportIsolation:
                 f"capture attempted forbidden model/CUDA import: {fullname}"
             )
 
-    def activate(self) -> None:
+    def activate(
+        self,
+        *,
+        authenticated_six: AuthenticatedCaptureSix | None = None,
+    ) -> None:
         if any(
             item is not None
             for item in (
@@ -7095,6 +7316,7 @@ class _CalibrationIdentityImportIsolation:
                 self._original_meta_path,
                 self._original_meta_path_topology,
                 self._guarded_meta_path,
+                self._authenticated_six,
             )
         ):
             raise CalibrationRunError("capture import isolation was activated twice")
@@ -7118,6 +7340,16 @@ class _CalibrationIdentityImportIsolation:
             raise CalibrationRunError("capture import machinery is unavailable")
         original_meta_path = sys.meta_path
         original_meta_path_topology = tuple(original_meta_path)
+        if authenticated_six is not None:
+            _assert_authenticated_capture_six(authenticated_six, hash_origin=True)
+            if (
+                original_meta_path is not authenticated_six.meta_path
+                or original_meta_path_topology
+                != authenticated_six.topology_with_importer
+            ):
+                raise CalibrationRunError(
+                    "capture isolation did not receive the exact authenticated six topology"
+                )
         guarded_meta_path = _GuardedCalibrationIdentityMetaPath(
             (self.blocker, *original_meta_path_topology)
         )
@@ -7156,6 +7388,7 @@ class _CalibrationIdentityImportIsolation:
         self._original_meta_path = original_meta_path
         self._original_meta_path_topology = original_meta_path_topology
         self._guarded_meta_path = guarded_meta_path
+        self._authenticated_six = authenticated_six
         try:
             sys.meta_path = guarded_meta_path
             importlib.util.find_spec = scoped_find_spec  # type: ignore[assignment]
@@ -7168,6 +7401,11 @@ class _CalibrationIdentityImportIsolation:
 
     def assert_intact(self) -> None:
         self._assert_guard_state()
+        if self._authenticated_six is not None:
+            _assert_authenticated_capture_six(
+                self._authenticated_six,
+                hash_origin=True,
+            )
         if self.blocker.attempts:
             raise CalibrationRunError(
                 "capture attempted forbidden model/CUDA imports: "
@@ -7186,6 +7424,7 @@ class _CalibrationIdentityImportIsolation:
         original_meta_path = self._original_meta_path
         original_meta_path_topology = self._original_meta_path_topology
         guarded_meta_path = self._guarded_meta_path
+        authenticated_six = self._authenticated_six
         state = (
             original_find_spec,
             scoped_find_spec,
@@ -7197,6 +7436,7 @@ class _CalibrationIdentityImportIsolation:
             original_meta_path,
             original_meta_path_topology,
             guarded_meta_path,
+            authenticated_six,
         )
         if all(item is None for item in state):
             return
@@ -7247,6 +7487,14 @@ class _CalibrationIdentityImportIsolation:
                 "capture attempted forbidden model/CUDA imports before restoration: "
                 f"{sorted(self.blocker.attempts)}"
             )
+        if authenticated_six is not None:
+            try:
+                _assert_authenticated_capture_six(
+                    authenticated_six,
+                    hash_origin=True,
+                )
+            except CalibrationRunError as error:
+                failures.append(str(error))
         self._original_find_spec = None
         self._scoped_find_spec = None
         self._original_import = None
@@ -7257,6 +7505,7 @@ class _CalibrationIdentityImportIsolation:
         self._original_meta_path = None
         self._original_meta_path_topology = None
         self._guarded_meta_path = None
+        self._authenticated_six = None
         if failures:
             error = CalibrationRunError("; ".join(failures))
             if primary_error is None:
@@ -7575,6 +7824,7 @@ def _sealed_capture_identity(
     resolver_module: ModuleType | None = None
     blocker = _ExcludedCalibrationIdentityImportBlocker()
     import_isolation = _CalibrationIdentityImportIsolation()
+    authenticated_six: AuthenticatedCaptureSix | None = None
     payload: bytes | None = None
     origins: list[dict[str, object]] | None = None
     normalized_calibration_binding: dict[str, str] | None = None
@@ -7582,7 +7832,12 @@ def _sealed_capture_identity(
     preexisting_policy_modules = frozenset(sys.modules)
     try:
         sys.meta_path.insert(0, blocker)
-        import_isolation.activate()
+        authenticated_six = _preload_authenticated_capture_six(
+            expected_origin=expected_origins["six"],
+            manifest=manifest,
+            runtime_context=runtime_context,
+        )
+        import_isolation.activate(authenticated_six=authenticated_six)
         namespace = _install_authenticated_recurquant_namespace(args.repository_root)
         source_module = _load_exact_source_module(
             CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
@@ -7820,30 +8075,37 @@ def _sealed_capture_identity(
         try:
             import_isolation.restore(primary_error=sys.exception())
         finally:
-            if blocker in sys.meta_path:
-                sys.meta_path.remove(blocker)
-            for name in tuple(sys.modules):
-                if (
-                    name not in preexisting_policy_modules
-                    and (
-                        name.split(".", 1)[0]
-                        in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
-                        or _module_matches_prefixes(
-                            name,
-                            CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
-                        )
+            try:
+                if authenticated_six is not None:
+                    _restore_authenticated_capture_six(
+                        authenticated_six,
+                        primary_error=sys.exception(),
                     )
+            finally:
+                if blocker in sys.meta_path:
+                    sys.meta_path.remove(blocker)
+                for name in tuple(sys.modules):
+                    if (
+                        name not in preexisting_policy_modules
+                        and (
+                            name.split(".", 1)[0]
+                            in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
+                            or _module_matches_prefixes(
+                                name,
+                                CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
+                            )
+                        )
+                    ):
+                        sys.modules.pop(name, None)
+                for name in (
+                    CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
+                    CALIBRATION_IDENTITY_CAPTURE_MODULE,
+                    IDENTITY_RESOLVER_MODULE,
+                    CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+                    CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
+                    "recurquant",
                 ):
                     sys.modules.pop(name, None)
-            for name in (
-                CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
-                CALIBRATION_IDENTITY_CAPTURE_MODULE,
-                IDENTITY_RESOLVER_MODULE,
-                CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
-                CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
-                "recurquant",
-            ):
-                sys.modules.pop(name, None)
 
 
 def _sealed_capture_calibration_identity(

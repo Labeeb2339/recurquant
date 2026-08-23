@@ -520,7 +520,11 @@ def capture_provenance_runtime_manifest_bytes() -> tuple[bytes, list[dict[str, o
         start=1,
     ):
         distribution_name = runner.CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS[module_name]
-        module_path = f"Lib/site-packages/{module_name}/__init__.py"
+        module_path = (
+            "Lib/site-packages/six.py"
+            if module_name == "six"
+            else f"Lib/site-packages/{module_name}/__init__.py"
+        )
         record_path = (
             f"Lib/site-packages/{distribution_name.replace('-', '_')}-1.0.dist-info/RECORD"
         )
@@ -965,6 +969,11 @@ def prepared_fake_sealed_capture(
         runner,
         "_preflight_calibration_identity_import_surface",
         lambda **_kwargs: {name: tmp_path / name for name in origins_by_module(origins)},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_preload_authenticated_capture_six",
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(runner, "_assert_capture_forbidden_modules_absent", lambda: None)
     monkeypatch.setattr(
@@ -1930,6 +1939,363 @@ def test_capture_import_isolation_latches_self_removing_finder_attempt(
     assert any(
         "topology mutation was attempted" in note
         for note in getattr(primary_error, "__notes__", ())
+    )
+
+
+def test_authenticated_six_preload_supports_dataset_and_tokenizer_under_isolation() -> None:
+    code = f"""
+import hashlib
+import importlib.util
+import sys
+import tempfile
+from pathlib import Path
+
+script = Path({str(SCRIPT)!r})
+spec = importlib.util.spec_from_file_location('isolated_six_capture_runner', script)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+assert 'six' not in sys.modules
+assert 'torch' not in sys.modules
+
+six_spec = importlib.util.find_spec('six')
+assert six_spec is not None and isinstance(six_spec.origin, str)
+six_path = Path(six_spec.origin).resolve(strict=True)
+package_root = six_path.parent
+payload = six_path.read_bytes()
+relative = 'six.py'
+file_record = module.RuntimeFileRecord(
+    path=relative,
+    sha256=hashlib.sha256(payload).hexdigest(),
+    size_bytes=len(payload),
+)
+manifest = module.CalibrationRuntimeManifest(
+    python_implementation='CPython',
+    python_version='fixture',
+    python_cache_tag='fixture',
+    python_abi_flags='',
+    machine_system='fixture',
+    machine_architecture='fixture',
+    machine_name='fixture',
+    machine_byteorder=sys.byteorder,
+    machine_pointer_bits=64,
+    launch_policy={{}},
+    base_sys_path=(),
+    base_runtime_root='base-runtime',
+    package_roots=(module.RuntimePackageRootRecord(name='packages', import_path='.'),),
+    interpreter_root='base-runtime',
+    interpreter_relative_path='python.exe',
+    interpreter_size_bytes=1,
+    interpreter_sha256='0' * 64,
+    git_executable_absolute_path_sha256='1' * 64,
+    git_executable_sha256='2' * 64,
+    git_executable_size_bytes=1,
+    runtime_trees=(
+        module.RuntimeTreeRecord(name='packages', kind='packages', files=(file_record,)),
+    ),
+    distributions=(
+        module.RuntimeDistributionRecord(
+            name='six',
+            version='1.17.0',
+            package_root='packages',
+            files=(relative,),
+        ),
+    ),
+    file_sha256='3' * 64,
+)
+context = module.SealedRuntimeContext(
+    manifest_file_sha256=manifest.file_sha256,
+    base_runtime_root=package_root,
+    package_roots={{'packages': package_root}},
+    package_import_paths={{'packages': '.'}},
+    git_executable_path=package_root / 'git',
+    pycache_prefix=package_root / 'unused-pycache',
+)
+
+original_meta_path = sys.meta_path
+original_topology = tuple(original_meta_path)
+excluded = module._ExcludedCalibrationIdentityImportBlocker()
+isolation = module._CalibrationIdentityImportIsolation()
+binding = None
+primary_error = None
+try:
+    sys.meta_path.insert(0, excluded)
+    binding = module._preload_authenticated_capture_six(
+        expected_origin=six_path,
+        manifest=manifest,
+        runtime_context=context,
+    )
+    assert tuple(sys.meta_path) == binding.topology_with_importer
+    assert binding.topology_with_importer == (
+        *binding.topology_before_import,
+        binding.importer,
+    )
+    isolation.activate(authenticated_six=binding)
+
+    from datasets import Dataset
+    import pandas
+    from tokenizers import Tokenizer, models
+    from transformers import AutoTokenizer, PreTrainedTokenizerFast
+
+    assert Dataset.from_dict({{'text': ['hello']}})[0]['text'] == 'hello'
+    assert pandas.DataFrame({{'value': [1]}}).iloc[0, 0] == 1
+    tokenizer = Tokenizer(models.WordLevel({{'[UNK]': 0, 'hello': 1}}, unk_token='[UNK]'))
+    fast = PreTrainedTokenizerFast(tokenizer_object=tokenizer, unk_token='[UNK]')
+    with tempfile.TemporaryDirectory() as directory:
+        fast.save_pretrained(directory)
+        loaded = AutoTokenizer.from_pretrained(directory, local_files_only=True)
+        assert loaded.encode('hello', add_special_tokens=False) == [1]
+    assert not any(name == 'torch' or name.startswith('torch.') for name in sys.modules)
+    isolation.assert_intact()
+    try:
+        sys.meta_path.append(object())
+    except module.CalibrationRunError as error:
+        primary_error = error
+    else:
+        raise AssertionError('sealed meta-path append was accepted')
+finally:
+    isolation.restore(primary_error=primary_error)
+    if binding is not None:
+        module._restore_authenticated_capture_six(binding, primary_error=primary_error)
+    if excluded in sys.meta_path:
+        sys.meta_path.remove(excluded)
+
+assert primary_error is not None
+assert sys.meta_path is original_meta_path
+assert tuple(sys.meta_path) == original_topology
+assert 'six' not in sys.modules
+assert not any(name.startswith('six.') for name in sys.modules)
+assert any(
+    'topology mutation was attempted' in note
+    for note in getattr(primary_error, '__notes__', ())
+)
+"""
+    subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code],
+        cwd=SCRIPT.parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def test_authenticated_six_preload_rejects_adversarial_state_and_cleans_exactly() -> None:
+    code = f"""
+import hashlib
+import importlib.util
+import sys
+import tempfile
+from pathlib import Path
+from types import ModuleType
+
+script = Path({str(SCRIPT)!r})
+spec = importlib.util.spec_from_file_location('isolated_adversarial_six_runner', script)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+def runtime_for(source, package_root, relative):
+    payload = source.read_bytes()
+    record = module.RuntimeFileRecord(
+        path=relative,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
+    )
+    manifest = module.CalibrationRuntimeManifest(
+        python_implementation='CPython', python_version='fixture',
+        python_cache_tag='fixture', python_abi_flags='', machine_system='fixture',
+        machine_architecture='fixture', machine_name='fixture',
+        machine_byteorder=sys.byteorder, machine_pointer_bits=64, launch_policy={{}},
+        base_sys_path=(), base_runtime_root='base-runtime',
+        package_roots=(module.RuntimePackageRootRecord(name='packages', import_path='.'),),
+        interpreter_root='base-runtime', interpreter_relative_path='python.exe',
+        interpreter_size_bytes=1, interpreter_sha256='0' * 64,
+        git_executable_absolute_path_sha256='1' * 64,
+        git_executable_sha256='2' * 64, git_executable_size_bytes=1,
+        runtime_trees=(
+            module.RuntimeTreeRecord(name='packages', kind='packages', files=(record,)),
+        ),
+        distributions=(
+            module.RuntimeDistributionRecord(
+                name='six', version='1.17.0', package_root='packages', files=(relative,),
+            ),
+        ),
+        file_sha256='3' * 64,
+    )
+    context = module.SealedRuntimeContext(
+        manifest_file_sha256=manifest.file_sha256,
+        base_runtime_root=package_root,
+        package_roots={{'packages': package_root}},
+        package_import_paths={{'packages': '.'}},
+        git_executable_path=package_root / 'git',
+        pycache_prefix=package_root / 'unused-pycache',
+    )
+    return manifest, context
+
+valid_tail = '''
+class _SixMetaPathImporter:
+    def __init__(self):
+        self.name = __name__
+_importer = _SixMetaPathImporter()
+sys.meta_path.append(_importer)
+'''
+
+original_meta_path = sys.meta_path
+original_topology = tuple(original_meta_path)
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    source = root / 'six.py'
+
+    source.write_text('import sys\\n' + valid_tail, encoding='utf-8')
+    manifest, context = runtime_for(source, root, 'six.py')
+    sys.modules['six.moves'] = ModuleType('six.moves')
+    try:
+        try:
+            module._preload_authenticated_capture_six(
+                expected_origin=source, manifest=manifest, runtime_context=context,
+            )
+        except module.CalibrationRunError as error:
+            assert 'preloaded' in str(error)
+        else:
+            raise AssertionError('orphan six.moves was accepted')
+    finally:
+        sys.modules.pop('six.moves', None)
+    assert tuple(sys.meta_path) == original_topology
+
+    Orphan = type(
+        '_SixMetaPathImporter',
+        (),
+        {{'__module__': 'six', '__init__': lambda self: setattr(self, 'name', 'six')}},
+    )
+    orphan = Orphan()
+    sys.meta_path.append(orphan)
+    try:
+        try:
+            module._preload_authenticated_capture_six(
+                expected_origin=source, manifest=manifest, runtime_context=context,
+            )
+        except module.CalibrationRunError as error:
+            assert 'already contains a six importer' in str(error)
+        else:
+            raise AssertionError('orphan six importer was accepted')
+    finally:
+        sys.meta_path.remove(orphan)
+    assert tuple(sys.meta_path) == original_topology
+
+    source.write_text(
+        'import sys\\ntry:\\n    import torch\\nexcept BaseException:\\n    pass\\n' + valid_tail,
+        encoding='utf-8',
+    )
+    manifest, context = runtime_for(source, root, 'six.py')
+    excluded = module._ExcludedCalibrationIdentityImportBlocker()
+    sys.meta_path.insert(0, excluded)
+    topology_with_excluded = tuple(sys.meta_path)
+    try:
+        try:
+            module._preload_authenticated_capture_six(
+                expected_origin=source, manifest=manifest, runtime_context=context,
+            )
+        except module.CalibrationRunError as error:
+            assert 'attempted forbidden model/CUDA imports' in str(error)
+        else:
+            raise AssertionError('swallowed forbidden import was accepted')
+        assert tuple(sys.meta_path) == topology_with_excluded
+        assert 'six' not in sys.modules
+        assert 'torch' not in sys.modules
+    finally:
+        sys.meta_path.remove(excluded)
+    assert tuple(sys.meta_path) == original_topology
+
+    source.write_text('import sys\\n' + valid_tail + '\\nraise RuntimeError("partial")\\n')
+    manifest, context = runtime_for(source, root, 'six.py')
+    try:
+        module._preload_authenticated_capture_six(
+            expected_origin=source, manifest=manifest, runtime_context=context,
+        )
+    except RuntimeError as error:
+        assert str(error) == 'partial'
+    else:
+        raise AssertionError('partial six initialization was accepted')
+    assert tuple(sys.meta_path) == original_topology
+    assert 'six' not in sys.modules
+
+    package_source = root / 'six' / '__init__.py'
+    package_source.parent.mkdir()
+    package_source.write_text('import sys\\n' + valid_tail, encoding='utf-8')
+    package_manifest, package_context = runtime_for(
+        package_source, root, 'six/__init__.py'
+    )
+    try:
+        module._preload_authenticated_capture_six(
+            expected_origin=package_source,
+            manifest=package_manifest,
+            runtime_context=package_context,
+        )
+    except module.CalibrationRunError as error:
+        assert 'critical module is shadowed: six' in str(error)
+    else:
+        raise AssertionError('package-form six origin was accepted')
+    assert tuple(sys.meta_path) == original_topology
+
+    source.write_text('import sys\\n' + valid_tail, encoding='utf-8')
+    manifest, context = runtime_for(source, root, 'six.py')
+    binding = module._preload_authenticated_capture_six(
+        expected_origin=source, manifest=manifest, runtime_context=context,
+    )
+    isolation = module._CalibrationIdentityImportIsolation()
+    isolation.activate(authenticated_six=binding)
+    replacement_error = None
+    try:
+        sys.modules['six'] = ModuleType('six')
+        try:
+            isolation.assert_intact()
+        except module.CalibrationRunError as error:
+            replacement_error = error
+        else:
+            raise AssertionError('post-seal six module replacement was accepted')
+    finally:
+        isolation.restore(primary_error=replacement_error)
+        module._restore_authenticated_capture_six(binding, primary_error=replacement_error)
+    assert replacement_error is not None
+    assert tuple(sys.meta_path) == original_topology
+    assert 'six' not in sys.modules
+    assert any(
+        'six module identity changed' in note
+        for note in getattr(replacement_error, '__notes__', ())
+    )
+
+    binding = module._preload_authenticated_capture_six(
+        expected_origin=source, manifest=manifest, runtime_context=context,
+    )
+    unreadable_error = module.CalibrationRunError('injected primary capture failure')
+    original_stream_file_sha256 = module._stream_file_sha256
+    def deny_six_hash(_path):
+        raise PermissionError('injected unreadable six source')
+    module._stream_file_sha256 = deny_six_hash
+    try:
+        module._restore_authenticated_capture_six(
+            binding, primary_error=unreadable_error,
+        )
+    finally:
+        module._stream_file_sha256 = original_stream_file_sha256
+    assert tuple(sys.meta_path) == original_topology
+    assert 'six' not in sys.modules
+    assert any(
+        'six source became unavailable during capture' in note
+        for note in getattr(unreadable_error, '__notes__', ())
+    )
+
+assert sys.meta_path is original_meta_path
+assert tuple(sys.meta_path) == original_topology
+"""
+    subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code],
+        cwd=SCRIPT.parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
