@@ -1,16 +1,17 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound ninth replacement-H0 amendment candidate. The eighth
-> replacement H0 completed its prerequisite gates, identity capture and
+> **Status: unbound tenth replacement-H0 amendment candidate. The ninth
+> replacement H0 completed all pre-smoke prerequisite gates, identity capture and
 > promotion, H1, and authenticated model staging. Its sole Fisher H=1 smoke
-> then failed closed during the first sequence reduction because an immutable
-> resolver record crossed into a JSON serializer that accepted only mutable
-> containers. Hugging Face Hub also created a snapshot link inside owned
-> scratch, so strict cleanup correctly preserved the incident tree. The H0,
-> H1, identity, and staged model root are retired and non-authorizing, with no
-> retry permitted. No smoke receipt, calibration aggregate, policy, Stage-A
-> result, quality result, or breakthrough result was published; not yet
-> re-preregistered.**
+> completed the one-sequence inner computation, but the official invocation
+> returned 1 after the child and host scratch postconditions reported residue.
+> A separate diagnostic reproduced an empty Torch Inductor cache directory. Its
+> report and child-published marker are
+> preserved only as failed-attempt evidence; they do not authorize full
+> calibration. The ninth H0, tag, H1, identity, runtime, model root, cache, and
+> output paths are retired and non-authorizing, with no retry or rebinding
+> permitted. No protocol-valid full-calibration aggregate, policy, Stage-A
+> result, or quality result exists. The tenth H0 is not yet bound.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -28,7 +29,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current ninth replacement-H0 amendment candidate amended: 2026-08-24
+Current tenth replacement-H0 amendment candidate amended: 2026-08-25
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -1697,6 +1698,134 @@ fresh Fisher smoke require new no-overwrite roots. Until those gates complete,
 no protected execution, quality conclusion, deployment, novelty,
 state-of-the-art, or breakthrough claim is authorized.
 
+Twenty-eighth replacement-H0 sealed-scratch custody and launcher-finalization
+amendment candidate: 2026-08-25. Source commit
+`6d0130d2b30f1b6bad24d926570fc91c586d7651` and lightweight tag
+`experiment013-h0-6d0130d` became the ninth replacement H0 after local focused,
+full, and package gates and exact-commit GitHub CI run `32748769745` passed all
+five jobs. The sole identity capture and promotion produced schema-v5 identity
+file SHA-256
+`ec75fd101f7e5ab9bb8312a6adda0376590f4ebf7e760891db3c3bf51fcc581f`;
+committing only that identity produced H1
+`09d970e0423f5b37e34a53ab6c59b47fa0d558a6`. The launcher-finalized capture-
+provenance receipt file SHA-256 was
+`73930958b0b075b50b59f97f4cda56fff224ef3cbcd0e986dee8b75cf91a1dd5`.
+The repository-source and runtime manifest file SHA-256 values were
+`84992b9ee05369fc287491577ae212b5f360222d4ccc852ad580899ec8bea069`
+and `0c15613a551f1857661ddf17d881465ed259a0ad9e48eb7ea6b440f6191dbe1f`.
+
+Authenticated model staging under H1 passed and published exactly three
+single-link regular files totalling 1,746,996,407 bytes at
+`C:\tmp\recurquant-exp013-model-h1-09d970e0`. These are custody facts, not a
+quality result.
+
+The chain's one permitted Fisher H=1 smoke completed the first frozen sequence:
+132 tokens and all 16 expected Fisher steps. The inner report recorded CUDA
+13.0, PyTorch 2.13.0+cu130, the NVIDIA GeForce RTX 5070 Laptop GPU, and a loaded
+model. The official outer invocation nevertheless returned 1. Both the child
+and host mandatory postconditions found the launcher-owned scratch directory
+non-empty, and the outer launcher preserved that failure. The declared output
+contains exactly the old v15 canonical report and marker. Their file SHA-256
+values are
+`73b044d2895fcd7c3419dfdd86ae2e2b0e792a535992ce5822115d56de46ac2d`
+and `c6eb5ebf54bb06f7914cfa8380d2b34496ca8a3dea12564853613c75bf4ec703`;
+the report's canonical-evidence SHA-256 is
+`ffb0b1bd99c2410255b6acf578ff6787aba189f96619de4d7954459fdcfedb62`.
+Because the official invocation failed, those bytes are incident evidence only:
+they are not a protocol-valid smoke receipt, do not authorize full calibration,
+and are neither positive nor negative evidence about static RHT-Q468.
+
+No current scratch tree survived the outer identity-checked cleanup, so this
+amendment does not infer its former inventory from absent bytes. A separate
+controlled metadata-only import diagnostic, outside the retired runtime and
+model, reproduced the relevant behavior: importing the pinned Torch 2.13.0+cu130
+and Transformers 5.14.1 versions created the empty path `torch\inductor` under
+the configured `TORCHINDUCTOR_CACHE_DIR`. The v15 contract incorrectly required
+literal scratch emptiness even though every cache endpoint was deliberately
+confined there.
+
+The incident also exposed a custody flaw independent of Torch. Runner v15
+published its report and completion marker before the outer launcher finished
+its scratch cleanup and final reauthentication, while the full-run gate
+authenticated only those two files. A failed official invocation could
+therefore leave mechanically reusable success-looking bytes. The old report
+and marker remain immutable evidence of that flaw and may not be copied,
+renamed, adopted, or rebound.
+
+The current working tree implements the runner-v16 custody repair, but it is not
+frozen or authorizing until committed in a clean H0 and verified by exact-commit
+CI. It makes the child publish candidate report/payload files only. After child
+return 0, every child and host postcondition, identity-checked owned-root cleanup,
+and final source/runtime/cache/artifact reauthentication, the host publishes a
+launcher-finalized v2 marker and then publishes canonical
+`RUN_LAUNCH_FINALIZATION.json` last as the authoritative no-overwrite commit
+sentinel. Smoke and full-calibration receipts bind the exact child inventory,
+sizes and hashes, marker, H0, frozen identity, capture receipt, execution
+bindings, launch policy, runner revision, and SHA-256 of the normalized absolute
+output-directory path. A full receipt and full report also bind the exact prior-
+smoke finalization-receipt hash. Every launcher, runner, and Stage-A authorizer
+recomputes the actual directory-path digest; a byte-identical directory copy is
+therefore inadmissible. Missing, old, noncanonical, moved-between-directories,
+altered, or extra prerequisite files fail closed. Controlled stability failure
+remains a report-only diagnostic and receives neither marker nor finalization
+receipt.
+
+Scratch confinement advances to bootstrap/cache policy v4. Scratch may contain
+only exact-case top-level directories `huggingface`, `private-home`, `torch`,
+`transformers`, and `xdg-cache`; every descendant must be a real directory or
+single-link regular file. Symlinks, junctions, reparse points, hardlinks,
+nonregular files, duplicate case-folded roots, unexpected roots, and scratch-
+local `huggingface\hub` or `huggingface\datasets` endpoints remain fatal. The
+child and host independently enforce the same rule. Pycache remains exactly
+empty, and host cleanup still proves disappearance of both owned roots. An
+owned root that disappears before identity-checked cleanup is a fatal custody
+failure, not successful cleanup; this closes the move-between-postcondition-and-
+cleanup interval.
+
+The sealed run output must be disjoint from every authenticated runtime,
+repository, model, dataset-cache, RULER-receipt, manifest, capture-receipt,
+identity, and prior-smoke evidence path before launch, again after scratch
+creation, and again after owned-root cleanup. The prior-smoke directory itself,
+not only its three files, is protected. The post-calibration Stage-A authorizer
+also rejects an output directory that contains, is contained by, or resolves
+through a link into the repository or any full-calibration, smoke, identity,
+capture, runtime, source-manifest, or model-manifest evidence path.
+On Windows, every sealed capture, calibration-run, and Stage-A-authorization
+output destination must use an ordinary local-drive absolute spelling; device/
+extended and UNC spellings are rejected. Lexical
+containment is not sufficient because `\\?\`, administrative-share UNC, and
+mapped-drive spellings can name the same object with different anchors. Cache,
+capture, run, and authorization boundaries therefore also compare directory-
+component `(device, inode)` identities. The Stage-A authorization publisher
+snapshots its existing non-link parent, revalidates that exact component chain
+immediately before the staging-directory rename, and authenticates the owned
+staging identity before any recursive failure cleanup. Parent or staging drift
+fails without following the redirected path.
+
+The runner advances v15 to v16, runtime-manifest schema v6 to v7, run-report
+schema v3 to v4, completion-marker contract v1 to launcher-finalized v2, and
+Stage-A calibration-authorization schema/revision v1 to v2. The new Stage-A
+authorization depends on both smoke and full launch-finalization receipts;
+the existing Stage-A binding transitively binds them and remains schema/revision
+v4. Calibration identity schema v5, Stage-A identity schema v6, capture and
+resolver procedure v6, capture-provenance schemas, model manifest, RULER
+launcher and generation-manifest schemas, all 160 records, tokenizer/content/
+split/Parquet commitments, model revision, Fisher boundary, byte budgets,
+methods, metrics, statistical gates, and claim boundary do not change.
+
+Existing ninth-chain artifacts are preserved. Every ninth-chain namespace,
+whether populated or still absent, is retired and non-authorizing. There is no
+retry, copying, adoption, renaming, or rebinding under that chain. Only after
+the v16 regressions plus focused, full,
+package, and exact-commit CI gates pass may a clean descendant become the tenth
+replacement H0 with an entirely fresh H0-scoped artifact namespace. Its new
+identity must keep all scientific/content fields byte-identical and differ from
+the retired identity at exactly the six frozen source/runtime/promotion
+pointers. Only its identity-only direct-child H1 may stage a fresh model and
+attempt exactly one new Fisher smoke. Full calibration remains unauthorized
+until that new official smoke returns 0 and its v2 marker plus launcher-last
+finalization receipt authenticate successfully.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -2072,7 +2201,7 @@ parquet_materialization_manifest_file_sha256
 ```
 
 The source manifest authenticates the implementation, tests, protocol, and
-runner at point of use. Calibration runtime-manifest v6 authenticates the
+runner at point of use. Calibration runtime-manifest v7 authenticates the
 Python and installed package-code inventory used by calibration plus the
 private-scratch child-cwd and cache-confinement launch policy defined by the
 Seventeenth amendment. The model manifest is derived from immutable Hub
@@ -2087,7 +2216,7 @@ Identity capture is an official calibration-runtime action, not a host-side
 manifest inspection. The sole official entrypoint is the outer sealed launcher
 with runner command `capture-calibration-identity` and the exact option profile
 in the Seventeenth amendment; the ordinary unsealed runner rejects it. It must
-use the authenticated staged interpreter bound by runtime-manifest v6, with the
+use the authenticated staged interpreter bound by runtime-manifest v7, with the
 exact authenticated base `sys.path`, package roots, import paths, and
 54-distribution inventory. Those
 facts are checked in the capture process before tokenizer or dataset content
@@ -2568,7 +2697,7 @@ the local bundle. A Python socket audit guard makes attempted network access in
 that offline child fatal.
 
 Both children use the authenticated staged interpreter and package roots bound
-by runtime-manifest v6, run with a launcher-owned scratch directory as cwd,
+by runtime-manifest v7, run with a launcher-owned scratch directory as cwd,
 confine private home, Hub,
 assets, token, Xet, Transformers, Torch, Triton, and compiler caches to that
 scratch directory, and place only dataset caches below the validated explicit
@@ -2592,7 +2721,7 @@ re-execution and ordinary local history changes detectable. They provide a
 durable honest-process audit trail on the machine where the run is performed;
 they are not a cryptographic proof that only one execution was ever possible.
 
-The source and calibration runtime-manifest v6 authenticate the exact canonical Git
+The source and calibration runtime-manifest v7 authenticate the exact canonical Git
 executable bytes, file size, and normalized absolute-path digest used by the
 runner. They do not recursively authenticate Git-for-Windows loaded DLLs,
 helper executables, the Windows kernel, or the underlying operating system;
@@ -2653,7 +2782,7 @@ diagonal read-error approximation to test, not a new general allocation
 principle. [LightMamba](https://arxiv.org/abs/2502.15260v2) already combines
 Hadamard-assisted low-bit Mamba inference with hardware co-design and reports
 that its elementwise Mamba hidden-state recurrence is not rotation-equivariant.
-The potentially differentiating RecurQuant hypothesis is narrower: prove that
+The Experiment 013 hypothesis is narrower: prove that
 a Gated DeltaNet matrix state admits an exact right/value-axis orthogonal
 basis, keep the persistent state in that basis, and consume its physical-row
 Q4/Q6/Q8 representation directly in the recurrent update without a persistent
@@ -2679,8 +2808,11 @@ generation; at least one larger and one independent Gated-DeltaNet-family
 checkpoint; a packed-native kernel with no persistent FP mirror compared
 against an optimized architecture-native baseline; fair batch-N byte and
 throughput accounting; and independent reproduction on another GPU/software
-stack. Until those pass, the public claim remains the exact frozen quality,
-storage, and implementation result actually measured here.
+stack. Experiment 013 currently supports no method-result claim. If a future
+protocol-valid run passes, claims remain limited to its pinned quality, storage,
+and implementation measurements unless the additional evidence above is
+completed.
 
-Failure is a publishable result. Any change after a gate is observed creates a
-new experiment number with new protected data.
+A protocol-valid negative result will be reported. Execution-contract failures
+remain incident evidence and do not count as method results. Any change after a
+gate is observed creates a new experiment number with new protected data.

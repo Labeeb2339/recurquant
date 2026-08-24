@@ -41,7 +41,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v15"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _BOUND_ARTIFACT_OPTIONS: Final = {
@@ -691,7 +691,7 @@ def _stage_a_receipt(options, bindings):
             or type(root.get("schema_version")) is not int or root.get("schema_version") != 1
             or type(root.get("capture_version")) is not int or root.get("capture_version") != 6
             or root.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v15"
+            != "experiment-013-static-q468-calibration-runner-v16"
             or root.get("phase") != "stage_a"
             or root.get("status")
             != "captured_under_authenticated_runtime_and_launcher_finalized"
@@ -807,6 +807,8 @@ if _stage_a_offline:
         "--fisher-h1-smoke",
         "--prior-fisher-h1-smoke-report",
         "--prior-fisher-h1-smoke-complete-marker",
+        "--prior-fisher-h1-smoke-launch-finalization",
+        "--expected-prior-fisher-h1-smoke-launch-finalization-sha256",
         "full calibration",
     )
     if any(value in result for value in forbidden):
@@ -1136,11 +1138,10 @@ def _run_sealed_child(
                 raise SealedStageALaunchError(
                     "Stage-A sealed scratch directory identity changed during execution"
                 )
-            calibration_launcher._assert_owned_temporary_tree_has_no_reparse(
+            calibration_launcher._verify_contained_scratch(
                 scratch,
                 context="Stage-A sealed scratch directory",
             )
-            calibration_launcher._verify_empty_scratch(scratch)
         except Exception as error:
             secondary_failures.append(("Stage-A scratch containment postcondition", error))
         try:

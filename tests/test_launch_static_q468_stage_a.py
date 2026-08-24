@@ -611,15 +611,23 @@ def test_bootstrap_derivation_switches_schema_phase_runner_and_keeps_isolation()
     assert "--expected-stage-a-capture-provenance-receipt-sha256" in bootstrap
     assert "--fisher-h1-smoke" not in bootstrap
     assert "--prior-fisher-h1-smoke-report" not in bootstrap
+    assert "--prior-fisher-h1-smoke-launch-finalization" not in bootstrap
+    assert "--expected-prior-fisher-h1-smoke-launch-finalization-sha256" not in bootstrap
     assert "full calibration" not in bootstrap
     assert 'promotion.get("explicit") is not True' in bootstrap
     assert "isolated != 1" in bootstrap
     assert "no_site != 1" in bootstrap
     assert "dont_write_bytecode != 1" in bootstrap
+    assert "experiment-013-static-q468-calibration-runner-v16" in bootstrap
     assert "_hf_hub_cache = _cache_root" in bootstrap
     assert (
-        "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3" in bootstrap
+        "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"
+        in bootstrap
     )
+    assert "exact-environment-root-allowlist-regular-non-link-cleanup-v1" in bootstrap
+    assert "def _assert_isolated_cache(cache, runtime_roots):" in bootstrap
+    assert "cache_identity in {(item[1], item[2]) for item in runtime_chain}" in bootstrap
+    assert "runtime_identity in {(item[1], item[2]) for item in cache_chain}" in bootstrap
 
 
 def test_authenticated_stdin_loader_rejects_modified_bootstrap() -> None:
@@ -766,12 +774,7 @@ def test_stage_a_external_hub_link_stays_outside_owned_scratch(tmp_path: Path) -
     scratch.mkdir()
     cache_root = tmp_path / "dataset-cache"
     blob = cache_root / "datasets--google-research-datasets--mbpp" / "blobs" / ("a" * 40)
-    snapshot = (
-        cache_root
-        / "datasets--google-research-datasets--mbpp"
-        / "snapshots"
-        / ("b" * 40)
-    )
+    snapshot = cache_root / "datasets--google-research-datasets--mbpp" / "snapshots" / ("b" * 40)
     blob.parent.mkdir(parents=True)
     snapshot.mkdir(parents=True)
     blob.write_bytes(b"dataset card\n")
@@ -846,7 +849,7 @@ def test_stage_a_partial_temp_creation_cleans_first_owned_root(
     assert created and all(not path.exists() for path in created)
 
 
-def test_stage_a_nonzero_child_preserves_code_reauthenticates_and_cleans_residue(
+def test_stage_a_nonzero_child_preserves_code_and_cleans_allowlisted_scratch_residue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -877,6 +880,7 @@ def test_stage_a_nonzero_child_preserves_code_reauthenticates_and_cleans_residue
         _temporary_directory_identity=helpers._temporary_directory_identity,
         _verify_empty_pycache=helpers._verify_empty_pycache,
         _verify_empty_scratch=helpers._verify_empty_scratch,
+        _verify_contained_scratch=helpers._verify_contained_scratch,
         _verified_dataset_cache_root=helpers._verified_dataset_cache_root,
         _non_link_directory_identity_chain=helpers._non_link_directory_identity_chain,
         _assert_owned_temporary_tree_has_no_reparse=(
@@ -926,7 +930,7 @@ def test_stage_a_nonzero_child_preserves_code_reauthenticates_and_cleans_residue
     diagnostic = capsys.readouterr().err
     assert "preserving child return code 37" in diagnostic
     assert "Stage-A pycache postcondition" in diagnostic
-    assert "Stage-A scratch containment postcondition" in diagnostic
+    assert "Stage-A scratch containment postcondition" not in diagnostic
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="sealed runtime fixture is Windows-only")
@@ -1122,6 +1126,7 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
         _temporary_directory_identity=calibration_helpers._temporary_directory_identity,
         _verify_empty_pycache=calibration_helpers._verify_empty_pycache,
         _verify_empty_scratch=calibration_helpers._verify_empty_scratch,
+        _verify_contained_scratch=calibration_helpers._verify_contained_scratch,
         _assert_owned_temporary_tree_has_no_reparse=(
             calibration_helpers._assert_owned_temporary_tree_has_no_reparse
         ),

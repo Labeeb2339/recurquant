@@ -459,9 +459,7 @@ def _authorization_runtime_manifest() -> tuple[bytes, list[dict[str, object]]]:
     for distribution in sorted(distribution_modules):
         module = distribution_modules[distribution]
         module_path = (
-            f"{import_path}/six.py"
-            if module == "six"
-            else f"{import_path}/{module}/__init__.py"
+            f"{import_path}/six.py" if module == "six" else f"{import_path}/{module}/__init__.py"
         )
         distributions.append(
             {
@@ -529,11 +527,7 @@ def _authorization_runtime_manifest() -> tuple[bytes, list[dict[str, object]]]:
     origins = []
     for module in sorted(module_to_distribution):
         distribution = module_to_distribution[module]
-        path = (
-            f"{import_path}/six.py"
-            if module == "six"
-            else f"{import_path}/{module}/__init__.py"
-        )
+        path = f"{import_path}/six.py" if module == "six" else f"{import_path}/{module}/__init__.py"
         file = by_path[path]
         dist = by_distribution[distribution]
         origins.append(
@@ -612,6 +606,7 @@ def _runner_report_bytes(
     model_manifest: bytes,
     artifacts: dict[str, str],
     capture_receipt_sha256: str,
+    smoke_launch_finalization_sha256: str | None,
     smoke_report_sha256: str | None,
     status: str,
 ) -> bytes:
@@ -672,6 +667,7 @@ def _runner_report_bytes(
         },
         "prerequisites": {
             "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+            "fisher_h1_smoke_launch_finalization_file_sha256": (smoke_launch_finalization_sha256),
             "fisher_h1_smoke_report_file_sha256": smoke_report_sha256,
         },
         "query_energy_ema": dict(resolver.CALIBRATION_QUERY_ENERGY_EMA),
@@ -714,8 +710,65 @@ def _runner_report_bytes(
     )
 
 
+def _run_launch_finalization_bytes(
+    *,
+    child_output: Mapping[str, bytes],
+    capture_receipt_sha256: str,
+    execution_bindings: Mapping[str, str],
+    frozen_identity_sha256: str,
+    source_commit: str,
+    smoke: bool,
+    prior_smoke_launch_finalization_sha256: str | None,
+    output_directory_absolute_path_sha256: str,
+) -> bytes:
+    marker_filename = "FISHER_H1_SMOKE_COMPLETE" if smoke else "CALIBRATION_COMPLETE"
+    marker = (
+        resolver.FISHER_H1_SMOKE_COMPLETE_BYTES if smoke else resolver.CALIBRATION_COMPLETE_BYTES
+    )
+    return resolver.canonical_json_bytes(
+        {
+            "artifact_kind": resolver.CALIBRATION_RUN_LAUNCH_FINALIZATION_KIND,
+            "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+            "child_output_file_sha256": {
+                name: resolver.sha256_bytes(payload)
+                for name, payload in sorted(child_output.items())
+            },
+            "child_output_size_bytes": {
+                name: len(payload) for name, payload in sorted(child_output.items())
+            },
+            "completion_marker_filename": marker_filename,
+            "completion_marker_sha256": resolver.sha256_bytes(marker),
+            "execution_bindings": dict(execution_bindings),
+            "frozen_identity_file_sha256": frozen_identity_sha256,
+            "launch_policy": dict(resolver.CALIBRATION_SEALED_LAUNCH_POLICY),
+            "mode": "fisher_h1_smoke" if smoke else "full_calibration",
+            "output_directory_absolute_path_sha256": (output_directory_absolute_path_sha256),
+            "prior_fisher_h1_smoke_launch_finalization_file_sha256": (
+                prior_smoke_launch_finalization_sha256
+            ),
+            "publication_contract": (
+                resolver.CALIBRATION_RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT
+            ),
+            "runner_revision": resolver.CALIBRATION_RUNNER_REVISION,
+            "schema_version": resolver.CALIBRATION_RUN_LAUNCH_FINALIZATION_SCHEMA_VERSION,
+            "source_commit": source_commit,
+            "status": (
+                "fisher_h1_smoke_launcher_finalized"
+                if smoke
+                else "full_calibration_launcher_finalized"
+            ),
+        }
+    )
+
+
 @contextmanager
 def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace]:
+    calibration_output_directory_absolute_path_sha256 = _hash(
+        "fixture-calibration-output-directory"
+    )
+    fisher_h1_smoke_output_directory_absolute_path_sha256 = _hash(
+        "fixture-fisher-h1-smoke-output-directory"
+    )
     identity_input_manifest_sha256 = _hash("identity-input-manifest")
     source_manifest = _authorization_source_manifest(fixture.source_commit_h0)
     runtime_manifest, origins = _authorization_runtime_manifest()
@@ -772,11 +825,24 @@ def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace
         model_manifest=model_manifest,
         artifacts={},
         capture_receipt_sha256=resolver.sha256_bytes(receipt),
+        smoke_launch_finalization_sha256=None,
         smoke_report_sha256=None,
         status="fisher_h1_smoke_passed",
     )
-    output_hashes = {
-        filename: resolver.sha256_bytes(
+    smoke_launch_finalization = _run_launch_finalization_bytes(
+        child_output={"fisher-h1-smoke-report.json": smoke},
+        capture_receipt_sha256=resolver.sha256_bytes(receipt),
+        execution_bindings=fixture.identity.execution_bindings,
+        frozen_identity_sha256=fixture.identity.file_sha256,
+        source_commit=fixture.source_commit_h0,
+        smoke=True,
+        prior_smoke_launch_finalization_sha256=None,
+        output_directory_absolute_path_sha256=(
+            fisher_h1_smoke_output_directory_absolute_path_sha256
+        ),
+    )
+    authorized_output_bytes = {
+        filename: (
             core_bytes
             if role == "calibration_core_binding_artifact"
             else q48_bytes
@@ -784,6 +850,10 @@ def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace
             else fixture.dependencies[role]
         )
         for role, filename in resolver.CALIBRATION_OUTPUT_FILENAMES.items()
+    }
+    output_hashes = {
+        filename: resolver.sha256_bytes(payload)
+        for filename, payload in authorized_output_bytes.items()
     }
     full_report = _runner_report_bytes(
         identity=fixture.identity,
@@ -793,58 +863,137 @@ def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace
         model_manifest=model_manifest,
         artifacts=output_hashes,
         capture_receipt_sha256=resolver.sha256_bytes(receipt),
+        smoke_launch_finalization_sha256=resolver.sha256_bytes(smoke_launch_finalization),
         smoke_report_sha256=resolver.sha256_bytes(smoke),
         status="passed",
     )
+    full_launch_finalization = _run_launch_finalization_bytes(
+        child_output={
+            **authorized_output_bytes,
+            "calibration-run-report.json": full_report,
+        },
+        capture_receipt_sha256=resolver.sha256_bytes(receipt),
+        execution_bindings=fixture.identity.execution_bindings,
+        frozen_identity_sha256=fixture.identity.file_sha256,
+        source_commit=fixture.source_commit_h0,
+        smoke=False,
+        prior_smoke_launch_finalization_sha256=resolver.sha256_bytes(smoke_launch_finalization),
+        output_directory_absolute_path_sha256=(calibration_output_directory_absolute_path_sha256),
+    )
     kwargs = {
         "calibration_run_report": full_report,
+        "calibration_run_launch_finalization": full_launch_finalization,
         "calibration_complete_marker": resolver.CALIBRATION_COMPLETE_BYTES,
         "capture_provenance_receipt": receipt,
         "fisher_h1_smoke_report": smoke,
+        "fisher_h1_smoke_launch_finalization": smoke_launch_finalization,
         "fisher_h1_smoke_complete_marker": resolver.FISHER_H1_SMOKE_COMPLETE_BYTES,
         "calibration_core_binding_artifact": core_bytes,
         "calibration_runtime_manifest": runtime_manifest,
         "model_file_manifest": model_manifest,
         "repository_source_manifest": source_manifest,
         "static_q48_policy_artifact": q48_bytes,
+        "expected_calibration_output_directory_absolute_path_sha256": (
+            calibration_output_directory_absolute_path_sha256
+        ),
+        "expected_fisher_h1_smoke_output_directory_absolute_path_sha256": (
+            fisher_h1_smoke_output_directory_absolute_path_sha256
+        ),
     }
     artifact = resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
     yield SimpleNamespace(
         artifact=artifact,
         kwargs=kwargs,
+        authorized_output_bytes=authorized_output_bytes,
         output_hashes=output_hashes,
         receipt=receipt,
         smoke=smoke,
+        smoke_launch_finalization=smoke_launch_finalization,
         full_report=full_report,
+        full_launch_finalization=full_launch_finalization,
         core=core_bytes,
+        identity=fixture.identity,
+        source_commit=fixture.source_commit_h0,
         model_manifest=model_manifest,
         runtime_manifest=runtime_manifest,
         source_manifest=source_manifest,
+        calibration_output_directory_absolute_path_sha256=(
+            calibration_output_directory_absolute_path_sha256
+        ),
+        fisher_h1_smoke_output_directory_absolute_path_sha256=(
+            fisher_h1_smoke_output_directory_absolute_path_sha256
+        ),
     )
+
+
+def _rechain_authorization(
+    authorization: SimpleNamespace,
+    *,
+    receipt: bytes | None = None,
+    smoke_report: bytes | None = None,
+) -> dict[str, object]:
+    receipt_bytes = authorization.receipt if receipt is None else receipt
+    capture_receipt_sha256 = resolver.sha256_bytes(receipt_bytes)
+    smoke = json.loads(authorization.smoke if smoke_report is None else smoke_report)
+    smoke["evidence"]["prerequisites"] = {
+        "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+        "fisher_h1_smoke_launch_finalization_file_sha256": None,
+        "fisher_h1_smoke_report_file_sha256": None,
+    }
+    smoke_bytes = _reauthenticated_binding_bytes(smoke)
+    smoke_launch_finalization = _run_launch_finalization_bytes(
+        child_output={"fisher-h1-smoke-report.json": smoke_bytes},
+        capture_receipt_sha256=capture_receipt_sha256,
+        execution_bindings=authorization.identity.execution_bindings,
+        frozen_identity_sha256=authorization.identity.file_sha256,
+        source_commit=authorization.source_commit,
+        smoke=True,
+        prior_smoke_launch_finalization_sha256=None,
+        output_directory_absolute_path_sha256=(
+            authorization.fisher_h1_smoke_output_directory_absolute_path_sha256
+        ),
+    )
+    full = json.loads(authorization.full_report)
+    full["evidence"]["prerequisites"] = {
+        "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+        "fisher_h1_smoke_launch_finalization_file_sha256": resolver.sha256_bytes(
+            smoke_launch_finalization
+        ),
+        "fisher_h1_smoke_report_file_sha256": resolver.sha256_bytes(smoke_bytes),
+    }
+    full_bytes = _reauthenticated_binding_bytes(full)
+    full_launch_finalization = _run_launch_finalization_bytes(
+        child_output={
+            **authorization.authorized_output_bytes,
+            "calibration-run-report.json": full_bytes,
+        },
+        capture_receipt_sha256=capture_receipt_sha256,
+        execution_bindings=authorization.identity.execution_bindings,
+        frozen_identity_sha256=authorization.identity.file_sha256,
+        source_commit=authorization.source_commit,
+        smoke=False,
+        prior_smoke_launch_finalization_sha256=resolver.sha256_bytes(smoke_launch_finalization),
+        output_directory_absolute_path_sha256=(
+            authorization.calibration_output_directory_absolute_path_sha256
+        ),
+    )
+    kwargs = dict(authorization.kwargs)
+    kwargs.update(
+        {
+            "calibration_run_report": full_bytes,
+            "calibration_run_launch_finalization": full_launch_finalization,
+            "capture_provenance_receipt": receipt_bytes,
+            "fisher_h1_smoke_report": smoke_bytes,
+            "fisher_h1_smoke_launch_finalization": smoke_launch_finalization,
+        }
+    )
+    return kwargs
 
 
 def _rechain_authorization_receipt(
     authorization: SimpleNamespace, receipt: bytes
 ) -> dict[str, bytes]:
-    smoke = json.loads(authorization.smoke)
-    smoke["evidence"]["prerequisites"]["capture_provenance_receipt_file_sha256"] = (
-        resolver.sha256_bytes(receipt)
-    )
-    smoke_bytes = _reauthenticated_binding_bytes(smoke)
-    full = json.loads(authorization.full_report)
-    full["evidence"]["prerequisites"] = {
-        "capture_provenance_receipt_file_sha256": resolver.sha256_bytes(receipt),
-        "fisher_h1_smoke_report_file_sha256": resolver.sha256_bytes(smoke_bytes),
-    }
-    kwargs = dict(authorization.kwargs)
-    kwargs.update(
-        {
-            "calibration_run_report": _reauthenticated_binding_bytes(full),
-            "capture_provenance_receipt": receipt,
-            "fisher_h1_smoke_report": smoke_bytes,
-        }
-    )
-    return kwargs
+    return _rechain_authorization(authorization, receipt=receipt)
 
 
 def _finalized_stage_a_capture_receipt_fixture(
@@ -1637,7 +1786,46 @@ def test_post_calibration_authorization_and_v4_binding_round_trip() -> None:
         )
         verified_binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
 
+    authorization_document = json.loads(authorization.artifact)
+    smoke_document = json.loads(authorization.smoke)
+    full_document = json.loads(authorization.full_report)
     document = json.loads(binding_bytes)
+    assert resolver.STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION == 2
+    assert resolver.STAGE_A_CALIBRATION_AUTHORIZATION_REVISION.endswith("-v2")
+    assert authorization_document["schema_version"] == 2
+    assert authorization_document["evidence"]["artifact_revision"].endswith("-v2")
+    assert set(authorization_document["evidence"]["dependencies_base64"]) == (
+        resolver.CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES
+    )
+    assert {
+        "calibration_run_launch_finalization",
+        "fisher_h1_smoke_launch_finalization",
+    } <= set(verified_authorization.authorization_dependencies)
+    assert (
+        verified_authorization.authorization_dependencies["calibration_run_launch_finalization"]
+        == authorization.full_launch_finalization
+    )
+    assert (
+        verified_authorization.authorization_dependencies["fisher_h1_smoke_launch_finalization"]
+        == authorization.smoke_launch_finalization
+    )
+    assert resolver.CALIBRATION_RUN_REPORT_SCHEMA_VERSION == 4
+    assert smoke_document["schema_version"] == 4
+    assert full_document["schema_version"] == 4
+    assert smoke_document["evidence"]["prerequisites"] == {
+        "capture_provenance_receipt_file_sha256": resolver.sha256_bytes(authorization.receipt),
+        "fisher_h1_smoke_launch_finalization_file_sha256": None,
+        "fisher_h1_smoke_report_file_sha256": None,
+    }
+    assert full_document["evidence"]["prerequisites"] == {
+        "capture_provenance_receipt_file_sha256": resolver.sha256_bytes(authorization.receipt),
+        "fisher_h1_smoke_launch_finalization_file_sha256": resolver.sha256_bytes(
+            authorization.smoke_launch_finalization
+        ),
+        "fisher_h1_smoke_report_file_sha256": resolver.sha256_bytes(authorization.smoke),
+    }
+    assert resolver.FISHER_H1_SMOKE_COMPLETE_BYTES.endswith(b"launch-finalized-v2\n")
+    assert resolver.CALIBRATION_COMPLETE_BYTES.endswith(b"launch-finalized-v2\n")
     assert resolver.STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION == 4
     assert document["schema_version"] == 4
     assert document["evidence"]["artifact_revision"].endswith("-v4")
@@ -1810,6 +1998,91 @@ def test_post_calibration_authorization_rejects_chain_and_marker_tamper() -> Non
             resolver.build_stage_a_calibration_authorization_artifact(**receipt_kwargs)
 
 
+@pytest.mark.parametrize(
+    ("dependency_name", "mutation"),
+    [
+        ("fisher_h1_smoke_launch_finalization", "status"),
+        ("calibration_run_launch_finalization", "child_output"),
+    ],
+)
+def test_authorization_rejects_rehashed_launch_finalization_tamper(
+    dependency_name: str,
+    mutation: str,
+) -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        kwargs = dict(authorization.kwargs)
+        finalization = json.loads(kwargs[dependency_name])
+        if mutation == "status":
+            finalization["status"] = "child_passed_but_launcher_not_finalized"
+        else:
+            finalization["child_output_file_sha256"]["calibration-run-report.json"] = "0" * 64
+        finalization_bytes = resolver.canonical_json_bytes(finalization)
+        kwargs[dependency_name] = finalization_bytes
+        if dependency_name == "fisher_h1_smoke_launch_finalization":
+            full = json.loads(authorization.full_report)
+            full["evidence"]["prerequisites"]["fisher_h1_smoke_launch_finalization_file_sha256"] = (
+                resolver.sha256_bytes(finalization_bytes)
+            )
+            full_bytes = _reauthenticated_binding_bytes(full)
+            kwargs["calibration_run_report"] = full_bytes
+            kwargs["calibration_run_launch_finalization"] = _run_launch_finalization_bytes(
+                child_output={
+                    **authorization.authorized_output_bytes,
+                    "calibration-run-report.json": full_bytes,
+                },
+                capture_receipt_sha256=resolver.sha256_bytes(authorization.receipt),
+                execution_bindings=authorization.identity.execution_bindings,
+                frozen_identity_sha256=authorization.identity.file_sha256,
+                source_commit=authorization.source_commit,
+                smoke=False,
+                prior_smoke_launch_finalization_sha256=resolver.sha256_bytes(finalization_bytes),
+                output_directory_absolute_path_sha256=(
+                    authorization.calibration_output_directory_absolute_path_sha256
+                ),
+            )
+        with pytest.raises(ValueError, match="launch finalization custody binding drifted"):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "expected_path_field",
+    [
+        "expected_calibration_output_directory_absolute_path_sha256",
+        "expected_fisher_h1_smoke_output_directory_absolute_path_sha256",
+    ],
+    ids=["copied-full-output", "copied-smoke-output"],
+)
+def test_authorization_rejects_copied_output_directory_path_rebinding(
+    expected_path_field: str,
+) -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        kwargs = dict(authorization.kwargs)
+        kwargs[expected_path_field] = _hash(f"copied-{expected_path_field}")
+
+        with pytest.raises(ValueError, match="launch finalization custody binding drifted"):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "dependency_name",
+    [
+        "fisher_h1_smoke_launch_finalization",
+        "calibration_run_launch_finalization",
+    ],
+)
+def test_authorization_rejects_missing_embedded_launch_finalization(
+    dependency_name: str,
+) -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        document = json.loads(authorization.artifact)
+        del document["evidence"]["dependencies_base64"][dependency_name]
+        del document["evidence"]["dependency_file_sha256"][dependency_name]
+        with pytest.raises(ValueError, match="dependencies fields drifted"):
+            resolver.deserialize_stage_a_calibration_authorization_artifact(
+                _reauthenticated_binding_bytes(document)
+            )
+
+
 def test_authorization_distinguishes_repository_digest_from_identity_input_hash() -> None:
     with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
         report = json.loads(authorization.full_report)["evidence"]
@@ -1867,13 +2140,7 @@ def test_authorization_rejects_full_smoke_runtime_identity_parity_drift() -> Non
         smoke = json.loads(authorization.smoke)
         smoke["evidence"]["runtime"]["platform"] = "forged-but-nonempty-platform"
         smoke_bytes = _reauthenticated_binding_bytes(smoke)
-        full = json.loads(authorization.full_report)
-        full["evidence"]["prerequisites"]["fisher_h1_smoke_report_file_sha256"] = (
-            resolver.sha256_bytes(smoke_bytes)
-        )
-        kwargs = dict(authorization.kwargs)
-        kwargs["fisher_h1_smoke_report"] = smoke_bytes
-        kwargs["calibration_run_report"] = _reauthenticated_binding_bytes(full)
+        kwargs = _rechain_authorization(authorization, smoke_report=smoke_bytes)
         with pytest.raises(ValueError, match="full and smoke runtime identity receipts differ"):
             resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
 

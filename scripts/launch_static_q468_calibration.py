@@ -25,19 +25,27 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Final
 
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 6
+RUNTIME_MANIFEST_SCHEMA: Final = 7
 IDENTITY_SCHEMA: Final = 5
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v15"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
-RUN_REPORT_SCHEMA: Final = 3
+RUN_REPORT_SCHEMA: Final = 4
+RUN_LAUNCH_FINALIZATION_KIND: Final = "recurquant_experiment013_calibration_run_launch_finalization"
+RUN_LAUNCH_FINALIZATION_SCHEMA: Final = 1
+RUN_LAUNCH_FINALIZATION_FILENAME: Final = "RUN_LAUNCH_FINALIZATION.json"
+RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-finalization-receipt-last-no-overwrite-after-postconditions-"
+    "owned-root-cleanup-and-reauthentication-v1"
+)
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
@@ -59,9 +67,9 @@ STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibratio
 STAGE_A_CALIBRATION_AUTHORIZATION_KIND: Final = (
     "recurquant_experiment013_stage_a_calibration_authorization"
 )
-STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA: Final = 1
+STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA: Final = 2
 STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
-    "experiment-013-stage-a-calibration-authorization-v1"
+    "experiment-013-stage-a-calibration-authorization-v2"
 )
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES: Final = (
@@ -78,7 +86,29 @@ CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS: Final = {
     "tokenizers": "tokenizers",
     "transformers": "transformers",
 }
-FISHER_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
+FISHER_SMOKE_COMPLETE_BYTES: Final = (
+    b"recurquant-experiment013-fisher-h1-smoke-launch-finalized-v2\n"
+)
+CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-launch-finalized-v2\n"
+FISHER_SMOKE_REPORT_FILENAME: Final = "fisher-h1-smoke-report.json"
+FISHER_SMOKE_COMPLETE_FILENAME: Final = "FISHER_H1_SMOKE_COMPLETE"
+CALIBRATION_REPORT_FILENAME: Final = "calibration-run-report.json"
+CALIBRATION_COMPLETE_FILENAME: Final = "CALIBRATION_COMPLETE"
+FISHER_SMOKE_CHILD_OUTPUT_FILENAMES: Final = frozenset({FISHER_SMOKE_REPORT_FILENAME})
+CALIBRATION_CHILD_OUTPUT_FILENAMES: Final = frozenset(
+    {
+        "calibration-scores.json",
+        "comparator-scores.json",
+        "split-half-stability.json",
+        "static-k27030-policy.json",
+        "static-k29334-policy.json",
+        "static-mse-k29334-policy.json",
+        "static-diagonal-fisher-h1-k29334-policy.json",
+        "static-q48-p14739-policy.json",
+        "stage-a-calibration-core-binding.json",
+        CALIBRATION_REPORT_FILENAME,
+    }
+)
 _WINDOWS_REPARSE_POINT: Final = 0x400
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _SHA1_RE: Final = re.compile(r"[0-9a-f]{40}")
@@ -98,10 +128,14 @@ _WINDOWS_RESERVED_NAMES: Final = frozenset(
     }
 )
 EXECUTABLE_CUSTODY_MODE: Final = "platform-held-launch-handles-v1"
+SEALED_SCRATCH_ALLOWED_TOP_LEVEL: Final = frozenset(
+    {"huggingface", "private-home", "torch", "transformers", "xdg-cache"}
+)
+SEALED_SCRATCH_RESIDUE_MODE: Final = "exact-environment-root-allowlist-regular-non-link-cleanup-v1"
 SEALED_LAUNCH_POLICY: Final = {
-    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v4",
     "cache_confinement_mode": (
-        "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3"
+        "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"
     ),
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
@@ -113,6 +147,7 @@ SEALED_LAUNCH_POLICY: Final = {
     "package_path_mode": "authenticated-record-only-roots-v1",
     "pycache_mode": "new-verified-empty-prefix-v1",
     "safe_path": True,
+    "scratch_residue_mode": SEALED_SCRATCH_RESIDUE_MODE,
     "site_loaded": False,
     "sys_path_mode": "staged-base-then-authenticated-packages-v1",
     "utf8_mode": 1,
@@ -176,9 +211,11 @@ _REQUIRED_RUNNER_OPTIONS: Final = frozenset(
         "--expected-capture-provenance-receipt-sha256",
         "--frozen-identity",
         "--cache-root",
+        "--model-root",
         "--repository-root",
         "--ruler-receipt-dir",
         "--source-commit",
+        "--output-dir",
         *_BOUND_ARTIFACT_OPTIONS.values(),
         *_EXPECTED_BOUND_DIGEST_OPTIONS.values(),
     }
@@ -188,6 +225,22 @@ _SMOKE_PREREQUISITE_OPTIONS: Final = frozenset(
     {
         "--prior-fisher-h1-smoke-report",
         "--prior-fisher-h1-smoke-complete-marker",
+        "--prior-fisher-h1-smoke-launch-finalization",
+        "--expected-prior-fisher-h1-smoke-launch-finalization-sha256",
+    }
+)
+_RUN_OUTPUT_FORBIDDEN_PATH_OPTIONS: Final = frozenset(
+    {
+        "--cache-root",
+        "--capture-provenance-receipt",
+        "--frozen-identity",
+        "--model-root",
+        "--repository-root",
+        "--ruler-receipt-dir",
+        "--prior-fisher-h1-smoke-report",
+        "--prior-fisher-h1-smoke-complete-marker",
+        "--prior-fisher-h1-smoke-launch-finalization",
+        *_BOUND_ARTIFACT_OPTIONS.values(),
     }
 )
 _SENSITIVE_MODULES: Final = frozenset(
@@ -395,9 +448,13 @@ def _parse_stage_a_calibration_binding_envelope(
         custody,
         {
             "calibration_core_binding_file_sha256",
+            "calibration_output_directory_absolute_path_sha256",
+            "calibration_run_launch_finalization_file_sha256",
             "calibration_run_report_file_sha256",
             "capture_provenance_receipt_file_sha256",
             "execution_bindings",
+            "fisher_h1_smoke_launch_finalization_file_sha256",
+            "fisher_h1_smoke_output_directory_absolute_path_sha256",
             "fisher_h1_smoke_report_file_sha256",
             "frozen_calibration_identity_file_sha256",
             "identity_input_manifest_sha256",
@@ -406,6 +463,8 @@ def _parse_stage_a_calibration_binding_envelope(
         },
         context="Stage-A calibration authorization custody bindings",
     )
+    for name in sorted(set(custody) - {"execution_bindings", "source_commit"}):
+        _sha256(custody[name], context=f"Stage-A authorization custody {name}")
     execution_bindings = custody.get("execution_bindings")
     if not isinstance(execution_bindings, dict):
         raise SealedLaunchError("Stage-A authorization execution bindings are missing")
@@ -593,14 +652,24 @@ CaptureArtifactSnapshot = tuple[
 ]
 
 
+def _ordinary_local_absolute_path(path: Path, *, context: str) -> Path:
+    raw = Path(path)
+    if not raw.is_absolute():
+        raise SealedLaunchError(f"{context} must be absolute")
+    if os.name == "nt":
+        rendered = os.fspath(raw).replace("/", "\\")
+        drive, tail = os.path.splitdrive(rendered)
+        if len(drive) != 2 or drive[1] != ":" or not tail.startswith("\\"):
+            raise SealedLaunchError(f"{context} must use an ordinary local-drive absolute path")
+    return raw
+
+
 def _new_capture_artifact_snapshot(
     path: Path,
     *,
     context: str,
 ) -> CaptureArtifactSnapshot:
-    raw = Path(path)
-    if not raw.is_absolute():
-        raise SealedLaunchError(f"{context} must be absolute")
+    raw = _ordinary_local_absolute_path(path, context=context)
     destination = Path(os.path.abspath(raw))
     if not destination.name:
         raise SealedLaunchError(f"{context} cannot be a filesystem root")
@@ -650,6 +719,25 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return True
 
 
+def _directory_contains_by_identity(container: Path, candidate: Path, *, context: str) -> bool:
+    container_chain = _non_link_directory_identity_chain(
+        container,
+        context=f"{context} container",
+    )
+    candidate_chain = _non_link_directory_identity_chain(
+        candidate,
+        context=f"{context} candidate",
+    )
+    container_identity = (container_chain[-1][1], container_chain[-1][2])
+    return container_identity in {(item[1], item[2]) for item in candidate_chain}
+
+
+def _directories_overlap_by_identity(left: Path, right: Path, *, context: str) -> bool:
+    return _directory_contains_by_identity(left, right, context=context) or (
+        _directory_contains_by_identity(right, left, context=context)
+    )
+
+
 def _validate_capture_artifact_disjointness(
     snapshots: Sequence[CaptureArtifactSnapshot],
     *,
@@ -661,10 +749,43 @@ def _validate_capture_artifact_disjointness(
     for destination in destinations:
         for root in forbidden_roots:
             authenticated_root = _absolute_directory(root, context="capture forbidden root")
-            if _paths_overlap(destination.parent, authenticated_root):
+            if _paths_overlap(destination.parent, authenticated_root) or (
+                _directories_overlap_by_identity(
+                    destination.parent,
+                    authenticated_root,
+                    context="capture output disjointness",
+                )
+            ):
                 raise SealedLaunchError(
                     "capture output parent overlaps an authenticated runtime or cache root"
                 )
+
+
+def _validate_run_output_disjointness(
+    snapshot: CaptureArtifactSnapshot,
+    *,
+    forbidden_paths: Sequence[Path],
+) -> None:
+    """Keep one absent run destination outside every authenticated input path."""
+
+    destination = snapshot[0]
+    for raw_path in forbidden_paths:
+        try:
+            authenticated_path = Path(raw_path).resolve(strict=True)
+        except OSError as exc:
+            raise SealedLaunchError("run output forbidden path is unavailable") from exc
+        identity_overlap = False
+        if authenticated_path.is_dir():
+            identity_overlap = _directory_contains_by_identity(
+                authenticated_path,
+                destination.parent,
+                context="run output disjointness",
+            )
+        if _paths_overlap(destination, authenticated_path) or identity_overlap:
+            raise SealedLaunchError(
+                "sealed run output overlaps an authenticated runtime, source, model, cache, "
+                "or prerequisite path"
+            )
 
 
 def _atomic_publish_capture_receipt(
@@ -701,6 +822,279 @@ def _atomic_publish_capture_receipt(
             ) from None
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _read_exact_run_output(
+    root: Path,
+    *,
+    expected_filenames: frozenset[str],
+    context: str,
+) -> tuple[dict[str, bytes], tuple[int, int, int]]:
+    directory = _absolute_directory(root, context=context)
+    identity = _temporary_directory_identity(directory, context=context)
+    _assert_owned_temporary_tree_has_no_reparse(directory, context=context)
+    try:
+        entries = tuple(sorted(os.scandir(directory), key=lambda item: item.name))
+    except OSError as exc:
+        raise SealedLaunchError(f"cannot enumerate {context}") from exc
+    names = [entry.name for entry in entries]
+    if set(names) != set(expected_filenames) or len(names) != len(expected_filenames):
+        raise SealedLaunchError(f"{context} inventory differs from the finalized contract")
+    if len({name.casefold() for name in names}) != len(names):
+        raise SealedLaunchError(f"{context} contains duplicate case-folded names")
+    payloads: dict[str, bytes] = {}
+    for entry in entries:
+        try:
+            status = Path(entry.path).stat(follow_symlinks=False)
+        except OSError as exc:
+            raise SealedLaunchError(f"cannot inspect {context} entry") from exc
+        if (
+            entry.is_symlink()
+            or bool(getattr(status, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT)
+            or not stat.S_ISREG(status.st_mode)
+            or int(getattr(status, "st_nlink", 1)) != 1
+        ):
+            raise SealedLaunchError(f"{context} entry is not a single-link regular file")
+        payloads[entry.name] = _stable_file_bytes(
+            Path(entry.path),
+            context=f"{context} entry {entry.name}",
+        )
+    if _temporary_directory_identity(directory, context=context) != identity:
+        raise SealedLaunchError(f"{context} identity changed while it was authenticated")
+    try:
+        repeated_names = sorted(entry.name for entry in os.scandir(directory))
+    except OSError as exc:
+        raise SealedLaunchError(f"cannot re-enumerate {context}") from exc
+    if repeated_names != names:
+        raise SealedLaunchError(f"{context} inventory changed while it was authenticated")
+    return payloads, identity
+
+
+def _atomic_publish_run_finalization_file(
+    output_dir: Path,
+    *,
+    expected_identity: tuple[int, int, int],
+    filename: str,
+    payload: bytes,
+    context: str,
+    commit_last: bool = False,
+) -> None:
+    root = _absolute_directory(output_dir, context="run output directory")
+    if _temporary_directory_identity(root, context="run output directory") != expected_identity:
+        raise SealedLaunchError("run output directory identity changed before host finalization")
+    destination = root / filename
+    if destination.parent != root or os.path.lexists(destination):
+        raise FileExistsError(f"refusing to overwrite existing {context}: {destination}")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{filename}.", dir=root)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if _temporary_directory_identity(root, context="run output directory") != expected_identity:
+            raise SealedLaunchError(
+                "run output directory identity changed during host finalization"
+            )
+        if os.path.lexists(destination):
+            raise FileExistsError(f"refusing to overwrite existing {context}: {destination}")
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            raise FileExistsError(
+                f"refusing to overwrite existing {context}: {destination}"
+            ) from None
+    finally:
+        temporary.unlink(missing_ok=True)
+    # The finalization receipt is the transaction's authoritative commit
+    # sentinel.  Once its temporary hardlink has been removed successfully,
+    # no fallible filesystem operation may run in this process.  A failed
+    # temporary unlink leaves a second link/extra entry and therefore remains
+    # mechanically inadmissible to every exact-directory consumer.
+    if commit_last:
+        return
+    if _stable_file_bytes(destination, context=context) != payload:
+        raise SealedLaunchError(f"published {context} bytes changed")
+
+
+def _finalize_run_output(
+    snapshot: CaptureArtifactSnapshot,
+    *,
+    runner_options: Mapping[str, str],
+    execution_bindings: Mapping[str, str],
+    source_manifest: Mapping[str, object],
+    capture_provenance_receipt_file_sha256: str,
+    fisher_h1_smoke: bool,
+) -> dict[str, object]:
+    output_dir = _revalidate_capture_artifact_snapshot(
+        snapshot,
+        context="sealed run output directory",
+        expect_absent=False,
+    )
+    child_names = (
+        FISHER_SMOKE_CHILD_OUTPUT_FILENAMES
+        if fisher_h1_smoke
+        else CALIBRATION_CHILD_OUTPUT_FILENAMES
+    )
+    child, output_identity = _read_exact_run_output(
+        output_dir,
+        expected_filenames=child_names,
+        context="sealed child run output",
+    )
+    report_name = FISHER_SMOKE_REPORT_FILENAME if fisher_h1_smoke else CALIBRATION_REPORT_FILENAME
+    report = _strict_json(child[report_name], context="sealed child run report")
+    _exact_fields(
+        report,
+        {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
+        context="sealed child run report",
+    )
+    evidence = report["evidence"]
+    repository = evidence.get("repository") if isinstance(evidence, dict) else None
+    expected_status = "fisher_h1_smoke_passed" if fisher_h1_smoke else "passed"
+    if (
+        _canonical_json_bytes(report) != child[report_name]
+        or report["artifact_kind"] != RUN_REPORT_KIND
+        or report["schema_version"] != RUN_REPORT_SCHEMA
+        or not isinstance(evidence, dict)
+        or evidence.get("status") != expected_status
+        or evidence.get("runner_revision") != RUNNER_REVISION
+        or not isinstance(repository, dict)
+        or repository.get("source_commit") != source_manifest["source_commit"]
+        or _sha256(
+            report["canonical_evidence_sha256"],
+            context="sealed child run canonical evidence SHA-256",
+        )
+        != _sha256_bytes(_canonical_json_bytes(evidence))
+    ):
+        raise SealedLaunchError("sealed child run report authentication failed")
+    identity_bytes = _stable_file_bytes(
+        Path(runner_options["--frozen-identity"]),
+        context="frozen identity for run finalization",
+    )
+    identity_sha256 = _sha256_bytes(identity_bytes)
+    identity_receipt = evidence.get("identity")
+    prerequisites = evidence.get("prerequisites")
+    prior_smoke_finalization_sha256 = (
+        None
+        if fisher_h1_smoke
+        else _sha256(
+            runner_options["--expected-prior-fisher-h1-smoke-launch-finalization-sha256"],
+            context="expected prior Fisher H=1 smoke launch finalization SHA-256",
+        )
+    )
+    prior_smoke_report_sha256 = (
+        None
+        if fisher_h1_smoke
+        else _sha256_bytes(
+            _stable_file_bytes(
+                Path(runner_options["--prior-fisher-h1-smoke-report"]),
+                context="prior Fisher H=1 smoke report for run finalization",
+            )
+        )
+    )
+    expected_prerequisites = {
+        "capture_provenance_receipt_file_sha256": (capture_provenance_receipt_file_sha256),
+        "fisher_h1_smoke_launch_finalization_file_sha256": (prior_smoke_finalization_sha256),
+        "fisher_h1_smoke_report_file_sha256": prior_smoke_report_sha256,
+    }
+    if (
+        not isinstance(identity_receipt, dict)
+        or identity_receipt.get("file_sha256") != identity_sha256
+        or identity_receipt.get("execution_bindings") != dict(execution_bindings)
+        or prerequisites != expected_prerequisites
+    ):
+        raise SealedLaunchError("sealed child run identity or prerequisite binding drifted")
+    child_hashes = {name: _sha256_bytes(payload) for name, payload in sorted(child.items())}
+    child_sizes = {name: len(payload) for name, payload in sorted(child.items())}
+    if fisher_h1_smoke:
+        if evidence.get("artifacts") != {}:
+            raise SealedLaunchError("Fisher H=1 smoke report authorizes unexpected artifacts")
+    else:
+        artifacts = evidence.get("artifacts")
+        expected_artifacts = {
+            name: digest
+            for name, digest in child_hashes.items()
+            if name != CALIBRATION_REPORT_FILENAME
+        }
+        if not isinstance(artifacts, dict) or artifacts != expected_artifacts:
+            raise SealedLaunchError("full calibration report artifact inventory drifted")
+    marker_name = (
+        FISHER_SMOKE_COMPLETE_FILENAME if fisher_h1_smoke else CALIBRATION_COMPLETE_FILENAME
+    )
+    marker_bytes = FISHER_SMOKE_COMPLETE_BYTES if fisher_h1_smoke else CALIBRATION_COMPLETE_BYTES
+    mode = "fisher_h1_smoke" if fisher_h1_smoke else "full_calibration"
+    status = (
+        "fisher_h1_smoke_launcher_finalized"
+        if fisher_h1_smoke
+        else "full_calibration_launcher_finalized"
+    )
+    receipt = _canonical_json_bytes(
+        {
+            "artifact_kind": RUN_LAUNCH_FINALIZATION_KIND,
+            "capture_provenance_receipt_file_sha256": (capture_provenance_receipt_file_sha256),
+            "child_output_file_sha256": child_hashes,
+            "child_output_size_bytes": child_sizes,
+            "completion_marker_filename": marker_name,
+            "completion_marker_sha256": _sha256_bytes(marker_bytes),
+            "execution_bindings": dict(execution_bindings),
+            "frozen_identity_file_sha256": identity_sha256,
+            "launch_policy": dict(SEALED_LAUNCH_POLICY),
+            "mode": mode,
+            "output_directory_absolute_path_sha256": _absolute_path_sha256(output_dir),
+            "prior_fisher_h1_smoke_launch_finalization_file_sha256": (
+                prior_smoke_finalization_sha256
+            ),
+            "publication_contract": RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT,
+            "runner_revision": RUNNER_REVISION,
+            "schema_version": RUN_LAUNCH_FINALIZATION_SCHEMA,
+            "source_commit": source_manifest["source_commit"],
+            "status": status,
+        }
+    )
+    repeated, repeated_identity = _read_exact_run_output(
+        output_dir,
+        expected_filenames=child_names,
+        context="pre-finalization sealed child run output",
+    )
+    if repeated_identity != output_identity or repeated != child:
+        raise SealedLaunchError("sealed child run output changed before host finalization")
+    _atomic_publish_run_finalization_file(
+        output_dir,
+        expected_identity=output_identity,
+        filename=marker_name,
+        payload=marker_bytes,
+        context="run completion marker",
+    )
+    precommit_names = frozenset({*child_names, marker_name})
+    precommit, precommit_identity = _read_exact_run_output(
+        output_dir,
+        expected_filenames=precommit_names,
+        context="pre-receipt launcher-finalized run output",
+    )
+    if (
+        precommit_identity != output_identity
+        or precommit[marker_name] != marker_bytes
+        or any(precommit[name] != child[name] for name in child_names)
+    ):
+        raise SealedLaunchError("launcher-finalized run output changed before receipt commit")
+    result = {
+        "artifact_sha256": {
+            RUN_LAUNCH_FINALIZATION_FILENAME: _sha256_bytes(receipt),
+            marker_name: _sha256_bytes(marker_bytes),
+            report_name: child_hashes[report_name],
+        },
+        "output_dir": str(output_dir),
+        "status": status,
+    }
+    _atomic_publish_run_finalization_file(
+        output_dir,
+        expected_identity=output_identity,
+        filename=RUN_LAUNCH_FINALIZATION_FILENAME,
+        payload=receipt,
+        context="run launch finalization receipt",
+        commit_last=True,
+    )
+    return result
 
 
 def _absolute_path_sha256(path: Path) -> str:
@@ -902,7 +1296,17 @@ class _HeldExecutableCustody:
             self.close()
         except BaseException as close_error:
             if exc is None:
-                raise
+                # A successful child chain verifies custody immediately before
+                # its launcher-finalized commit. Handle release happens after
+                # that transaction and cannot invalidate the committed bytes;
+                # process exit releases any surviving OS handles.
+                with suppress(OSError, UnicodeError):
+                    sys.stderr.write(
+                        "sealed launcher diagnostic: executable custody release failed "
+                        f"after finalization: {close_error}\n"
+                    )
+                    sys.stderr.flush()
+                return False
             assert isinstance(exc, BaseException)
             raise BaseExceptionGroup(
                 "executable custody release failed after a primary launch failure",
@@ -1130,7 +1534,7 @@ def _tree_files(root: Path, *, context: str) -> tuple[dict[str, object], ...]:
                 raise SealedLaunchError(f"{context} has a case-insensitive path collision")
             directory_names.add(folded_relative)
             try:
-                status = entry.stat(follow_symlinks=False)
+                status = Path(entry.path).stat(follow_symlinks=False)
             except OSError as exc:
                 raise SealedLaunchError(f"{context} path is unavailable") from exc
             if entry.is_symlink() or bool(
@@ -1677,10 +2081,11 @@ def _extract_runner_options(arguments: Sequence[str]) -> dict[str, str]:
         raise SealedLaunchError("smoke mode forbids prior Fisher H=1 smoke prerequisites")
     if smoke_flag_count == 0 and supplied_prerequisites != _SMOKE_PREREQUISITE_OPTIONS:
         raise SealedLaunchError(
-            "full calibration requires both prior Fisher H=1 smoke prerequisite paths"
+            "full calibration requires the complete prior Fisher H=1 smoke finalization profile"
         )
-    if not Path(result["--capture-provenance-receipt"]).is_absolute():
-        raise SealedLaunchError("capture provenance receipt path must be absolute")
+    for option in (*sorted(_RUN_OUTPUT_FORBIDDEN_PATH_OPTIONS), "--output-dir"):
+        if option in result and not Path(result[option]).is_absolute():
+            raise SealedLaunchError(f"sealed runner path option must be absolute: {option}")
     return result
 
 
@@ -1735,15 +2140,52 @@ def _verify_capture_provenance_envelope(runner_options: Mapping[str, str]) -> st
     return actual
 
 
-def _verify_fisher_smoke_prerequisite_files(runner_options: Mapping[str, str]) -> None:
+def _verify_fisher_smoke_prerequisite_files(
+    runner_options: Mapping[str, str],
+    *,
+    execution_bindings: Mapping[str, str],
+    source_manifest: Mapping[str, object],
+    frozen_identity_file_sha256: str,
+) -> None:
     capture_provenance_sha256 = _verify_capture_provenance_envelope(runner_options)
     if "--prior-fisher-h1-smoke-report" not in runner_options:
         return
+    report_path = Path(runner_options["--prior-fisher-h1-smoke-report"])
+    marker_path = Path(runner_options["--prior-fisher-h1-smoke-complete-marker"])
+    finalization_path = Path(runner_options["--prior-fisher-h1-smoke-launch-finalization"])
+    if not all(path.is_absolute() for path in (report_path, marker_path, finalization_path)):
+        raise SealedLaunchError("prior Fisher H=1 smoke prerequisite paths must be absolute")
     try:
-        marker = Path(runner_options["--prior-fisher-h1-smoke-complete-marker"]).read_bytes()
-        report_bytes = Path(runner_options["--prior-fisher-h1-smoke-report"]).read_bytes()
+        parents = {
+            report_path.resolve(strict=True).parent,
+            marker_path.resolve(strict=True).parent,
+            finalization_path.resolve(strict=True).parent,
+        }
     except OSError as exc:
         raise SealedLaunchError("prior Fisher H=1 smoke prerequisite is unavailable") from exc
+    if len(parents) != 1:
+        raise SealedLaunchError("prior Fisher H=1 smoke prerequisites are not one output directory")
+    output_dir = parents.pop()
+    if (
+        report_path.resolve(strict=True) != output_dir / FISHER_SMOKE_REPORT_FILENAME
+        or marker_path.resolve(strict=True) != output_dir / FISHER_SMOKE_COMPLETE_FILENAME
+        or finalization_path.resolve(strict=True) != output_dir / RUN_LAUNCH_FINALIZATION_FILENAME
+    ):
+        raise SealedLaunchError("prior Fisher H=1 smoke prerequisite filenames drifted")
+    files, _output_identity = _read_exact_run_output(
+        output_dir,
+        expected_filenames=frozenset(
+            {
+                FISHER_SMOKE_REPORT_FILENAME,
+                FISHER_SMOKE_COMPLETE_FILENAME,
+                RUN_LAUNCH_FINALIZATION_FILENAME,
+            }
+        ),
+        context="launcher-finalized prior Fisher H=1 smoke output",
+    )
+    marker = files[FISHER_SMOKE_COMPLETE_FILENAME]
+    report_bytes = files[FISHER_SMOKE_REPORT_FILENAME]
+    finalization_bytes = files[RUN_LAUNCH_FINALIZATION_FILENAME]
     if marker != FISHER_SMOKE_COMPLETE_BYTES:
         raise SealedLaunchError("prior Fisher H=1 smoke completion marker drifted")
     root = _strict_json(report_bytes, context="prior Fisher H=1 smoke report")
@@ -1765,6 +2207,7 @@ def _verify_fisher_smoke_prerequisite_files(runner_options: Mapping[str, str]) -
         or evidence.get("prerequisites")
         != {
             "capture_provenance_receipt_file_sha256": capture_provenance_sha256,
+            "fisher_h1_smoke_launch_finalization_file_sha256": None,
             "fisher_h1_smoke_report_file_sha256": None,
         }
         or _sha256(
@@ -1774,6 +2217,65 @@ def _verify_fisher_smoke_prerequisite_files(runner_options: Mapping[str, str]) -
         != _sha256_bytes(_canonical_json_bytes(evidence))
     ):
         raise SealedLaunchError("prior Fisher H=1 smoke report authentication failed")
+    expected_finalization_sha256 = _sha256(
+        runner_options["--expected-prior-fisher-h1-smoke-launch-finalization-sha256"],
+        context="expected prior Fisher H=1 smoke launch finalization SHA-256",
+    )
+    if _sha256_bytes(finalization_bytes) != expected_finalization_sha256:
+        raise SealedLaunchError(
+            "prior Fisher H=1 smoke launch finalization differs from its explicit SHA-256"
+        )
+    finalization = _strict_json(
+        finalization_bytes,
+        context="prior Fisher H=1 smoke launch finalization",
+    )
+    _exact_fields(
+        finalization,
+        {
+            "artifact_kind",
+            "capture_provenance_receipt_file_sha256",
+            "child_output_file_sha256",
+            "child_output_size_bytes",
+            "completion_marker_filename",
+            "completion_marker_sha256",
+            "execution_bindings",
+            "frozen_identity_file_sha256",
+            "launch_policy",
+            "mode",
+            "output_directory_absolute_path_sha256",
+            "prior_fisher_h1_smoke_launch_finalization_file_sha256",
+            "publication_contract",
+            "runner_revision",
+            "schema_version",
+            "source_commit",
+            "status",
+        },
+        context="prior Fisher H=1 smoke launch finalization",
+    )
+    if (
+        _canonical_json_bytes(finalization) != finalization_bytes
+        or finalization["artifact_kind"] != RUN_LAUNCH_FINALIZATION_KIND
+        or finalization["schema_version"] != RUN_LAUNCH_FINALIZATION_SCHEMA
+        or finalization["publication_contract"] != RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT
+        or finalization["runner_revision"] != RUNNER_REVISION
+        or finalization["mode"] != "fisher_h1_smoke"
+        or finalization["status"] != "fisher_h1_smoke_launcher_finalized"
+        or finalization["source_commit"] != source_manifest["source_commit"]
+        or finalization["frozen_identity_file_sha256"] != frozen_identity_file_sha256
+        or finalization["capture_provenance_receipt_file_sha256"] != capture_provenance_sha256
+        or finalization["execution_bindings"] != dict(execution_bindings)
+        or finalization["launch_policy"] != dict(SEALED_LAUNCH_POLICY)
+        or finalization["output_directory_absolute_path_sha256"]
+        != _absolute_path_sha256(output_dir)
+        or finalization["prior_fisher_h1_smoke_launch_finalization_file_sha256"] is not None
+        or finalization["child_output_file_sha256"]
+        != {FISHER_SMOKE_REPORT_FILENAME: _sha256_bytes(report_bytes)}
+        or finalization["child_output_size_bytes"]
+        != {FISHER_SMOKE_REPORT_FILENAME: len(report_bytes)}
+        or finalization["completion_marker_filename"] != FISHER_SMOKE_COMPLETE_FILENAME
+        or finalization["completion_marker_sha256"] != _sha256_bytes(marker)
+    ):
+        raise SealedLaunchError("prior Fisher H=1 smoke launch finalization authentication failed")
 
 
 def _parse_identity(data: bytes) -> dict[str, str]:
@@ -2186,7 +2688,12 @@ def _verify_bound_artifacts(
         source_manifest,
         Path(runner_options["--repository-root"]),
     )
-    _verify_fisher_smoke_prerequisite_files(runner_options)
+    _verify_fisher_smoke_prerequisite_files(
+        runner_options,
+        execution_bindings=bindings,
+        source_manifest=source_manifest,
+        frozen_identity_file_sha256=_sha256_bytes(identity_bytes),
+    )
     return bindings, source_manifest, runner_path
 
 
@@ -2252,19 +2759,11 @@ def _verified_dataset_cache_root(
             runtime_root,
             context="authenticated runtime root",
         )
-        if root == authenticated_runtime_root:
-            raise SealedLaunchError("dataset cache root overlaps an authenticated runtime root")
-        try:
-            root.relative_to(authenticated_runtime_root)
-        except ValueError:
-            pass
-        else:
-            raise SealedLaunchError("dataset cache root overlaps an authenticated runtime root")
-        try:
-            authenticated_runtime_root.relative_to(root)
-        except ValueError:
-            pass
-        else:
+        if _paths_overlap(root, authenticated_runtime_root) or _directories_overlap_by_identity(
+            root,
+            authenticated_runtime_root,
+            context="dataset cache and authenticated runtime disjointness",
+        ):
             raise SealedLaunchError("dataset cache root overlaps an authenticated runtime root")
     return root
 
@@ -2290,9 +2789,7 @@ def _prepare_capture_hub_cache_root(dataset_cache_root: Path) -> Path:
         try:
             os.mkdir(candidate, mode=0o700)
         except FileExistsError as exc:
-            raise SealedLaunchError(
-                "capture Hub cache root appeared during creation"
-            ) from exc
+            raise SealedLaunchError("capture Hub cache root appeared during creation") from exc
         except OSError as exc:
             raise SealedLaunchError("cannot create capture Hub cache root") from exc
     return _verified_capture_hub_cache_root(cache)
@@ -2370,7 +2867,7 @@ def _assert_owned_temporary_tree_has_no_reparse(path: Path, *, context: str) -> 
             raise SealedLaunchError(f"cannot enumerate {context} during cleanup") from exc
         for entry in entries:
             try:
-                status = entry.stat(follow_symlinks=False)
+                status = Path(entry.path).stat(follow_symlinks=False)
             except OSError as exc:
                 raise SealedLaunchError(f"cannot inspect {context} during cleanup") from exc
             if entry.is_symlink() or bool(
@@ -2381,6 +2878,42 @@ def _assert_owned_temporary_tree_has_no_reparse(path: Path, *, context: str) -> 
                 stack.append(Path(entry.path))
             elif not stat.S_ISREG(status.st_mode):
                 raise SealedLaunchError(f"{context} contains a non-regular path")
+            elif int(getattr(status, "st_nlink", 1)) != 1:
+                raise SealedLaunchError(f"{context} contains a hard-linked regular file")
+
+
+def _verify_contained_scratch(path: Path, *, context: str) -> Path:
+    """Accept only private cache roots whose complete trees remain ordinary and local."""
+
+    root = _absolute_directory(path, context=context)
+    _assert_owned_temporary_tree_has_no_reparse(root, context=context)
+    try:
+        entries = tuple(os.scandir(root))
+    except OSError as exc:
+        raise SealedLaunchError(f"cannot enumerate {context}") from exc
+    unexpected: list[str] = []
+    observed_folded: set[str] = set()
+    for entry in entries:
+        folded = entry.name.casefold()
+        if folded in observed_folded:
+            raise SealedLaunchError(f"{context} contains duplicate case-folded top-level entries")
+        observed_folded.add(folded)
+        try:
+            is_directory = entry.is_dir(follow_symlinks=False)
+        except OSError as exc:
+            raise SealedLaunchError(f"cannot inspect {context} top-level entry") from exc
+        if entry.name not in SEALED_SCRATCH_ALLOWED_TOP_LEVEL or not is_directory:
+            unexpected.append(entry.name)
+    if unexpected:
+        raise SealedLaunchError(
+            f"{context} contains unexpected top-level entries: {sorted(unexpected)!r}"
+        )
+    for forbidden in (root / "huggingface" / "hub", root / "huggingface" / "datasets"):
+        if os.path.lexists(forbidden):
+            raise SealedLaunchError(
+                f"{context} contains an externally routed Hugging Face cache endpoint"
+            )
+    return root
 
 
 def _cleanup_owned_temporary_directory(
@@ -2393,7 +2926,7 @@ def _cleanup_owned_temporary_directory(
 
     root = Path(os.path.abspath(path))
     if not os.path.lexists(root):
-        return
+        raise SealedLaunchError(f"{context} disappeared before identity-checked cleanup")
     observed_identity = _temporary_directory_identity(root, context=context)
     if observed_identity != expected_identity:
         raise SealedLaunchError(f"{context} identity changed before cleanup")
@@ -2632,8 +3165,9 @@ _reserved = {
     *{"lpt" + str(i) for i in range(1, 10)},
 }
 _policy = {
-    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
-    "cache_confinement_mode": "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v4",
+    "cache_confinement_mode":
+        "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4",
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
     "executable_custody_mode": "platform-held-launch-handles-v1",
@@ -2644,11 +3178,14 @@ _policy = {
     "package_path_mode": "authenticated-record-only-roots-v1",
     "pycache_mode": "new-verified-empty-prefix-v1",
     "safe_path": True,
+    "scratch_residue_mode":
+        "exact-environment-root-allowlist-regular-non-link-cleanup-v1",
     "site_loaded": False,
     "sys_path_mode": "staged-base-then-authenticated-packages-v1",
     "utf8_mode": 1,
     "virtualenv_hook_loaded": False,
 }
+_scratch_top_level = {"huggingface", "private-home", "torch", "transformers", "xdg-cache"}
 _binding_options = {
     "calibration_runtime_manifest_file_sha256": "--runtime-manifest",
     "model_file_manifest_file_sha256": "--model-file-manifest",
@@ -2680,9 +3217,11 @@ _stage_a_capture_required = _calibration_capture_required | {
 _smoke_options = {
     "--prior-fisher-h1-smoke-report",
     "--prior-fisher-h1-smoke-complete-marker",
+    "--prior-fisher-h1-smoke-launch-finalization",
+    "--expected-prior-fisher-h1-smoke-launch-finalization-sha256",
 }
 _forbidden_runner_options = {"--ruler-root"}
-_smoke_marker = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
+_smoke_marker = b"recurquant-experiment013-fisher-h1-smoke-launch-finalized-v2\n"
 
 def _fail(message):
     raise RuntimeError(message)
@@ -2839,7 +3378,7 @@ def _assert_private_tree(path, context):
             raise RuntimeError("cannot enumerate " + context) from error
         for entry in entries:
             try:
-                status = entry.stat(follow_symlinks=False)
+                status = _p.Path(entry.path).stat(follow_symlinks=False)
             except OSError as error:
                 raise RuntimeError("cannot inspect " + context) from error
             if entry.is_symlink() or bool(
@@ -2849,24 +3388,44 @@ def _assert_private_tree(path, context):
                 stack.append(_p.Path(entry.path))
             elif not _stat.S_ISREG(status.st_mode):
                 _fail(context + " contains a non-regular path")
+            elif int(getattr(status, "st_nlink", 1)) != 1:
+                _fail(context + " contains a hard-linked regular file")
+
+def _assert_contained_scratch(path, context):
+    _assert_private_tree(path, context)
+    try:
+        entries = tuple(_o.scandir(path))
+    except OSError as error:
+        raise RuntimeError("cannot enumerate " + context) from error
+    observed = set()
+    unexpected = []
+    for entry in entries:
+        folded = entry.name.casefold()
+        if folded in observed:
+            _fail(context + " contains duplicate case-folded top-level entries")
+        observed.add(folded)
+        try:
+            is_directory = entry.is_dir(follow_symlinks=False)
+        except OSError as error:
+            raise RuntimeError("cannot inspect " + context + " top-level entry") from error
+        if entry.name not in _scratch_top_level or not is_directory:
+            unexpected.append(entry.name)
+    if unexpected:
+        _fail(context + " contains unexpected top-level entries: " + repr(sorted(unexpected)))
+    for forbidden in (path / "huggingface" / "hub", path / "huggingface" / "datasets"):
+        if _o.path.lexists(forbidden):
+            _fail(context + " contains an externally routed Hugging Face cache endpoint")
 
 def _assert_isolated_cache(cache, runtime_roots):
     if cache == _p.Path(cache.anchor):
         _fail("dataset cache root cannot be a filesystem root")
+    cache_chain = _directory_chain(cache, "dataset cache root")
+    cache_identity = (cache_chain[-1][1], cache_chain[-1][2])
     for runtime in runtime_roots:
-        if cache == runtime:
-            _fail("dataset cache root overlaps an authenticated runtime root")
-        try:
-            cache.relative_to(runtime)
-        except ValueError:
-            pass
-        else:
-            _fail("dataset cache root overlaps an authenticated runtime root")
-        try:
-            runtime.relative_to(cache)
-        except ValueError:
-            pass
-        else:
+        runtime_chain = _directory_chain(runtime, "authenticated runtime root")
+        runtime_identity = (runtime_chain[-1][1], runtime_chain[-1][2])
+        if (cache_identity in {(item[1], item[2]) for item in runtime_chain}
+                or runtime_identity in {(item[1], item[2]) for item in cache_chain}):
             _fail("dataset cache root overlaps an authenticated runtime root")
 
 def _join(root, relative, context, directory=False):
@@ -3011,7 +3570,9 @@ def _options(arguments):
     required = {
         "--capture-provenance-receipt",
         "--expected-capture-provenance-receipt-sha256",
-        "--frozen-identity", "--cache-root", "--repository-root", "--source-commit",
+        "--frozen-identity", "--cache-root", "--model-root", "--repository-root",
+        "--source-commit",
+        "--output-dir",
         *_binding_options.values(), *_expected_digest_options.values(),
         "--ruler-receipt-dir",
     }
@@ -3045,8 +3606,16 @@ def _options(arguments):
         _fail("smoke mode forbids prior Fisher H=1 smoke prerequisites")
     if smoke_count == 0 and supplied != _smoke_options:
         _fail("full calibration requires prior Fisher H=1 smoke prerequisites")
-    if not _p.Path(result["--capture-provenance-receipt"]).is_absolute():
-        _fail("capture provenance receipt path must be absolute")
+    for name in {
+        "--cache-root", "--capture-provenance-receipt", "--frozen-identity",
+        "--model-root", "--output-dir", "--repository-root", "--ruler-receipt-dir",
+        *_binding_options.values(),
+    }:
+        if not _p.Path(result[name]).is_absolute():
+            _fail("sealed runner path is not absolute: " + name)
+    if any(not _p.Path(result[name]).is_absolute() for name in supplied
+           if name != "--expected-prior-fisher-h1-smoke-launch-finalization-sha256"):
+        _fail("prior Fisher H=1 smoke prerequisite paths must be absolute")
     return result
 
 def _smoke(options):
@@ -3075,7 +3644,7 @@ def _smoke(options):
             or type(receipt_root["capture_version"]) is not int
             or receipt_root["capture_version"] != 6
             or receipt_root["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v15"
+            != "experiment-013-static-q468-calibration-runner-v16"
             or receipt_root["phase"] != "calibration"
             or receipt_root["publication_contract"]
             != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
@@ -3085,27 +3654,96 @@ def _smoke(options):
         _fail("capture provenance receipt finalized envelope drifted")
     if "--prior-fisher-h1-smoke-report" not in options:
         return
-    if _p.Path(options["--prior-fisher-h1-smoke-complete-marker"]).read_bytes() != _smoke_marker:
+    report_path = _p.Path(options["--prior-fisher-h1-smoke-report"])
+    marker_path = _p.Path(options["--prior-fisher-h1-smoke-complete-marker"])
+    finalization_path = _p.Path(options["--prior-fisher-h1-smoke-launch-finalization"])
+    resolved = [path.resolve(strict=True) for path in (
+        report_path, marker_path, finalization_path)]
+    parents = {path.parent for path in resolved}
+    if len(parents) != 1:
+        _fail("prior Fisher H=1 smoke prerequisites are not one output directory")
+    output_root = parents.pop()
+    if ({item.name for item in output_root.iterdir()} != {
+            "fisher-h1-smoke-report.json", "FISHER_H1_SMOKE_COMPLETE",
+            "RUN_LAUNCH_FINALIZATION.json"}
+            or resolved[0] != output_root / "fisher-h1-smoke-report.json"
+            or resolved[1] != output_root / "FISHER_H1_SMOKE_COMPLETE"
+            or resolved[2] != output_root / "RUN_LAUNCH_FINALIZATION.json"):
+        _fail("prior Fisher H=1 smoke output inventory drifted")
+    marker = _bytes(marker_path, "prior Fisher H=1 smoke completion marker")
+    if marker != _smoke_marker:
         _fail("prior Fisher H=1 smoke completion marker drifted")
-    data = _p.Path(options["--prior-fisher-h1-smoke-report"]).read_bytes()
+    data = _bytes(report_path, "prior Fisher H=1 smoke report")
     root = _json(data, "prior Fisher H=1 smoke report")
     _fields(root, {"artifact_kind", "canonical_evidence_sha256", "evidence", "schema_version"},
             "prior Fisher H=1 smoke report")
     evidence = root["evidence"]
     if (_canonical(root) != data
             or root["artifact_kind"] != "recurquant_experiment013_calibration_run"
-            or type(root["schema_version"]) is not int or root["schema_version"] != 3
+            or type(root["schema_version"]) is not int or root["schema_version"] != 4
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
             or evidence.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v15"
+            != "experiment-013-static-q468-calibration-runner-v16"
             or evidence.get("prerequisites") != {
                 "capture_provenance_receipt_file_sha256": receipt_sha256,
+                "fisher_h1_smoke_launch_finalization_file_sha256": None,
                 "fisher_h1_smoke_report_file_sha256": None,
             }
             or _digest(root["canonical_evidence_sha256"], "smoke evidence hash")
             != _h.sha256(_canonical(evidence)).hexdigest()):
         _fail("prior Fisher H=1 smoke report authentication failed")
+    finalization_bytes = _bytes(
+        finalization_path, "prior Fisher H=1 smoke launch finalization")
+    if _h.sha256(finalization_bytes).hexdigest() != _digest(
+            options["--expected-prior-fisher-h1-smoke-launch-finalization-sha256"],
+            "prior Fisher H=1 smoke launch finalization SHA-256"):
+        _fail("prior Fisher H=1 smoke launch finalization digest drifted")
+    finalization = _json(
+        finalization_bytes, "prior Fisher H=1 smoke launch finalization")
+    _fields(finalization, {
+        "artifact_kind", "capture_provenance_receipt_file_sha256",
+        "child_output_file_sha256", "child_output_size_bytes",
+        "completion_marker_filename", "completion_marker_sha256",
+        "execution_bindings", "frozen_identity_file_sha256", "launch_policy",
+        "mode", "output_directory_absolute_path_sha256",
+        "prior_fisher_h1_smoke_launch_finalization_file_sha256",
+        "publication_contract", "runner_revision", "schema_version",
+        "source_commit", "status",
+    }, "prior Fisher H=1 smoke launch finalization")
+    identity_bytes = _bytes(_p.Path(options["--frozen-identity"]), "frozen identity")
+    identity_bindings = _identity(identity_bytes)
+    if (_canonical(finalization) != finalization_bytes
+            or finalization["artifact_kind"]
+            != "recurquant_experiment013_calibration_run_launch_finalization"
+            or type(finalization["schema_version"]) is not int
+            or finalization["schema_version"] != 1
+            or finalization["runner_revision"]
+            != "experiment-013-static-q468-calibration-runner-v16"
+            or finalization["mode"] != "fisher_h1_smoke"
+            or finalization["status"] != "fisher_h1_smoke_launcher_finalized"
+            or finalization["publication_contract"]
+            != "sealed-host-finalization-receipt-last-no-overwrite-after-postconditions-"
+               "owned-root-cleanup-and-reauthentication-v1"
+            or finalization["source_commit"] != options["--source-commit"]
+            or finalization["frozen_identity_file_sha256"]
+            != _h.sha256(identity_bytes).hexdigest()
+            or finalization["capture_provenance_receipt_file_sha256"] != receipt_sha256
+            or finalization["execution_bindings"] != identity_bindings
+            or finalization["launch_policy"] != _policy
+            or finalization["output_directory_absolute_path_sha256"]
+            != _h.sha256(_o.path.normcase(str(output_root)).encode("utf-8")).hexdigest()
+            or finalization["prior_fisher_h1_smoke_launch_finalization_file_sha256"]
+            is not None
+            or finalization["child_output_file_sha256"]
+            != {"fisher-h1-smoke-report.json": _h.sha256(data).hexdigest()}
+            or finalization["child_output_size_bytes"]
+            != {"fisher-h1-smoke-report.json": len(data)}
+            or finalization["completion_marker_filename"]
+            != "FISHER_H1_SMOKE_COMPLETE"
+            or finalization["completion_marker_sha256"]
+            != _h.sha256(marker).hexdigest()):
+        _fail("prior Fisher H=1 smoke launch finalization authentication failed")
 
 def _identity(data):
     root = _json(data, "frozen identity")
@@ -3210,7 +3848,7 @@ def _manifest(data):
                    "runtime_trees", "schema_version"}, "runtime manifest")
     if _canonical(root) != data or root["artifact_kind"] != (
         "recurquant_experiment013_calibration_runtime_manifest"
-    ) or type(root["schema_version"]) is not int or root["schema_version"] != 6:
+    ) or type(root["schema_version"]) is not int or root["schema_version"] != 7:
         _fail("runtime manifest identity or policy drifted")
     _typed(root["launch_policy"], _policy, "runtime launch policy")
     if root["base_runtime_root"] != "base-runtime":
@@ -3632,9 +4270,7 @@ try:
             if _temporary_identity(
                     _scratch, "sealed scratch directory") != _scratch_identity:
                 raise RuntimeError("sealed scratch directory identity changed")
-            _assert_private_tree(_scratch, "sealed scratch directory")
-            if any(_scratch.iterdir()):
-                raise RuntimeError("sealed scratch directory was not left empty")
+            _assert_contained_scratch(_scratch, "sealed scratch directory")
         except Exception as error:
             _postcondition_failures.append(("scratch containment", error))
         try:
@@ -3745,7 +4381,6 @@ def _launch_with_custody(
             runtime_manifest=runtime_manifest,
         ) as custody:
             result = _launch_with_custody(argv, _executable_custody=custody)
-            custody.verify()
             return result
     _executable_custody.verify()
     dataset_cache_root = _verified_dataset_cache_root(
@@ -3766,6 +4401,8 @@ def _launch_with_custody(
         )
     capture_output_snapshot: CaptureArtifactSnapshot | None = None
     capture_receipt_snapshot: CaptureArtifactSnapshot | None = None
+    run_output_snapshot: CaptureArtifactSnapshot | None = None
+    run_forbidden_paths: tuple[Path, ...] = ()
     if capture_profile:
         capture_output_snapshot = _new_capture_artifact_snapshot(
             Path(runner_options["--output"]),
@@ -3778,6 +4415,37 @@ def _launch_with_custody(
         _validate_capture_artifact_disjointness(
             (capture_output_snapshot, capture_receipt_snapshot),
             forbidden_roots=(base, *packages.values(), dataset_cache_root),
+        )
+    else:
+        run_output_snapshot = _new_capture_artifact_snapshot(
+            Path(runner_options["--output-dir"]),
+            context="sealed run output directory",
+        )
+        prior_smoke_roots = tuple(
+            {
+                Path(runner_options[option]).parent
+                for option in (
+                    "--prior-fisher-h1-smoke-report",
+                    "--prior-fisher-h1-smoke-complete-marker",
+                    "--prior-fisher-h1-smoke-launch-finalization",
+                )
+                if option in runner_options
+            }
+        )
+        run_forbidden_paths = (
+            base,
+            *packages.values(),
+            dataset_cache_root,
+            *prior_smoke_roots,
+            *(
+                Path(runner_options[option])
+                for option in sorted(_RUN_OUTPUT_FORBIDDEN_PATH_OPTIONS)
+                if option in runner_options
+            ),
+        )
+        _validate_run_output_disjointness(
+            run_output_snapshot,
+            forbidden_paths=run_forbidden_paths,
         )
 
     pycache: Path | None = None
@@ -3814,6 +4482,12 @@ def _launch_with_custody(
                     pycache,
                     scratch,
                 ),
+            )
+        else:
+            assert run_output_snapshot is not None
+            _validate_run_output_disjointness(
+                run_output_snapshot,
+                forbidden_paths=(*run_forbidden_paths, pycache, scratch),
             )
         command = _sealed_argv(
             interpreter=interpreter,
@@ -3870,11 +4544,10 @@ def _launch_with_custody(
                 raise SealedLaunchError(
                     "sealed scratch directory identity changed during execution"
                 )
-            _assert_owned_temporary_tree_has_no_reparse(
+            _verify_contained_scratch(
                 scratch,
                 context="sealed scratch directory",
             )
-            _verify_empty_scratch(scratch)
         except Exception as exc:
             secondary_failures.append(("scratch containment postcondition", exc))
         try:
@@ -4046,6 +4719,7 @@ def _launch_with_custody(
             dataset_cache_root,
             expected_identity=capture_hub_cache_identity,
         )
+        _executable_custody.verify()
         _atomic_publish_capture_receipt(capture_receipt_snapshot, candidate)
         published_receipt = _revalidate_capture_artifact_snapshot(
             capture_receipt_snapshot,
@@ -4101,6 +4775,51 @@ def _launch_with_custody(
             ).decode("utf-8"),
             end="",
         )
+    if not capture_profile and child_returncode == 0:
+        assert run_output_snapshot is not None
+        _validate_run_output_disjointness(
+            run_output_snapshot,
+            forbidden_paths=run_forbidden_paths,
+        )
+        final_bindings, final_source, _runner_path = _verify_bound_artifacts(
+            runner_options,
+            runtime_manifest_path=args.runtime_manifest,
+        )
+        if final_bindings != bindings or final_source != source_manifest:
+            raise SealedLaunchError("bound artifacts changed after owned-root cleanup")
+        final_cache_root = _verified_dataset_cache_root(
+            dataset_cache_root,
+            runtime_roots=(base, *packages.values()),
+        )
+        if (
+            _non_link_directory_identity_chain(
+                final_cache_root,
+                context="dataset cache root",
+            )
+            != dataset_cache_identity
+        ):
+            raise SealedLaunchError("dataset cache root changed after owned-root cleanup")
+        _verify_runtime(
+            runtime_manifest,
+            base_runtime_root=base,
+            package_roots=packages,
+            git_executable_path=git_executable,
+            require_current_process=False,
+        )
+        capture_provenance_sha256 = _verify_capture_provenance_envelope(runner_options)
+        _executable_custody.verify()
+        finalized = _finalize_run_output(
+            run_output_snapshot,
+            runner_options=runner_options,
+            execution_bindings=final_bindings,
+            source_manifest=final_source,
+            capture_provenance_receipt_file_sha256=capture_provenance_sha256,
+            fisher_h1_smoke=("--fisher-h1-smoke" in runner_arguments),
+        )
+        # The receipt is the completed transaction. A closed diagnostic
+        # stream after its commit cannot retroactively invalidate it.
+        with suppress(OSError, UnicodeError):
+            print(_canonical_json_bytes(finalized).decode("utf-8"), end="")
     return child_returncode
 
 

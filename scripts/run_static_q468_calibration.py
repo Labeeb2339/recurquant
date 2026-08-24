@@ -67,7 +67,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v15"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -113,10 +113,10 @@ STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibratio
 MODEL_STAGING_PATHS_KIND: Final = "recurquant_experiment013_model_staging_paths_verification"
 MODEL_STAGING_PATHS_SCHEMA: Final = 1
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-RUNTIME_MANIFEST_SCHEMA: Final = 6
+RUNTIME_MANIFEST_SCHEMA: Final = 7
 OFFICIAL_DATASETS_DISTRIBUTION_VERSION: Final = "4.8.5"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
-RUN_REPORT_SCHEMA: Final = 3
+RUN_REPORT_SCHEMA: Final = 4
 CANONICAL_ADAPTER_REVISION: Final = "experiment-013-qwen35-live-adapter-v2"
 CANONICAL_ADAPTER_KERNEL_BACKEND: Final = "transformers_pure_torch_gated_delta_rule"
 CANONICAL_ADAPTER_MODEL_DTYPE: Final = "bfloat16"
@@ -194,10 +194,19 @@ AUTHORIZATION_COMPLETE_BYTES: Final = (
 )
 REPORT_FILENAME: Final = "calibration-run-report.json"
 COMPLETE_FILENAME: Final = "CALIBRATION_COMPLETE"
-CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-complete-v1\n"
+CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-launch-finalized-v2\n"
 FISHER_SMOKE_REPORT_FILENAME: Final = "fisher-h1-smoke-report.json"
 FISHER_SMOKE_COMPLETE_FILENAME: Final = "FISHER_H1_SMOKE_COMPLETE"
-FISHER_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
+FISHER_SMOKE_COMPLETE_BYTES: Final = (
+    b"recurquant-experiment013-fisher-h1-smoke-launch-finalized-v2\n"
+)
+RUN_LAUNCH_FINALIZATION_KIND: Final = "recurquant_experiment013_calibration_run_launch_finalization"
+RUN_LAUNCH_FINALIZATION_SCHEMA: Final = 1
+RUN_LAUNCH_FINALIZATION_FILENAME: Final = "RUN_LAUNCH_FINALIZATION.json"
+RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-finalization-receipt-last-no-overwrite-after-postconditions-"
+    "owned-root-cleanup-and-reauthentication-v1"
+)
 RULER_RECEIPT_DIRECTORY_FILENAMES: Final = (
     "aggregation__cwe__l2048__s12340.json",
     "aggregation__cwe__l4096__s12340.json",
@@ -260,9 +269,9 @@ _FORBIDDEN_RUNTIME_FILENAMES: Final = frozenset(
     {"pyvenv.cfg", "sitecustomize.py", "usercustomize.py"}
 )
 SEALED_LAUNCH_POLICY: Final = {
-    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
+    "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v4",
     "cache_confinement_mode": (
-        "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3"
+        "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"
     ),
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,
@@ -274,6 +283,7 @@ SEALED_LAUNCH_POLICY: Final = {
     "package_path_mode": "authenticated-record-only-roots-v1",
     "pycache_mode": "new-verified-empty-prefix-v1",
     "safe_path": True,
+    "scratch_residue_mode": "exact-environment-root-allowlist-regular-non-link-cleanup-v1",
     "site_loaded": False,
     "sys_path_mode": "staged-base-then-authenticated-packages-v1",
     "utf8_mode": 1,
@@ -1147,6 +1157,9 @@ class CalibrationRunConfig:
     fisher_h1_smoke: bool = False
     prior_fisher_h1_smoke_report_bytes: bytes | None = None
     prior_fisher_h1_smoke_complete_bytes: bytes | None = None
+    prior_fisher_h1_smoke_launch_finalization_bytes: bytes | None = None
+    expected_prior_fisher_h1_smoke_launch_finalization_sha256: str | None = None
+    expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256: str | None = None
 
 
 class CalibrationBackend(Protocol):
@@ -5641,6 +5654,7 @@ def _report_bytes(
     runtime: Mapping[str, object],
     capture_provenance_receipt_file_sha256: str,
     fisher_h1_smoke_report_file_sha256: str | None,
+    fisher_h1_smoke_launch_finalization_file_sha256: str | None,
 ) -> bytes:
     evidence = {
         "artifacts": {name: sha256_bytes(payload) for name, payload in sorted(artifacts.items())},
@@ -5683,6 +5697,9 @@ def _report_bytes(
         },
         "prerequisites": {
             "capture_provenance_receipt_file_sha256": (capture_provenance_receipt_file_sha256),
+            "fisher_h1_smoke_launch_finalization_file_sha256": (
+                fisher_h1_smoke_launch_finalization_file_sha256
+            ),
             "fisher_h1_smoke_report_file_sha256": (fisher_h1_smoke_report_file_sha256),
         },
         "repository": {
@@ -5741,6 +5758,7 @@ def _frozen_token_sequence_manifest_sha256(
 def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
     report_bytes: bytes,
     complete_marker_bytes: bytes,
+    launch_finalization_bytes: bytes,
     *,
     identity: FrozenCalibrationIdentity,
     source_commit: str,
@@ -5749,10 +5767,16 @@ def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
     model_manifest: ModelFileManifest,
     authenticated_runtime: AuthenticatedRuntime,
     expected_capture_provenance_receipt_sha256: str,
-) -> str:
+    expected_launch_finalization_sha256: str,
+    expected_output_directory_absolute_path_sha256: str,
+) -> tuple[str, str]:
     """Authenticate the mandatory one-sequence Fisher H=1 smoke receipt."""
 
-    if not isinstance(report_bytes, bytes) or not isinstance(complete_marker_bytes, bytes):
+    if (
+        not isinstance(report_bytes, bytes)
+        or not isinstance(complete_marker_bytes, bytes)
+        or not isinstance(launch_finalization_bytes, bytes)
+    ):
         raise TypeError("Fisher H=1 smoke prerequisite files must be bytes")
     if complete_marker_bytes != FISHER_SMOKE_COMPLETE_BYTES:
         raise CalibrationRunError("Fisher H=1 smoke completion marker drifted")
@@ -5803,6 +5827,7 @@ def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
         or evidence["prerequisites"]
         != {
             "capture_provenance_receipt_file_sha256": (expected_capture_provenance_receipt_sha256),
+            "fisher_h1_smoke_launch_finalization_file_sha256": None,
             "fisher_h1_smoke_report_file_sha256": None,
         }
     ):
@@ -6038,12 +6063,88 @@ def _authenticate_fisher_h1_smoke_prerequisite_unchecked(
         or adapter["token_sequence_manifest_sha256"] != expected_token_sequence_manifest_sha256
     ):
         raise CalibrationRunError("Fisher H=1 smoke adapter identity drifted")
-    return sha256_bytes(report_bytes)
+    launch_finalization_file_sha256 = sha256_bytes(launch_finalization_bytes)
+    if launch_finalization_file_sha256 != _sha256(
+        expected_launch_finalization_sha256,
+        context="expected Fisher H=1 smoke launch finalization SHA-256",
+    ):
+        raise CalibrationRunError(
+            "Fisher H=1 smoke launch finalization differs from its explicit SHA-256"
+        )
+    finalization = _strict_json_bytes(
+        launch_finalization_bytes,
+        context="Fisher H=1 smoke launch finalization",
+    )
+    _exact_fields(
+        finalization,
+        {
+            "artifact_kind",
+            "capture_provenance_receipt_file_sha256",
+            "child_output_file_sha256",
+            "child_output_size_bytes",
+            "completion_marker_filename",
+            "completion_marker_sha256",
+            "execution_bindings",
+            "frozen_identity_file_sha256",
+            "launch_policy",
+            "mode",
+            "output_directory_absolute_path_sha256",
+            "prior_fisher_h1_smoke_launch_finalization_file_sha256",
+            "publication_contract",
+            "runner_revision",
+            "schema_version",
+            "source_commit",
+            "status",
+        },
+        context="Fisher H=1 smoke launch finalization",
+    )
+    report_file_sha256 = sha256_bytes(report_bytes)
+    if (
+        canonical_json_bytes(finalization) != launch_finalization_bytes
+        or finalization["artifact_kind"] != RUN_LAUNCH_FINALIZATION_KIND
+        or type(finalization["schema_version"]) is not int
+        or finalization["schema_version"] != RUN_LAUNCH_FINALIZATION_SCHEMA
+        or finalization["runner_revision"] != RUNNER_REVISION
+        or finalization["mode"] != "fisher_h1_smoke"
+        or finalization["status"] != "fisher_h1_smoke_launcher_finalized"
+        or finalization["publication_contract"] != RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT
+        or finalization["source_commit"] != source_commit
+        or finalization["frozen_identity_file_sha256"] != identity.file_sha256
+        or finalization["capture_provenance_receipt_file_sha256"]
+        != expected_capture_provenance_receipt_sha256
+        or finalization["execution_bindings"]
+        != {
+            "calibration_runtime_manifest_file_sha256": identity.runtime_manifest_file_sha256,
+            "model_file_manifest_file_sha256": identity.model_file_manifest_file_sha256,
+            "parquet_materialization_manifest_file_sha256": (
+                identity.parquet_materialization_manifest_file_sha256
+            ),
+            "repository_source_manifest_file_sha256": (
+                identity.repository_source_manifest_file_sha256
+            ),
+        }
+        or finalization["launch_policy"] != dict(SEALED_LAUNCH_POLICY)
+        or finalization["output_directory_absolute_path_sha256"]
+        != _sha256(
+            expected_output_directory_absolute_path_sha256,
+            context="expected Fisher H=1 smoke output-directory absolute-path SHA-256",
+        )
+        or finalization["prior_fisher_h1_smoke_launch_finalization_file_sha256"] is not None
+        or finalization["child_output_file_sha256"]
+        != {FISHER_SMOKE_REPORT_FILENAME: report_file_sha256}
+        or finalization["child_output_size_bytes"]
+        != {FISHER_SMOKE_REPORT_FILENAME: len(report_bytes)}
+        or finalization["completion_marker_filename"] != FISHER_SMOKE_COMPLETE_FILENAME
+        or finalization["completion_marker_sha256"] != sha256_bytes(complete_marker_bytes)
+    ):
+        raise CalibrationRunError("Fisher H=1 smoke launch finalization drifted")
+    return report_file_sha256, launch_finalization_file_sha256
 
 
 def authenticate_fisher_h1_smoke_prerequisite(
     report_bytes: bytes,
     complete_marker_bytes: bytes,
+    launch_finalization_bytes: bytes,
     *,
     identity: FrozenCalibrationIdentity,
     source_commit: str,
@@ -6052,13 +6153,16 @@ def authenticate_fisher_h1_smoke_prerequisite(
     model_manifest: ModelFileManifest,
     authenticated_runtime: AuthenticatedRuntime,
     expected_capture_provenance_receipt_sha256: str,
-) -> str:
+    expected_launch_finalization_sha256: str,
+    expected_output_directory_absolute_path_sha256: str,
+) -> tuple[str, str]:
     """Fail closed with one public error type for malformed smoke evidence."""
 
     try:
         return _authenticate_fisher_h1_smoke_prerequisite_unchecked(
             report_bytes,
             complete_marker_bytes,
+            launch_finalization_bytes,
             identity=identity,
             source_commit=source_commit,
             source_manifest_sha256=source_manifest_sha256,
@@ -6066,6 +6170,10 @@ def authenticate_fisher_h1_smoke_prerequisite(
             model_manifest=model_manifest,
             authenticated_runtime=authenticated_runtime,
             expected_capture_provenance_receipt_sha256=(expected_capture_provenance_receipt_sha256),
+            expected_launch_finalization_sha256=expected_launch_finalization_sha256,
+            expected_output_directory_absolute_path_sha256=(
+                expected_output_directory_absolute_path_sha256
+            ),
         )
     except CalibrationRunError:
         raise
@@ -6109,46 +6217,77 @@ def _publish_output_directory(
     output_dir: Path,
     payloads: Mapping[str, bytes],
     *,
-    complete_filename: str = COMPLETE_FILENAME,
+    complete_filename: str | None = COMPLETE_FILENAME,
+    output_path_snapshot: NewCaptureArtifactPath | None = None,
 ) -> None:
-    if complete_filename not in {
+    if complete_filename is not None and complete_filename not in {
         COMPLETE_FILENAME,
         FISHER_SMOKE_COMPLETE_FILENAME,
         AUTHORIZATION_COMPLETE_FILENAME,
     }:
         raise ValueError("completion marker is not a frozen Experiment 013 marker")
-    resolved = Path(os.path.abspath(output_dir))
-    parent = resolved.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    if output_path_snapshot is None:
+        resolved = Path(
+            os.path.abspath(
+                _ordinary_local_absolute_path(
+                    output_dir,
+                    context="published output directory",
+                )
+            )
+        )
+        parent = resolved.parent
+        parent.mkdir(parents=True, exist_ok=True)
+    else:
+        if Path(output_dir) != output_path_snapshot.path:
+            raise CalibrationRunError("published output directory differs from its snapshot")
+        _revalidate_new_capture_artifact_path(
+            output_path_snapshot,
+            context="published output directory",
+        )
+        resolved = output_path_snapshot.path
+        parent = output_path_snapshot.parent
     if resolved.exists():
         raise FileExistsError(f"refusing to overwrite existing calibration output: {resolved}")
     prefix = f".{resolved.name}.staging-"
     staging = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
     owned_staging = True
-    # Custody receipts and the completion marker are deliberately last. The
-    # public directory appears only after every dependency is durable.
-    ordered = [
-        name
-        for name in sorted(payloads)
-        if name not in {REPORT_FILENAME, AUTHORIZATION_FILENAME, BINDING_FILENAME}
-    ]
-    if REPORT_FILENAME in payloads:
-        ordered.append(REPORT_FILENAME)
-    if AUTHORIZATION_FILENAME in payloads:
-        ordered.append(AUTHORIZATION_FILENAME)
-    if BINDING_FILENAME in payloads:
-        ordered.append(BINDING_FILENAME)
+    staging_identity: tuple[int, int, int] | None = None
     try:
+        staging_status = staging.lstat()
+        staging_identity = (
+            staging_status.st_dev,
+            staging_status.st_ino,
+            stat.S_IFMT(staging_status.st_mode),
+        )
+        # Custody receipts and the completion marker are deliberately last. The
+        # public directory appears only after every dependency is durable.
+        ordered = [
+            name
+            for name in sorted(payloads)
+            if name not in {REPORT_FILENAME, AUTHORIZATION_FILENAME, BINDING_FILENAME}
+        ]
+        if REPORT_FILENAME in payloads:
+            ordered.append(REPORT_FILENAME)
+        if AUTHORIZATION_FILENAME in payloads:
+            ordered.append(AUTHORIZATION_FILENAME)
+        if BINDING_FILENAME in payloads:
+            ordered.append(BINDING_FILENAME)
         for name in ordered:
             _atomic_publish_new(staging / name, payloads[name])
-        _atomic_publish_new(
-            staging / complete_filename,
-            {
-                COMPLETE_FILENAME: CALIBRATION_COMPLETE_BYTES,
-                FISHER_SMOKE_COMPLETE_FILENAME: FISHER_SMOKE_COMPLETE_BYTES,
-                AUTHORIZATION_COMPLETE_FILENAME: AUTHORIZATION_COMPLETE_BYTES,
-            }[complete_filename],
-        )
+        if complete_filename is not None:
+            _atomic_publish_new(
+                staging / complete_filename,
+                {
+                    COMPLETE_FILENAME: CALIBRATION_COMPLETE_BYTES,
+                    FISHER_SMOKE_COMPLETE_FILENAME: FISHER_SMOKE_COMPLETE_BYTES,
+                    AUTHORIZATION_COMPLETE_FILENAME: AUTHORIZATION_COMPLETE_BYTES,
+                }[complete_filename],
+            )
+        if output_path_snapshot is not None:
+            _revalidate_new_capture_artifact_path(
+                output_path_snapshot,
+                context="published output directory before commit",
+            )
         if resolved.exists():
             raise FileExistsError(f"refusing to overwrite existing calibration output: {resolved}")
         staging.rename(resolved)
@@ -6164,12 +6303,47 @@ def _publish_output_directory(
                 os.close(descriptor)
     finally:
         if owned_staging:
+            if staging_identity is None:
+                raise CalibrationRunError(
+                    "owned output staging identity was not captured; refusing recursive cleanup; "
+                    f"possible residue: {staging}"
+                )
             try:
                 staging.relative_to(parent)
             except ValueError as exc:  # defensive: never recursively remove outside parent
                 raise RuntimeError("owned staging directory escaped its parent") from exc
             if not staging.name.startswith(prefix):
                 raise RuntimeError("owned staging directory name drifted")
+            if output_path_snapshot is not None:
+                cleanup_parent, cleanup_parent_identities = _require_existing_regular_directory(
+                    output_path_snapshot.parent,
+                    context="published output cleanup parent",
+                )
+                if (
+                    cleanup_parent != output_path_snapshot.parent
+                    or cleanup_parent_identities != output_path_snapshot.parent_component_identities
+                ):
+                    raise CalibrationRunError(
+                        "published output cleanup parent identity changed; "
+                        "refusing recursive cleanup"
+                    )
+            cleanup_staging, cleanup_staging_identities = _require_existing_regular_directory(
+                staging,
+                context="owned output staging directory before cleanup",
+            )
+            cleanup_staging_identity = cleanup_staging_identities[-1]
+            if (
+                cleanup_staging != staging
+                or (
+                    cleanup_staging_identity.device,
+                    cleanup_staging_identity.inode,
+                    stat.S_IFMT(cleanup_staging_identity.mode),
+                )
+                != staging_identity
+            ):
+                raise CalibrationRunError(
+                    "owned output staging identity changed; refusing recursive cleanup"
+                )
             shutil.rmtree(staging, ignore_errors=False)
 
 
@@ -6184,6 +6358,10 @@ def run_calibration(
     started = time.perf_counter()
     if not isinstance(config.require_cuda, bool) or not isinstance(config.fisher_h1_smoke, bool):
         raise TypeError("calibration mode flags must be booleans")
+    _ordinary_local_absolute_path(
+        config.output_dir,
+        context="calibration output directory",
+    )
     for name, value in (
         ("capture_provenance_receipt_bytes", config.capture_provenance_receipt_bytes),
         ("prior_fisher_h1_smoke_report_bytes", config.prior_fisher_h1_smoke_report_bytes),
@@ -6191,9 +6369,34 @@ def run_calibration(
             "prior_fisher_h1_smoke_complete_bytes",
             config.prior_fisher_h1_smoke_complete_bytes,
         ),
+        (
+            "prior_fisher_h1_smoke_launch_finalization_bytes",
+            config.prior_fisher_h1_smoke_launch_finalization_bytes,
+        ),
     ):
         if value is not None and not isinstance(value, bytes):
             raise TypeError(f"{name} must be bytes or None")
+    if (
+        config.expected_prior_fisher_h1_smoke_launch_finalization_sha256 is not None
+        and not isinstance(
+            config.expected_prior_fisher_h1_smoke_launch_finalization_sha256,
+            str,
+        )
+    ):
+        raise TypeError(
+            "expected_prior_fisher_h1_smoke_launch_finalization_sha256 must be str or None"
+        )
+    if (
+        config.expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256 is not None
+        and not isinstance(
+            config.expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256,
+            str,
+        )
+    ):
+        raise TypeError(
+            "expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256 must be "
+            "str or None"
+        )
     bootstrap_bindings = _bootstrap_identity_bindings(config.frozen_identity_bytes)
     source_commit = _git_revision(
         config.expected_source_commit,
@@ -6234,14 +6437,22 @@ def run_calibration(
         if (
             config.prior_fisher_h1_smoke_report_bytes is not None
             or config.prior_fisher_h1_smoke_complete_bytes is not None
+            or config.prior_fisher_h1_smoke_launch_finalization_bytes is not None
+            or config.expected_prior_fisher_h1_smoke_launch_finalization_sha256 is not None
+            or config.expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256
+            is not None
         ):
             raise CalibrationRunError("Fisher H=1 smoke mode forbids a prior smoke prerequisite")
     elif (
         config.prior_fisher_h1_smoke_report_bytes is None
         or config.prior_fisher_h1_smoke_complete_bytes is None
+        or config.prior_fisher_h1_smoke_launch_finalization_bytes is None
+        or config.expected_prior_fisher_h1_smoke_launch_finalization_sha256 is None
+        or config.expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256 is None
     ):
         raise CalibrationRunError(
-            "full calibration requires the prior Fisher H=1 smoke report and marker"
+            "full calibration requires the prior Fisher H=1 smoke report, marker, and "
+            "launch finalization"
         )
 
     # H0 remains the policy/report provenance even when the authenticated
@@ -6323,12 +6534,22 @@ def run_calibration(
         raise CalibrationRunError("calibration runtime identity changed before data access")
 
     fisher_h1_smoke_report_file_sha256: str | None = None
+    fisher_h1_smoke_launch_finalization_file_sha256: str | None = None
     if not config.fisher_h1_smoke:
         assert config.prior_fisher_h1_smoke_report_bytes is not None
         assert config.prior_fisher_h1_smoke_complete_bytes is not None
-        fisher_h1_smoke_report_file_sha256 = authenticate_fisher_h1_smoke_prerequisite(
+        assert config.prior_fisher_h1_smoke_launch_finalization_bytes is not None
+        assert config.expected_prior_fisher_h1_smoke_launch_finalization_sha256 is not None
+        assert (
+            config.expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256 is not None
+        )
+        (
+            fisher_h1_smoke_report_file_sha256,
+            fisher_h1_smoke_launch_finalization_file_sha256,
+        ) = authenticate_fisher_h1_smoke_prerequisite(
             config.prior_fisher_h1_smoke_report_bytes,
             config.prior_fisher_h1_smoke_complete_bytes,
+            config.prior_fisher_h1_smoke_launch_finalization_bytes,
             identity=identity,
             source_commit=source_commit,
             source_manifest_sha256=source_manifest_sha256,
@@ -6336,6 +6557,12 @@ def run_calibration(
             model_manifest=model_manifest,
             authenticated_runtime=authenticated_runtime,
             expected_capture_provenance_receipt_sha256=(capture_provenance_receipt_file_sha256),
+            expected_launch_finalization_sha256=(
+                config.expected_prior_fisher_h1_smoke_launch_finalization_sha256
+            ),
+            expected_output_directory_absolute_path_sha256=(
+                config.expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256
+            ),
         )
 
     materialized: list[tuple[dict[str, object], tuple[int, ...]]] = []
@@ -6481,12 +6708,13 @@ def run_calibration(
             runtime=runtime,
             capture_provenance_receipt_file_sha256=(capture_provenance_receipt_file_sha256),
             fisher_h1_smoke_report_file_sha256=None,
+            fisher_h1_smoke_launch_finalization_file_sha256=None,
         )
         smoke_payloads = {FISHER_SMOKE_REPORT_FILENAME: report}
         _publish_output_directory(
             config.output_dir,
             smoke_payloads,
-            complete_filename=FISHER_SMOKE_COMPLETE_FILENAME,
+            complete_filename=None,
         )
         return {
             "artifact_sha256": {FISHER_SMOKE_REPORT_FILENAME: sha256_bytes(report)},
@@ -6517,8 +6745,15 @@ def run_calibration(
             runtime=runtime,
             capture_provenance_receipt_file_sha256=(capture_provenance_receipt_file_sha256),
             fisher_h1_smoke_report_file_sha256=(fisher_h1_smoke_report_file_sha256),
+            fisher_h1_smoke_launch_finalization_file_sha256=(
+                fisher_h1_smoke_launch_finalization_file_sha256
+            ),
         )
-        _publish_output_directory(config.output_dir, {REPORT_FILENAME: report})
+        _publish_output_directory(
+            config.output_dir,
+            {REPORT_FILENAME: report},
+            complete_filename=None,
+        )
         report_path = config.output_dir / REPORT_FILENAME
         raise CalibrationStabilityFailure(
             f"split-half stability gate failed; failure report: {report_path}"
@@ -6554,9 +6789,12 @@ def run_calibration(
         runtime=runtime,
         capture_provenance_receipt_file_sha256=(capture_provenance_receipt_file_sha256),
         fisher_h1_smoke_report_file_sha256=fisher_h1_smoke_report_file_sha256,
+        fisher_h1_smoke_launch_finalization_file_sha256=(
+            fisher_h1_smoke_launch_finalization_file_sha256
+        ),
     )
     payloads[REPORT_FILENAME] = report
-    _publish_output_directory(config.output_dir, payloads)
+    _publish_output_directory(config.output_dir, payloads, complete_filename=None)
     return {
         "artifact_sha256": {name: sha256_bytes(payload) for name, payload in payloads.items()},
         "output_dir": str(config.output_dir.resolve()),
@@ -6737,9 +6975,7 @@ def _parse_stage_a_identity_capture_arguments(
 
 
 def _new_capture_artifact_path(path: Path, *, context: str) -> NewCaptureArtifactPath:
-    raw = Path(path)
-    if not raw.is_absolute():
-        raise CalibrationRunError(f"{context} must be absolute")
+    raw = _ordinary_local_absolute_path(path, context=context)
     absolute = Path(os.path.abspath(raw))
     if os.path.lexists(absolute):
         raise FileExistsError(f"refusing to overwrite existing {context}: {absolute}")
@@ -6974,9 +7210,8 @@ def _assert_authenticated_capture_six(
         raise CalibrationRunError("authenticated six module origin changed")
     if getattr(module, "_importer", None) is not binding.importer:
         raise CalibrationRunError("authenticated six importer identity changed")
-    if (
-        type(binding.importer) is not binding.importer_type
-        or not _is_six_meta_path_importer(binding.importer)
+    if type(binding.importer) is not binding.importer_type or not _is_six_meta_path_importer(
+        binding.importer
     ):
         raise CalibrationRunError("authenticated six importer contract changed")
     if sum(item is binding.importer for item in sys.meta_path) != 1:
@@ -7022,10 +7257,7 @@ def _preload_authenticated_capture_six(
     )
     source_sha256 = sha256_bytes(source_bytes)
     source_size = len(source_bytes)
-    if (
-        source_sha256 != origin_record["sha256"]
-        or source_size != origin_record["size_bytes"]
-    ):
+    if source_sha256 != origin_record["sha256"] or source_size != origin_record["size_bytes"]:
         raise CalibrationRunError("authenticated capture six source drifted before import")
     try:
         code = compile(source_bytes, str(origin_path), "exec", dont_inherit=True)
@@ -7144,9 +7376,7 @@ class _ExcludedCalibrationIdentityImportBlocker:
 
 
 def _module_matches_prefixes(fullname: str, prefixes: Sequence[str]) -> bool:
-    return any(
-        fullname == prefix or fullname.startswith(f"{prefix}.") for prefix in prefixes
-    )
+    return any(fullname == prefix or fullname.startswith(f"{prefix}.") for prefix in prefixes)
 
 
 class _ForbiddenCalibrationIdentityImportBlocker:
@@ -7167,9 +7397,7 @@ class _ForbiddenCalibrationIdentityImportBlocker:
             CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
         ):
             self.attempts.append(fullname)
-            raise CalibrationRunError(
-                f"capture attempted forbidden model/CUDA import: {fullname}"
-            )
+            raise CalibrationRunError(f"capture attempted forbidden model/CUDA import: {fullname}")
         return None
 
 
@@ -7283,7 +7511,8 @@ class _CalibrationIdentityImportIsolation:
             not guarded
             or guarded[0] is not self.blocker
             or sum(item is self.blocker for item in guarded) != 1
-            or tuple(guarded) != (
+            or tuple(guarded)
+            != (
                 self.blocker,
                 *(self._original_meta_path_topology or ()),
             )
@@ -7311,9 +7540,7 @@ class _CalibrationIdentityImportIsolation:
         if self._forbidden_import(fullname):
             assert isinstance(fullname, str)
             self.blocker.attempts.append(fullname)
-            raise CalibrationRunError(
-                f"capture attempted forbidden model/CUDA import: {fullname}"
-            )
+            raise CalibrationRunError(f"capture attempted forbidden model/CUDA import: {fullname}")
 
     def activate(
         self,
@@ -7361,8 +7588,7 @@ class _CalibrationIdentityImportIsolation:
             _assert_authenticated_capture_six(authenticated_six, hash_origin=True)
             if (
                 original_meta_path is not authenticated_six.meta_path
-                or original_meta_path_topology
-                != authenticated_six.topology_with_importer
+                or original_meta_path_topology != authenticated_six.topology_with_importer
             ):
                 raise CalibrationRunError(
                     "capture isolation did not receive the exact authenticated six topology"
@@ -7425,8 +7651,7 @@ class _CalibrationIdentityImportIsolation:
             )
         if self.blocker.attempts:
             raise CalibrationRunError(
-                "capture attempted forbidden model/CUDA imports: "
-                f"{sorted(self.blocker.attempts)}"
+                f"capture attempted forbidden model/CUDA imports: {sorted(self.blocker.attempts)}"
             )
 
     def restore(self, *, primary_error: BaseException | None) -> None:
@@ -7469,11 +7694,7 @@ class _CalibrationIdentityImportIsolation:
             if builtins.__import__ is not scoped_import:
                 failures.append("capture guarded import changed before restoration")
             builtins.__import__ = original_import  # type: ignore[assignment]
-        if (
-            bootstrap is None
-            or original_find_and_load is None
-            or scoped_find_and_load is None
-        ):
+        if bootstrap is None or original_find_and_load is None or scoped_find_and_load is None:
             failures.append("capture import loader state was incomplete")
         else:
             if getattr(bootstrap, "_find_and_load", None) is not scoped_find_and_load:
@@ -7549,8 +7770,10 @@ def _snapshot_phase_ruler_file_metadata(
     required_provider = getattr(capture_module, "required_ruler_receipts", None)
     generation_reader = getattr(live_source, "ruler_generation_manifest_bytes", None)
     receipt_reader = getattr(live_source, "ruler_receipt_bytes", None)
-    if not callable(required_provider) or not callable(generation_reader) or not callable(
-        receipt_reader
+    if (
+        not callable(required_provider)
+        or not callable(generation_reader)
+        or not callable(receipt_reader)
     ):
         raise CalibrationRunError("authenticated RULER metadata surface is incomplete")
     required = required_provider()
@@ -7596,9 +7819,7 @@ def _snapshot_phase_ruler_file_metadata(
             raise CalibrationRunError("authenticated RULER receipt schedule value drifted")
         normalized.append(dict(raw))
     names = tuple(
-        sorted(
-            ["generation-manifest.json", *(str(item["filename"]) for item in normalized)]
-        )
+        sorted(["generation-manifest.json", *(str(item["filename"]) for item in normalized)])
     )
     if (
         len(names) != 21
@@ -8102,15 +8323,11 @@ def _sealed_capture_identity(
                 if blocker in sys.meta_path:
                     sys.meta_path.remove(blocker)
                 for name in tuple(sys.modules):
-                    if (
-                        name not in preexisting_policy_modules
-                        and (
-                            name.split(".", 1)[0]
-                            in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
-                            or _module_matches_prefixes(
-                                name,
-                                CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
-                            )
+                    if name not in preexisting_policy_modules and (
+                        name.split(".", 1)[0] in CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES
+                        or _module_matches_prefixes(
+                            name,
+                            CALIBRATION_IDENTITY_FORBIDDEN_MODULE_PREFIXES,
                         )
                     ):
                         sys.modules.pop(name, None)
@@ -8291,6 +8508,21 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--prior-fisher-h1-smoke-launch-finalization",
+        type=Path,
+        help=(
+            "RUN_LAUNCH_FINALIZATION.json paired with the prior smoke report; "
+            "mandatory for full calibration and forbidden in smoke mode."
+        ),
+    )
+    parser.add_argument(
+        "--expected-prior-fisher-h1-smoke-launch-finalization-sha256",
+        help=(
+            "Explicit SHA-256 of the prior host-finalized smoke receipt; mandatory for "
+            "full calibration and forbidden in smoke mode."
+        ),
+    )
+    parser.add_argument(
         "--adapter",
         choices=[CANONICAL_ADAPTER_SPEC],
         default=CANONICAL_ADAPTER_SPEC,
@@ -8341,6 +8573,80 @@ def _read_exact_regular_directory(
     return payloads
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    try:
+        left.relative_to(right)
+    except ValueError:
+        pass
+    else:
+        return True
+    try:
+        right.relative_to(left)
+    except ValueError:
+        return False
+    return True
+
+
+def _ordinary_local_absolute_path(path: Path, *, context: str) -> Path:
+    raw = Path(path)
+    if not raw.is_absolute():
+        raise CalibrationRunError(f"{context} must be an absolute path")
+    if os.name == "nt":
+        rendered = os.fspath(raw).replace("/", "\\")
+        drive, tail = os.path.splitdrive(rendered)
+        if len(drive) != 2 or drive[1] != ":" or not tail.startswith("\\"):
+            raise CalibrationRunError(f"{context} must use an ordinary local-drive absolute path")
+    return raw
+
+
+def _normalized_new_output_destination(
+    path: Path,
+    *,
+    context: str,
+) -> tuple[Path, frozenset[tuple[int, int]]]:
+    raw = _ordinary_local_absolute_path(path, context=context)
+    destination = Path(os.path.abspath(raw))
+    missing_parts: list[str] = []
+    ancestor = destination
+    while not os.path.lexists(ancestor):
+        if ancestor == ancestor.parent:
+            raise CalibrationRunError(f"{context} has no available ancestor")
+        missing_parts.append(ancestor.name)
+        ancestor = ancestor.parent
+    resolved_ancestor, ancestor_chain = _require_existing_regular_directory(
+        ancestor,
+        context=f"{context} ancestor",
+    )
+    ancestor_identities = frozenset((item.device, item.inode) for item in ancestor_chain)
+    return resolved_ancestor.joinpath(*reversed(missing_parts)), ancestor_identities
+
+
+def _validate_authorization_output_disjointness(
+    output_dir: Path,
+    *,
+    protected_paths: Sequence[Path],
+) -> None:
+    destination, output_ancestor_identities = _normalized_new_output_destination(
+        output_dir,
+        context="Stage-A authorization output directory",
+    )
+    for raw_path in protected_paths:
+        try:
+            protected = Path(raw_path).resolve(strict=True)
+            protected_status = protected.stat()
+        except OSError as exc:
+            raise CalibrationRunError(
+                "Stage-A authorization protected path is unavailable"
+            ) from exc
+        identity_overlap = stat.S_ISDIR(protected_status.st_mode) and (
+            (protected_status.st_dev, protected_status.st_ino) in output_ancestor_identities
+        )
+        if _paths_overlap(destination, protected) or identity_overlap:
+            raise CalibrationRunError(
+                "Stage-A authorization output overlaps authenticated calibration evidence"
+            )
+
+
 def _load_authorization_identity_resolver(
     bootstrap_source: BootstrapSource,
 ) -> ModuleType:
@@ -8375,13 +8681,32 @@ def authorize_stage_a_calibration(
     model_file_manifest_path: Path,
     expected_model_file_manifest_sha256: str,
     expected_full_run_report_sha256: str,
+    expected_calibration_run_launch_finalization_sha256: str,
     expected_fisher_h1_smoke_report_sha256: str,
+    expected_fisher_h1_smoke_launch_finalization_sha256: str,
     source_commit: str,
     output_dir: Path,
     identity_resolver: Any | None = None,
 ) -> dict[str, object]:
     """Publish the post-calibration receipt and only Stage-A-eligible binding."""
 
+    output_path_snapshot = _new_capture_artifact_path(
+        output_dir,
+        context="Stage-A authorization output directory",
+    )
+    _validate_authorization_output_disjointness(
+        output_path_snapshot.path,
+        protected_paths=(
+            REPOSITORY_ROOT,
+            calibration_output_dir,
+            fisher_h1_smoke_output_dir,
+            capture_provenance_receipt_path,
+            frozen_identity_path,
+            repository_source_manifest_path,
+            runtime_manifest_path,
+            model_file_manifest_path,
+        ),
+    )
     expected_source_commit = _git_revision(source_commit, context="authorization H0")
     expected_full_report = _sha256(
         expected_full_run_report_sha256,
@@ -8390,6 +8715,14 @@ def authorize_stage_a_calibration(
     expected_smoke_report = _sha256(
         expected_fisher_h1_smoke_report_sha256,
         context="expected Fisher H=1 smoke report SHA-256",
+    )
+    expected_full_launch_finalization = _sha256(
+        expected_calibration_run_launch_finalization_sha256,
+        context="expected full calibration launch finalization SHA-256",
+    )
+    expected_smoke_launch_finalization = _sha256(
+        expected_fisher_h1_smoke_launch_finalization_sha256,
+        context="expected Fisher H=1 smoke launch finalization SHA-256",
     )
     expected_receipt = _sha256(
         expected_capture_provenance_receipt_sha256,
@@ -8423,6 +8756,7 @@ def authorize_stage_a_calibration(
         CORE_BINDING_FILENAME,
         REPORT_FILENAME,
         COMPLETE_FILENAME,
+        RUN_LAUNCH_FINALIZATION_FILENAME,
     }
     full = _read_exact_regular_directory(
         calibration_output_dir,
@@ -8431,8 +8765,18 @@ def authorize_stage_a_calibration(
     )
     smoke = _read_exact_regular_directory(
         fisher_h1_smoke_output_dir,
-        expected_filenames={FISHER_SMOKE_REPORT_FILENAME, FISHER_SMOKE_COMPLETE_FILENAME},
+        expected_filenames={
+            FISHER_SMOKE_REPORT_FILENAME,
+            FISHER_SMOKE_COMPLETE_FILENAME,
+            RUN_LAUNCH_FINALIZATION_FILENAME,
+        },
         context="finalized Fisher H=1 smoke output",
+    )
+    calibration_output_directory_absolute_path_sha256 = _absolute_path_sha256(
+        Path(calibration_output_dir)
+    )
+    fisher_h1_smoke_output_directory_absolute_path_sha256 = _absolute_path_sha256(
+        Path(fisher_h1_smoke_output_dir)
     )
     receipt_bytes = _read_stable_regular_bytes(
         capture_provenance_receipt_path,
@@ -8470,9 +8814,17 @@ def authorize_stage_a_calibration(
             expected_model_manifest,
         ),
         "full calibration report": (sha256_bytes(full[REPORT_FILENAME]), expected_full_report),
+        "full calibration launch finalization": (
+            sha256_bytes(full[RUN_LAUNCH_FINALIZATION_FILENAME]),
+            expected_full_launch_finalization,
+        ),
         "Fisher H=1 smoke report": (
             sha256_bytes(smoke[FISHER_SMOKE_REPORT_FILENAME]),
             expected_smoke_report,
+        ),
+        "Fisher H=1 smoke launch finalization": (
+            sha256_bytes(smoke[RUN_LAUNCH_FINALIZATION_FILENAME]),
+            expected_smoke_launch_finalization,
         ),
     }
     for name, (actual, expected) in observed.items():
@@ -8502,21 +8854,47 @@ def authorize_stage_a_calibration(
             )
         authorization = resolver.build_stage_a_calibration_authorization_artifact(
             calibration_run_report=full[REPORT_FILENAME],
+            calibration_run_launch_finalization=full[RUN_LAUNCH_FINALIZATION_FILENAME],
             calibration_complete_marker=full[COMPLETE_FILENAME],
             capture_provenance_receipt=receipt_bytes,
             fisher_h1_smoke_report=smoke[FISHER_SMOKE_REPORT_FILENAME],
+            fisher_h1_smoke_launch_finalization=smoke[RUN_LAUNCH_FINALIZATION_FILENAME],
             fisher_h1_smoke_complete_marker=smoke[FISHER_SMOKE_COMPLETE_FILENAME],
             calibration_core_binding_artifact=full[CORE_BINDING_FILENAME],
             calibration_runtime_manifest=runtime_manifest_bytes,
             model_file_manifest=model_file_manifest_bytes,
             repository_source_manifest=repository_source_manifest_bytes,
             static_q48_policy_artifact=full[Q48_FILENAME],
+            expected_calibration_output_directory_absolute_path_sha256=(
+                calibration_output_directory_absolute_path_sha256
+            ),
+            expected_fisher_h1_smoke_output_directory_absolute_path_sha256=(
+                fisher_h1_smoke_output_directory_absolute_path_sha256
+            ),
         )
         verified_authorization = resolver.deserialize_stage_a_calibration_authorization_artifact(
             authorization
         )
         if verified_authorization.source_commit != expected_source_commit:
             raise CalibrationRunError("calibration authorization differs from explicit H0")
+        observed_authorized_output_hashes = {
+            name: sha256_bytes(full[name])
+            for name in sorted(
+                full_filenames
+                - {
+                    REPORT_FILENAME,
+                    COMPLETE_FILENAME,
+                    RUN_LAUNCH_FINALIZATION_FILENAME,
+                }
+            )
+        }
+        if (
+            dict(verified_authorization.authorized_output_file_sha256)
+            != observed_authorized_output_hashes
+        ):
+            raise CalibrationRunError(
+                "calibration authorization differs from the exact finalized output bytes"
+            )
         binding = resolver.build_stage_a_calibration_binding_artifact(
             calibration_authorization_artifact=authorization
         )
@@ -8532,12 +8910,13 @@ def authorize_stage_a_calibration(
             sys.modules.pop(resolver.__name__, None)
 
     _publish_output_directory(
-        output_dir,
+        output_path_snapshot.path,
         {
             AUTHORIZATION_FILENAME: authorization,
             BINDING_FILENAME: binding,
         },
         complete_filename=AUTHORIZATION_COMPLETE_FILENAME,
+        output_path_snapshot=output_path_snapshot,
     )
     return {
         "artifact_sha256": {
@@ -8545,7 +8924,7 @@ def authorize_stage_a_calibration(
             BINDING_FILENAME: sha256_bytes(binding),
         },
         "authorized_calibration_output_dir": str(Path(calibration_output_dir).resolve()),
-        "output_dir": str(Path(output_dir).resolve()),
+        "output_dir": str(output_path_snapshot.path.resolve()),
         "source_commit": expected_source_commit,
         "status": "authorized_for_stage_a",
     }
@@ -8586,7 +8965,15 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
         parser.add_argument("--model-file-manifest", required=True, type=Path)
         parser.add_argument("--expected-model-file-manifest-sha256", required=True)
         parser.add_argument("--expected-full-run-report-sha256", required=True)
+        parser.add_argument(
+            "--expected-calibration-run-launch-finalization-sha256",
+            required=True,
+        )
         parser.add_argument("--expected-fisher-h1-smoke-report-sha256", required=True)
+        parser.add_argument(
+            "--expected-fisher-h1-smoke-launch-finalization-sha256",
+            required=True,
+        )
         parser.add_argument("--source-commit", required=True)
         parser.add_argument("--output-dir", required=True, type=Path)
     elif command == "prepare-runtime":
@@ -8676,7 +9063,13 @@ def _capture_manifest_mode(arguments: Sequence[str]) -> int | None:
             model_file_manifest_path=args.model_file_manifest,
             expected_model_file_manifest_sha256=args.expected_model_file_manifest_sha256,
             expected_full_run_report_sha256=args.expected_full_run_report_sha256,
+            expected_calibration_run_launch_finalization_sha256=(
+                args.expected_calibration_run_launch_finalization_sha256
+            ),
             expected_fisher_h1_smoke_report_sha256=(args.expected_fisher_h1_smoke_report_sha256),
+            expected_fisher_h1_smoke_launch_finalization_sha256=(
+                args.expected_fisher_h1_smoke_launch_finalization_sha256
+            ),
             source_commit=args.source_commit,
             output_dir=args.output_dir,
         )
@@ -8893,22 +9286,71 @@ def _official_main(
         if (
             args.prior_fisher_h1_smoke_report is not None
             or args.prior_fisher_h1_smoke_complete_marker is not None
+            or args.prior_fisher_h1_smoke_launch_finalization is not None
+            or args.expected_prior_fisher_h1_smoke_launch_finalization_sha256 is not None
         ):
             raise CalibrationRunError(
                 "Fisher H=1 smoke mode forbids prior smoke prerequisite paths"
             )
         prior_smoke_report_bytes = None
         prior_smoke_complete_bytes = None
+        prior_smoke_launch_finalization_bytes = None
+        expected_prior_smoke_launch_finalization_sha256 = None
+        expected_prior_smoke_output_directory_absolute_path_sha256 = None
     else:
         if (
             args.prior_fisher_h1_smoke_report is None
             or args.prior_fisher_h1_smoke_complete_marker is None
+            or args.prior_fisher_h1_smoke_launch_finalization is None
+            or args.expected_prior_fisher_h1_smoke_launch_finalization_sha256 is None
         ):
             raise CalibrationRunError(
-                "full calibration requires prior Fisher H=1 smoke report and marker paths"
+                "full calibration requires the prior Fisher H=1 smoke finalization profile"
             )
-        prior_smoke_report_bytes = args.prior_fisher_h1_smoke_report.read_bytes()
-        prior_smoke_complete_bytes = args.prior_fisher_h1_smoke_complete_marker.read_bytes()
+        raw_smoke_paths = (
+            args.prior_fisher_h1_smoke_report,
+            args.prior_fisher_h1_smoke_complete_marker,
+            args.prior_fisher_h1_smoke_launch_finalization,
+        )
+        if any(not path.is_absolute() for path in raw_smoke_paths):
+            raise CalibrationRunError("prior Fisher H=1 smoke prerequisite paths must be absolute")
+        smoke_paths = tuple(Path(os.path.abspath(path)) for path in raw_smoke_paths)
+        try:
+            smoke_parents = {path.resolve(strict=True).parent for path in smoke_paths}
+        except OSError as exc:
+            raise CalibrationRunError("prior Fisher H=1 smoke prerequisite is unavailable") from exc
+        if len(smoke_parents) != 1:
+            raise CalibrationRunError(
+                "prior Fisher H=1 smoke prerequisites are not one output directory"
+            )
+        smoke_output_dir = smoke_parents.pop()
+        if (
+            smoke_paths[0].resolve(strict=True) != smoke_output_dir / FISHER_SMOKE_REPORT_FILENAME
+            or smoke_paths[1].resolve(strict=True)
+            != smoke_output_dir / FISHER_SMOKE_COMPLETE_FILENAME
+            or smoke_paths[2].resolve(strict=True)
+            != smoke_output_dir / RUN_LAUNCH_FINALIZATION_FILENAME
+        ):
+            raise CalibrationRunError("prior Fisher H=1 smoke prerequisite filenames drifted")
+        smoke_files = _read_exact_regular_directory(
+            smoke_output_dir,
+            expected_filenames={
+                FISHER_SMOKE_REPORT_FILENAME,
+                FISHER_SMOKE_COMPLETE_FILENAME,
+                RUN_LAUNCH_FINALIZATION_FILENAME,
+            },
+            context="launcher-finalized prior Fisher H=1 smoke output",
+        )
+        prior_smoke_report_bytes = smoke_files[FISHER_SMOKE_REPORT_FILENAME]
+        prior_smoke_complete_bytes = smoke_files[FISHER_SMOKE_COMPLETE_FILENAME]
+        prior_smoke_launch_finalization_bytes = smoke_files[RUN_LAUNCH_FINALIZATION_FILENAME]
+        expected_prior_smoke_launch_finalization_sha256 = _sha256(
+            args.expected_prior_fisher_h1_smoke_launch_finalization_sha256,
+            context="expected prior Fisher H=1 smoke launch finalization SHA-256",
+        )
+        expected_prior_smoke_output_directory_absolute_path_sha256 = _absolute_path_sha256(
+            smoke_output_dir
+        )
     if (
         _sha256(
             args.expected_runtime_manifest_sha256,
@@ -9075,6 +9517,13 @@ def _official_main(
         fisher_h1_smoke=args.fisher_h1_smoke,
         prior_fisher_h1_smoke_report_bytes=prior_smoke_report_bytes,
         prior_fisher_h1_smoke_complete_bytes=prior_smoke_complete_bytes,
+        prior_fisher_h1_smoke_launch_finalization_bytes=(prior_smoke_launch_finalization_bytes),
+        expected_prior_fisher_h1_smoke_launch_finalization_sha256=(
+            expected_prior_smoke_launch_finalization_sha256
+        ),
+        expected_prior_fisher_h1_smoke_output_directory_absolute_path_sha256=(
+            expected_prior_smoke_output_directory_absolute_path_sha256
+        ),
     )
     result = run_calibration(
         config,

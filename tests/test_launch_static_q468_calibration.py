@@ -33,12 +33,189 @@ def _write(path: Path, data: bytes) -> Path:
     return path
 
 
+def _unc_administrative_share_alias(path: Path) -> Path:
+    if os.name != "nt":
+        pytest.skip("UNC administrative-share identity checks are Windows-only")
+    resolved = path.resolve(strict=True)
+    if len(resolved.drive) != 2 or resolved.drive[1] != ":":
+        pytest.skip("test path is not on a drive with an administrative-share spelling")
+    relative = resolved.relative_to(Path(resolved.anchor))
+    hosts = tuple(
+        host for host in ("localhost", "127.0.0.1", os.environ.get("COMPUTERNAME", "")) if host
+    )
+    failures: list[str] = []
+    for host in hosts:
+        alias = Path(rf"\\{host}\{resolved.drive[0]}$") / relative
+        try:
+            if os.path.samefile(resolved, alias):
+                return alias
+        except (NotImplementedError, OSError) as error:
+            failures.append(f"{host}:{type(error).__name__}")
+    pytest.skip(
+        "UNC administrative share or samefile identity is unavailable"
+        + (f" ({', '.join(failures)})" if failures else "")
+    )
+
+
+def _smoke_report_bytes(
+    fixture: dict[str, Any],
+    *,
+    capture_provenance_receipt_file_sha256: str | None = None,
+) -> bytes:
+    evidence = {
+        "artifacts": {},
+        "identity": {
+            "execution_bindings": fixture["bindings"],
+            "file_sha256": _sha256(fixture["identity_path"].read_bytes()),
+        },
+        "prerequisites": {
+            "capture_provenance_receipt_file_sha256": (
+                capture_provenance_receipt_file_sha256
+                or _sha256(fixture["capture_provenance_receipt_bytes"])
+            ),
+            "fisher_h1_smoke_launch_finalization_file_sha256": None,
+            "fisher_h1_smoke_report_file_sha256": None,
+        },
+        "repository": {"source_commit": fixture["source_manifest"]["source_commit"]},
+        "runner_revision": launcher.RUNNER_REVISION,
+        "status": "fisher_h1_smoke_passed",
+    }
+    return launcher._canonical_json_bytes(
+        {
+            "artifact_kind": launcher.RUN_REPORT_KIND,
+            "canonical_evidence_sha256": _sha256(launcher._canonical_json_bytes(evidence)),
+            "evidence": evidence,
+            "schema_version": launcher.RUN_REPORT_SCHEMA,
+        }
+    )
+
+
+def _publish_smoke_child_output(fixture: dict[str, Any]) -> Path:
+    output_dir = fixture["output_dir"]
+    output_dir.mkdir()
+    return _write(
+        output_dir / launcher.FISHER_SMOKE_REPORT_FILENAME,
+        _smoke_report_bytes(fixture),
+    )
+
+
+def _launcher_finalized_smoke_fixture(
+    tmp_path: Path,
+    fixture: dict[str, Any],
+    *,
+    capture_provenance_receipt_file_sha256: str | None = None,
+) -> dict[str, Any]:
+    output_dir = tmp_path / "launcher-finalized-smoke"
+    capture_sha256 = capture_provenance_receipt_file_sha256 or _sha256(
+        fixture["capture_provenance_receipt_bytes"]
+    )
+    report_bytes = _smoke_report_bytes(
+        fixture,
+        capture_provenance_receipt_file_sha256=capture_sha256,
+    )
+    report_path = _write(
+        output_dir / launcher.FISHER_SMOKE_REPORT_FILENAME,
+        report_bytes,
+    )
+    marker_path = _write(
+        output_dir / launcher.FISHER_SMOKE_COMPLETE_FILENAME,
+        launcher.FISHER_SMOKE_COMPLETE_BYTES,
+    )
+    finalization_bytes = launcher._canonical_json_bytes(
+        {
+            "artifact_kind": launcher.RUN_LAUNCH_FINALIZATION_KIND,
+            "capture_provenance_receipt_file_sha256": capture_sha256,
+            "child_output_file_sha256": {
+                launcher.FISHER_SMOKE_REPORT_FILENAME: _sha256(report_bytes)
+            },
+            "child_output_size_bytes": {launcher.FISHER_SMOKE_REPORT_FILENAME: len(report_bytes)},
+            "completion_marker_filename": launcher.FISHER_SMOKE_COMPLETE_FILENAME,
+            "completion_marker_sha256": _sha256(launcher.FISHER_SMOKE_COMPLETE_BYTES),
+            "execution_bindings": fixture["bindings"],
+            "frozen_identity_file_sha256": _sha256(fixture["identity_path"].read_bytes()),
+            "launch_policy": dict(launcher.SEALED_LAUNCH_POLICY),
+            "mode": "fisher_h1_smoke",
+            "output_directory_absolute_path_sha256": _sha256(
+                os.path.normcase(str(output_dir.resolve(strict=True))).encode("utf-8")
+            ),
+            "prior_fisher_h1_smoke_launch_finalization_file_sha256": None,
+            "publication_contract": launcher.RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT,
+            "runner_revision": launcher.RUNNER_REVISION,
+            "schema_version": launcher.RUN_LAUNCH_FINALIZATION_SCHEMA,
+            "source_commit": fixture["source_manifest"]["source_commit"],
+            "status": "fisher_h1_smoke_launcher_finalized",
+        }
+    )
+    finalization_path = _write(
+        output_dir / launcher.RUN_LAUNCH_FINALIZATION_FILENAME,
+        finalization_bytes,
+    )
+    assert {entry.name for entry in output_dir.iterdir()} == {
+        launcher.FISHER_SMOKE_REPORT_FILENAME,
+        launcher.FISHER_SMOKE_COMPLETE_FILENAME,
+        launcher.RUN_LAUNCH_FINALIZATION_FILENAME,
+    }
+    return {
+        "finalization_bytes": finalization_bytes,
+        "finalization_path": finalization_path,
+        "marker_path": marker_path,
+        "output_dir": output_dir,
+        "report_bytes": report_bytes,
+        "report_path": report_path,
+    }
+
+
+def _full_runner_arguments(
+    fixture: dict[str, Any],
+    smoke: dict[str, Any],
+) -> list[str]:
+    arguments = list(fixture["runner_arguments"])
+    arguments.remove("--fisher-h1-smoke")
+    arguments.extend(
+        [
+            "--prior-fisher-h1-smoke-report",
+            str(smoke["report_path"]),
+            "--prior-fisher-h1-smoke-complete-marker",
+            str(smoke["marker_path"]),
+            "--prior-fisher-h1-smoke-launch-finalization",
+            str(smoke["finalization_path"]),
+            "--expected-prior-fisher-h1-smoke-launch-finalization-sha256",
+            _sha256(smoke["finalization_bytes"]),
+        ]
+    )
+    return arguments
+
+
+def test_v16_runtime_report_marker_and_scratch_contract_constants() -> None:
+    assert launcher.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v16"
+    assert launcher.RUNTIME_MANIFEST_SCHEMA == 7
+    assert launcher.RUN_REPORT_SCHEMA == 4
+    assert launcher.FISHER_SMOKE_COMPLETE_BYTES == (
+        b"recurquant-experiment013-fisher-h1-smoke-launch-finalized-v2\n"
+    )
+    assert launcher.CALIBRATION_COMPLETE_BYTES == (
+        b"recurquant-experiment013-calibration-launch-finalized-v2\n"
+    )
+    assert launcher.SEALED_LAUNCH_POLICY["bootstrap_mode"] == (
+        "stdlib-only-exact-runner-and-capture-v4"
+    )
+    assert launcher.SEALED_LAUNCH_POLICY["cache_confinement_mode"] == (
+        "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"
+    )
+    assert launcher.SEALED_LAUNCH_POLICY["scratch_residue_mode"] == (
+        "exact-environment-root-allowlist-regular-non-link-cleanup-v1"
+    )
+
+
 def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     base = tmp_path / "base"
     packages = tmp_path / "packages"
     repository = tmp_path / "repository"
     cache_root = tmp_path / "dataset-cache"
     cache_root.mkdir()
+    model_root = tmp_path / "model-root"
+    model_root.mkdir()
+    output_dir = tmp_path / "run-output"
     artifacts = tmp_path / "artifacts"
     git_executable = _write(tmp_path / "toolchain" / "git.exe", b"fixture git executable\n")
     git_executable, git_record = launcher._authenticated_git_executable(git_executable)
@@ -229,6 +406,8 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         _sha256(receipt_bytes),
         "--cache-root",
         str(cache_root),
+        "--model-root",
+        str(model_root),
         "--repository-source-manifest",
         str(source_path),
         "--model-file-manifest",
@@ -249,6 +428,8 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         source["source_commit"],
         "--ruler-receipt-dir",
         str(ruler_receipt_dir),
+        "--output-dir",
+        str(output_dir),
     ]
     host_arguments = [
         "--base-runtime-root",
@@ -269,7 +450,10 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         "git_executable": git_executable,
         "host_arguments": host_arguments,
         "identity_input_bytes": identity_input_bytes,
+        "identity_path": identity_path,
         "model_path": model_path,
+        "model_root": model_root,
+        "output_dir": output_dir,
         "packages": packages,
         "parquet_path": parquet_path,
         "repository": repository,
@@ -297,9 +481,13 @@ def _stage_a_binding_bytes(fixture: dict[str, Any]) -> tuple[bytes, str]:
         "authorized_output_file_sha256": {},
         "bindings": {
             "calibration_core_binding_file_sha256": "1" * 64,
+            "calibration_output_directory_absolute_path_sha256": "8" * 64,
+            "calibration_run_launch_finalization_file_sha256": "9" * 64,
             "calibration_run_report_file_sha256": "2" * 64,
             "capture_provenance_receipt_file_sha256": "3" * 64,
             "execution_bindings": fixture["bindings"],
+            "fisher_h1_smoke_launch_finalization_file_sha256": "a" * 64,
+            "fisher_h1_smoke_output_directory_absolute_path_sha256": "b" * 64,
             "fisher_h1_smoke_report_file_sha256": "4" * 64,
             "frozen_calibration_identity_file_sha256": "5" * 64,
             "identity_input_manifest_sha256": "6" * 64,
@@ -519,8 +707,7 @@ def _run_embedded_manifest_boundary(
         *fixture["runner_arguments"],
     ]
     capture_profile = bool(
-        fixture["runner_arguments"]
-        and fixture["runner_arguments"][0] in launcher._CAPTURE_COMMANDS
+        fixture["runner_arguments"] and fixture["runner_arguments"][0] in launcher._CAPTURE_COMMANDS
     )
     if capture_profile:
         launcher._prepare_capture_hub_cache_root(fixture["cache_root"])
@@ -596,6 +783,7 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
         assert check is False
         assert_git_locked()
         commands.append((command, cwd, env, input))
+        _publish_smoke_child_output(fixture)
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(launcher, "_verify_bound_artifacts", bound_wrapper)
@@ -617,6 +805,8 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
         "runtime",
         "cleanup",
         "cleanup",
+        "bound",
+        "runtime",
     ]
     assert len(commands) == 1
     command, cwd, environment, stdin_payload = commands[0]
@@ -646,6 +836,147 @@ def test_launch_uses_exact_isolated_command_and_reauthenticates(
     assert stdin_payload == launcher.SEALED_BOOTSTRAP_BYTES
     fixture["git_executable"].write_bytes(original_git_bytes)
     assert fixture["git_executable"].read_bytes() == original_git_bytes
+
+
+def test_run_finalization_publishes_marker_then_receipt_as_last_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    snapshot = launcher._new_capture_artifact_snapshot(
+        fixture["output_dir"],
+        context="sealed run output directory",
+    )
+    report_path = _publish_smoke_child_output(fixture)
+    published: list[tuple[str, bool]] = []
+    publish = launcher._atomic_publish_run_finalization_file
+
+    def publish_wrapper(*args: Any, **kwargs: Any) -> None:
+        published.append((kwargs["filename"], bool(kwargs.get("commit_last", False))))
+        publish(*args, **kwargs)
+
+    monkeypatch.setattr(launcher, "_atomic_publish_run_finalization_file", publish_wrapper)
+    result = launcher._finalize_run_output(
+        snapshot,
+        runner_options=launcher._extract_runner_options(fixture["runner_arguments"]),
+        execution_bindings=fixture["bindings"],
+        source_manifest=fixture["source_manifest"],
+        capture_provenance_receipt_file_sha256=_sha256(fixture["capture_provenance_receipt_bytes"]),
+        fisher_h1_smoke=True,
+    )
+
+    assert published == [
+        (launcher.FISHER_SMOKE_COMPLETE_FILENAME, False),
+        (launcher.RUN_LAUNCH_FINALIZATION_FILENAME, True),
+    ]
+    assert set(path.name for path in fixture["output_dir"].iterdir()) == {
+        launcher.FISHER_SMOKE_REPORT_FILENAME,
+        launcher.FISHER_SMOKE_COMPLETE_FILENAME,
+        launcher.RUN_LAUNCH_FINALIZATION_FILENAME,
+    }
+    assert report_path.read_bytes() == _smoke_report_bytes(fixture)
+    assert result["status"] == "fisher_h1_smoke_launcher_finalized"
+    finalization = launcher._strict_json(
+        (fixture["output_dir"] / launcher.RUN_LAUNCH_FINALIZATION_FILENAME).read_bytes(),
+        context="test run launch finalization",
+    )
+    assert set(finalization) == {
+        "artifact_kind",
+        "capture_provenance_receipt_file_sha256",
+        "child_output_file_sha256",
+        "child_output_size_bytes",
+        "completion_marker_filename",
+        "completion_marker_sha256",
+        "execution_bindings",
+        "frozen_identity_file_sha256",
+        "launch_policy",
+        "mode",
+        "output_directory_absolute_path_sha256",
+        "prior_fisher_h1_smoke_launch_finalization_file_sha256",
+        "publication_contract",
+        "runner_revision",
+        "schema_version",
+        "source_commit",
+        "status",
+    }
+    assert finalization["output_directory_absolute_path_sha256"] == _sha256(
+        os.path.normcase(str(fixture["output_dir"].resolve(strict=True))).encode("utf-8")
+    )
+
+
+def test_run_finalization_failure_never_publishes_commit_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    snapshot = launcher._new_capture_artifact_snapshot(
+        fixture["output_dir"],
+        context="sealed run output directory",
+    )
+    _publish_smoke_child_output(fixture)
+    publish = launcher._atomic_publish_run_finalization_file
+
+    def fail_receipt(*args: Any, **kwargs: Any) -> None:
+        if kwargs["filename"] == launcher.RUN_LAUNCH_FINALIZATION_FILENAME:
+            raise launcher.SealedLaunchError("injected pre-commit failure")
+        publish(*args, **kwargs)
+
+    monkeypatch.setattr(launcher, "_atomic_publish_run_finalization_file", fail_receipt)
+    with pytest.raises(launcher.SealedLaunchError, match="injected pre-commit failure"):
+        launcher._finalize_run_output(
+            snapshot,
+            runner_options=launcher._extract_runner_options(fixture["runner_arguments"]),
+            execution_bindings=fixture["bindings"],
+            source_manifest=fixture["source_manifest"],
+            capture_provenance_receipt_file_sha256=_sha256(
+                fixture["capture_provenance_receipt_bytes"]
+            ),
+            fisher_h1_smoke=True,
+        )
+
+    assert (fixture["output_dir"] / launcher.FISHER_SMOKE_COMPLETE_FILENAME).is_file()
+    assert not (fixture["output_dir"] / launcher.RUN_LAUNCH_FINALIZATION_FILENAME).exists()
+
+
+@pytest.mark.parametrize("authenticated_root", ["base", "repository", "model_root", "cache_root"])
+def test_run_output_is_disjoint_from_authenticated_input_roots_before_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authenticated_root: str,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    arguments = list(fixture["host_arguments"])
+    arguments[arguments.index("--output-dir") + 1] = str(
+        fixture[authenticated_root] / "nested-run-output"
+    )
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+
+    with pytest.raises(launcher.SealedLaunchError, match="sealed run output overlaps"):
+        launcher.launch(arguments)
+
+
+def test_run_output_cannot_reuse_a_prior_smoke_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    smoke = _launcher_finalized_smoke_fixture(tmp_path, fixture)
+    runner_arguments = _full_runner_arguments(fixture, smoke)
+    runner_arguments[runner_arguments.index("--output-dir") + 1] = str(smoke["report_path"])
+    separator = fixture["host_arguments"].index("--")
+    arguments = [*fixture["host_arguments"][: separator + 1], *runner_arguments]
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
+    )
+
+    with pytest.raises(FileExistsError, match="refusing to overwrite existing sealed run output"):
+        launcher.launch(arguments)
 
 
 def test_executable_custody_holds_authenticated_files_until_release(tmp_path: Path) -> None:
@@ -961,6 +1292,37 @@ def test_stage_a_capture_candidate_binds_v4_authorization_and_exact_chain(
             )
 
 
+def test_stage_a_capture_rejects_non_sha256_path_custody_binding(tmp_path: Path) -> None:
+    fixture = _capture_fixture(tmp_path, stage_a=True)
+    binding = json.loads(fixture["stage_a_binding_bytes"])
+    binding_evidence = binding["evidence"]
+    dependency_name = "calibration_authorization_artifact"
+    authorization = json.loads(
+        base64.b64decode(binding_evidence["dependencies_base64"][dependency_name])
+    )
+    authorization["evidence"]["bindings"]["calibration_output_directory_absolute_path_sha256"] = (
+        "not-a-sha256"
+    )
+    authorization["canonical_evidence_sha256"] = _sha256(
+        launcher._canonical_json_bytes(authorization["evidence"])
+    )
+    authorization_bytes = launcher._canonical_json_bytes(authorization)
+    authorization_sha256 = _sha256(authorization_bytes)
+    binding_evidence["dependencies_base64"][dependency_name] = base64.b64encode(
+        authorization_bytes
+    ).decode("ascii")
+    binding_evidence["dependency_file_sha256"][dependency_name] = authorization_sha256
+    binding_evidence["binding"]["calibration_authorization_file_sha256"] = authorization_sha256
+    binding["canonical_evidence_sha256"] = _sha256(launcher._canonical_json_bytes(binding_evidence))
+    mutated = launcher._canonical_json_bytes(binding)
+
+    with pytest.raises(launcher.SealedLaunchError, match="must be a lowercase SHA-256"):
+        launcher._parse_stage_a_calibration_binding_envelope(
+            mutated,
+            expected_file_sha256=_sha256(mutated),
+        )
+
+
 def test_stage_a_capture_rejects_binding_downgrade_before_subprocess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1077,9 +1439,7 @@ def test_capture_receipt_is_published_only_after_postconditions_and_cleanup(
     ) -> subprocess.CompletedProcess[bytes]:
         assert kwargs["stdout"] == subprocess.PIPE
         assert kwargs["env"]["HF_HUB_CACHE"] == str(fixture["cache_root"] / "hub")
-        assert kwargs["env"]["HUGGINGFACE_HUB_CACHE"] == str(
-            fixture["cache_root"] / "hub"
-        )
+        assert kwargs["env"]["HUGGINGFACE_HUB_CACHE"] == str(fixture["cache_root"] / "hub")
         assert kwargs["env"]["HF_HOME"] == str(Path(command[15]) / "huggingface")
         assert not fixture["receipt_output"].exists()
         temporary_roots.extend((Path(command[13]), Path(command[15])))
@@ -1547,6 +1907,23 @@ def test_cleanup_refuses_replaced_temporary_root_identity(tmp_path: Path) -> Non
     assert (root / "replacement-sentinel.txt").read_bytes() == b"replacement must survive\n"
 
 
+def test_cleanup_fails_closed_when_owned_root_disappeared(tmp_path: Path) -> None:
+    root = tmp_path / "owned-temporary-root"
+    root.mkdir()
+    identity = launcher._temporary_directory_identity(root, context="temporary root")
+    root.rmdir()
+
+    with pytest.raises(
+        launcher.SealedLaunchError,
+        match="disappeared before identity-checked cleanup",
+    ):
+        launcher._cleanup_owned_temporary_directory(
+            root,
+            expected_identity=identity,
+            context="temporary root",
+        )
+
+
 def test_cleanup_refuses_link_entry_and_preserves_external_target(tmp_path: Path) -> None:
     root = tmp_path / "owned-temporary-root"
     root.mkdir()
@@ -1716,12 +2093,7 @@ def test_external_hub_snapshot_link_does_not_contaminate_owned_scratch(
     scratch.mkdir()
     cache_root = tmp_path / "dataset-cache"
     blob = cache_root / "datasets--google-research-datasets--mbpp" / "blobs" / ("a" * 40)
-    snapshot = (
-        cache_root
-        / "datasets--google-research-datasets--mbpp"
-        / "snapshots"
-        / ("b" * 40)
-    )
+    snapshot = cache_root / "datasets--google-research-datasets--mbpp" / "snapshots" / ("b" * 40)
     blob.parent.mkdir(parents=True)
     snapshot.mkdir(parents=True)
     blob.write_bytes(b"dataset card\n")
@@ -1912,7 +2284,7 @@ def test_embedded_bootstrap_binds_capture_hub_root_before_and_after_runner() -> 
     assert "_repeated_hub_identity != _hf_hub_identity" in launcher.SEALED_BOOTSTRAP
     assert "_hf_hub_cache = _cache_root" in launcher.SEALED_BOOTSTRAP
     assert (
-        "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3"
+        "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"
         in launcher.SEALED_BOOTSTRAP
     )
 
@@ -1944,6 +2316,80 @@ def test_private_home_prevents_literal_tilde_runtime_writes(tmp_path: Path) -> N
 
     assert (scratch / "private-home" / ".cache" / "huggingface" / ".agent_harnesses.json").is_file()
     assert not (scratch / "~").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path-spelling contract")
+@pytest.mark.parametrize("spelling", ["extended", "device", "unc"])
+def test_capture_snapshot_rejects_nonordinary_windows_output_spelling(
+    tmp_path: Path,
+    spelling: str,
+) -> None:
+    parent = tmp_path / "capture-output-parent"
+    parent.mkdir()
+    destination = parent / "identity.json"
+    if spelling == "extended":
+        candidate = Path("\\\\?\\" + str(destination))
+    elif spelling == "device":
+        candidate = Path("\\\\.\\" + str(destination))
+    else:
+        candidate = _unc_administrative_share_alias(parent) / destination.name
+
+    with pytest.raises(
+        launcher.SealedLaunchError,
+        match="ordinary local-drive absolute path",
+    ):
+        launcher._new_capture_artifact_snapshot(candidate, context="capture output")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows identity-alias contract")
+def test_dataset_cache_rejects_unc_alias_of_normal_runtime_root(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    cache_alias = _unc_administrative_share_alias(runtime)
+    assert os.path.samefile(runtime, cache_alias)
+
+    with pytest.raises(launcher.SealedLaunchError, match="overlaps"):
+        launcher._verified_dataset_cache_root(cache_alias, runtime_roots=(runtime,))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows identity-alias contract")
+def test_capture_output_disjointness_rejects_unc_alias_of_normal_parent(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "capture-output-parent"
+    parent.mkdir()
+    snapshot = launcher._new_capture_artifact_snapshot(
+        parent / "identity.json",
+        context="capture output",
+    )
+    forbidden_alias = _unc_administrative_share_alias(parent)
+    assert os.path.samefile(parent, forbidden_alias)
+
+    with pytest.raises(launcher.SealedLaunchError, match="overlaps"):
+        launcher._validate_capture_artifact_disjointness(
+            (snapshot,),
+            forbidden_roots=(forbidden_alias,),
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows identity-alias contract")
+def test_run_output_disjointness_rejects_unc_alias_of_normal_parent(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "run-output-parent"
+    parent.mkdir()
+    snapshot = launcher._new_capture_artifact_snapshot(
+        parent / "run-output",
+        context="run output",
+    )
+    forbidden_alias = _unc_administrative_share_alias(parent)
+    assert os.path.samefile(parent, forbidden_alias)
+
+    with pytest.raises(launcher.SealedLaunchError, match="overlaps"):
+        launcher._validate_run_output_disjointness(
+            snapshot,
+            forbidden_paths=(forbidden_alias,),
+        )
 
 
 def test_dataset_cache_root_is_absolute_non_link_and_disjoint(tmp_path: Path) -> None:
@@ -2008,6 +2454,20 @@ def test_embedded_capture_profiles_accept_explicit_hub_cache_contract(
 def test_help_does_not_require_the_runner_separator(capsys: pytest.CaptureFixture[str]) -> None:
     assert launcher.launch(["--help"]) == 0
     assert "exact run_static_q468_calibration.py arguments" in capsys.readouterr().out
+
+
+def test_sealed_runner_requires_an_absolute_model_root(tmp_path: Path) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    missing = list(fixture["runner_arguments"])
+    index = missing.index("--model-root")
+    del missing[index : index + 2]
+    with pytest.raises(launcher.SealedLaunchError, match="omit required sealed inputs"):
+        launcher._extract_runner_options(missing)
+
+    relative = list(fixture["runner_arguments"])
+    relative[relative.index("--model-root") + 1] = "relative-model-root"
+    with pytest.raises(launcher.SealedLaunchError, match="path option must be absolute"):
+        launcher._extract_runner_options(relative)
 
 
 @pytest.mark.parametrize(
@@ -2088,7 +2548,7 @@ def test_embedded_bootstrap_requires_exact_finalized_capture_provenance_digest(
     assert b"point-used interpreter path drifted" not in completed.stderr
 
 
-def test_full_launch_requires_both_prior_fisher_smoke_paths_before_subprocess(
+def test_full_launch_requires_complete_prior_fisher_smoke_profile_before_subprocess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2101,47 +2561,19 @@ def test_full_launch_requires_both_prior_fisher_smoke_paths_before_subprocess(
         lambda *_args, **_kwargs: pytest.fail("subprocess must not start"),
     )
 
-    with pytest.raises(launcher.SealedLaunchError, match="requires both prior Fisher"):
+    with pytest.raises(
+        launcher.SealedLaunchError,
+        match="requires the complete prior Fisher H=1 smoke finalization profile",
+    ):
         launcher.launch(arguments)
 
 
-def test_full_launch_authenticates_prior_fisher_smoke_report_and_marker(
+def test_full_launch_authenticates_prior_smoke_report_marker_and_finalization(
     tmp_path: Path,
 ) -> None:
     fixture = _sealed_fixture(tmp_path)
-    evidence = {
-        "prerequisites": {
-            "capture_provenance_receipt_file_sha256": _sha256(
-                fixture["capture_provenance_receipt_bytes"]
-            ),
-            "fisher_h1_smoke_report_file_sha256": None,
-        },
-        "runner_revision": launcher.RUNNER_REVISION,
-        "status": "fisher_h1_smoke_passed",
-    }
-    report = launcher._canonical_json_bytes(
-        {
-            "artifact_kind": launcher.RUN_REPORT_KIND,
-            "canonical_evidence_sha256": _sha256(launcher._canonical_json_bytes(evidence)),
-            "evidence": evidence,
-            "schema_version": launcher.RUN_REPORT_SCHEMA,
-        }
-    )
-    report_path = _write(tmp_path / "smoke" / "report.json", report)
-    marker_path = _write(
-        tmp_path / "smoke" / "FISHER_H1_SMOKE_COMPLETE",
-        launcher.FISHER_SMOKE_COMPLETE_BYTES,
-    )
-    runner_arguments = list(fixture["runner_arguments"])
-    runner_arguments.remove("--fisher-h1-smoke")
-    runner_arguments.extend(
-        [
-            "--prior-fisher-h1-smoke-report",
-            str(report_path),
-            "--prior-fisher-h1-smoke-complete-marker",
-            str(marker_path),
-        ]
-    )
+    smoke = _launcher_finalized_smoke_fixture(tmp_path, fixture)
+    runner_arguments = _full_runner_arguments(fixture, smoke)
 
     options = launcher._extract_runner_options(runner_arguments)
     launcher._verify_bound_artifacts(
@@ -2150,41 +2582,50 @@ def test_full_launch_authenticates_prior_fisher_smoke_report_and_marker(
     )
 
 
+def test_full_launch_rejects_a_byte_identical_copied_smoke_directory(
+    tmp_path: Path,
+) -> None:
+    fixture = _sealed_fixture(tmp_path)
+    smoke = _launcher_finalized_smoke_fixture(tmp_path, fixture)
+    copied_dir = tmp_path / "copied-launcher-finalized-smoke"
+    shutil.copytree(smoke["output_dir"], copied_dir)
+    copied = {
+        **smoke,
+        "finalization_path": copied_dir / launcher.RUN_LAUNCH_FINALIZATION_FILENAME,
+        "marker_path": copied_dir / launcher.FISHER_SMOKE_COMPLETE_FILENAME,
+        "output_dir": copied_dir,
+        "report_path": copied_dir / launcher.FISHER_SMOKE_REPORT_FILENAME,
+    }
+    assert all(
+        (copied_dir / name).read_bytes() == (smoke["output_dir"] / name).read_bytes()
+        for name in {
+            launcher.FISHER_SMOKE_REPORT_FILENAME,
+            launcher.FISHER_SMOKE_COMPLETE_FILENAME,
+            launcher.RUN_LAUNCH_FINALIZATION_FILENAME,
+        }
+    )
+    runner_arguments = _full_runner_arguments(fixture, copied)
+
+    with pytest.raises(
+        launcher.SealedLaunchError,
+        match="launch finalization authentication failed",
+    ):
+        launcher._verify_bound_artifacts(
+            launcher._extract_runner_options(runner_arguments),
+            runtime_manifest_path=fixture["runtime_path"],
+        )
+
+
 def test_full_launch_rejects_rehashed_smoke_bound_to_another_capture_receipt(
     tmp_path: Path,
 ) -> None:
     fixture = _sealed_fixture(tmp_path)
-    evidence = {
-        "prerequisites": {
-            "capture_provenance_receipt_file_sha256": "0" * 64,
-            "fisher_h1_smoke_report_file_sha256": None,
-        },
-        "runner_revision": launcher.RUNNER_REVISION,
-        "status": "fisher_h1_smoke_passed",
-    }
-    report = launcher._canonical_json_bytes(
-        {
-            "artifact_kind": launcher.RUN_REPORT_KIND,
-            "canonical_evidence_sha256": _sha256(launcher._canonical_json_bytes(evidence)),
-            "evidence": evidence,
-            "schema_version": launcher.RUN_REPORT_SCHEMA,
-        }
+    smoke = _launcher_finalized_smoke_fixture(
+        tmp_path,
+        fixture,
+        capture_provenance_receipt_file_sha256="0" * 64,
     )
-    report_path = _write(tmp_path / "wrong-smoke" / "report.json", report)
-    marker_path = _write(
-        tmp_path / "wrong-smoke" / "FISHER_H1_SMOKE_COMPLETE",
-        launcher.FISHER_SMOKE_COMPLETE_BYTES,
-    )
-    runner_arguments = list(fixture["runner_arguments"])
-    runner_arguments.remove("--fisher-h1-smoke")
-    runner_arguments.extend(
-        [
-            "--prior-fisher-h1-smoke-report",
-            str(report_path),
-            "--prior-fisher-h1-smoke-complete-marker",
-            str(marker_path),
-        ]
-    )
+    runner_arguments = _full_runner_arguments(fixture, smoke)
 
     with pytest.raises(launcher.SealedLaunchError, match="authentication failed"):
         launcher._verify_bound_artifacts(
@@ -2202,7 +2643,10 @@ def test_embedded_bootstrap_authenticates_smoke_prerequisite_before_runner_load(
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("schema_version", 3.0), ("dont_write_bytecode", True)],
+    [
+        ("schema_version", float(launcher.RUNTIME_MANIFEST_SCHEMA)),
+        ("dont_write_bytecode", True),
+    ],
 )
 def test_runtime_parser_rejects_equality_compatible_json_types(
     tmp_path: Path,
@@ -2286,7 +2730,7 @@ def test_identity_parser_rejects_float_schema_version(tmp_path: Path) -> None:
     fixture = _sealed_fixture(tmp_path)
     identity_path = fixture["runtime_path"].parent / "identity.json"
     document = json.loads(identity_path.read_bytes())
-    document["evidence"]["schema_version"] = 4.0
+    document["evidence"]["schema_version"] = float(launcher.IDENTITY_SCHEMA)
     document["canonical_evidence_sha256"] = _sha256(
         launcher._canonical_json_bytes(document["evidence"])
     )

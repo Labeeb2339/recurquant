@@ -326,14 +326,23 @@ STAGE_A_CORE_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibrat
 STAGE_A_CALIBRATION_AUTHORIZATION_ARTIFACT_KIND: Final = (
     "recurquant_experiment013_stage_a_calibration_authorization"
 )
-STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION: Final = 1
+STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION: Final = 2
 STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
-    "experiment-013-stage-a-calibration-authorization-v1"
+    "experiment-013-stage-a-calibration-authorization-v2"
 )
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
-CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 3
-CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v15"
+CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 4
+CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
+CALIBRATION_RUN_LAUNCH_FINALIZATION_KIND: Final = (
+    "recurquant_experiment013_calibration_run_launch_finalization"
+)
+CALIBRATION_RUN_LAUNCH_FINALIZATION_SCHEMA_VERSION: Final = 1
+CALIBRATION_RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT: Final = (
+    "sealed-host-finalization-receipt-last-no-overwrite-after-postconditions-"
+    "owned-root-cleanup-and-reauthentication-v1"
+)
+CALIBRATION_RUN_LAUNCH_FINALIZATION_FILENAME: Final = "RUN_LAUNCH_FINALIZATION.json"
 CALIBRATION_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
@@ -353,8 +362,10 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
     "captured_under_authenticated_runtime_and_launcher_finalized"
 )
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = CALIBRATION_CAPTURE_PUBLICATION_CONTRACT
-CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-complete-v1\n"
-FISHER_H1_SMOKE_COMPLETE_BYTES: Final = b"recurquant-experiment013-fisher-h1-smoke-complete-v1\n"
+CALIBRATION_COMPLETE_BYTES: Final = b"recurquant-experiment013-calibration-launch-finalized-v2\n"
+FISHER_H1_SMOKE_COMPLETE_BYTES: Final = (
+    b"recurquant-experiment013-fisher-h1-smoke-launch-finalized-v2\n"
+)
 CALIBRATION_OUTPUT_FILENAMES: Final = MappingProxyType(
     {
         "calibration_score_artifact": "calibration-scores.json",
@@ -373,10 +384,12 @@ CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES: Final = frozenset(
         "calibration_complete_marker",
         "calibration_core_binding_artifact",
         "calibration_run_report",
+        "calibration_run_launch_finalization",
         "calibration_runtime_manifest",
         "capture_provenance_receipt",
         "fisher_h1_smoke_complete_marker",
         "fisher_h1_smoke_report",
+        "fisher_h1_smoke_launch_finalization",
         "model_file_manifest",
         "repository_source_manifest",
         "static_q48_policy_artifact",
@@ -384,7 +397,7 @@ CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES: Final = frozenset(
 )
 
 CALIBRATION_RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
-CALIBRATION_RUNTIME_MANIFEST_SCHEMA_VERSION: Final = 6
+CALIBRATION_RUNTIME_MANIFEST_SCHEMA_VERSION: Final = 7
 CALIBRATION_MODEL_FILE_MANIFEST_KIND: Final = "recurquant_experiment013_model_file_manifest"
 CALIBRATION_MODEL_FILE_MANIFEST_SCHEMA_VERSION: Final = 1
 CALIBRATION_MODEL_FILE_MANIFEST_DERIVATION: Final = "huggingface-hub-pinned-tree-lfs-v1"
@@ -443,9 +456,9 @@ CALIBRATION_CANONICAL_ADAPTER_LOADING_DIAGNOSTICS: Final = frozenset(
 )
 CALIBRATION_SEALED_LAUNCH_POLICY: Final = MappingProxyType(
     {
-        "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
+        "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v4",
         "cache_confinement_mode": (
-            "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3"
+            "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"
         ),
         "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
         "dont_write_bytecode": 1,
@@ -457,6 +470,7 @@ CALIBRATION_SEALED_LAUNCH_POLICY: Final = MappingProxyType(
         "package_path_mode": "authenticated-record-only-roots-v1",
         "pycache_mode": "new-verified-empty-prefix-v1",
         "safe_path": True,
+        "scratch_residue_mode": ("exact-environment-root-allowlist-regular-non-link-cleanup-v1"),
         "site_loaded": False,
         "sys_path_mode": "staged-base-then-authenticated-packages-v1",
         "utf8_mode": 1,
@@ -2072,7 +2086,7 @@ class StageACalibrationBindingArtifact:
 
 @dataclass(frozen=True, slots=True)
 class StageACalibrationAuthorizationArtifact:
-    """Verified authorization over one finalized runner-v15 calibration chain."""
+    """Verified authorization over one finalized runner-v16 calibration chain."""
 
     binding: Mapping[str, str]
     calibration_dependencies: Mapping[str, bytes]
@@ -4066,8 +4080,98 @@ def _validate_runner_v9_receipts(
         raise ValueError("full and smoke adapter identity receipts differ")
 
 
+def _deserialize_calibration_run_launch_finalization(
+    data: bytes,
+    *,
+    context: str,
+    expected_mode: str,
+    expected_status: str,
+    expected_source_commit: str,
+    expected_frozen_identity_file_sha256: str,
+    expected_capture_provenance_receipt_file_sha256: str,
+    expected_execution_bindings: Mapping[str, str],
+    expected_child_output: Mapping[str, bytes],
+    expected_completion_marker_filename: str,
+    expected_completion_marker: bytes,
+    expected_prior_fisher_h1_smoke_launch_finalization_file_sha256: str | None,
+    expected_output_directory_absolute_path_sha256: str | None,
+) -> dict[str, object]:
+    """Authenticate the launcher-last receipt over one exact child output set."""
+
+    if not isinstance(data, bytes):
+        raise TypeError(f"{context} must be bytes")
+    root = _json_without_duplicate_keys(data, context=context)
+    require_exact_fields(
+        root,
+        frozenset(
+            {
+                "artifact_kind",
+                "capture_provenance_receipt_file_sha256",
+                "child_output_file_sha256",
+                "child_output_size_bytes",
+                "completion_marker_filename",
+                "completion_marker_sha256",
+                "execution_bindings",
+                "frozen_identity_file_sha256",
+                "launch_policy",
+                "mode",
+                "output_directory_absolute_path_sha256",
+                "prior_fisher_h1_smoke_launch_finalization_file_sha256",
+                "publication_contract",
+                "runner_revision",
+                "schema_version",
+                "source_commit",
+                "status",
+            }
+        ),
+        context=context,
+    )
+    if canonical_json_bytes(root) != data:
+        raise ValueError(f"{context} is not canonical JSON")
+    output_directory_absolute_path_sha256 = require_sha256(
+        root["output_directory_absolute_path_sha256"],
+        context=f"{context} output-directory absolute-path SHA-256",
+    )
+    if (
+        root["artifact_kind"] != CALIBRATION_RUN_LAUNCH_FINALIZATION_KIND
+        or type(root["schema_version"]) is not int
+        or root["schema_version"] != CALIBRATION_RUN_LAUNCH_FINALIZATION_SCHEMA_VERSION
+        or root["runner_revision"] != CALIBRATION_RUNNER_REVISION
+        or root["mode"] != expected_mode
+        or root["status"] != expected_status
+        or root["publication_contract"] != CALIBRATION_RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT
+        or root["source_commit"] != expected_source_commit
+        or root["frozen_identity_file_sha256"] != expected_frozen_identity_file_sha256
+        or root["capture_provenance_receipt_file_sha256"]
+        != expected_capture_provenance_receipt_file_sha256
+        or root["execution_bindings"] != dict(expected_execution_bindings)
+        or root["launch_policy"] != dict(CALIBRATION_SEALED_LAUNCH_POLICY)
+        or root["prior_fisher_h1_smoke_launch_finalization_file_sha256"]
+        != expected_prior_fisher_h1_smoke_launch_finalization_file_sha256
+        or (
+            expected_output_directory_absolute_path_sha256 is not None
+            and output_directory_absolute_path_sha256
+            != require_sha256(
+                expected_output_directory_absolute_path_sha256,
+                context=f"expected {context} output-directory absolute-path SHA-256",
+            )
+        )
+        or root["child_output_file_sha256"]
+        != {name: sha256_bytes(payload) for name, payload in sorted(expected_child_output.items())}
+        or root["child_output_size_bytes"]
+        != {name: len(payload) for name, payload in sorted(expected_child_output.items())}
+        or root["completion_marker_filename"] != expected_completion_marker_filename
+        or root["completion_marker_sha256"] != sha256_bytes(expected_completion_marker)
+    ):
+        raise ValueError(f"{context} custody binding drifted")
+    return dict(root)
+
+
 def _derive_stage_a_calibration_authorization(
     dependencies: Mapping[str, bytes],
+    *,
+    expected_calibration_output_directory_absolute_path_sha256: str | None = None,
+    expected_fisher_h1_smoke_output_directory_absolute_path_sha256: str | None = None,
 ) -> tuple[
     dict[str, str],
     dict[str, bytes],
@@ -4184,13 +4288,17 @@ def _derive_stage_a_calibration_authorization(
     if serialize_static_rht_q48_policy(expected_q48) != dependencies["static_q48_policy_artifact"]:
         raise ValueError("Q48 policy bytes differ from deterministic P14739 reconstruction")
 
-    authorized_output_file_sha256 = {
-        filename: sha256_bytes(
+    authorized_output_bytes = {
+        filename: (
             dependencies[role]
             if role in {"static_q48_policy_artifact", "calibration_core_binding_artifact"}
             else calibration_dependencies[role]
         )
         for role, filename in sorted(CALIBRATION_OUTPUT_FILENAMES.items())
+    }
+    authorized_output_file_sha256 = {
+        filename: sha256_bytes(payload)
+        for filename, payload in sorted(authorized_output_bytes.items())
     }
     full_report = _deserialize_runner_v9_report(
         dependencies["calibration_run_report"],
@@ -4205,11 +4313,18 @@ def _derive_stage_a_calibration_authorization(
 
     capture_receipt_sha256 = sha256_bytes(dependencies["capture_provenance_receipt"])
     smoke_report_sha256 = sha256_bytes(dependencies["fisher_h1_smoke_report"])
+    smoke_launch_finalization_sha256 = sha256_bytes(
+        dependencies["fisher_h1_smoke_launch_finalization"]
+    )
+    full_launch_finalization_sha256 = sha256_bytes(
+        dependencies["calibration_run_launch_finalization"]
+    )
     prerequisites = require_mapping(
         full_report["prerequisites"], context="full calibration prerequisites"
     )
     if prerequisites != {
         "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+        "fisher_h1_smoke_launch_finalization_file_sha256": (smoke_launch_finalization_sha256),
         "fisher_h1_smoke_report_file_sha256": smoke_report_sha256,
     }:
         raise ValueError("full calibration prerequisite binding drifted")
@@ -4223,6 +4338,7 @@ def _derive_stage_a_calibration_authorization(
         raise ValueError("Fisher H=1 smoke report unexpectedly authorizes outputs")
     if smoke_report["prerequisites"] != {
         "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
+        "fisher_h1_smoke_launch_finalization_file_sha256": None,
         "fisher_h1_smoke_report_file_sha256": None,
     }:
         raise ValueError("Fisher H=1 smoke prerequisite binding drifted")
@@ -4253,12 +4369,64 @@ def _derive_stage_a_calibration_authorization(
     ):
         raise ValueError("capture provenance receipt differs from H0/identity bindings")
 
+    _deserialize_calibration_run_launch_finalization(
+        dependencies["fisher_h1_smoke_launch_finalization"],
+        context="Fisher H=1 smoke launch finalization",
+        expected_mode="fisher_h1_smoke",
+        expected_status="fisher_h1_smoke_launcher_finalized",
+        expected_source_commit=source_commit,
+        expected_frozen_identity_file_sha256=identity.file_sha256,
+        expected_capture_provenance_receipt_file_sha256=capture_receipt_sha256,
+        expected_execution_bindings=execution_bindings,
+        expected_child_output={
+            "fisher-h1-smoke-report.json": dependencies["fisher_h1_smoke_report"]
+        },
+        expected_completion_marker_filename="FISHER_H1_SMOKE_COMPLETE",
+        expected_completion_marker=dependencies["fisher_h1_smoke_complete_marker"],
+        expected_prior_fisher_h1_smoke_launch_finalization_file_sha256=None,
+        expected_output_directory_absolute_path_sha256=(
+            expected_fisher_h1_smoke_output_directory_absolute_path_sha256
+        ),
+    )
+    _deserialize_calibration_run_launch_finalization(
+        dependencies["calibration_run_launch_finalization"],
+        context="full calibration launch finalization",
+        expected_mode="full_calibration",
+        expected_status="full_calibration_launcher_finalized",
+        expected_source_commit=source_commit,
+        expected_frozen_identity_file_sha256=identity.file_sha256,
+        expected_capture_provenance_receipt_file_sha256=capture_receipt_sha256,
+        expected_execution_bindings=execution_bindings,
+        expected_child_output={
+            **authorized_output_bytes,
+            "calibration-run-report.json": dependencies["calibration_run_report"],
+        },
+        expected_completion_marker_filename="CALIBRATION_COMPLETE",
+        expected_completion_marker=dependencies["calibration_complete_marker"],
+        expected_prior_fisher_h1_smoke_launch_finalization_file_sha256=(
+            smoke_launch_finalization_sha256
+        ),
+        expected_output_directory_absolute_path_sha256=(
+            expected_calibration_output_directory_absolute_path_sha256
+        ),
+    )
+
     bindings: dict[str, object] = {
         "calibration_core_binding_file_sha256": core.file_sha256,
         "calibration_run_report_file_sha256": sha256_bytes(dependencies["calibration_run_report"]),
+        "calibration_run_launch_finalization_file_sha256": (full_launch_finalization_sha256),
+        "calibration_output_directory_absolute_path_sha256": require_sha256(
+            expected_calibration_output_directory_absolute_path_sha256,
+            context="calibration output-directory absolute-path SHA-256",
+        ),
         "capture_provenance_receipt_file_sha256": capture_receipt_sha256,
         "execution_bindings": execution_bindings,
         "fisher_h1_smoke_report_file_sha256": smoke_report_sha256,
+        "fisher_h1_smoke_launch_finalization_file_sha256": (smoke_launch_finalization_sha256),
+        "fisher_h1_smoke_output_directory_absolute_path_sha256": require_sha256(
+            expected_fisher_h1_smoke_output_directory_absolute_path_sha256,
+            context="Fisher H=1 smoke output-directory absolute-path SHA-256",
+        ),
         "frozen_calibration_identity_file_sha256": identity.file_sha256,
         "identity_input_manifest_sha256": identity_input_manifest_sha256,
         "source_commit": source_commit,
@@ -4275,32 +4443,46 @@ def _derive_stage_a_calibration_authorization(
 def build_stage_a_calibration_authorization_artifact(
     *,
     calibration_run_report: bytes,
+    calibration_run_launch_finalization: bytes,
     calibration_complete_marker: bytes,
     capture_provenance_receipt: bytes,
     fisher_h1_smoke_report: bytes,
+    fisher_h1_smoke_launch_finalization: bytes,
     fisher_h1_smoke_complete_marker: bytes,
     calibration_core_binding_artifact: bytes,
     calibration_runtime_manifest: bytes,
     model_file_manifest: bytes,
     repository_source_manifest: bytes,
     static_q48_policy_artifact: bytes,
+    expected_calibration_output_directory_absolute_path_sha256: str,
+    expected_fisher_h1_smoke_output_directory_absolute_path_sha256: str,
 ) -> bytes:
-    """Authorize Stage A only after the complete runner-v15 chain is finalized."""
+    """Authorize Stage A only after the complete runner-v16 chain is finalized."""
 
     dependencies = {
         "calibration_complete_marker": calibration_complete_marker,
         "calibration_core_binding_artifact": calibration_core_binding_artifact,
         "calibration_run_report": calibration_run_report,
+        "calibration_run_launch_finalization": calibration_run_launch_finalization,
         "calibration_runtime_manifest": calibration_runtime_manifest,
         "capture_provenance_receipt": capture_provenance_receipt,
         "fisher_h1_smoke_complete_marker": fisher_h1_smoke_complete_marker,
         "fisher_h1_smoke_report": fisher_h1_smoke_report,
+        "fisher_h1_smoke_launch_finalization": fisher_h1_smoke_launch_finalization,
         "model_file_manifest": model_file_manifest,
         "repository_source_manifest": repository_source_manifest,
         "static_q48_policy_artifact": static_q48_policy_artifact,
     }
     _binding, _calibration_dependencies, output_hashes, bindings = (
-        _derive_stage_a_calibration_authorization(dependencies)
+        _derive_stage_a_calibration_authorization(
+            dependencies,
+            expected_calibration_output_directory_absolute_path_sha256=(
+                expected_calibration_output_directory_absolute_path_sha256
+            ),
+            expected_fisher_h1_smoke_output_directory_absolute_path_sha256=(
+                expected_fisher_h1_smoke_output_directory_absolute_path_sha256
+            ),
+        )
     )
     dependency_hashes = {name: sha256_bytes(value) for name, value in sorted(dependencies.items())}
     evidence = {
@@ -4409,8 +4591,22 @@ def deserialize_stage_a_calibration_authorization_artifact(
         name: sha256_bytes(value) for name, value in sorted(dependencies.items())
     }:
         raise ValueError("calibration authorization dependency bytes differ from their hashes")
+    claimed_bindings = require_mapping(
+        evidence["bindings"],
+        context="calibration authorization claimed custody bindings",
+    )
     binding, calibration_dependencies, output_hashes, bindings = (
-        _derive_stage_a_calibration_authorization(dependencies)
+        _derive_stage_a_calibration_authorization(
+            dependencies,
+            expected_calibration_output_directory_absolute_path_sha256=require_sha256(
+                claimed_bindings.get("calibration_output_directory_absolute_path_sha256"),
+                context="claimed calibration output-directory absolute-path SHA-256",
+            ),
+            expected_fisher_h1_smoke_output_directory_absolute_path_sha256=require_sha256(
+                claimed_bindings.get("fisher_h1_smoke_output_directory_absolute_path_sha256"),
+                context="claimed Fisher H=1 smoke output-directory absolute-path SHA-256",
+            ),
+        )
     )
     if evidence["authorized_output_file_sha256"] != output_hashes:
         raise ValueError("calibration authorization output inventory drifted")
