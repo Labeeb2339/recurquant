@@ -1532,18 +1532,59 @@ try:
         payloads["frozen_identity_artifact"]
     ).hexdigest()
 
-    tampered = bytearray(payloads["static_k29334_policy_artifact"])
-    tampered[-2] ^= 1
-    rejected = False
-    try:
-        resolver.build_stage_a_calibration_core_binding_artifact(
-            **{**payloads, "static_k29334_policy_artifact": bytes(tampered)}
+    def expect_rejected(action):
+        try:
+            action()
+        except (TypeError, ValueError):
+            return
+        raise AssertionError("semantic or canonical tampering was accepted")
+
+    score_document = json.loads(payloads["calibration_score_artifact"])
+    score_document["evidence"]["allocations"][0]["code_counts_q4_q6_q8"][0] += 1
+    score_document["canonical_evidence_sha256"] = hashlib.sha256(
+        resolver.canonical_json_bytes(score_document["evidence"])
+    ).hexdigest()
+    semantic_score = resolver.canonical_json_bytes(score_document)
+    expect_rejected(
+        lambda: resolver.build_stage_a_calibration_core_binding_artifact(
+            **{**payloads, "calibration_score_artifact": semantic_score}
         )
-    except (TypeError, ValueError):
-        rejected = True
-    assert rejected
+    )
+
+    policy_document = json.loads(payloads["static_k29334_policy_artifact"])
+    policy_document["content"]["pool_counts"][0] += 1
+    policy_document["policy_sha256"] = hashlib.sha256(
+        contract._policy_canonical_json(policy_document["content"])
+    ).hexdigest()
+    semantic_policy = contract._policy_canonical_json(policy_document) + b"\n"
+    expect_rejected(
+        lambda: resolver.build_stage_a_calibration_core_binding_artifact(
+            **{**payloads, "static_k29334_policy_artifact": semantic_policy}
+        )
+    )
+
+    core_document = json.loads(core)
+    core_document["evidence"]["dependency_file_sha256"][
+        "calibration_score_artifact"
+    ] = "0" * 64
+    core_document["canonical_evidence_sha256"] = hashlib.sha256(
+        resolver.canonical_json_bytes(core_document["evidence"])
+    ).hexdigest()
+    expect_rejected(
+        lambda: resolver.deserialize_stage_a_calibration_core_binding_artifact(
+            resolver.canonical_json_bytes(core_document)
+        )
+    )
+    expect_rejected(
+        lambda: resolver.deserialize_stage_a_calibration_core_binding_artifact(core + b"\n")
+    )
+
     isolation.assert_intact()
-    assert "torch" not in sys.modules
+    assert not {
+        "torch",
+        "recurquant.static_q468",
+        "recurquant.static_q468_calibration",
+    } & set(sys.modules)
     assert isolation.blocker.attempts == []
     print(json.dumps({"status": "real_binding_verified_without_torch"}, sort_keys=True))
 except BaseException:

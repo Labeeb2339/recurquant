@@ -1568,12 +1568,21 @@ def test_torch_free_contract_policies_match_runtime_bytes_and_reject_mutation(
     for array in (contract_q48.packed_precision_mask, contract_q48.pool_offsets):
         _assert_deeply_immutable(array)
 
-    for payload, decoder in (
-        (runtime_q468_bytes, artifact_contract.deserialize_static_rht_q468_policy),
-        (runtime_q48_bytes, artifact_contract.deserialize_static_rht_q48_policy),
+    for payload, contract_decoder, runtime_decoder in (
+        (
+            runtime_q468_bytes,
+            artifact_contract.deserialize_static_rht_q468_policy,
+            static_runtime.deserialize_static_rht_q468_policy,
+        ),
+        (
+            runtime_q48_bytes,
+            artifact_contract.deserialize_static_rht_q48_policy,
+            static_runtime.deserialize_static_rht_q48_policy,
+        ),
     ):
-        with pytest.raises(ValueError, match="canonical form"):
-            decoder(payload + b"\n")
+        for decoder in (contract_decoder, runtime_decoder):
+            with pytest.raises(ValueError):
+                decoder(payload + b"\n")
 
         document = json.loads(payload)
         document["content"]["pool_counts"][0] += 1
@@ -1595,8 +1604,9 @@ def test_torch_free_contract_policies_match_runtime_bytes_and_reject_mutation(
             ).encode("utf-8")
             + b"\n"
         )
-        with pytest.raises(ValueError, match="pool_counts"):
-            decoder(mutated)
+        for decoder in (contract_decoder, runtime_decoder):
+            with pytest.raises(ValueError):
+                decoder(mutated)
 
 
 def test_stability_metrics_define_ties_empty_q8_and_bitwidth_shift() -> None:
@@ -1830,13 +1840,16 @@ def test_torch_free_contract_decodes_frozen_calibration_artifact_with_runtime_pa
         assert np.array_equal(contract_codes, runtime_codes.numpy())
         _assert_deeply_immutable(contract_codes)
 
-    with pytest.raises(ValueError, match="canonical JSON"):
-        artifact_contract.deserialize_calibration_score_artifact(raw + b"\n")
-
     mutated = json.loads(raw)
     mutated["evidence"]["allocations"][0]["code_counts_q4_q6_q8"][0] += 1
-    with pytest.raises(ValueError, match="code counts differ from exact allocation"):
-        artifact_contract.deserialize_calibration_score_artifact(_rehashed_document(mutated))
+    for decoder in (
+        artifact_contract.deserialize_calibration_score_artifact,
+        deserialize_calibration_score_artifact,
+    ):
+        with pytest.raises(ValueError):
+            decoder(raw + b"\n")
+        with pytest.raises(ValueError):
+            decoder(_rehashed_document(mutated))
 
 
 def test_torch_free_contract_decodes_comparator_artifact_with_runtime_parity() -> None:
@@ -1884,9 +1897,6 @@ def test_torch_free_contract_decodes_comparator_artifact_with_runtime_parity() -
             assert np.array_equal(contract_scores, runtime_scores.numpy())
             _assert_deeply_immutable(contract_scores)
 
-    with pytest.raises(ValueError, match="canonical JSON"):
-        artifact_contract.deserialize_comparator_score_artifact(raw + b"\n")
-
     mutated = json.loads(raw)
     encoded = mutated["evidence"]["selectors"][0]["scores"]["data_base64"]
     score_bytes = bytearray(base64.b64decode(encoded))
@@ -1894,8 +1904,17 @@ def test_torch_free_contract_decodes_comparator_artifact_with_runtime_parity() -
     mutated["evidence"]["selectors"][0]["scores"]["data_base64"] = base64.b64encode(
         score_bytes
     ).decode("ascii")
-    with pytest.raises(ValueError, match="aggregate-score SHA-256 drifted"):
-        artifact_contract.deserialize_comparator_score_artifact(_rehashed_document(mutated))
+    for decoder in (
+        artifact_contract.deserialize_comparator_score_artifact,
+        deserialize_comparator_score_artifact,
+    ):
+        with pytest.raises(ValueError):
+            decoder(raw + b"\n", expected_calibration_identity_sha256=identity_sha256)
+        with pytest.raises(ValueError):
+            decoder(
+                _rehashed_document(mutated),
+                expected_calibration_identity_sha256=identity_sha256,
+            )
 
 
 def test_torch_free_contract_decodes_split_half_artifact_with_runtime_parity() -> None:
@@ -1962,9 +1981,6 @@ def test_torch_free_contract_decodes_split_half_artifact_with_runtime_parity() -
             assert np.array_equal(contract_scores, runtime_scores.numpy())
             _assert_deeply_immutable(contract_scores)
 
-    with pytest.raises(ValueError, match="canonical JSON"):
-        artifact_contract.deserialize_frozen_split_half_stability_artifact(raw + b"\n")
-
     mutated = json.loads(raw)
     encoded_codes = mutated["evidence"]["halves"][0]["code_map"]["codes_base64"]
     code_bytes = bytearray(base64.b64decode(encoded_codes))
@@ -1972,10 +1988,14 @@ def test_torch_free_contract_decodes_split_half_artifact_with_runtime_parity() -
     mutated["evidence"]["halves"][0]["code_map"]["codes_base64"] = base64.b64encode(
         code_bytes
     ).decode("ascii")
-    with pytest.raises(ValueError, match="differs from exact allocation"):
-        artifact_contract.deserialize_frozen_split_half_stability_artifact(
-            _rehashed_document(mutated)
-        )
+    for decoder in (
+        artifact_contract.deserialize_frozen_split_half_stability_artifact,
+        deserialize_frozen_split_half_stability_artifact,
+    ):
+        with pytest.raises(ValueError):
+            decoder(raw + b"\n", **expected)
+        with pytest.raises(ValueError):
+            decoder(_rehashed_document(mutated), **expected)
 
 
 def test_comparator_score_artifact_rejects_profile_hash_array_and_allocation_tampering() -> None:

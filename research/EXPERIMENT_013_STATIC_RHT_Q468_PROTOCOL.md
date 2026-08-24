@@ -1945,8 +1945,9 @@ compare both implementations on Q468 and Q48 canonical serialization,
 reciprocal deserialization, code maps, counts, hashes, every feasible budget
 for exhaustive small instances including ties, non-convex marginals and
 endpoints, and the frozen `P=14739` reconstruction. Every valid and adversarial
-policy, calibration-score, comparator, and split-half fixture must be processed
-by both implementations, requiring identical accept/reject decisions and,
+policy, calibration-score, comparator, and split-half fixture in this
+differential corpus must be processed by both implementations, requiring
+identical accept/reject decisions and,
 when accepted, equal canonical hashes, scalar values, and array bytes. Any
 divergence or unilateral acceptance fails closed and forbids H0. A contract
 change must update both implementations and the differential corpus in the
