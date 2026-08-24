@@ -41,7 +41,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _BOUND_ARTIFACT_OPTIONS: Final = {
@@ -253,7 +253,7 @@ def _parse_identity_custody(
         or evidence.get("identity_only") is not True
         or evidence.get("promotion_required") is not False
     ):
-        raise SealedStageALaunchError("identity is not a promoted Stage-A resolver-v6 artifact")
+        raise SealedStageALaunchError("identity is not a promoted Stage-A resolver-v7 artifact")
     promotion = evidence.get("promotion")
     if not isinstance(promotion, dict):
         raise SealedStageALaunchError("Stage-A identity lacks explicit promotion")
@@ -364,7 +364,7 @@ def _parse_stage_a_capture_provenance_receipt(
         or type(root.get("schema_version")) is not int
         or root.get("schema_version") != 1
         or type(root.get("capture_version")) is not int
-        or root.get("capture_version") != 6
+        or root.get("capture_version") != 7
         or root.get("runner_revision") != STAGE_A_CAPTURE_RUNNER_REVISION
         or root.get("phase") != "stage_a"
         or root.get("status") != STAGE_A_CAPTURE_PROVENANCE_STATUS
@@ -689,9 +689,9 @@ def _stage_a_receipt(options, bindings):
             or root.get("artifact_kind")
             != "recurquant_experiment013_stage_a_identity_capture_provenance"
             or type(root.get("schema_version")) is not int or root.get("schema_version") != 1
-            or type(root.get("capture_version")) is not int or root.get("capture_version") != 6
+            or type(root.get("capture_version")) is not int or root.get("capture_version") != 7
             or root.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v16"
+            != "experiment-013-static-q468-calibration-runner-v17"
             or root.get("phase") != "stage_a"
             or root.get("status")
             != "captured_under_authenticated_runtime_and_launcher_finalized"

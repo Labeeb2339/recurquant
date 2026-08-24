@@ -110,7 +110,7 @@ def _capture_receipt_bytes(
                 "path": stage_a.CAPTURE_SOURCE_PATH,
                 "sha256": capture_source_sha256 or _digest("capture-source"),
             },
-            "capture_version": 6,
+            "capture_version": 7,
             "critical_module_origins": [],
             "excluded_runtime_modules": ["pkg_resources", "setuptools"],
             "execution_bindings": dict(execution_bindings),
@@ -161,6 +161,15 @@ def _runtime_namespace() -> Any:
 
 
 def test_bootstrap_requires_promoted_v6_and_exact_forward_formula() -> None:
+    assert stage_a.RUNNER_REVISION == "experiment-013-static-q468-stage-a-runner-v6"
+    assert (
+        stage_a.STAGE_A_CAPTURE_RUNNER_REVISION
+        == "experiment-013-static-q468-calibration-runner-v17"
+    )
+    assert (
+        stage_a.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH
+        in stage_a.REQUIRED_SOURCE_PATHS
+    )
     decoded = _bootstrap()
     assert decoded.expected_forward_count == 9 * 12 * 2
     assert set(decoded.execution_bindings) == stage_a.EXECUTION_BINDING_FIELDS
@@ -171,7 +180,7 @@ def test_bootstrap_requires_promoted_v6_and_exact_forward_formula() -> None:
     root["canonical_evidence_sha256"] = stage_a.sha256_bytes(
         stage_a.canonical_json_bytes(root["evidence"])
     )
-    with pytest.raises(stage_a.StageAError, match="promoted resolver-v6"):
+    with pytest.raises(stage_a.StageAError, match="promoted resolver-v7"):
         stage_a.bootstrap_stage_a_identity(stage_a.canonical_json_bytes(root))
 
 
@@ -197,7 +206,7 @@ def test_bootstrap_accepts_exact_finalized_stage_a_capture_receipt_and_rejects_c
         identity=identity,
         expected_source_commit="1" * 40,
     )
-    assert decoded["capture_version"] == 6
+    assert decoded["capture_version"] == 7
     assert decoded["runner_revision"] == stage_a.STAGE_A_CAPTURE_RUNNER_REVISION
 
     mutations = (
@@ -306,7 +315,7 @@ def test_legacy_v5_identity_fails_before_binding_receipt_or_provider_access(
         "_load_exact_module",
         lambda *_args, **_kwargs: pytest.fail("provider modules must not be loaded"),
     )
-    with pytest.raises(stage_a.StageAError, match="promoted resolver-v6"):
+    with pytest.raises(stage_a.StageAError, match="promoted resolver-v7"):
         stage_a.authenticate_production(
             SimpleNamespace(frozen_identity_path=identity_path),
             require_input_bundle=False,
@@ -1004,11 +1013,16 @@ def test_authorization_execution_mismatch_fails_before_model_file_touch(
 
     monkeypatch.setattr(stage_a, "_stable_file_bytes", stable_bytes)
 
+    loaded_paths: list[str] = []
+
     def load_module(_name: str, relative_path: str, **_kwargs: object) -> object:
+        loaded_paths.append(relative_path)
         if relative_path == stage_a.SOURCE_MODULE_PATH:
             return source_module
         if relative_path == stage_a.CALIBRATION_RUNNER_SOURCE_PATH:
             return FakeRunner()
+        if relative_path == stage_a.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH:
+            return SimpleNamespace()
         if relative_path == stage_a.RESOLVER_SOURCE_PATH:
             return resolver
         raise AssertionError(f"unexpected module load: {relative_path}")
@@ -1018,6 +1032,12 @@ def test_authorization_execution_mismatch_fails_before_model_file_touch(
         stage_a.authenticate_production(config, require_input_bundle=False)
 
     assert model_touched is False
+    assert loaded_paths == [
+        stage_a.SOURCE_MODULE_PATH,
+        stage_a.CALIBRATION_RUNNER_SOURCE_PATH,
+        stage_a.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
+        stage_a.RESOLVER_SOURCE_PATH,
+    ]
 
 
 def _run(root: Path, *args: str, input_bytes: bytes | None = None) -> str:

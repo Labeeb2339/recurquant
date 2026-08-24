@@ -41,7 +41,7 @@ STAGE_A_FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v6"
 STAGE_A_IDENTITY_SCHEMA_VERSION: Final = 6
 ARTIFACT_KIND: Final = "recurquant_static_rht_q468_identity"
 # Procedure version.  The identity field sets remain the published v5 contract.
-RESOLVER_VERSION: Final = 6
+RESOLVER_VERSION: Final = 7
 PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256: Final = (
     "ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c"
 )
@@ -333,7 +333,7 @@ STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 4
-CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
+CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
 CALIBRATION_RUN_LAUNCH_FINALIZATION_KIND: Final = (
     "recurquant_experiment013_calibration_run_launch_finalization"
 )
@@ -347,7 +347,7 @@ CALIBRATION_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
 CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION: Final = 2
-CALIBRATION_CAPTURE_VERSION: Final = 6
+CALIBRATION_CAPTURE_VERSION: Final = 7
 CALIBRATION_CAPTURE_PROVENANCE_STATUS: Final = (
     "captured_under_authenticated_runtime_and_launcher_finalized"
 )
@@ -2086,7 +2086,7 @@ class StageACalibrationBindingArtifact:
 
 @dataclass(frozen=True, slots=True)
 class StageACalibrationAuthorizationArtifact:
-    """Verified authorization over one finalized runner-v16 calibration chain."""
+    """Verified authorization over one finalized runner-v17 calibration chain."""
 
     binding: Mapping[str, str]
     calibration_dependencies: Mapping[str, bytes]
@@ -2539,7 +2539,7 @@ def _decode_canonical_b64(value: object, *, context: str) -> bytes:
 def _identity_half_record_manifests(
     identity: FrozenCalibrationIdentityArtifact,
 ) -> dict[str, str]:
-    from recurquant.static_q468_calibration import (
+    from recurquant.static_q468_artifact_contract import (
         calibration_identity_record_manifest_sha256,
     )
 
@@ -2599,12 +2599,16 @@ def _derive_stage_a_calibration_binding(
     static_fisher_k29334_policy_artifact: bytes,
     static_mse_k29334_policy_artifact: bytes,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    from recurquant.static_q468 import (
+    from recurquant.static_q468_artifact_contract import (
+        CALIBRATION_SCORE_ARTIFACT_KIND,
+        FROZEN_COMPARATOR_PROFILE_ORDER,
+        FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
         FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
         FROZEN_STATELEASE_RESIDENT_BYTES,
         FROZEN_STATIC_Q468_ABLATION_STEPS,
         FROZEN_STATIC_Q468_PRIMARY_STEPS,
         FROZEN_TRANSFORMERS_VERSION,
+        FROZEN_UNWEIGHTED_MSE_PROFILE,
         PRIMARY_MODEL_ID,
         PRIMARY_MODEL_REVISION,
         PRIMARY_TOKENIZER_ID,
@@ -2614,21 +2618,15 @@ def _derive_stage_a_calibration_binding(
         STATIC_Q468_MSE_METHOD,
         STATIC_Q468_PRIMARY_METHOD,
         build_static_rht_q468_policy,
-        deserialize_static_rht_q468_policy,
-        serialize_static_rht_q468_policy,
-        static_q468_byte_ledger,
-        static_q468_distortion_sha256,
-    )
-    from recurquant.static_q468_calibration import (
-        CALIBRATION_SCORE_ARTIFACT_KIND,
-        FROZEN_COMPARATOR_PROFILE_ORDER,
-        FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE,
-        FROZEN_UNWEIGHTED_MSE_PROFILE,
         calibration_identity_record_manifest_sha256,
         deserialize_calibration_score_artifact,
         deserialize_comparator_score_artifact,
         deserialize_frozen_split_half_stability_artifact,
+        deserialize_static_rht_q468_policy,
+        serialize_static_rht_q468_policy,
+        static_q468_byte_ledger,
         static_q468_code_map_sha256,
+        static_q468_distortion_sha256,
     )
 
     identity = deserialize_frozen_calibration_identity_artifact(frozen_identity_artifact)
@@ -2704,7 +2702,6 @@ def _derive_stage_a_calibration_binding(
         ),
     )
     allocations = {steps: (codes, digest) for steps, codes, digest in scores.allocations}
-    torch = __import__("torch")
     for policy, method_id, steps in expected_policy_contracts:
         if (
             policy.method_id != method_id
@@ -2732,9 +2729,10 @@ def _derive_stage_a_calibration_binding(
         if steps not in allocations:
             raise ValueError(f"official score artifact is missing exact K{steps}")
         allocation_codes, allocation_hash = allocations[steps]
-        if policy.code_map_sha256 != allocation_hash or not torch.equal(
-            policy.precision_codes().reshape(-1).to("cpu"),
-            allocation_codes.reshape(-1).to("cpu"),
+        if (
+            policy.code_map_sha256 != allocation_hash
+            or policy.precision_codes().reshape(-1).tobytes(order="C")
+            != allocation_codes.reshape(-1).tobytes(order="C")
         ):
             raise ValueError(f"policy {method_id} code map differs from exact allocation")
     if policy27030.source_commit != policy29334.source_commit:
@@ -2815,7 +2813,7 @@ def _derive_stage_a_calibration_binding(
             raise ValueError(
                 f"comparator policy {method_id} bytes differ from deterministic reconstruction"
             )
-        selector_codes = selector.precision_codes.reshape(-1).to("cpu")
+        selector_codes = selector.precision_codes.reshape(-1)
         expected_code_map_sha256 = static_q468_code_map_sha256(
             selector_codes,
             geometry=FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
@@ -2826,10 +2824,8 @@ def _derive_stage_a_calibration_binding(
             or selector.marginal_steps != FROZEN_STATIC_Q468_PRIMARY_STEPS
             or selector.code_map_sha256 != expected_code_map_sha256
             or policy.code_map_sha256 != expected_code_map_sha256
-            or not torch.equal(
-                policy.precision_codes().reshape(-1).to("cpu"),
-                selector_codes,
-            )
+            or policy.precision_codes().reshape(-1).tobytes(order="C")
+            != selector_codes.tobytes(order="C")
         ):
             raise ValueError(
                 f"comparator policy {method_id} code map differs from its exact allocation"
@@ -4225,7 +4221,7 @@ def _derive_stage_a_calibration_authorization(
     ):
         raise ValueError("authorization execution manifests differ from the frozen identity")
 
-    from recurquant.static_q468 import (
+    from recurquant.static_q468_artifact_contract import (
         FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
         FROZEN_STATIC_Q48_PROMOTIONS,
         PRIMARY_MODEL_ID,
@@ -4234,13 +4230,11 @@ def _derive_stage_a_calibration_authorization(
         PRIMARY_TOKENIZER_REVISION,
         STATIC_Q48_COMPARATOR_METHOD,
         build_static_rht_q48_policy,
+        deserialize_calibration_score_artifact,
+        deserialize_frozen_split_half_stability_artifact,
         deserialize_static_rht_q48_policy,
         deserialize_static_rht_q468_policy,
         serialize_static_rht_q48_policy,
-    )
-    from recurquant.static_q468_calibration import (
-        deserialize_calibration_score_artifact,
-        deserialize_frozen_split_half_stability_artifact,
     )
 
     if (
@@ -4457,7 +4451,7 @@ def build_stage_a_calibration_authorization_artifact(
     expected_calibration_output_directory_absolute_path_sha256: str,
     expected_fisher_h1_smoke_output_directory_absolute_path_sha256: str,
 ) -> bytes:
-    """Authorize Stage A only after the complete runner-v16 chain is finalized."""
+    """Authorize Stage A only after the complete runner-v17 chain is finalized."""
 
     dependencies = {
         "calibration_complete_marker": calibration_complete_marker,

@@ -94,7 +94,7 @@ def _capture_receipt(
                 "path": "scripts/capture_static_q468_identity_input.py",
                 "sha256": capture_source_sha256,
             },
-            "capture_version": 6,
+            "capture_version": 7,
             "critical_module_origins": [],
             "excluded_runtime_modules": ["pkg_resources", "setuptools"],
             "execution_bindings": dict(bindings),
@@ -454,7 +454,7 @@ def test_identity_parser_accepts_only_promoted_stage_a_v6() -> None:
     legacy["canonical_evidence_sha256"] = _digest(
         launcher._canonical_json_bytes(legacy["evidence"])
     )
-    with pytest.raises(launcher.SealedStageALaunchError, match="resolver-v6"):
+    with pytest.raises(launcher.SealedStageALaunchError, match="resolver-v7"):
         launcher._parse_identity(launcher._canonical_json_bytes(legacy))
 
 
@@ -618,7 +618,7 @@ def test_bootstrap_derivation_switches_schema_phase_runner_and_keeps_isolation()
     assert "isolated != 1" in bootstrap
     assert "no_site != 1" in bootstrap
     assert "dont_write_bytecode != 1" in bootstrap
-    assert "experiment-013-static-q468-calibration-runner-v16" in bootstrap
+    assert "experiment-013-static-q468-calibration-runner-v17" in bootstrap
     assert "_hf_hub_cache = _cache_root" in bootstrap
     assert (
         "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"

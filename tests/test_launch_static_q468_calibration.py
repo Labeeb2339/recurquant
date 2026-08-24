@@ -186,8 +186,8 @@ def _full_runner_arguments(
     return arguments
 
 
-def test_v16_runtime_report_marker_and_scratch_contract_constants() -> None:
-    assert launcher.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v16"
+def test_v17_runtime_report_marker_and_scratch_contract_constants() -> None:
+    assert launcher.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v17"
     assert launcher.RUNTIME_MANIFEST_SCHEMA == 7
     assert launcher.RUN_REPORT_SCHEMA == 4
     assert launcher.FISHER_SMOKE_COMPLETE_BYTES == (
@@ -311,7 +311,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     )
     capture_source_path = _write(
         repository / launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
-        b"CAPTURE_VERSION = 6\n",
+        b"CAPTURE_VERSION = 7\n",
     )
     source_payload = {
         "git_executable": {

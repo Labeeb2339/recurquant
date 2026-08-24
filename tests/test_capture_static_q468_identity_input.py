@@ -866,7 +866,7 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
         first, expected_revisions=resolver.FROZEN_DATASET_REVISIONS
     )
     assert candidate["evidence"]["record_count"] == 160
-    assert capture.CAPTURE_VERSION == resolver.RESOLVER_VERSION == 6
+    assert capture.CAPTURE_VERSION == resolver.RESOLVER_VERSION == 7
     assert first["schema"] == "recurquant.experiment013.identity-input.v5"
     assert candidate["evidence"]["identity_schema"] == (
         "recurquant.experiment013.identity-candidate.v5"
@@ -1342,7 +1342,9 @@ def test_frozen_calibration_identity_decoder_recomputes_capture_lineage() -> Non
         )
 
 
-def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies() -> None:
+def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies(
+    tmp_path: Path,
+) -> None:
     captured = capture.capture_identity_input(phase="calibration", source=FakeSource())
     candidate = resolver.build_candidate(
         captured,
@@ -1461,6 +1463,120 @@ def test_stage_a_binding_is_derived_from_identity_scores_split_and_policies() ->
         "static_fisher_k29334_policy_artifact": fisher_policy_bytes,
         "static_mse_k29334_policy_artifact": mse_policy_bytes,
     }
+
+    dependency_dir = tmp_path / "real-binding-dependencies"
+    dependency_dir.mkdir()
+    for name, payload in core_dependencies.items():
+        (dependency_dir / f"{name}.bin").write_bytes(payload)
+    isolated_script = r"""
+import hashlib
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+repository = Path(sys.argv[1]).resolve(strict=True)
+dependencies = Path(sys.argv[2]).resolve(strict=True)
+runner_path = repository / "scripts" / "run_static_q468_calibration.py"
+spec = importlib.util.spec_from_file_location(
+    "experiment013_production_runner_isolation_regression",
+    runner_path,
+)
+assert spec is not None and spec.loader is not None
+runner = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runner
+spec.loader.exec_module(runner)
+
+contract_path = repository / runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH
+resolver_path = repository / runner.IDENTITY_RESOLVER_SOURCE_PATH
+entries = {
+    runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: {
+        "raw_sha256": hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+    },
+    runner.IDENTITY_RESOLVER_SOURCE_PATH: {
+        "raw_sha256": hashlib.sha256(resolver_path.read_bytes()).hexdigest(),
+    },
+}
+isolation = runner._CalibrationIdentityImportIsolation()
+primary_error = None
+try:
+    isolation.activate()
+    namespace = runner._install_authenticated_recurquant_namespace(repository)
+    contract = runner._load_exact_source_module(
+        runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
+        runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
+        repository_root=repository,
+        entry=entries[runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH],
+    )
+    namespace.static_q468_artifact_contract = contract
+    resolver = runner._load_exact_source_module(
+        runner.AUTHORIZATION_IDENTITY_RESOLVER_MODULE,
+        runner.IDENTITY_RESOLVER_SOURCE_PATH,
+        repository_root=repository,
+        entry=entries[runner.IDENTITY_RESOLVER_SOURCE_PATH],
+    )
+    names = (
+        "frozen_identity_artifact",
+        "calibration_score_artifact",
+        "split_half_stability_artifact",
+        "static_k27030_policy_artifact",
+        "static_k29334_policy_artifact",
+        "comparator_score_artifact",
+        "static_fisher_k29334_policy_artifact",
+        "static_mse_k29334_policy_artifact",
+    )
+    payloads = {name: (dependencies / f"{name}.bin").read_bytes() for name in names}
+    core = resolver.build_stage_a_calibration_core_binding_artifact(**payloads)
+    decoded = resolver.deserialize_stage_a_calibration_core_binding_artifact(core)
+    assert decoded.binding["calibration_identity_file_sha256"] == hashlib.sha256(
+        payloads["frozen_identity_artifact"]
+    ).hexdigest()
+
+    tampered = bytearray(payloads["static_k29334_policy_artifact"])
+    tampered[-2] ^= 1
+    rejected = False
+    try:
+        resolver.build_stage_a_calibration_core_binding_artifact(
+            **{**payloads, "static_k29334_policy_artifact": bytes(tampered)}
+        )
+    except (TypeError, ValueError):
+        rejected = True
+    assert rejected
+    isolation.assert_intact()
+    assert "torch" not in sys.modules
+    assert isolation.blocker.attempts == []
+    print(json.dumps({"status": "real_binding_verified_without_torch"}, sort_keys=True))
+except BaseException:
+    primary_error = sys.exception()
+    raise
+finally:
+    try:
+        isolation.restore(primary_error=primary_error)
+    finally:
+        for name in reversed(runner.AUTHORIZATION_EXACT_MODULE_NAMES):
+            sys.modules.pop(name, None)
+"""
+    isolated = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            isolated_script,
+            str(REPOSITORY_ROOT),
+            str(dependency_dir),
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=120,
+    )
+    assert isolated.returncode == 0, isolated.stdout + isolated.stderr
+    assert json.loads(isolated.stdout) == {
+        "status": "real_binding_verified_without_torch"
+    }
+
     core_bytes = resolver.build_stage_a_calibration_core_binding_artifact(**core_dependencies)
     core = resolver.deserialize_stage_a_calibration_core_binding_artifact(core_bytes)
     authorization_bytes = b"verified-post-calibration-authorization"

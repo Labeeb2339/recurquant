@@ -2,7 +2,7 @@
 """Authenticated one-run Experiment 013 Stage-A falsification screen.
 
 This evaluator is intentionally fail closed.  It authenticates the promoted
-resolver-v6 Stage-A identity, its finalized capture provenance, the embedded
+resolver-v7 Stage-A identity, its finalized capture provenance, the embedded
 eight-dependency calibration binding, the
 split-half pass, the complete H0 source inventory, the sealed runtime, the
 model tree, and the checked-in Parquet identity before reserving the one run.
@@ -45,8 +45,11 @@ CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RESOLVER_SOURCE_PATH: Final = "scripts/resolve_static_q468_identity.py"
 SOURCE_MODULE_PATH: Final = "src/recurquant/experiment013_source.py"
 STAGE_A_GATE_MODULE_PATH: Final = "src/recurquant/experiment013_stage_a.py"
+STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: Final = (
+    "src/recurquant/static_q468_artifact_contract.py"
+)
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v5"
+RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v6"
 ATTEMPT_SCHEMA: Final = "recurquant.experiment013.stage-a-attempt.v3"
 IDENTITY_ATTEMPT_LOCK_SCHEMA: Final = "recurquant.experiment013.stage-a-identity-attempt-lock.v4"
 IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
@@ -91,7 +94,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
 ONE_RUN_MARKER: Final = "RecurQuant-One-Run: experiment013-stage-a-v1"
 CLAIM_BOUNDARY: Final = (
     "Stage A is a falsification screen only. Passage is not confirmation, selector "
@@ -238,6 +241,7 @@ REQUIRED_SOURCE_PATHS: Final = frozenset(
         RESOLVER_SOURCE_PATH,
         SOURCE_MODULE_PATH,
         STAGE_A_GATE_MODULE_PATH,
+        STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
     }
 )
 
@@ -580,7 +584,7 @@ def bootstrap_stage_a_identity(data: bytes) -> BootstrapIdentity:
         or evidence.get("identity_only") is not True
         or evidence.get("promotion_required") is not False
     ):
-        raise StageAError("identity is not the promoted resolver-v6 Stage-A artifact")
+        raise StageAError("identity is not the promoted resolver-v7 Stage-A artifact")
     promotion = evidence.get("promotion")
     if not isinstance(promotion, dict):
         raise StageAError("Stage-A identity lacks an explicit promotion")
@@ -723,7 +727,7 @@ def bootstrap_stage_a_capture_provenance_receipt(
         or type(root.get("schema_version")) is not int
         or root.get("schema_version") != 1
         or type(root.get("capture_version")) is not int
-        or root.get("capture_version") != 6
+        or root.get("capture_version") != 7
         or root.get("runner_revision") != STAGE_A_CAPTURE_RUNNER_REVISION
         or root.get("phase") != "stage_a"
         or root.get("status") != STAGE_A_CAPTURE_PROVENANCE_STATUS
@@ -3583,6 +3587,12 @@ def authenticate_production(
     calibration_runner = _load_exact_module(
         "_recurquant_experiment013_calibration_runner_for_stage_a",
         CALIBRATION_RUNNER_SOURCE_PATH,
+        repository_root=config.repository_root,
+        entries=entries,
+    )
+    _load_exact_module(
+        "recurquant.static_q468_artifact_contract",
+        STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
         repository_root=config.repository_root,
         entries=entries,
     )

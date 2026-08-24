@@ -204,9 +204,11 @@ def isolated_sealed_capture_modules() -> Iterator[None]:
         "recurquant",
         runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
         runner.CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+        runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
         runner.IDENTITY_RESOLVER_MODULE,
         runner.CALIBRATION_IDENTITY_CAPTURE_MODULE,
         runner.CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
+        runner.AUTHORIZATION_IDENTITY_RESOLVER_MODULE,
     )
     previous = {name: sys.modules[name] for name in module_names if name in sys.modules}
     for name in module_names:
@@ -818,7 +820,8 @@ def prepared_fake_sealed_capture(
             },
             runner.SOURCE_VERIFIER_PATH: {"raw_sha256": "1" * 64},
             runner.PARQUET_SOURCE_PATH: {"raw_sha256": "2" * 64},
-            runner.IDENTITY_RESOLVER_SOURCE_PATH: {"raw_sha256": "3" * 64},
+            runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: {"raw_sha256": "3" * 64},
+            runner.IDENTITY_RESOLVER_SOURCE_PATH: {"raw_sha256": "4" * 64},
         },
     )
     observations: dict[str, object] = {
@@ -826,6 +829,7 @@ def prepared_fake_sealed_capture(
         "runtime_authentications": 0,
         "ruler_reads": [],
         "source_verifications": 0,
+        "module_loads": [],
     }
 
     def verify_source(manifest_value: object, **kwargs: object) -> object:
@@ -944,18 +948,34 @@ def prepared_fake_sealed_capture(
         capture_identity_input=capture_identity_input,
         required_ruler_receipts=lambda: tuple(required_ruler),
     )
+    artifact_contract_module = SimpleNamespace()
 
     def load_module(
-        _module_name: str,
+        module_name: str,
         relative_path: str,
-        **_kwargs: object,
+        **kwargs: object,
     ) -> object:
-        return {
+        assert kwargs == {
+            "repository_root": repository,
+            "entry": bootstrap.entries[relative_path],
+        }
+        loaded = observations["module_loads"]
+        assert isinstance(loaded, list)
+        loaded.append((module_name, relative_path))
+        if relative_path == runner.IDENTITY_RESOLVER_SOURCE_PATH:
+            assert (
+                getattr(sys.modules["recurquant"], "static_q468_artifact_contract", None)
+                is artifact_contract_module
+            )
+        module = {
             runner.SOURCE_VERIFIER_PATH: source_module,
             runner.PARQUET_SOURCE_PATH: SimpleNamespace(),
+            runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: artifact_contract_module,
             runner.IDENTITY_RESOLVER_SOURCE_PATH: resolver_module,
             runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: capture_module,
         }[relative_path]
+        sys.modules[module_name] = module  # type: ignore[assignment]
+        return module
 
     monkeypatch.setattr(runner, "_bootstrap_source_manifest", lambda *_args, **_kwargs: bootstrap)
     monkeypatch.setattr(runner, "_load_exact_source_module", load_module)
@@ -1011,6 +1031,18 @@ def prepared_fake_sealed_capture(
 
 def origins_by_module(origins: Sequence[Mapping[str, object]]) -> dict[str, Mapping[str, object]]:
     return {str(item["module"]): item for item in origins}
+
+
+def test_capture_custody_constants_are_frozen_at_v17_v7() -> None:
+    assert runner.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v17"
+    assert runner.CALIBRATION_IDENTITY_CAPTURE_VERSION == 7
+    assert (
+        runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE
+        == "recurquant.static_q468_artifact_contract"
+    )
+    assert runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH == (
+        "src/recurquant/static_q468_artifact_contract.py"
+    )
 
 
 def test_capture_provenance_receipt_authenticates_exact_runtime_record_origins(
@@ -1237,6 +1269,19 @@ def test_sealed_capture_emits_receipt_candidate_without_publishing_it(
     assert receipt["status"] == runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
     assert observations["runtime_authentications"] == 2
     assert observations["source_verifications"] == 3
+    assert observations["module_loads"] == [
+        (runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE, runner.SOURCE_VERIFIER_PATH),
+        (runner.CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE, runner.PARQUET_SOURCE_PATH),
+        (
+            runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
+            runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
+        ),
+        (runner.IDENTITY_RESOLVER_MODULE, runner.IDENTITY_RESOLVER_SOURCE_PATH),
+        (
+            runner.CALIBRATION_IDENTITY_CAPTURE_MODULE,
+            runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
+        ),
+    ]
     live_source = observations["live_source"]
     assert live_source.arguments["cache_dir"] == observations["capture_hub_cache_root"]
     assert live_source.arguments["cache_dir"] != Path(
@@ -1319,6 +1364,31 @@ def test_sealed_stage_a_capture_authenticates_binding_and_emits_only_candidate(
         "generation-manifest.json",
         *stage_a_names,
     ]
+
+
+def test_sealed_capture_rejects_preloaded_artifact_contract_before_exact_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch)
+    )
+    sentinel = SimpleNamespace(__name__=runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE)
+
+    with isolated_sealed_capture_modules():
+        sys.modules[runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE] = sentinel
+        with pytest.raises(runner.CalibrationRunError, match="source module was preloaded"):
+            runner._sealed_capture_calibration_identity(
+                arguments,
+                manifest=manifest,
+                runtime_context=runtime_context,
+                authenticated_runtime=authenticated,
+                interpreter_path=tmp_path / "python.exe",
+            )
+        assert sys.modules[runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE] is sentinel
+
+    assert observations["module_loads"] == []
+    assert not (tmp_path / "identity-input.json").exists()
 
 
 def test_sealed_capture_rejects_hub_environment_that_bypasses_authenticated_endpoint(
@@ -2414,6 +2484,7 @@ def test_sealed_capture_restoration_error_cannot_skip_other_policy_cleanup(
         runner.CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
         runner.CALIBRATION_IDENTITY_CAPTURE_MODULE,
         runner.IDENTITY_RESOLVER_MODULE,
+        runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
         runner.CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
         runner.CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
         "recurquant",
@@ -3106,6 +3177,7 @@ def test_success_authenticates_every_boundary_and_publishes_complete_set(tmp_pat
 
 def test_post_calibration_authorizer_requires_exact_inputs_and_publishes_v4_pair(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_commit = "a" * 40
     calibration_dir = tmp_path / "calibration"
@@ -3217,32 +3289,59 @@ def test_post_calibration_authorizer_requires_exact_inputs_and_publishes_v4_pair
                 authorization_file_sha256=runner.sha256_bytes(authorization_bytes)
             )
 
-    output_dir = tmp_path / "authorized"
-    result = runner.authorize_stage_a_calibration(
-        calibration_output_dir=calibration_dir,
-        fisher_h1_smoke_output_dir=smoke_dir,
-        capture_provenance_receipt_path=receipt_path,
-        expected_capture_provenance_receipt_sha256=runner.sha256_bytes(receipt),
-        frozen_identity_path=identity_path,
-        expected_frozen_identity_sha256=runner.sha256_bytes(frozen_identity),
-        repository_source_manifest_path=source_manifest_path,
-        expected_repository_source_manifest_sha256=runner.sha256_bytes(source_manifest),
-        runtime_manifest_path=runtime_manifest_path,
-        expected_runtime_manifest_sha256=runner.sha256_bytes(runtime_manifest),
-        model_file_manifest_path=model_manifest_path,
-        expected_model_file_manifest_sha256=runner.sha256_bytes(model_manifest),
-        expected_full_run_report_sha256=runner.sha256_bytes(full_payloads[runner.REPORT_FILENAME]),
-        expected_calibration_run_launch_finalization_sha256=runner.sha256_bytes(
-            full_payloads[runner.RUN_LAUNCH_FINALIZATION_FILENAME]
-        ),
-        expected_fisher_h1_smoke_report_sha256=runner.sha256_bytes(smoke_report),
-        expected_fisher_h1_smoke_launch_finalization_sha256=runner.sha256_bytes(
-            smoke_launch_finalization
-        ),
+    bootstrap = runner.BootstrapSource(
+        manifest={},
         source_commit=source_commit,
-        output_dir=output_dir,
-        identity_resolver=FakeResolver(),
+        entries={},
     )
+    monkeypatch.setattr(runner, "_bootstrap_source_manifest", lambda *_args, **_kwargs: bootstrap)
+    hidden_probe = "never_present_authorization_model_runtime"
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        (hidden_probe,),
+    )
+
+    def load_owned_resolver(value: runner.BootstrapSource) -> object:
+        assert value is bootstrap
+        assert importlib.util.find_spec(hidden_probe) is None
+        for name in runner.AUTHORIZATION_EXACT_MODULE_NAMES:
+            sys.modules[name] = SimpleNamespace(__name__=name)  # type: ignore[assignment]
+        resolver = FakeResolver()
+        sys.modules[runner.AUTHORIZATION_IDENTITY_RESOLVER_MODULE] = resolver  # type: ignore[assignment]
+        return resolver
+
+    monkeypatch.setattr(runner, "_load_authorization_identity_resolver", load_owned_resolver)
+    output_dir = tmp_path / "authorized"
+    with isolated_sealed_capture_modules():
+        result = runner.authorize_stage_a_calibration(
+            calibration_output_dir=calibration_dir,
+            fisher_h1_smoke_output_dir=smoke_dir,
+            capture_provenance_receipt_path=receipt_path,
+            expected_capture_provenance_receipt_sha256=runner.sha256_bytes(receipt),
+            frozen_identity_path=identity_path,
+            expected_frozen_identity_sha256=runner.sha256_bytes(frozen_identity),
+            repository_source_manifest_path=source_manifest_path,
+            expected_repository_source_manifest_sha256=runner.sha256_bytes(source_manifest),
+            runtime_manifest_path=runtime_manifest_path,
+            expected_runtime_manifest_sha256=runner.sha256_bytes(runtime_manifest),
+            model_file_manifest_path=model_manifest_path,
+            expected_model_file_manifest_sha256=runner.sha256_bytes(model_manifest),
+            expected_full_run_report_sha256=runner.sha256_bytes(
+                full_payloads[runner.REPORT_FILENAME]
+            ),
+            expected_calibration_run_launch_finalization_sha256=runner.sha256_bytes(
+                full_payloads[runner.RUN_LAUNCH_FINALIZATION_FILENAME]
+            ),
+            expected_fisher_h1_smoke_report_sha256=runner.sha256_bytes(smoke_report),
+            expected_fisher_h1_smoke_launch_finalization_sha256=runner.sha256_bytes(
+                smoke_launch_finalization
+            ),
+            source_commit=source_commit,
+            output_dir=output_dir,
+        )
+        for name in runner.AUTHORIZATION_EXACT_MODULE_NAMES:
+            assert name not in sys.modules
 
     assert result["status"] == "authorized_for_stage_a"
     assert {item.name for item in output_dir.iterdir()} == {
@@ -3446,6 +3545,10 @@ def test_authorization_resolver_path_swap_executes_no_unauthenticated_code(
     repository = tmp_path / "repository"
     resolver_path = repository / runner.IDENTITY_RESOLVER_SOURCE_PATH
     resolver_path.parent.mkdir(parents=True)
+    contract_path = repository / runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH
+    contract_path.parent.mkdir(parents=True)
+    contract_bytes = b"CONTRACT_SENTINEL = 'authenticated-contract'\n"
+    contract_path.write_bytes(contract_bytes)
     authenticated_bytes = b"AUTHENTICATED_SENTINEL = 'exact-buffer'\n"
     side_effect = tmp_path / "unauthenticated-resolver-side-effect.txt"
     malicious_bytes = (
@@ -3457,6 +3560,9 @@ def test_authorization_resolver_path_swap_executes_no_unauthenticated_code(
         manifest={},
         source_commit="a" * 40,
         entries={
+            runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: {
+                "raw_sha256": digest(contract_bytes),
+            },
             runner.IDENTITY_RESOLVER_SOURCE_PATH: {
                 "raw_sha256": digest(authenticated_bytes),
             }
@@ -3473,11 +3579,13 @@ def test_authorization_resolver_path_swap_executes_no_unauthenticated_code(
     monkeypatch.setattr(runner, "REPOSITORY_ROOT", repository)
     monkeypatch.setattr(runner, "_read_stable_regular_bytes", read_then_swap)
 
-    with pytest.raises(runner.CalibrationRunError, match="identity drifted on import"):
-        runner._load_authorization_identity_resolver(bootstrap)
+    with isolated_sealed_capture_modules():
+        with pytest.raises(runner.CalibrationRunError, match="identity drifted on import"):
+            runner._load_authorization_identity_resolver(bootstrap)
+        for name in runner.AUTHORIZATION_EXACT_MODULE_NAMES:
+            assert name not in sys.modules
 
     assert not side_effect.exists()
-    assert "_recurquant_experiment013_identity_resolver_for_authorization" not in sys.modules
 
 
 def test_forged_authorization_resolver_is_rejected_before_output_publication(
@@ -3545,6 +3653,12 @@ def test_forged_authorization_resolver_is_rejected_before_output_publication(
         manifest={},
         source_commit=source_commit,
         entries={
+            runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: {
+                "raw_sha256": digest(
+                    (SCRIPT.parents[1] / runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH)
+                    .read_bytes()
+                ),
+            },
             runner.IDENTITY_RESOLVER_SOURCE_PATH: {
                 "raw_sha256": "0" * 64,
             }
@@ -3557,35 +3671,43 @@ def test_forged_authorization_resolver_is_rejected_before_output_publication(
         "_bootstrap_source_manifest",
         lambda *_args, **_kwargs: forged_bootstrap,
     )
+    monkeypatch.setattr(
+        runner,
+        "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
+        ("never_present_authorization_model_runtime",),
+    )
     output_dir = tmp_path / "authorization-output"
 
-    with pytest.raises(runner.CalibrationRunError, match="bytes drifted before import"):
-        runner.authorize_stage_a_calibration(
-            calibration_output_dir=tmp_path / "calibration",
-            fisher_h1_smoke_output_dir=tmp_path / "smoke",
-            capture_provenance_receipt_path=tmp_path / "receipt.json",
-            expected_capture_provenance_receipt_sha256=digest(receipt),
-            frozen_identity_path=tmp_path / "identity.json",
-            expected_frozen_identity_sha256=digest(frozen_identity),
-            repository_source_manifest_path=tmp_path / "source.json",
-            expected_repository_source_manifest_sha256=digest(source_manifest),
-            runtime_manifest_path=tmp_path / "runtime.json",
-            expected_runtime_manifest_sha256=digest(runtime_manifest),
-            model_file_manifest_path=tmp_path / "model.json",
-            expected_model_file_manifest_sha256=digest(model_manifest),
-            expected_full_run_report_sha256=digest(full[runner.REPORT_FILENAME]),
-            expected_calibration_run_launch_finalization_sha256=digest(
-                full[runner.RUN_LAUNCH_FINALIZATION_FILENAME]
-            ),
-            expected_fisher_h1_smoke_report_sha256=digest(
-                smoke[runner.FISHER_SMOKE_REPORT_FILENAME]
-            ),
-            expected_fisher_h1_smoke_launch_finalization_sha256=digest(
-                smoke[runner.RUN_LAUNCH_FINALIZATION_FILENAME]
-            ),
-            source_commit=source_commit,
-            output_dir=output_dir,
-        )
+    with isolated_sealed_capture_modules():
+        with pytest.raises(runner.CalibrationRunError, match="bytes drifted before import"):
+            runner.authorize_stage_a_calibration(
+                calibration_output_dir=tmp_path / "calibration",
+                fisher_h1_smoke_output_dir=tmp_path / "smoke",
+                capture_provenance_receipt_path=tmp_path / "receipt.json",
+                expected_capture_provenance_receipt_sha256=digest(receipt),
+                frozen_identity_path=tmp_path / "identity.json",
+                expected_frozen_identity_sha256=digest(frozen_identity),
+                repository_source_manifest_path=tmp_path / "source.json",
+                expected_repository_source_manifest_sha256=digest(source_manifest),
+                runtime_manifest_path=tmp_path / "runtime.json",
+                expected_runtime_manifest_sha256=digest(runtime_manifest),
+                model_file_manifest_path=tmp_path / "model.json",
+                expected_model_file_manifest_sha256=digest(model_manifest),
+                expected_full_run_report_sha256=digest(full[runner.REPORT_FILENAME]),
+                expected_calibration_run_launch_finalization_sha256=digest(
+                    full[runner.RUN_LAUNCH_FINALIZATION_FILENAME]
+                ),
+                expected_fisher_h1_smoke_report_sha256=digest(
+                    smoke[runner.FISHER_SMOKE_REPORT_FILENAME]
+                ),
+                expected_fisher_h1_smoke_launch_finalization_sha256=digest(
+                    smoke[runner.RUN_LAUNCH_FINALIZATION_FILENAME]
+                ),
+                source_commit=source_commit,
+                output_dir=output_dir,
+            )
+        for name in runner.AUTHORIZATION_EXACT_MODULE_NAMES:
+            assert name not in sys.modules
 
     assert not output_dir.exists()
 

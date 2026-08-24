@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import itertools
+import subprocess
+import sys
 from fractions import Fraction
+from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
+import recurquant.static_q468_artifact_contract as artifact_contract
 from recurquant.multibit_policy import (
     FROZEN_QWEN35_INT8_ROW_QUOTAS,
     QWEN35_FROZEN_TOTAL_MARGINAL_STEPS,
@@ -15,6 +20,49 @@ from recurquant.multibit_policy import (
 )
 
 ALLOCATORS = (allocate_exact_multibit_codes, allocate_exact_multibit_codes_fast)
+
+
+def test_artifact_contract_imports_in_isolated_process_without_torch() -> None:
+    module_path = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "recurquant"
+        / "static_q468_artifact_contract.py"
+    )
+    script = r"""
+import builtins
+import importlib.util
+import sys
+
+real_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    root = name.partition(".")[0]
+    if root in {"recurquant", "torch"}:
+        raise AssertionError(f"forbidden import attempted: {name}")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+spec = importlib.util.spec_from_file_location(
+    "static_q468_artifact_contract_isolated",
+    sys.argv[1],
+)
+assert spec is not None and spec.loader is not None
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+assert "torch" not in sys.modules
+assert not any(name.startswith("recurquant") for name in sys.modules)
+assert module.FROZEN_STATIC_Q468_PRIMARY_STEPS == 29_334
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script, str(module_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def _objective(
@@ -198,6 +246,59 @@ def test_fast_allocator_matches_exact_oracles_on_adversarial_nonconvex_and_ties(
         )
         assert torch.equal(fast, dynamic)
         assert torch.equal(fast, brute)
+
+
+@pytest.mark.parametrize(
+    "distortions",
+    [
+        (
+            torch.tensor([[101.0, 60.0]], dtype=torch.float64),
+            torch.tensor([[100.0, 0.0]], dtype=torch.float64),
+            torch.tensor([[0.0, 0.0]], dtype=torch.float64),
+        ),
+        (
+            torch.ones((2, 2), dtype=torch.float64),
+            torch.ones((2, 2), dtype=torch.float64),
+            torch.ones((2, 2), dtype=torch.float64),
+        ),
+        (
+            torch.tensor([[5.0, 5.0, 2.0, 2.0]], dtype=torch.float64),
+            torch.tensor([[4.0, 8.0, 1.0, 2.0]], dtype=torch.float64),
+            torch.tensor([[3.0, 7.0, 0.0, 0.0]], dtype=torch.float64),
+        ),
+    ],
+    ids=("increasing-second-marginal", "exact-ties", "mixed-nonconvex"),
+)
+def test_torch_free_artifact_contract_allocator_matches_exact_oracles_for_every_budget(
+    distortions: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+) -> None:
+    numpy_distortions = tuple(value.numpy() for value in distortions)
+    rows = distortions[0].numel()
+
+    for marginal_steps in range(2 * rows + 1):
+        dynamic = allocate_exact_multibit_codes(
+            *distortions,
+            marginal_steps=marginal_steps,
+        )
+        fast = allocate_exact_multibit_codes_fast(
+            *distortions,
+            marginal_steps=marginal_steps,
+        )
+        brute = _brute_force_codes(
+            *distortions,
+            marginal_steps=marginal_steps,
+        )
+        contract_codes = artifact_contract.allocate_exact_multibit_codes(
+            *numpy_distortions,
+            marginal_steps=marginal_steps,
+        )
+
+        assert np.array_equal(contract_codes, dynamic.numpy())
+        assert np.array_equal(contract_codes, fast.numpy())
+        assert np.array_equal(contract_codes, brute.numpy())
+        assert contract_codes.dtype == np.uint8
+        assert contract_codes.flags.c_contiguous
+        assert int(contract_codes.astype(np.int64).sum()) == marginal_steps
 
 
 def test_exact_optimum_has_at_most_one_nonconvex_singleton() -> None:

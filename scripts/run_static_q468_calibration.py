@@ -57,8 +57,20 @@ CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE: Final = (
 )
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE: Final = "recurquant.experiment013_source"
 CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE: Final = "recurquant.experiment013_parquet"
+STATIC_Q468_ARTIFACT_CONTRACT_MODULE: Final = "recurquant.static_q468_artifact_contract"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 PARQUET_SOURCE_PATH: Final = "src/recurquant/experiment013_parquet.py"
+STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: Final = (
+    "src/recurquant/static_q468_artifact_contract.py"
+)
+AUTHORIZATION_IDENTITY_RESOLVER_MODULE: Final = (
+    "_recurquant_experiment013_identity_resolver_for_authorization"
+)
+AUTHORIZATION_EXACT_MODULE_NAMES: Final = (
+    "recurquant",
+    STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
+    AUTHORIZATION_IDENTITY_RESOLVER_MODULE,
+)
 MODEL_STAGING_SOURCE_MODULE: Final = "recurquant_experiment013_source_for_model_staging"
 MODEL_STAGING_RESOLVER_MODULE: Final = "recurquant_experiment013_resolver_for_model_staging"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
@@ -67,7 +79,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -102,7 +114,7 @@ CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS: Final = (
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 6
+CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 7
 CALIBRATION_IDENTITY_INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
 STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_stage_a_identity_capture_provenance"
@@ -659,6 +671,7 @@ def _bootstrap_source_manifest(
         IDENTITY_RESOLVER_SOURCE_PATH,
         SOURCE_VERIFIER_PATH,
         PARQUET_SOURCE_PATH,
+        STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
         CALIBRATION_API_PATH,
         CALIBRATION_REQUIREMENTS_PATH,
     }
@@ -8048,6 +8061,7 @@ def _sealed_capture_identity(
         "recurquant",
         CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
         CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
+        STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
         IDENTITY_RESOLVER_MODULE,
         CALIBRATION_IDENTITY_CAPTURE_MODULE,
         CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
@@ -8058,6 +8072,7 @@ def _sealed_capture_identity(
     namespace: ModuleType | None = None
     source_module: ModuleType | None = None
     parquet_module: ModuleType | None = None
+    artifact_contract_module: ModuleType | None = None
     capture_module: ModuleType | None = None
     resolver_module: ModuleType | None = None
     blocker = _ExcludedCalibrationIdentityImportBlocker()
@@ -8091,6 +8106,13 @@ def _sealed_capture_identity(
             entry=bootstrap_source.entries[PARQUET_SOURCE_PATH],
         )
         namespace.experiment013_parquet = parquet_module
+        artifact_contract_module = _load_exact_source_module(
+            STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
+            STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
+            repository_root=args.repository_root,
+            entry=bootstrap_source.entries[STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH],
+        )
+        namespace.static_q468_artifact_contract = artifact_contract_module
         resolver_module = _load_exact_source_module(
             IDENTITY_RESOLVER_MODULE,
             IDENTITY_RESOLVER_SOURCE_PATH,
@@ -8335,6 +8357,7 @@ def _sealed_capture_identity(
                     CALIBRATION_IDENTITY_CAPTURE_RUNNER_MODULE,
                     CALIBRATION_IDENTITY_CAPTURE_MODULE,
                     IDENTITY_RESOLVER_MODULE,
+                    STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
                     CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE,
                     CALIBRATION_IDENTITY_CAPTURE_SOURCE_MODULE,
                     "recurquant",
@@ -8650,20 +8673,42 @@ def _validate_authorization_output_disjointness(
 def _load_authorization_identity_resolver(
     bootstrap_source: BootstrapSource,
 ) -> ModuleType:
-    """Load authorization resolver only from source-manifest-authenticated bytes."""
+    """Load the pure contract, then resolver, from authenticated source bytes."""
 
-    module_name = "_recurquant_experiment013_identity_resolver_for_authorization"
-    entry = bootstrap_source.entries.get(IDENTITY_RESOLVER_SOURCE_PATH)
-    if not isinstance(entry, Mapping):
+    contract_entry = bootstrap_source.entries.get(STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH)
+    resolver_entry = bootstrap_source.entries.get(IDENTITY_RESOLVER_SOURCE_PATH)
+    if not isinstance(contract_entry, Mapping):
+        raise CalibrationRunError(
+            "calibration authorization source manifest omits the Q468 artifact contract"
+        )
+    if not isinstance(resolver_entry, Mapping):
         raise CalibrationRunError(
             "calibration authorization source manifest omits the identity resolver"
         )
-    return _load_exact_source_module(
-        module_name,
-        IDENTITY_RESOLVER_SOURCE_PATH,
-        repository_root=REPOSITORY_ROOT,
-        entry=entry,
-    )
+    preloaded = sorted(name for name in AUTHORIZATION_EXACT_MODULE_NAMES if name in sys.modules)
+    if preloaded:
+        raise CalibrationRunError(
+            f"calibration authorization source module was preloaded: {preloaded}"
+        )
+    try:
+        namespace = _install_authenticated_recurquant_namespace(REPOSITORY_ROOT)
+        artifact_contract = _load_exact_source_module(
+            STATIC_Q468_ARTIFACT_CONTRACT_MODULE,
+            STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH,
+            repository_root=REPOSITORY_ROOT,
+            entry=contract_entry,
+        )
+        namespace.static_q468_artifact_contract = artifact_contract
+        return _load_exact_source_module(
+            AUTHORIZATION_IDENTITY_RESOLVER_MODULE,
+            IDENTITY_RESOLVER_SOURCE_PATH,
+            repository_root=REPOSITORY_ROOT,
+            entry=resolver_entry,
+        )
+    except BaseException:
+        for name in reversed(AUTHORIZATION_EXACT_MODULE_NAMES):
+            sys.modules.pop(name, None)
+        raise
 
 
 def authorize_stage_a_calibration(
@@ -8832,18 +8877,25 @@ def authorize_stage_a_calibration(
             raise CalibrationRunError(f"{name} differs from its explicit SHA-256")
 
     owned_resolver = identity_resolver is None
-    if owned_resolver:
-        bootstrap_source = _bootstrap_source_manifest(
-            repository_source_manifest_bytes,
-            repository_root=REPOSITORY_ROOT,
-            require_adapter=False,
-        )
-        if bootstrap_source.source_commit != expected_source_commit:
-            raise CalibrationRunError("repository source manifest differs from authorization H0")
-        resolver = _load_authorization_identity_resolver(bootstrap_source)
-    else:
-        resolver = identity_resolver
+    authorization_import_isolation = (
+        _CalibrationIdentityImportIsolation() if owned_resolver else None
+    )
     try:
+        if owned_resolver:
+            bootstrap_source = _bootstrap_source_manifest(
+                repository_source_manifest_bytes,
+                repository_root=REPOSITORY_ROOT,
+                require_adapter=False,
+            )
+            if bootstrap_source.source_commit != expected_source_commit:
+                raise CalibrationRunError(
+                    "repository source manifest differs from authorization H0"
+                )
+            assert authorization_import_isolation is not None
+            authorization_import_isolation.activate()
+            resolver = _load_authorization_identity_resolver(bootstrap_source)
+        else:
+            resolver = identity_resolver
         core = resolver.deserialize_stage_a_calibration_core_binding_artifact(
             full[CORE_BINDING_FILENAME]
         )
@@ -8901,13 +8953,20 @@ def authorize_stage_a_calibration(
         verified_binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding)
         if verified_binding.authorization_file_sha256 != sha256_bytes(authorization):
             raise CalibrationRunError("Stage-A binding lost its authorization dependency")
+        if authorization_import_isolation is not None:
+            authorization_import_isolation.assert_intact()
     except CalibrationRunError:
         raise
     except (KeyError, TypeError, ValueError) as exc:
         raise CalibrationRunError(str(exc)) from exc
     finally:
-        if owned_resolver:
-            sys.modules.pop(resolver.__name__, None)
+        try:
+            if authorization_import_isolation is not None:
+                authorization_import_isolation.restore(primary_error=sys.exception())
+        finally:
+            if owned_resolver:
+                for name in reversed(AUTHORIZATION_EXACT_MODULE_NAMES):
+                    sys.modules.pop(name, None)
 
     _publish_output_directory(
         output_path_snapshot.path,

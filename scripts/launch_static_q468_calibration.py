@@ -36,7 +36,7 @@ BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v16"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 4
 RUN_LAUNCH_FINALIZATION_KIND: Final = "recurquant_experiment013_calibration_run_launch_finalization"
@@ -50,7 +50,7 @@ CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 2
-CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 6
+CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 7
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS: Final = (
     "captured_under_authenticated_runtime_and_launcher_finalized"
 )
@@ -3642,9 +3642,9 @@ def _smoke(options):
             or type(receipt_root["schema_version"]) is not int
             or receipt_root["schema_version"] != 2
             or type(receipt_root["capture_version"]) is not int
-            or receipt_root["capture_version"] != 6
+            or receipt_root["capture_version"] != 7
             or receipt_root["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v16"
+            != "experiment-013-static-q468-calibration-runner-v17"
             or receipt_root["phase"] != "calibration"
             or receipt_root["publication_contract"]
             != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
@@ -3684,7 +3684,7 @@ def _smoke(options):
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
             or evidence.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v16"
+            != "experiment-013-static-q468-calibration-runner-v17"
             or evidence.get("prerequisites") != {
                 "capture_provenance_receipt_file_sha256": receipt_sha256,
                 "fisher_h1_smoke_launch_finalization_file_sha256": None,
@@ -3719,7 +3719,7 @@ def _smoke(options):
             or type(finalization["schema_version"]) is not int
             or finalization["schema_version"] != 1
             or finalization["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v16"
+            != "experiment-013-static-q468-calibration-runner-v17"
             or finalization["mode"] != "fisher_h1_smoke"
             or finalization["status"] != "fisher_h1_smoke_launcher_finalized"
             or finalization["publication_contract"]

@@ -1,17 +1,17 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound tenth replacement-H0 amendment candidate. The ninth
-> replacement H0 completed all pre-smoke prerequisite gates, identity capture and
-> promotion, H1, and authenticated model staging. Its sole Fisher H=1 smoke
-> completed the one-sequence inner computation, but the official invocation
-> returned 1 after the child and host scratch postconditions reported residue.
-> A separate diagnostic reproduced an empty Torch Inductor cache directory. Its
-> report and child-published marker are
-> preserved only as failed-attempt evidence; they do not authorize full
-> calibration. The ninth H0, tag, H1, identity, runtime, model root, cache, and
-> output paths are retired and non-authorizing, with no retry or rebinding
-> permitted. No protocol-valid full-calibration aggregate, policy, Stage-A
-> result, or quality result exists. The tenth H0 is not yet bound.**
+> **Status: unbound eleventh replacement-H0 amendment candidate. The tenth
+> replacement H0 completed calibration-identity capture and promotion, H1,
+> authenticated model staging, its sole Fisher H=1 smoke, full calibration, and
+> the metadata-only Stage-A calibration authorization. Its first sealed Stage-A
+> identity-capture attempt then failed closed before protected-provider
+> construction or output publication because strict recursive binding
+> verification reached a module-level Torch import forbidden by capture
+> isolation. The tenth H0, tag, H1, identity, runtime, model root, cache,
+> calibration, authorization, and populated or absent output namespaces are
+> retired and non-authorizing, with no retry, adoption, or rebinding permitted.
+> No Stage-A identity, Stage-A result, or quality result exists. The eleventh H0
+> is not yet bound.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
 > preregistration only when its exact bytes and dependencies are committed in a
@@ -29,7 +29,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current tenth replacement-H0 amendment candidate amended: 2026-08-25
+Current eleventh replacement-H0 amendment candidate amended: 2026-08-25
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -1825,6 +1825,223 @@ pointers. Only its identity-only direct-child H1 may stage a fresh model and
 attempt exactly one new Fisher smoke. Full calibration remains unauthorized
 until that new official smoke returns 0 and its v2 marker plus launcher-last
 finalization receipt authenticate successfully.
+
+Twenty-ninth replacement-H0 Stage-A capture import-isolation amendment
+candidate: 2026-08-25. Source commit
+`a5188a0b3e7bc3ab9ab2a27a639cac26d93030bd` and lightweight tag
+`experiment013-h0-a5188a0` became the tenth replacement H0. Its sole promoted
+schema-v5 calibration identity had file SHA-256
+`17b2aa18840a040883e74cb1f2ac17ad152aee3865e4d1537bbec59670099697`;
+committing only those promoted bytes produced H1
+`874e586bda98602cc712a543a071a0047df38659`. The repository-source,
+runtime, model-manifest, and launcher-finalized calibration-capture receipt
+file SHA-256 values were respectively
+`d3d5640ae4a779357bb34bb7f1edc002a6803fa088c9aa7c0a7ffe36d59bb210`,
+`95092677bcc4245c2ffe1d6dbbe83f39f411cb10d012efa61f1e3bc9378b4f36`,
+`586d9c7e520f3bbd99ecef30663bf07d283eb14622475c58891becd8e033b05c`,
+and
+`e67e00c44e9956a6f1444d79c7bc545def82e4849aa748111e335d1aa1cee8bc`.
+
+Authenticated model staging, the one permitted Fisher H=1 smoke, and the full
+calibration all completed under that chain. The finalized smoke report and
+launcher-last receipt had file SHA-256 values
+`26a1b7f297133d3b8b6f854b7f3c0cce97d8332fb881a8054a9a3072cb34789b`
+and
+`2e6ad077612d81f1b8a6bd5c107cad953689cc3f5d0130555c76cbacb545cc4f`.
+The finalized full-calibration report and launcher-last receipt had file
+SHA-256 values
+`196d382325141f46ec6415b601a5bc240a0d3243e062a55a119a0b6aeaa67b74`
+and
+`00af660cdc460b6246cbcb0b09661dc7487744304dfba8dbc25b1e87401d0d26`.
+The post-calibration metadata-only authorizer then accepted the exact closed
+12-file full-calibration directory, exact closed three-file smoke directory,
+and their explicit prerequisite hashes. It atomically published exactly these
+three files under the no-overwrite directory
+`C:\tmp\recurquant-exp013-stage-a-calibration-authorization-h1-874e586b`:
+
+| File | Size (bytes) | SHA-256 |
+| --- | ---: | --- |
+| `STAGE_A_CALIBRATION_AUTHORIZED` | 59 | `bda179b4e32cecc80b72132abd1e5613befa9b57fd9b539b7245b820d29ea227` |
+| `stage-a-calibration-authorization.json` | 19,596,102 | `83ee580d7a9a63bb58a395174f700ab6cfe03df60c42c0ce879c60ae9d161e02` |
+| `stage-a-calibration-binding.json` | 26,129,565 | `bc9b5c7db604826e2d7564bc8934871d5c19532c9f274304f67d086cb5e0c962` |
+
+The schema-v2 authorization reported `authorized_for_stage_a`, bound H0
+`a5188a0b3e7bc3ab9ab2a27a639cac26d93030bd`, embedded the exact 12
+authorization dependencies, and authenticated all nine calibration outputs.
+The schema-v4 binding embedded that authorization at its exact file hash and
+exposed the required nine-field Stage-A calibration binding. These are
+calibration and custody facts only; successful calibration and authorization do
+not establish evaluation quality, non-inferiority, deployment readiness, or a
+static-Q468 advantage.
+
+The first official sealed `capture-stage-a-identity` attempt failed before a
+live capture source, tokenizer, or protected dataset provider was constructed.
+After authenticating the binding file hash, source/runtime/model/Parquet
+manifests, H0, and the shallow RULER directory precondition, the sealed runner
+installed the existing model/CUDA import isolation and exact-loaded the H0
+resolver. Strict
+`deserialize_stage_a_calibration_binding_artifact` verification decoded the
+embedded authorization and rederived its complete dependency chain. That
+rederivation unconditionally imported `recurquant.static_q468` and
+`recurquant.static_q468_calibration`; both modules import `torch` at module
+scope. The isolation guard correctly stopped that request with
+`capture attempted forbidden model/CUDA import: torch`. The ordinary metadata
+authorizer had succeeded because it performed the same recursive derivation
+outside the sealed capture isolation. The mismatch is therefore an
+authenticated source-graph defect at the Stage-A capture boundary, not an
+invalid authorization artifact and not an infrastructure interruption.
+
+The failed child published neither a Stage-A identity-input file nor a
+launcher-finalized schema-v1 Stage-A capture-provenance receipt. It produced no
+candidate, frozen Stage-A identity, identity-authorization commit, Stage-A
+input bundle, one-run reservation, result, or completion marker. It did not
+construct a model adapter, open or load model weights, open the four protected
+Stage-A RULER receipt bodies, fetch a PG19 validation row, fetch a HumanEval+
+record, tokenize protected content, or calculate a quality value. Thus the
+attempt is evidence that the isolation boundary failed closed; it is neither
+positive nor negative scientific evidence about static RHT-Q468.
+
+This failure is deterministic containment and source-design evidence. The
+same-command infrastructure-retry exception does not apply. H0
+`a5188a0b3e7bc3ab9ab2a27a639cac26d93030bd`, tag
+`experiment013-h0-a5188a0`, H1
+`874e586bda98602cc712a543a071a0047df38659`, and every artifact and
+namespace bound to them are retired and non-authorizing. This includes the
+source/runtime/model manifests, calibration identity and capture receipt,
+model root, cache, Fisher smoke, full-calibration directory, Stage-A
+authorization directory and binding, failed command, and every declared
+Stage-A capture, candidate, promotion, and frozen-identity path whether
+populated or absent. They must be preserved as historical evidence and may not
+be retried, copied, renamed, adopted, substituted, or rebound into a replacement
+chain. A successful old authorization does not survive the retirement of its
+H0 and execution bindings.
+
+The repair must preserve strict recursive verification; accepting only the
+outer binding envelope, trusting a previously reported status, weakening the
+Torch blocker, preloading Torch, or exempting these imports is forbidden. A
+new authenticated, Torch-free metadata module at
+`src/recurquant/static_q468_artifact_contract.py`, imported only as
+`recurquant.static_q468_artifact_contract`, must own the complete artifact
+surface needed by Stage-A binding verification: frozen model/tokenizer IDs and
+geometry, strict Q468 and Q48 policy deserialization, strict calibration-score
+and split-half-stability deserialization, deterministic `P=14739` Q48
+reconstruction, and canonical policy serialization. It may depend only on the
+standard library and the already authenticated NumPy capture surface. It must
+not import Torch or any module that transitively imports Torch, including the
+current runtime-oriented `static_q468`, `static_q468_calibration`,
+`multibit_policy`, `metrics`, quantization, cache, or adapter modules. The
+runtime-oriented `static_q468` and `static_q468_calibration` modules remain the
+independent Torch producer/reference implementation. The new module is a
+deliberately independent NumPy N-version verifier for the same frozen artifact
+contract, not a runtime adapter. Duplication is permitted only under the
+source-bound differential-conformance gates below; neither implementation may
+silently change canonical bytes, allocation or tie-breaking semantics,
+accepted field/value domains, or decoded values.
+
+The new metadata module and the contract regressions in
+`tests/test_multibit_policy.py` and `tests/test_static_q468_calibration.py` must
+be explicit frozen-source-manifest members. Before H0, those regressions must
+compare both implementations on Q468 and Q48 canonical serialization,
+reciprocal deserialization, code maps, counts, hashes, every feasible budget
+for exhaustive small instances including ties, non-convex marginals and
+endpoints, and the frozen `P=14739` reconstruction. Every valid and adversarial
+policy, calibration-score, comparator, and split-half fixture must be processed
+by both implementations, requiring identical accept/reject decisions and,
+when accepted, equal canonical hashes, scalar values, and array bytes. Any
+divergence or unilateral acceptance fails closed and forbids H0. A contract
+change must update both implementations and the differential corpus in the
+same clean source commit.
+
+Every security-critical consumer must hash and exact-load its held bytes under
+an authenticated module name before resolver use. In particular,
+the metadata authorizer, sealed calibration/Stage-A capture runner, and Stage-A
+screen must not fall back to an ambient package import. The capture bootstrap
+must treat the module as a required pre-source-verification path, reject a
+preloaded instance, install it under the authenticated `recurquant` namespace
+before binding deserialization, and remove it during exact-module cleanup. The
+resolver's authorization derivation must import only this pure metadata layer;
+the existing import-isolation guard and postconditions remain mandatory. The
+owned metadata authorizer must activate that same guard before exact-loading
+the contract and resolver, retain it through recursive authorization and final
+binding rederivation, and restore it before publishing any output.
+
+A real-path regression is required before the repair can contribute to a new
+H0. In a fresh isolated `-I -B` subprocess using the production runner, exact
+source loader, production resolver, and a canonically generated complete
+core-binding dependency chain, it must activate the real capture isolation and
+call the real core-binding builder and deserializer rather than the prior
+`SimpleNamespace` stub. It must finish recursive rederivation with identical
+dependency hashes and byte-identical Q468 policies, with `torch`,
+`recurquant.static_q468`, and `recurquant.static_q468_calibration` absent from
+`sys.modules` and no forbidden import attempt recorded. Paired cases must
+prove that a changed score, policy, dependency hash, or canonical byte fails
+recursively. Existing adversarial import-topology, hidden-availability,
+restoration, and forbidden-import regressions may not be weakened.
+
+That always-run core regression does not replace end-to-end authorization.
+Before H0 is accepted, the fresh requalification must also construct the
+complete smoke, full-report, marker, launch-finalization, authorization, Q48,
+and final-binding chain and traverse the actual sealed binding deserializer to
+the pre-live-source boundary under the same isolation. A changed embedded
+authorization, marker, report, Q48 policy, execution binding, or canonical
+byte must fail before protected input or model access.
+
+The repair advances the calibration runner from v16 to v17, the capture and
+resolver procedures together from v6 to v7, and the sealed Stage-A runner in
+`screen_static_q468_stage_a.py` from v5 to v6. No artifact field-set change is
+intended: calibration identity remains schema v5;
+Stage-A candidate and frozen identity remain schema v6; calibration and Stage-A
+capture-provenance schemas remain v2 and v1; runtime-manifest schema remains
+v7; run-report schema remains v4; Stage-A
+calibration authorization remains schema/revision v2; and the only eligible
+Stage-A binding remains schema/revision v4. If implementation requires any
+field, canonical-byte, or semantic-contract change, its corresponding schema or
+revision must advance in a further pre-H0 amendment rather than being silently
+treated as this repair. No record selection, tokenizer byte or span, model
+revision, Parquet or RULER commitment, Fisher boundary, quantization policy,
+byte budget, metric, statistical gate, or claim boundary changes.
+
+Only after the amendment, pure-metadata implementation, real-path regression,
+all focused suites, the full clean-tree suite, package gates, and exact-commit
+GitHub CI pass all five jobs may a clean descendant be tagged as the eleventh
+replacement H0. That chain must use entirely fresh H0-scoped, no-overwrite
+repository-source, runtime, model-metadata, calibration identity-input,
+capture-provenance, candidate, promoted-identity, model, cache, smoke,
+full-calibration, Stage-A authorization, and Stage-A capture paths. It must
+repeat every source, runtime, immutable-model-metadata, RULER-custody, capture,
+promotion, frozen-identity-contract, model-staging, smoke, full-calibration, and
+post-calibration authorization gate. The replacement promoted calibration
+identity must keep every scientific/content field byte-identical to identity
+file SHA-256
+`17b2aa18840a040883e74cb1f2ac17ad152aee3865e4d1537bbec59670099697`
+and differ only at these seven frozen source/runtime/procedure/promotion
+pointers:
+
+```text
+/canonical_evidence_sha256
+/evidence/execution_bindings/calibration_runtime_manifest_file_sha256
+/evidence/execution_bindings/repository_source_manifest_file_sha256
+/evidence/promotion/candidate_canonical_evidence_sha256
+/evidence/promotion/candidate_file_sha256
+/evidence/resolver_version
+/evidence/source_manifest_sha256
+```
+
+The added procedure pointer must change exactly from resolver version 6 to 7;
+the other six pointers retain their established replacement semantics. Only
+that identity may be the sole tree change in its direct-child H1.
+
+The smoke, full calibration, authorization, and binding must be regenerated;
+their old H0, runner, source/runtime, output-path, and prerequisite commitments
+make reuse impossible even if the scientific inputs are unchanged. Existing
+public immutable dataset and RULER materializations may be reused only through
+their already frozen byte-level replay and provenance rules, never by adopting
+an old H0-scoped artifact. Only after the new authorization and binding pass
+may exactly one fresh sealed Stage-A identity capture be attempted. Until its
+identity input and launcher-finalized receipt authenticate, no Stage-A
+candidate, promotion, identity-authorization commit, model evaluation, quality
+conclusion, deployment, adoption, novelty, state-of-the-art, or breakthrough
+claim is authorized.
 
 ## Question
 

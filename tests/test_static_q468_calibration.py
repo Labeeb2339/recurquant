@@ -10,9 +10,12 @@ import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
+import recurquant.static_q468 as static_runtime
+import recurquant.static_q468_artifact_contract as artifact_contract
 import recurquant.static_q468_calibration as calibration
 from recurquant.evidence import canonical_json_bytes
 from recurquant.multibit_policy import allocate_exact_multibit_codes
@@ -95,6 +98,13 @@ assert CAPTURE_SPEC is not None and CAPTURE_SPEC.loader is not None
 capture = importlib.util.module_from_spec(CAPTURE_SPEC)
 sys.modules[CAPTURE_SPEC.name] = capture
 CAPTURE_SPEC.loader.exec_module(capture)
+
+
+def _assert_deeply_immutable(array: np.ndarray) -> None:
+    assert array.flags.c_contiguous
+    assert array.flags.writeable is False
+    with pytest.raises(ValueError):
+        array.setflags(write=True)
 
 
 def _batch(
@@ -1471,6 +1481,124 @@ def test_fast_allocation_matches_exhaustive_oracle_for_every_tiny_budget() -> No
         assert torch.equal(actual, expected)
 
 
+def test_torch_free_contract_policies_match_runtime_bytes_and_reject_mutation(
+) -> None:
+    d4 = torch.tensor([[10.0, 8.0], [4.0, 2.0]], dtype=torch.float64)
+    d6 = torch.tensor([[4.0, 5.0], [3.0, 1.5]], dtype=torch.float64)
+    d8 = torch.tensor([[1.0, 2.0], [2.0, 1.0]], dtype=torch.float64)
+    contract_geometry = artifact_contract.StaticRhtQ468Geometry(
+        layer_indices=TINY_GEOMETRY.layer_indices,
+        heads=TINY_GEOMETRY.heads,
+        key_rows=TINY_GEOMETRY.key_rows,
+        value_width=TINY_GEOMETRY.value_width,
+        target_resident_bytes=TINY_GEOMETRY.target_resident_bytes,
+    )
+    metadata = {
+        "calibration_manifest_sha256": "a" * 64,
+        "identity_artifact_sha256": "b" * 64,
+        "tokenizer_manifest_sha256": "c" * 64,
+        "source_commit": "d" * 40,
+    }
+
+    runtime_q468 = static_runtime.build_static_rht_q468_policy(
+        d4,
+        d6,
+        d8,
+        geometry=TINY_GEOMETRY,
+        marginal_steps=4,
+        **metadata,
+    )
+    contract_q468 = artifact_contract.build_static_rht_q468_policy(
+        d4.numpy(),
+        d6.numpy(),
+        d8.numpy(),
+        geometry=contract_geometry,
+        marginal_steps=4,
+        **metadata,
+    )
+    runtime_q468_bytes = static_runtime.serialize_static_rht_q468_policy(runtime_q468)
+    contract_q468_bytes = artifact_contract.serialize_static_rht_q468_policy(contract_q468)
+
+    assert contract_q468_bytes == runtime_q468_bytes
+    assert (
+        artifact_contract.serialize_static_rht_q468_policy(
+            artifact_contract.deserialize_static_rht_q468_policy(runtime_q468_bytes)
+        )
+        == runtime_q468_bytes
+    )
+    assert (
+        static_runtime.serialize_static_rht_q468_policy(
+            static_runtime.deserialize_static_rht_q468_policy(contract_q468_bytes)
+        )
+        == contract_q468_bytes
+    )
+    for array in (contract_q468.packed_precision_codes, contract_q468.pool_offsets):
+        _assert_deeply_immutable(array)
+
+    runtime_q48 = static_runtime.build_static_rht_q48_policy(
+        d4,
+        d8,
+        geometry=TINY_GEOMETRY,
+        promoted_rows=2,
+        **metadata,
+    )
+    contract_q48 = artifact_contract.build_static_rht_q48_policy(
+        d4.numpy(),
+        d8.numpy(),
+        geometry=contract_geometry,
+        promoted_rows=2,
+        **metadata,
+    )
+    runtime_q48_bytes = static_runtime.serialize_static_rht_q48_policy(runtime_q48)
+    contract_q48_bytes = artifact_contract.serialize_static_rht_q48_policy(contract_q48)
+
+    assert contract_q48_bytes == runtime_q48_bytes
+    assert (
+        artifact_contract.serialize_static_rht_q48_policy(
+            artifact_contract.deserialize_static_rht_q48_policy(runtime_q48_bytes)
+        )
+        == runtime_q48_bytes
+    )
+    assert (
+        static_runtime.serialize_static_rht_q48_policy(
+            static_runtime.deserialize_static_rht_q48_policy(contract_q48_bytes)
+        )
+        == contract_q48_bytes
+    )
+    for array in (contract_q48.packed_precision_mask, contract_q48.pool_offsets):
+        _assert_deeply_immutable(array)
+
+    for payload, decoder in (
+        (runtime_q468_bytes, artifact_contract.deserialize_static_rht_q468_policy),
+        (runtime_q48_bytes, artifact_contract.deserialize_static_rht_q48_policy),
+    ):
+        with pytest.raises(ValueError, match="canonical form"):
+            decoder(payload + b"\n")
+
+        document = json.loads(payload)
+        document["content"]["pool_counts"][0] += 1
+        content_bytes = json.dumps(
+            document["content"],
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        document["policy_sha256"] = hashlib.sha256(content_bytes).hexdigest()
+        mutated = (
+            json.dumps(
+                document,
+                ensure_ascii=True,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        with pytest.raises(ValueError, match="pool_counts"):
+            decoder(mutated)
+
+
 def test_stability_metrics_define_ties_empty_q8_and_bitwidth_shift() -> None:
     tied = evaluate_policy_stability(
         torch.tensor([0, 0, 2], dtype=torch.uint8),
@@ -1648,6 +1776,206 @@ def test_comparator_score_artifact_round_trips_both_exact_k29334_profiles() -> N
         )["valid"]
         is True
     )
+
+
+def test_torch_free_contract_decodes_frozen_calibration_artifact_with_runtime_parity() -> None:
+    raw = build_frozen_calibration_score_artifact(
+        _synthetic_frozen_aggregate(),
+        calibration_identity_sha256=FAKE_IDENTITY_SHA256,
+    )
+    expected_file_sha256 = hashlib.sha256(raw).hexdigest()
+    runtime = deserialize_calibration_score_artifact(
+        raw,
+        expected_file_sha256=expected_file_sha256,
+    )
+    contract = artifact_contract.deserialize_calibration_score_artifact(
+        raw,
+        expected_file_sha256=expected_file_sha256,
+    )
+
+    assert contract.artifact_kind == runtime.artifact_kind
+    assert contract.artifact_profile == runtime.artifact_profile
+    assert contract.artifact_revision == runtime.artifact_revision
+    assert contract.geometry.canonical_dict() == runtime.geometry.canonical_dict()
+    assert contract.calibration_identity_sha256 == runtime.calibration_identity_sha256
+    assert contract.calibration_scores_sha256 == runtime.calibration_scores_sha256
+    assert contract.canonical_evidence_sha256 == runtime.canonical_evidence_sha256
+    assert contract.file_sha256 == runtime.file_sha256 == expected_file_sha256
+    assert contract.aggregate.family_sequence_counts == runtime.aggregate.family_sequence_counts
+    assert (
+        contract.aggregate.ruler_category_sequence_counts
+        == runtime.aggregate.ruler_category_sequence_counts
+    )
+    assert (
+        contract.aggregate.source_contract.canonical_dict()
+        == runtime.aggregate.source_contract.canonical_dict()
+    )
+    for contract_scores, runtime_scores in zip(
+        contract.aggregate.scores(),
+        runtime.aggregate.scores(),
+        strict=True,
+    ):
+        assert np.array_equal(contract_scores, runtime_scores.numpy())
+        assert contract_scores.dtype == np.float64
+        _assert_deeply_immutable(contract_scores)
+    for contract_allocation, runtime_allocation in zip(
+        contract.allocations,
+        runtime.allocations,
+        strict=True,
+    ):
+        contract_steps, contract_codes, contract_digest = contract_allocation
+        runtime_steps, runtime_codes, runtime_digest = runtime_allocation
+        assert contract_steps == runtime_steps
+        assert contract_digest == runtime_digest
+        assert np.array_equal(contract_codes, runtime_codes.numpy())
+        _assert_deeply_immutable(contract_codes)
+
+    with pytest.raises(ValueError, match="canonical JSON"):
+        artifact_contract.deserialize_calibration_score_artifact(raw + b"\n")
+
+    mutated = json.loads(raw)
+    mutated["evidence"]["allocations"][0]["code_counts_q4_q6_q8"][0] += 1
+    with pytest.raises(ValueError, match="code counts differ from exact allocation"):
+        artifact_contract.deserialize_calibration_score_artifact(_rehashed_document(mutated))
+
+
+def test_torch_free_contract_decodes_comparator_artifact_with_runtime_parity() -> None:
+    identity_sha256 = "1" * 64
+    raw = build_frozen_comparator_score_artifact(
+        _synthetic_comparator_aggregate(FROZEN_UNWEIGHTED_MSE_PROFILE),
+        _synthetic_comparator_aggregate(FROZEN_DIAGONAL_EMPIRICAL_FISHER_H1_PROFILE),
+        calibration_identity_sha256=identity_sha256,
+    )
+    runtime = deserialize_comparator_score_artifact(
+        raw,
+        expected_calibration_identity_sha256=identity_sha256,
+    )
+    contract = artifact_contract.deserialize_comparator_score_artifact(
+        raw,
+        expected_calibration_identity_sha256=identity_sha256,
+    )
+
+    assert list(contract.selectors) == list(runtime.selectors)
+    assert contract.calibration_identity_sha256 == runtime.calibration_identity_sha256
+    assert contract.canonical_evidence_sha256 == runtime.canonical_evidence_sha256
+    assert contract.file_sha256 == runtime.file_sha256 == hashlib.sha256(raw).hexdigest()
+    for method_id in runtime.selectors:
+        runtime_selector = runtime.selectors[method_id]
+        contract_selector = contract.selectors[method_id]
+        assert contract_selector.method_id == runtime_selector.method_id
+        assert contract_selector.position_manifest_sha256 == (
+            runtime_selector.position_manifest_sha256
+        )
+        assert contract_selector.calibration_scores_sha256 == (
+            runtime_selector.calibration_scores_sha256
+        )
+        assert contract_selector.marginal_steps == runtime_selector.marginal_steps
+        assert contract_selector.code_map_sha256 == runtime_selector.code_map_sha256
+        assert np.array_equal(
+            contract_selector.precision_codes,
+            runtime_selector.precision_codes.numpy(),
+        )
+        _assert_deeply_immutable(contract_selector.precision_codes)
+        for contract_scores, runtime_scores in zip(
+            contract_selector.aggregate.scores(),
+            runtime_selector.aggregate.scores(),
+            strict=True,
+        ):
+            assert np.array_equal(contract_scores, runtime_scores.numpy())
+            _assert_deeply_immutable(contract_scores)
+
+    with pytest.raises(ValueError, match="canonical JSON"):
+        artifact_contract.deserialize_comparator_score_artifact(raw + b"\n")
+
+    mutated = json.loads(raw)
+    encoded = mutated["evidence"]["selectors"][0]["scores"]["data_base64"]
+    score_bytes = bytearray(base64.b64decode(encoded))
+    score_bytes[0] ^= 1
+    mutated["evidence"]["selectors"][0]["scores"]["data_base64"] = base64.b64encode(
+        score_bytes
+    ).decode("ascii")
+    with pytest.raises(ValueError, match="aggregate-score SHA-256 drifted"):
+        artifact_contract.deserialize_comparator_score_artifact(_rehashed_document(mutated))
+
+
+def test_torch_free_contract_decodes_split_half_artifact_with_runtime_parity() -> None:
+    identity_file_sha256 = "1" * 64
+    canonical_identity_sha256 = "2" * 64
+    resolver_assignment_sha256 = "3" * 64
+    raw = build_frozen_split_half_stability_artifact(
+        _synthetic_frozen_half_aggregate("a" * 64),
+        _synthetic_frozen_half_aggregate("b" * 64),
+        identity_file_sha256=identity_file_sha256,
+        canonical_identity_sha256=canonical_identity_sha256,
+        resolver_assignment_sha256=resolver_assignment_sha256,
+        full_sequence_score_manifest_sha256="c" * 64,
+        full_calibration_scores_sha256="d" * 64,
+    )
+    expected_file_sha256 = hashlib.sha256(raw).hexdigest()
+    expected = {
+        "expected_file_sha256": expected_file_sha256,
+        "expected_identity_file_sha256": identity_file_sha256,
+        "expected_canonical_identity_sha256": canonical_identity_sha256,
+        "expected_resolver_assignment_sha256": resolver_assignment_sha256,
+    }
+    runtime = deserialize_frozen_split_half_stability_artifact(raw, **expected)
+    contract = artifact_contract.deserialize_frozen_split_half_stability_artifact(
+        raw,
+        **expected,
+    )
+
+    assert contract.identity_file_sha256 == runtime.identity_file_sha256
+    assert contract.canonical_identity_sha256 == runtime.canonical_identity_sha256
+    assert contract.resolver_assignment_sha256 == runtime.resolver_assignment_sha256
+    assert contract.full_sequence_score_manifest_sha256 == (
+        runtime.full_sequence_score_manifest_sha256
+    )
+    assert contract.full_calibration_scores_sha256 == runtime.full_calibration_scores_sha256
+    assert contract.canonical_evidence_sha256 == runtime.canonical_evidence_sha256
+    assert contract.file_sha256 == runtime.file_sha256 == expected_file_sha256
+    assert np.array_equal(contract.half_a_codes, runtime.half_a_codes.numpy())
+    assert np.array_equal(contract.half_b_codes, runtime.half_b_codes.numpy())
+    _assert_deeply_immutable(contract.half_a_codes)
+    _assert_deeply_immutable(contract.half_b_codes)
+    assert contract.stability.passed == runtime.stability.passed
+    assert contract.stability.spearman_average_ties == pytest.approx(
+        runtime.stability.spearman_average_ties
+    )
+    assert contract.stability.q8_jaccard == pytest.approx(runtime.stability.q8_jaccard)
+    for contract_shift, runtime_shift in zip(
+        contract.stability.layer_mean_bitwidth_shifts,
+        runtime.stability.layer_mean_bitwidth_shifts,
+        strict=True,
+    ):
+        assert contract_shift[0] == runtime_shift[0]
+        assert contract_shift[1] == pytest.approx(runtime_shift[1])
+    assert contract.stability.checks == runtime.stability.checks
+    for contract_aggregate, runtime_aggregate in (
+        (contract.half_a_aggregate, runtime.half_a_aggregate),
+        (contract.half_b_aggregate, runtime.half_b_aggregate),
+    ):
+        for contract_scores, runtime_scores in zip(
+            contract_aggregate.scores(),
+            runtime_aggregate.scores(),
+            strict=True,
+        ):
+            assert np.array_equal(contract_scores, runtime_scores.numpy())
+            _assert_deeply_immutable(contract_scores)
+
+    with pytest.raises(ValueError, match="canonical JSON"):
+        artifact_contract.deserialize_frozen_split_half_stability_artifact(raw + b"\n")
+
+    mutated = json.loads(raw)
+    encoded_codes = mutated["evidence"]["halves"][0]["code_map"]["codes_base64"]
+    code_bytes = bytearray(base64.b64decode(encoded_codes))
+    code_bytes[0] = (code_bytes[0] + 1) % 3
+    mutated["evidence"]["halves"][0]["code_map"]["codes_base64"] = base64.b64encode(
+        code_bytes
+    ).decode("ascii")
+    with pytest.raises(ValueError, match="differs from exact allocation"):
+        artifact_contract.deserialize_frozen_split_half_stability_artifact(
+            _rehashed_document(mutated)
+        )
 
 
 def test_comparator_score_artifact_rejects_profile_hash_array_and_allocation_tampering() -> None:

@@ -61,7 +61,7 @@ else:
         raise
 
 # Procedure version.  The resolver-compatible identity field sets remain v5.
-CAPTURE_VERSION: Final = 6
+CAPTURE_VERSION: Final = 7
 RUNTIME_AUTHENTICATION_CONTEXT_FIELDS: Final = frozenset(
     {
         "base_runtime_root",
@@ -772,7 +772,7 @@ class MaterializedStageASequence:
     """One authenticated Stage-A identity record and its exact token sequence.
 
     The record is the content-redacted capture projection authenticated by a
-    promoted resolver-v6 Stage-A artifact.  Raw source rows, formatted prompts,
+    promoted resolver-v7 Stage-A artifact.  Raw source rows, formatted prompts,
     targets, and receipt bodies are never retained on this object.
     """
 
@@ -2993,7 +2993,9 @@ def _capture_identity_input_with_tokens(
     """Run the sole capture flow, optionally retaining formatter token IDs."""
 
     if phase in resolver.PROTECTED_STAGES:
-        raise PermissionError(f"{phase} is protected; capture v6 refuses it before source access")
+        raise PermissionError(
+            f"{phase} is protected; capture v{CAPTURE_VERSION} refuses it before source access"
+        )
     if phase not in resolver.ALLOWED_PHASES:
         raise ValueError(f"unsupported identity phase: {phase!r}")
     if phase == "stage_a" and calibration_binding is None:
@@ -3206,7 +3208,7 @@ def materialize_stage_a_identity_sequences(
 ) -> StageAIdentityMaterialization:
     """Authenticate and materialize the exact twelve frozen Stage-A sequences.
 
-    The promoted resolver-v6 artifact and its complete calibration binding are
+    The promoted resolver-v7 artifact and its complete calibration binding are
     authenticated before any data source is touched.  The canonical capture is
     then replayed once with token retention, and every content-redacted record
     must equal the corresponding authenticated frozen record byte for byte.
@@ -3219,12 +3221,12 @@ def materialize_stage_a_identity_sequences(
     if not isinstance(calibration_binding_artifact, bytes):
         raise TypeError("Stage-A calibration binding artifact must be bytes")
     if (
-        CAPTURE_VERSION != 6
-        or resolver.RESOLVER_VERSION != 6
+        CAPTURE_VERSION != 7
+        or resolver.RESOLVER_VERSION != 7
         or resolver.INPUT_SCHEMA != "recurquant.experiment013.identity-input.v5"
         or resolver.STAGE_A_FROZEN_SCHEMA != "recurquant.experiment013.identity-frozen.v6"
     ):
-        raise RuntimeError("Stage-A materialization requires the resolver-v6 identity contract")
+        raise RuntimeError("Stage-A materialization requires the resolver-v7 identity contract")
 
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_stage_a_identity_artifact,
@@ -5027,7 +5029,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     if args.phase in resolver.PROTECTED_STAGES:
         raise PermissionError(
-            f"{args.phase} is protected; capture v6 refuses it before file or source access"
+            f"{args.phase} is protected; capture v{CAPTURE_VERSION} refuses it before file or "
+            "source access"
         )
     if args.phase == "stage_a":
         raise PermissionError(

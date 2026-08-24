@@ -12,10 +12,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import numpy as np
 import pytest
-import torch
 
-from recurquant import experiment013_source, static_q468
+from recurquant import experiment013_source, static_q468, static_q468_artifact_contract
 from recurquant import static_q468_calibration as calibration
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -62,9 +62,9 @@ def _hash(label: str) -> str:
     return resolver.sha256_bytes(label.encode())
 
 
-def _exact_code_vector(steps: int, *, from_end: bool = False) -> torch.Tensor:
-    rows = static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
-    codes = torch.zeros(rows, dtype=torch.uint8)
+def _exact_code_vector(steps: int, *, from_end: bool = False) -> np.ndarray:
+    rows = static_q468_artifact_contract.FROZEN_QWEN35_STATIC_Q468_GEOMETRY.total_rows
+    codes = np.zeros(rows, dtype=np.uint8)
     if from_end:
         codes[-steps:] = 1
     else:
@@ -76,15 +76,15 @@ def _fake_policy(
     *,
     method_id: str,
     marginal_steps: int,
-    codes: torch.Tensor,
+    codes: np.ndarray,
     identity_sha256: str,
     tokenizer_manifest_sha256: str,
     calibration_manifest_sha256: str,
     calibration_scores_sha256: str,
     source_commit: str,
 ) -> SimpleNamespace:
-    geometry = static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY
-    code_map_sha256 = calibration.static_q468_code_map_sha256(
+    geometry = static_q468_artifact_contract.FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    code_map_sha256 = static_q468_artifact_contract.static_q468_code_map_sha256(
         codes,
         geometry=geometry,
         marginal_steps=marginal_steps,
@@ -93,12 +93,12 @@ def _fake_policy(
         method_id=method_id,
         marginal_steps=marginal_steps,
         geometry=geometry,
-        model_id=static_q468.PRIMARY_MODEL_ID,
-        model_revision=static_q468.PRIMARY_MODEL_REVISION,
-        tokenizer_id=static_q468.PRIMARY_TOKENIZER_ID,
-        tokenizer_revision=static_q468.PRIMARY_TOKENIZER_REVISION,
+        model_id=static_q468_artifact_contract.PRIMARY_MODEL_ID,
+        model_revision=static_q468_artifact_contract.PRIMARY_MODEL_REVISION,
+        tokenizer_id=static_q468_artifact_contract.PRIMARY_TOKENIZER_ID,
+        tokenizer_revision=static_q468_artifact_contract.PRIMARY_TOKENIZER_REVISION,
         tokenizer_manifest_sha256=tokenizer_manifest_sha256,
-        transformers_version=static_q468.FROZEN_TRANSFORMERS_VERSION,
+        transformers_version=static_q468_artifact_contract.FROZEN_TRANSFORMERS_VERSION,
         identity_artifact_sha256=identity_sha256,
         source_commit=source_commit,
         calibration_manifest_sha256=calibration_manifest_sha256,
@@ -108,13 +108,13 @@ def _fake_policy(
             geometry.layers,
             geometry.heads,
             geometry.key_rows,
-        ).clone(),
+        ).copy(),
     )
 
 
 @contextmanager
 def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
-    geometry = static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY
+    geometry = static_q468_artifact_contract.FROZEN_QWEN35_STATIC_Q468_GEOMETRY
     identity_bytes = resolver.canonical_json_bytes(
         {"evidence": {"source_manifest_sha256": _hash("identity-input-manifest")}}
     )
@@ -167,7 +167,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
         tokenizer_manifest_sha256=tokenizer_manifest_sha256,
         execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS),
     )
-    candidate_row = torch.arange(geometry.total_rows, dtype=torch.float64)
+    candidate_row = np.arange(geometry.total_rows, dtype=np.float64)
     candidate_d4 = ((candidate_row + 2) % 1_009) / 1_009
     candidate_d8 = ((candidate_row + 11) % 1_013) / 1_013
     candidate_scores = SimpleNamespace(
@@ -185,7 +185,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
             (
                 static_q468.FROZEN_STATIC_Q468_ABLATION_STEPS,
                 k27030_codes,
-                calibration.static_q468_code_map_sha256(
+                static_q468_artifact_contract.static_q468_code_map_sha256(
                     k27030_codes,
                     geometry=geometry,
                     marginal_steps=static_q468.FROZEN_STATIC_Q468_ABLATION_STEPS,
@@ -194,7 +194,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
             (
                 static_q468.FROZEN_STATIC_Q468_PRIMARY_STEPS,
                 k29334_codes,
-                calibration.static_q468_code_map_sha256(
+                static_q468_artifact_contract.static_q468_code_map_sha256(
                     k29334_codes,
                     geometry=geometry,
                     marginal_steps=static_q468.FROZEN_STATIC_Q468_PRIMARY_STEPS,
@@ -228,7 +228,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
         ),
     )
 
-    row = torch.arange(geometry.total_rows, dtype=torch.float64)
+    row = np.arange(geometry.total_rows, dtype=np.float64)
     selector_specs = (
         (
             calibration.FROZEN_UNWEIGHTED_MSE_PROFILE,
@@ -290,7 +290,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
             calibration_scores_sha256=aggregate_score_sha256,
             marginal_steps=static_q468.FROZEN_STATIC_Q468_PRIMARY_STEPS,
             precision_codes=codes,
-            code_map_sha256=calibration.static_q468_code_map_sha256(
+            code_map_sha256=static_q468_artifact_contract.static_q468_code_map_sha256(
                 codes,
                 geometry=geometry,
                 marginal_steps=static_q468.FROZEN_STATIC_Q468_PRIMARY_STEPS,
@@ -304,7 +304,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
             identity_sha256=identity_sha256,
             tokenizer_manifest_sha256=tokenizer_manifest_sha256,
             calibration_manifest_sha256=aggregate.sequence_score_manifest_sha256,
-            calibration_scores_sha256=static_q468.static_q468_distortion_sha256(
+            calibration_scores_sha256=static_q468_artifact_contract.static_q468_distortion_sha256(
                 *scores,
                 geometry=geometry,
             ),
@@ -323,7 +323,7 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
         except KeyError as error:
             raise ValueError("unknown policy fixture bytes") from error
 
-    def rebuild_policy(*_scores: torch.Tensor, method_id: str, **_kwargs: object) -> object:
+    def rebuild_policy(*_scores: np.ndarray, method_id: str, **_kwargs: object) -> object:
         return policies[method_id]
 
     def serialize_policy(policy: SimpleNamespace) -> bytes:
@@ -355,37 +355,37 @@ def _binding_v3_fixture() -> Iterator[SimpleNamespace]:
             },
         ),
         patch.object(
-            calibration,
+            static_q468_artifact_contract,
             "calibration_identity_record_manifest_sha256",
             return_value=identity_record_manifest_sha256,
         ),
         patch.object(
-            calibration,
+            static_q468_artifact_contract,
             "deserialize_calibration_score_artifact",
             return_value=candidate_scores,
         ),
         patch.object(
-            calibration,
+            static_q468_artifact_contract,
             "deserialize_frozen_split_half_stability_artifact",
             return_value=split,
         ),
         patch.object(
-            calibration,
+            static_q468_artifact_contract,
             "deserialize_comparator_score_artifact",
             return_value=comparator_scores,
         ),
         patch.object(
-            static_q468,
+            static_q468_artifact_contract,
             "deserialize_static_rht_q468_policy",
             side_effect=deserialize_policy,
         ),
         patch.object(
-            static_q468,
+            static_q468_artifact_contract,
             "build_static_rht_q468_policy",
             side_effect=rebuild_policy,
         ),
         patch.object(
-            static_q468,
+            static_q468_artifact_contract,
             "serialize_static_rht_q468_policy",
             side_effect=serialize_policy,
         ),
@@ -783,20 +783,20 @@ def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace
     }
     fixture.identity.split = fixture.split
     core_bytes = resolver.build_stage_a_calibration_core_binding_artifact(**fixture.dependencies)
-    q48 = static_q468.build_static_rht_q48_policy(
+    q48 = static_q468_artifact_contract.build_static_rht_q48_policy(
         fixture.candidate_scores.aggregate.d4,
         fixture.candidate_scores.aggregate.d8,
-        geometry=static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
-        promoted_rows=static_q468.FROZEN_STATIC_Q48_PROMOTIONS,
+        geometry=static_q468_artifact_contract.FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+        promoted_rows=static_q468_artifact_contract.FROZEN_STATIC_Q48_PROMOTIONS,
         calibration_manifest_sha256=(
             fixture.candidate_scores.aggregate.sequence_score_manifest_sha256
         ),
         identity_artifact_sha256=fixture.identity.file_sha256,
         tokenizer_manifest_sha256=fixture.identity.tokenizer_manifest_sha256,
         source_commit=fixture.source_commit_h0,
-        method_id=static_q468.STATIC_Q48_COMPARATOR_METHOD,
+        method_id=static_q468_artifact_contract.STATIC_Q48_COMPARATOR_METHOD,
     )
-    q48_bytes = static_q468.serialize_static_rht_q48_policy(q48)
+    q48_bytes = static_q468_artifact_contract.serialize_static_rht_q48_policy(q48)
     receipt = resolver.canonical_json_bytes(
         {
             "artifact_kind": resolver.CALIBRATION_CAPTURE_PROVENANCE_KIND,
@@ -1868,7 +1868,7 @@ def test_finalized_stage_a_capture_provenance_round_trips_exact_flat_contract() 
         "source_commit",
         "status",
     }
-    assert capture.document["capture_version"] == 6
+    assert capture.document["capture_version"] == 7
     assert capture.document["runner_revision"] == resolver.CALIBRATION_RUNNER_REVISION
     assert verified.file_sha256 == capture.receipt_sha256
     assert verified.identity_input_file_sha256 == capture.identity_input_file_sha256
@@ -2168,34 +2168,36 @@ def test_authorization_rejects_rehashed_capture_provenance_forgery(mutation: str
 def test_authorization_rejects_q48_h0_and_allocation_drift() -> None:
     with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
         common = {
-            "geometry": static_q468.FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
-            "promoted_rows": static_q468.FROZEN_STATIC_Q48_PROMOTIONS,
+            "geometry": static_q468_artifact_contract.FROZEN_QWEN35_STATIC_Q468_GEOMETRY,
+            "promoted_rows": static_q468_artifact_contract.FROZEN_STATIC_Q48_PROMOTIONS,
             "calibration_manifest_sha256": (
                 fixture.candidate_scores.aggregate.sequence_score_manifest_sha256
             ),
             "identity_artifact_sha256": fixture.identity.file_sha256,
             "tokenizer_manifest_sha256": fixture.identity.tokenizer_manifest_sha256,
-            "method_id": static_q468.STATIC_Q48_COMPARATOR_METHOD,
+            "method_id": static_q468_artifact_contract.STATIC_Q48_COMPARATOR_METHOD,
         }
-        wrong_h0 = static_q468.build_static_rht_q48_policy(
+        wrong_h0 = static_q468_artifact_contract.build_static_rht_q48_policy(
             fixture.candidate_scores.aggregate.d4,
             fixture.candidate_scores.aggregate.d8,
             source_commit="b" * 40,
             **common,
         )
         kwargs = dict(authorization.kwargs)
-        kwargs["static_q48_policy_artifact"] = static_q468.serialize_static_rht_q48_policy(wrong_h0)
+        kwargs["static_q48_policy_artifact"] = (
+            static_q468_artifact_contract.serialize_static_rht_q48_policy(wrong_h0)
+        )
         with pytest.raises(ValueError, match="Q48 policy differs"):
             resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
 
-        wrong_allocation = static_q468.build_static_rht_q48_policy(
-            fixture.candidate_scores.aggregate.d4.flip(0),
+        wrong_allocation = static_q468_artifact_contract.build_static_rht_q48_policy(
+            np.flip(fixture.candidate_scores.aggregate.d4).copy(),
             fixture.candidate_scores.aggregate.d8,
             source_commit=fixture.source_commit_h0,
             **common,
         )
-        kwargs["static_q48_policy_artifact"] = static_q468.serialize_static_rht_q48_policy(
-            wrong_allocation
+        kwargs["static_q48_policy_artifact"] = (
+            static_q468_artifact_contract.serialize_static_rht_q48_policy(wrong_allocation)
         )
         with pytest.raises(ValueError, match="deterministic P14739 reconstruction"):
             resolver.build_stage_a_calibration_authorization_artifact(**kwargs)

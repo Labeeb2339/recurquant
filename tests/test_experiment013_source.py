@@ -83,6 +83,7 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
         "scripts/screen_static_q468_stage_a.py",
         "requirements/experiment013-ruler.txt",
         "src/recurquant/cache.py",
+        "src/recurquant/static_q468_artifact_contract.py",
         "src/recurquant/static_q468.py",
         "src/recurquant/static_q468_cache.py",
         "src/recurquant/static_q468_calibration.py",
@@ -157,6 +158,12 @@ def test_stage_a_runner_required_source_paths_are_frozen() -> None:
 
     assert isinstance(stage_a_required, frozenset)
     assert stage_a_required <= set(EXPERIMENT013_SOURCE_PATHS)
+    assert module.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH in stage_a_required
+    assert module.RUNNER_REVISION == "experiment-013-static-q468-stage-a-runner-v6"
+    assert (
+        module.STAGE_A_CAPTURE_RUNNER_REVISION
+        == "experiment-013-static-q468-calibration-runner-v17"
+    )
 
 
 def test_capture_is_portable_complete_and_allows_ignored_artifacts(tmp_path: Path) -> None:
