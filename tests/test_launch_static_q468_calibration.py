@@ -1688,8 +1688,8 @@ def test_sealed_environment_omits_auth_network_and_compute_modifiers(
     assert environment["TZ"] == "UTC"
     assert environment["HOME"] == environment["USERPROFILE"] == str(scratch / "private-home")
     assert environment["HF_HOME"] == str(scratch / "huggingface")
-    assert environment["HF_HUB_CACHE"] == str(scratch / "huggingface" / "hub")
-    assert environment["HUGGINGFACE_HUB_CACHE"] == str(scratch / "huggingface" / "hub")
+    assert environment["HF_HUB_CACHE"] == str(cache_root)
+    assert environment["HUGGINGFACE_HUB_CACHE"] == str(cache_root)
     assert environment["TORCH_HOME"] == str(scratch / "torch")
     assert environment["HF_DATASETS_CACHE"] == str(cache_root / "datasets")
     assert environment["HF_DATASETS_DOWNLOADED_DATASETS_PATH"] == str(
@@ -1706,7 +1706,53 @@ def test_sealed_environment_omits_auth_network_and_compute_modifiers(
         "HF_HUB_DISABLE_UPDATE_CHECK": "1",
         "HF_HUB_DISABLE_XET": "1",
     }.items() <= environment.items()
-    assert not (cache_root / "hub").exists()
+    assert not (scratch / "huggingface" / "hub").exists()
+
+
+def test_external_hub_snapshot_link_does_not_contaminate_owned_scratch(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    cache_root = tmp_path / "dataset-cache"
+    blob = cache_root / "datasets--google-research-datasets--mbpp" / "blobs" / ("a" * 40)
+    snapshot = (
+        cache_root
+        / "datasets--google-research-datasets--mbpp"
+        / "snapshots"
+        / ("b" * 40)
+    )
+    blob.parent.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+    blob.write_bytes(b"dataset card\n")
+    link = snapshot / "README.md"
+    try:
+        link.symlink_to(Path("..") / ".." / "blobs" / blob.name)
+    except OSError as error:
+        pytest.skip(f"file symlinks are unavailable: {error}")
+
+    environment = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=cache_root,
+    )
+    assert environment["HF_HUB_CACHE"] == str(cache_root)
+    assert link.is_symlink()
+    (scratch / "private-home").mkdir()
+    (scratch / "private-home" / "ordinary.cache").write_bytes(b"contained\n")
+    scratch_identity = launcher._temporary_directory_identity(
+        scratch,
+        context="sealed scratch directory",
+    )
+
+    launcher._cleanup_owned_temporary_directory(
+        scratch,
+        expected_identity=scratch_identity,
+        context="sealed scratch directory",
+    )
+
+    assert not scratch.exists()
+    assert link.is_symlink()
+    assert link.read_bytes() == b"dataset card\n"
 
 
 def test_capture_environment_routes_only_hub_cache_to_explicit_cache_root(
@@ -1864,6 +1910,11 @@ def test_embedded_bootstrap_binds_capture_hub_root_before_and_after_runner() -> 
         in launcher.SEALED_BOOTSTRAP
     )
     assert "_repeated_hub_identity != _hf_hub_identity" in launcher.SEALED_BOOTSTRAP
+    assert "_hf_hub_cache = _cache_root" in launcher.SEALED_BOOTSTRAP
+    assert (
+        "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3"
+        in launcher.SEALED_BOOTSTRAP
+    )
 
 
 def test_private_home_prevents_literal_tilde_runtime_writes(tmp_path: Path) -> None:

@@ -3609,12 +3609,9 @@ def test_identity_view_consumes_schema_v5_bindings_and_preserves_fisher_boundary
         "parquet_materialization_manifest_file_sha256": "9" * 64,
         "repository_source_manifest_file_sha256": "3" * 64,
     }
-    boundary = fisher_boundary_contract()
-    evidence_record = {
-        "canonical_id": "item-1",
-        "fisher_boundary": boundary,
-        "sequence_length": 3,
-    }
+    evidence_record = record()
+    boundary = evidence_record["fisher_boundary"]
+    assert isinstance(boundary, dict)
     evidence = {
         "execution_bindings": bindings,
         "model_contracts": {"primary": {"id": "example/model", "revision": "4" * 40}},
@@ -3657,6 +3654,13 @@ def test_identity_view_consumes_schema_v5_bindings_and_preserves_fisher_boundary
     assert decoded.records[0]["fisher_boundary"] is not boundary
     for name in ("boundary_positions", "input_positions", "target_positions"):
         assert isinstance(decoded.records[0]["fisher_boundary"][name], list)
+    assert isinstance(decoded.records[0]["token_span"], Mapping)
+    from recurquant.static_q468_calibration import identity_record_sha256
+
+    assert (
+        identity_record_sha256(decoded.records[0])
+        == evidence_record["identity_record_sha256"]
+    )
 
 
 @pytest.mark.parametrize(

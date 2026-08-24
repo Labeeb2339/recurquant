@@ -689,23 +689,39 @@ def test_frozen_comparator_reduction_binds_v5_positions_inputs_scores_and_nll_ha
         len(mse_positions) * math.prod(trailing) + 1,
         dtype=torch.float64,
     ).reshape(len(mse_positions), *trailing)
-    mse = reduce_frozen_comparator_endpoints(
-        FrozenComparatorEndpointBatch(
-            selector_profile=FROZEN_UNWEIGHTED_MSE_PROFILE,
-            family="mbpp",
-            config="full",
-            ruler_category=None,
-            canonical_id="comparator-1",
-            seed=None,
-            configured_length=None,
-            token_count=len(token_ids),
-            endpoint_positions=mse_positions,
-            q4_scores=mse_values,
-            q6_scores=mse_values / 2,
-            q8_scores=mse_values / 4,
-            sequence_token_ids=token_ids,
-            identity_record=record,
-        )
+    mse_batch = FrozenComparatorEndpointBatch(
+        selector_profile=FROZEN_UNWEIGHTED_MSE_PROFILE,
+        family="mbpp",
+        config="full",
+        ruler_category=None,
+        canonical_id="comparator-1",
+        seed=None,
+        configured_length=None,
+        token_count=len(token_ids),
+        endpoint_positions=mse_positions,
+        q4_scores=mse_values,
+        q6_scores=mse_values / 2,
+        q8_scores=mse_values / 4,
+        sequence_token_ids=token_ids,
+        identity_record=record,
+    )
+    mse = reduce_frozen_comparator_endpoints(mse_batch)
+    frozen_artifact = capture.resolver.FrozenCalibrationIdentityArtifact(
+        file_sha256="1" * 64,
+        canonical_evidence_sha256="2" * 64,
+        records=(record,),
+        assignment=(),
+        assignment_sha256="3" * 64,
+        tokenizer_manifest_sha256="a" * 64,
+        parquet_materialization_manifest_file_sha256="4" * 64,
+        execution_bindings={},
+    )
+    runner_view = dict(frozen_artifact.records[0])
+    runner_view["fisher_boundary"] = json.loads(
+        capture.resolver.canonical_json_bytes(runner_view["fisher_boundary"])
+    )
+    frozen_mse = reduce_frozen_comparator_endpoints(
+        replace(mse_batch, identity_record=runner_view)
     )
     permuted_mse = reduce_frozen_comparator_endpoints(
         FrozenComparatorEndpointBatch(
@@ -755,6 +771,8 @@ def test_frozen_comparator_reduction_binds_v5_positions_inputs_scores_and_nll_ha
     assert mse.position_manifest_sha256 != fisher.position_manifest_sha256
     assert mse.endpoint_inputs_sha256 != fisher.endpoint_inputs_sha256
     assert mse.sequence_scores_sha256 != fisher.sequence_scores_sha256
+    assert frozen_mse.sequence_scores_sha256 == mse.sequence_scores_sha256
+    assert frozen_mse.identity_record_sha256 == mse.identity_record_sha256
     assert mse.position_manifest_sha256 == permuted_mse.position_manifest_sha256
     assert mse.endpoint_inputs_sha256 != permuted_mse.endpoint_inputs_sha256
     assert mse.sequence_scores_sha256 != permuted_mse.sequence_scores_sha256
@@ -1079,6 +1097,31 @@ def test_frozen_reduction_requires_exact_layer_head_key_row_cpu_fp64_shape() -> 
     assert result.sequence_token_ids_sha256 == captured_record["sequence_token_ids_sha256"]
     assert result.identity_anchor_manifest_sha256 == captured_record["anchor_manifest_sha256"]
     assert result.identity_record_sha256 == captured_record["identity_record_sha256"]
+
+    frozen_artifact = capture.resolver.FrozenCalibrationIdentityArtifact(
+        file_sha256="1" * 64,
+        canonical_evidence_sha256="2" * 64,
+        records=(identity_record,),
+        assignment=(),
+        assignment_sha256="3" * 64,
+        tokenizer_manifest_sha256=tokenizer_manifest_sha256,
+        parquet_materialization_manifest_file_sha256="4" * 64,
+        execution_bindings={},
+    )
+    frozen_record = frozen_artifact.records[0]
+    assert calibration._resolver_canonical_json_bytes(
+        frozen_record
+    ) == capture.resolver.canonical_json_bytes(identity_record)
+    assert identity_record_sha256(frozen_record) == identity_record["identity_record_sha256"]
+    runner_view = dict(frozen_record)
+    runner_view["fisher_boundary"] = json.loads(
+        capture.resolver.canonical_json_bytes(frozen_record["fisher_boundary"])
+    )
+    frozen_result = reduce_frozen_anchor_distortions(
+        replace(batch, identity_record=runner_view)
+    )
+    assert frozen_result.identity_record_sha256 == result.identity_record_sha256
+    assert frozen_result.sequence_scores_sha256 == result.sequence_scores_sha256
 
     def with_identity_record(record: dict[str, object]) -> AnchorDistortionBatch:
         fields = {name: getattr(batch, name) for name in AnchorDistortionBatch.__dataclass_fields__}

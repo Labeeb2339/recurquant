@@ -67,7 +67,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v14"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v15"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -262,7 +262,7 @@ _FORBIDDEN_RUNTIME_FILENAMES: Final = frozenset(
 SEALED_LAUNCH_POLICY: Final = {
     "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
     "cache_confinement_mode": (
-        "private-scratch-plus-explicit-dataset-and-capture-hub-root-v2"
+        "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3"
     ),
     "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
     "dont_write_bytecode": 1,

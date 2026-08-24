@@ -2,7 +2,7 @@
 
 ## v0.3 experimental track
 
-Last updated: 2026-08-23
+Last updated: 2026-08-24
 
 Experiment 005 stopped before holdout after its frozen real-storage-boundary
 sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
@@ -115,33 +115,47 @@ prior art through Nemotron 3 Ultra and ReplaySSM. Even a future protocol pass
 would not by itself support a first, novelty, speed, deployment,
 state-of-the-art, or breakthrough claim.
 
-Experiment 013 is a separate, scientifically unexecuted static RHT-Q468
-comparison. Source commit `10ce582659e0d273adc294b593ce078b39265011`
-and tag `experiment013-h0-10ce582` became its seventh replacement H0 after
-focused, full, package, exact-commit CI, repository-source, fresh runtime, and
-metadata-only model-manifest gates passed. Its sole official sealed identity
-capture atomically published a canonical schema-v5 input with 160 records and
-`model_weights_loaded=false`, but Windows text-mode stdout translated the
-schema-v2 provenance candidate's terminal LF to CRLF. The outer launcher
-correctly failed closed with `capture provenance candidate is not canonical
-JSON` before receipt publication. The input is historical, non-authorizing
-evidence; no candidate or frozen identity and no H1 exist. The owned scratch and
-pycache were cleaned. The H0 and tag are retired with no retry permitted. No
-model weight was downloaded or opened, and no Fisher, calibration, Stage-A, or
-quality result exists. There is no breakthrough result.
+Experiment 013 remains scientifically unresolved and has no accepted static
+RHT-Q468 result.
+Its eighth replacement H0 was
+`50d3a1b08b2905b51fcab86b715be66289df5da0`, tagged
+`experiment013-h0-50d3a1b`. Identity capture and promotion succeeded, the
+schema-v5 frozen identity file SHA-256 was
+`e782e47855979fdb0189b69898b31d13d736aa2c86bb7d1cf69d209da2426ec1`,
+and the sole identity commit produced H1
+`d4573a34116d7319f1ff1f23c63bb109ededd4ac`. Authenticated model staging then
+published exactly three regular files totalling 1,746,996,407 bytes.
 
-The eighth replacement-H0 amendment candidate advances only the calibration
-runner from v13 to v14. It writes the already-canonical provenance bytes through
-binary stdout and fails closed on an unavailable stream, partial write, or flush
-failure; the outer launcher continues to reject CRLF and any extra byte. Capture
-and resolver procedure v6, identity schemas v5, runtime-manifest schema v6,
-capture-provenance schema v2, launch-policy values, publication contract, and
-Stage-A runner v5 remain unchanged. The next gate is focused, full, package, and
-CI verification of a clean descendant, followed by an eighth H0 and entirely
-fresh H0-scoped source, runtime, model-metadata, identity-input, and provenance
-paths. An exact six-pointer retired-identity diff is still required before any
-H1. Model staging, Fisher smoke, calibration, and Stage A remain unauthorized.
-See
+The one permitted Fisher H=1 smoke loaded that model and completed the first
+causal/Fisher sequence capture, but failed before its first reduced row. A
+resolver record remained recursively immutable after the runner's shallow
+copy, and the production canonical-JSON path rejected its nested
+`MappingProxyType`. A reproducing test also found a second masked immutable-
+sequence mismatch in anchor-position validation. No smoke report, completion
+marker, calibration aggregate, policy, Stage-A artifact, or quality result was
+published. The declared output is absent, so this is an execution-contract
+failure—not positive or negative method evidence and not a breakthrough.
+
+Hugging Face Hub also created its standard relative MBPP snapshot link under
+owned scratch. Strict cleanup correctly refused to traverse the reparse point
+and preserved the incident tree at
+`C:\Users\Labeeb\AppData\Local\Temp\recurquant-exp013-sealed-scratch-qy2au1k0`.
+The eighth H0, H1, identity, and staged model root are retired and may not be
+retried, adopted, copied, or rebound.
+
+The ninth replacement-H0 amendment candidate advances the calibration runner
+to v15. It recursively materializes only JSON-compatible resolver containers,
+strictly validates immutable anchor sequences, and routes ordinary calibration
+and Stage-A Hub traffic to the authenticated external cache root; capture keeps
+its authenticated `hub` subroot. The owned-scratch no-link and cleanup rules
+remain unchanged. Identity schema v5, scientific records, tokenizer and model
+contracts, Fisher boundary, byte budgets, metrics, and gates do not change.
+
+The next gate is focused, full, package, and exact-commit CI verification of a
+clean descendant, followed by a fresh ninth H0 and entirely new H0-scoped
+source, runtime, model-metadata, identity-input, and provenance paths. The new
+identity must pass the frozen exact six-pointer diff before a new H1, model
+root, or single Fisher smoke is authorized. See
 [`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
 
 In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8

@@ -1,12 +1,15 @@
 # Experiment 013: static RHT-Q468 packed-native adoption protocol
 
-> **Status: unbound seventh replacement-H0 amendment candidate. The sixth
-> replacement H0 passed CI plus source, runtime, and model-metadata gates, but
-> its sole official sealed identity capture failed closed when authenticated
-> `six.py` mutated `sys.meta_path` during the Datasets/Pandas import path. That
-> H0 and tag are retired and non-authorizing, with no retry permitted. No
-> identity or provenance receipt was published, no model weight was downloaded
-> or opened, and no calibration or quality result exists; not yet
+> **Status: unbound ninth replacement-H0 amendment candidate. The eighth
+> replacement H0 completed its prerequisite gates, identity capture and
+> promotion, H1, and authenticated model staging. Its sole Fisher H=1 smoke
+> then failed closed during the first sequence reduction because an immutable
+> resolver record crossed into a JSON serializer that accepted only mutable
+> containers. Hugging Face Hub also created a snapshot link inside owned
+> scratch, so strict cleanup correctly preserved the incident tree. The H0,
+> H1, identity, and staged model root are retired and non-authorizing, with no
+> retry permitted. No smoke receipt, calibration aggregate, policy, Stage-A
+> result, quality result, or breakthrough result was published; not yet
 > re-preregistered.**
 >
 > This replacement working copy becomes the next frozen Experiment 013
@@ -25,7 +28,7 @@
 
 Protocol draft initiated: 2026-08-02
 
-Current seventh replacement-H0 amendment candidate amended: 2026-08-23
+Current ninth replacement-H0 amendment candidate amended: 2026-08-24
 
 Pre-resolution audit amendment: 2026-08-02. The amendment corrects a
 cache-exposed-span off-by-one, binds the Stage-A calibration chain by exact
@@ -1582,6 +1585,117 @@ the promoted identity must pass the complete frozen-identity contract and the
 Twenty-fourth amendment's exact six-pointer-only diff from the retired identity.
 Until then, model staging, protected access, Fisher smoke, calibration, Stage A,
 and every breakthrough or scientific-result claim remain unauthorized.
+
+Twenty-seventh replacement-H0 resolver-container and phase-Hub-routing
+amendment candidate: 2026-08-24. Source commit
+`50d3a1b08b2905b51fcab86b715be66289df5da0` and lightweight tag
+`experiment013-h0-50d3a1b` became the eighth replacement H0 after the required
+focused, full, package, exact-commit GitHub CI run `32615036536`, repository-
+source, fresh runtime, and metadata-only model-manifest gates passed. Its
+repository-source-manifest file SHA-256 is
+`6d015f83ad01e93131d99b7389445c0f850bcfcbba8a6dc1406fa1041b6e4081`;
+its runtime-manifest file SHA-256 is
+`0d710149bc04c0170dc2f99531247a458b9d155336433cbd3e93d94cb824cb26`;
+and its metadata-only model-manifest file SHA-256 is
+`586d9c7e520f3bbd99ecef30663bf07d283eb14622475c58891becd8e033b05c`.
+The sole sealed identity capture and launcher-finalized provenance flow
+succeeded, the schema-v5 identity was independently resolved and promoted, and
+the exact identity file SHA-256 is
+`e782e47855979fdb0189b69898b31d13d736aa2c86bb7d1cf69d209da2426ec1`.
+Committing only that identity produced H1
+`d4573a34116d7319f1ff1f23c63bb109ededd4ac`.
+
+Authenticated model staging under H1 passed both byte-identical path
+preflights, its authorization gate, and the exact three-file no-link inventory.
+The staged root
+`C:\tmp\recurquant-exp013-model-h1-d4573a34` contains exactly
+`config.json`, `model.safetensors-00001-of-00001.safetensors`, and
+`model.safetensors.index.json`, totalling 1,746,996,407 bytes. These are
+prerequisite and custody facts, not scientific results.
+
+The one permitted Fisher H=1 smoke loaded the authenticated model and completed
+the first sequence's causal/Fisher endpoint capture. It then failed before the
+first reduced row could be accepted or published. The resolver deliberately
+returned a recursively immutable record; the runner made only a shallow copy
+and normalized its `fisher_boundary`, leaving the nested `token_span` as a
+`MappingProxyType`. The production identity-record hasher passed that record to
+`json.dumps`, which failed with `TypeError: Object of type mappingproxy is not
+JSON serializable`. A reproducing resolver-to-reducer regression also exposed
+a second masked container mismatch: immutable `anchor_positions` reached a
+list-specific inequality check. Neither defect changes or calls into the
+quantization method, scores, allocation, or statistical gates.
+
+The declared smoke output
+`C:\tmp\recurquant-exp013-fisher-h1-smoke-h1-d4573a34` is absent, and no hidden
+publication staging sibling remains. No smoke report, completion marker,
+aggregate, fitted policy, calibration binding, Stage-A artifact, or quality
+result was published. The attempt therefore yields no positive or negative
+scientific evidence about static RHT-Q468.
+
+The child also caused Hugging Face Hub 1.26.0 to create its ordinary relative
+snapshot-to-blob link for the MBPP dataset card under launcher-owned scratch.
+The launcher correctly refused to traverse or delete that reparse point,
+preserved child return code 1, and retained the incident tree at
+`C:\Users\Labeeb\AppData\Local\Temp\recurquant-exp013-sealed-scratch-qy2au1k0`.
+Its sole link is
+`huggingface\hub\datasets--google-research-datasets--mbpp\snapshots\4bb6404fdc6cacfda99d4ac4205087b89d32030c\README.md`,
+with relative target
+`..\..\blobs\476c2286e2ef2713058cade8be49c2f9c1514055`. The tree is incident
+evidence: it must not be mutated, deleted, adopted as a cache, or rebound into
+a replacement chain.
+
+H0 `50d3a1b08b2905b51fcab86b715be66289df5da0`, its tag, H1
+`d4573a34116d7319f1ff1f23c63bb109ededd4ac`, the frozen identity, and the staged
+model root are retired and non-authorizing. The failed smoke may not be retried
+under that chain. Its model root may not be renamed, copied, adopted, or
+rebound. The failed output name and every H0/H1-scoped publication path remain
+historical and unavailable to a replacement attempt.
+
+Calibration runner v15 repairs only these execution boundaries. Canonical
+identity JSON now recursively materializes verified `Mapping` and non-text
+`Sequence` containers while leaving unsupported leaf types to fail closed;
+plain JSON and resolver-frozen records must produce byte-identical canonical
+bytes and existing hashes. Anchor-position validation now accepts mutable or
+immutable non-text sequence containers only after exact integer-type and
+ordered-value checks. Resolver immutability, identity-record hash domains, and
+schema v5 remain unchanged.
+
+Cache confinement advances to
+`private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3`. Capture children
+retain the authenticated `<cache-root>/hub` endpoint. Ordinary calibration and
+Stage A route both Hub-cache variables to their already authenticated
+`<cache-root>`, matching the explicit cache passed to their materializers.
+`HF_HOME`, token, assets, Xet, modules, Transformers, Torch, compiler caches,
+and private home remain in owned scratch. External Hub contents may retain
+their standard content-addressed relative links; the authenticated cache root
+and ancestor identities are still checked before and after each child. The
+owned-scratch no-link/no-reparse postcondition and identity-checked cleanup are
+not weakened. This paragraph supersedes the original scratch-Hub assignment
+and the Twenty-fourth amendment's statement that ordinary calibration does not
+receive external Hub routing.
+
+Capture and resolver procedure v6, identity-input/candidate/frozen schema v5,
+runtime-manifest schema v6, capture-provenance schema v2, bootstrap mode v3,
+RULER launcher v7, RULER generation-manifest schema v2, publication contract
+v1, and Stage-A runner v5 remain unchanged. No record selection, dataset row,
+tokenizer byte or span, model revision, RHT transform, Q4/Q6/Q8 code budget,
+Fisher H=1 boundary, comparator, metric, statistical gate, or claim boundary
+changes.
+
+Only after the new regressions plus focused, full, package, and exact-commit CI
+verification may a clean descendant be tagged as the ninth replacement H0. It
+must create fresh H0-scoped, no-overwrite repository-source, runtime,
+model-metadata, identity-input, and capture-provenance paths and repeat every
+prerequisite gate. The promoted replacement identity must pass the complete
+contract and differ from identity file SHA-256
+`e782e47855979fdb0189b69898b31d13d736aa2c86bb7d1cf69d209da2426ec1`
+at exactly the six previously frozen source/runtime/promotion pointers and
+nowhere else. All 160 scientific records and all tokenizer, content, split,
+model, and Parquet commitments must remain byte-identical. Only that verified
+identity may become the sole H1 tree change, after which model staging and one
+fresh Fisher smoke require new no-overwrite roots. Until those gates complete,
+no protected execution, quality conclusion, deployment, novelty,
+state-of-the-art, or breakthrough claim is authorized.
 
 ## Question
 

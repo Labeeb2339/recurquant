@@ -696,12 +696,22 @@ def _hash_score_triplet(
     return digest.hexdigest()
 
 
+def _resolver_json_compatible(value: object) -> object:
+    """Detach immutable resolver DTO containers without accepting new leaf types."""
+
+    if isinstance(value, Mapping):
+        return {key: _resolver_json_compatible(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_resolver_json_compatible(item) for item in value]
+    return value
+
+
 def _resolver_canonical_json_bytes(value: object) -> bytes:
     """Match the compact canonical JSON used by the identity resolver."""
 
     return (
         json.dumps(
-            value,
+            _resolver_json_compatible(value),
             ensure_ascii=False,
             allow_nan=False,
             sort_keys=True,
@@ -1079,7 +1089,13 @@ def _validate_frozen_identity_lineage(
 
     positions = frozen_anchor_positions(batch.token_count)
     if "anchor_positions" in record:
-        if record["anchor_positions"] != list(positions):
+        recorded_positions = record["anchor_positions"]
+        if (
+            isinstance(recorded_positions, (str, bytes, bytearray))
+            or not isinstance(recorded_positions, Sequence)
+            or any(type(position) is not int for position in recorded_positions)
+            or tuple(recorded_positions) != positions
+        ):
             raise ValueError("resolver anchor positions differ from the frozen anchor equation")
         positions_hash = hashlib.sha256(_resolver_canonical_json_bytes(positions)).hexdigest()
         if record["anchor_positions_sha256"] != positions_hash:

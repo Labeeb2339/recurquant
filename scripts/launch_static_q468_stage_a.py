@@ -41,7 +41,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v14"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v15"
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _BOUND_ARTIFACT_OPTIONS: Final = {
@@ -691,7 +691,7 @@ def _stage_a_receipt(options, bindings):
             or type(root.get("schema_version")) is not int or root.get("schema_version") != 1
             or type(root.get("capture_version")) is not int or root.get("capture_version") != 6
             or root.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v14"
+            != "experiment-013-static-q468-calibration-runner-v15"
             or root.get("phase") != "stage_a"
             or root.get("status")
             != "captured_under_authenticated_runtime_and_launcher_finalized"
@@ -894,7 +894,7 @@ def _sealed_environment(
     private_home = scratch / "private-home"
     xdg_cache = scratch / "xdg-cache"
     hf_home = scratch / "huggingface"
-    hf_hub_cache = hf_home / "hub"
+    hf_hub_cache = cache
     hf_assets_cache = hf_home / "assets"
     hf_xet_cache = hf_home / "xet"
     hf_modules_cache = hf_home / "modules"

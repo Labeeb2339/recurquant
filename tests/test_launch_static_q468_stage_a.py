@@ -616,6 +616,10 @@ def test_bootstrap_derivation_switches_schema_phase_runner_and_keeps_isolation()
     assert "isolated != 1" in bootstrap
     assert "no_site != 1" in bootstrap
     assert "dont_write_bytecode != 1" in bootstrap
+    assert "_hf_hub_cache = _cache_root" in bootstrap
+    assert (
+        "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3" in bootstrap
+    )
 
 
 def test_authenticated_stdin_loader_rejects_modified_bootstrap() -> None:
@@ -748,10 +752,55 @@ def test_mode_specific_child_environments_strip_credentials_and_proxies(
     assert not forbidden & set(networked)
     assert not forbidden & set(offline)
     assert networked["HOME"] == networked["USERPROFILE"] == str(scratch / "private-home")
+    assert networked["HF_HUB_CACHE"] == str(cache_root)
+    assert networked["HUGGINGFACE_HUB_CACHE"] == str(cache_root)
     assert networked["HF_DATASETS_CACHE"] == str(cache_root / "datasets")
     assert networked["HF_HUB_DISABLE_UPDATE_CHECK"] == "1"
     assert networked["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
     assert networked["HF_HUB_DISABLE_XET"] == "1"
+
+
+def test_stage_a_external_hub_link_stays_outside_owned_scratch(tmp_path: Path) -> None:
+    helpers = _load_calibration_launcher("stage_a_external_hub_link_test")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    cache_root = tmp_path / "dataset-cache"
+    blob = cache_root / "datasets--google-research-datasets--mbpp" / "blobs" / ("a" * 40)
+    snapshot = (
+        cache_root
+        / "datasets--google-research-datasets--mbpp"
+        / "snapshots"
+        / ("b" * 40)
+    )
+    blob.parent.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+    blob.write_bytes(b"dataset card\n")
+    link = snapshot / "README.md"
+    try:
+        link.symlink_to(Path("..") / ".." / "blobs" / blob.name)
+    except OSError as error:
+        pytest.skip(f"file symlinks are unavailable: {error}")
+
+    environment = launcher._sealed_environment(
+        scratch_directory=scratch,
+        dataset_cache_root=cache_root,
+        offline=True,
+    )
+    assert environment["HF_HUB_CACHE"] == str(cache_root)
+    assert link.is_symlink()
+    scratch_identity = helpers._temporary_directory_identity(
+        scratch,
+        context="Stage-A sealed scratch directory",
+    )
+    helpers._cleanup_owned_temporary_directory(
+        scratch,
+        expected_identity=scratch_identity,
+        context="Stage-A sealed scratch directory",
+    )
+
+    assert not scratch.exists()
+    assert link.is_symlink()
+    assert link.read_bytes() == b"dataset card\n"
 
 
 def test_stage_a_partial_temp_creation_cleans_first_owned_root(
@@ -1096,6 +1145,8 @@ def test_launch_reauthenticates_after_child_and_uses_isolated_argv(
             assert "HF_HUB_OFFLINE" not in kwargs["env"]
         else:
             assert kwargs["env"]["HF_HUB_OFFLINE"] == "1"
+        assert kwargs["env"]["HF_HUB_CACHE"] == str(repository)
+        assert kwargs["env"]["HUGGINGFACE_HUB_CACHE"] == str(repository)
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(launcher.subprocess, "run", fake_run)

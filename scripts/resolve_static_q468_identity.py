@@ -333,7 +333,7 @@ STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 3
-CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v14"
+CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v15"
 CALIBRATION_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
@@ -445,7 +445,7 @@ CALIBRATION_SEALED_LAUNCH_POLICY: Final = MappingProxyType(
     {
         "bootstrap_mode": "stdlib-only-exact-runner-and-capture-v3",
         "cache_confinement_mode": (
-            "private-scratch-plus-explicit-dataset-and-capture-hub-root-v2"
+            "private-scratch-plus-explicit-dataset-and-phase-hub-roots-v3"
         ),
         "child_cwd_mode": "authenticated-launcher-owned-scratch-v1",
         "dont_write_bytecode": 1,
@@ -2072,7 +2072,7 @@ class StageACalibrationBindingArtifact:
 
 @dataclass(frozen=True, slots=True)
 class StageACalibrationAuthorizationArtifact:
-    """Verified authorization over one finalized runner-v14 calibration chain."""
+    """Verified authorization over one finalized runner-v15 calibration chain."""
 
     binding: Mapping[str, str]
     calibration_dependencies: Mapping[str, bytes]
@@ -4285,7 +4285,7 @@ def build_stage_a_calibration_authorization_artifact(
     repository_source_manifest: bytes,
     static_q48_policy_artifact: bytes,
 ) -> bytes:
-    """Authorize Stage A only after the complete runner-v14 chain is finalized."""
+    """Authorize Stage A only after the complete runner-v15 chain is finalized."""
 
     dependencies = {
         "calibration_complete_marker": calibration_complete_marker,
