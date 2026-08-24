@@ -1,0 +1,104 @@
+{
+  "datasets": {
+    "humaneval_plus": {
+      "conversion_revision": "1cf4467306a94e0828b355ff1f32e9222d2d588a",
+      "dataset_id": "evalplus/humanevalplus",
+      "failed": [],
+      "files": [
+        {
+          "config": "default",
+          "git_blob_oid": "9877db06683d4245bc39aed18ee7cbad013ba5fa",
+          "immutable_path": "default/test/0000.parquet",
+          "lfs_sha256": "4436f5c03d77c17e0cbc57543b90665b5c1266f55a43992a5ed7922cd34a7558",
+          "lfs_size_bytes": 2902210,
+          "logical_split": "test",
+          "size_bytes": 2902210
+        }
+      ],
+      "partial": false,
+      "pending": [],
+      "selected_splits": [
+        "test"
+      ],
+      "source_revision": "d32357cf319e50e9c8d8dab5ea876c72b0fd321b"
+    },
+    "pg19": {
+      "conversion_revision": "b3624dc44b60cb01e74876e8869234d2660812cf",
+      "dataset_id": "emozilla/pg19",
+      "failed": [],
+      "files": [
+        {
+          "config": "default",
+          "git_blob_oid": "00245b214ff9806a04f32debff0fd2e7b0737997",
+          "immutable_path": "default/partial-train/0000.parquet",
+          "lfs_sha256": "ea701af2e8a11bb8601150a47affff658452d687494dbed52a82d3b1fcf48811",
+          "lfs_size_bytes": 603127902,
+          "logical_split": "train",
+          "size_bytes": 603127902
+        },
+        {
+          "config": "default",
+          "git_blob_oid": "1169b6deb8c1cd46a46f0ae752b68806c9b5cca9",
+          "immutable_path": "default/partial-train/0001.parquet",
+          "lfs_sha256": "5c1c025f46b4a6b52b56167efeb89a2b9378f9ea8a50cdf5ddcbca8c4e17db1f",
+          "lfs_size_bytes": 526793959,
+          "logical_split": "train",
+          "size_bytes": 526793959
+        },
+        {
+          "config": "default",
+          "git_blob_oid": "b9413777553240574488fa36b74f4bd286c06719",
+          "immutable_path": "default/partial-train/0002.parquet",
+          "lfs_sha256": "80cc198a2ef5239bf22a496eb10e6afd6fba075c4f6dd3d26dae7ed82c3bb1ad",
+          "lfs_size_bytes": 576668259,
+          "logical_split": "train",
+          "size_bytes": 576668259
+        },
+        {
+          "config": "default",
+          "git_blob_oid": "08f92b1ad15eb9f90268fa7cf9823523f1fb056a",
+          "immutable_path": "default/partial-train/0003.parquet",
+          "lfs_sha256": "326718129b7d13a9f45ae8e6e68ae90d95c15bf40fa457a053716832e4d07c1c",
+          "lfs_size_bytes": 583939098,
+          "logical_split": "train",
+          "size_bytes": 583939098
+        },
+        {
+          "config": "default",
+          "git_blob_oid": "9cb48d05cf6568879582eb5bd894a7d1b34aee7b",
+          "immutable_path": "default/partial-train/0004.parquet",
+          "lfs_sha256": "c4dff8b2cd993d1bb6bded41eb0eef56dff5449753ea13c79e730b7a9e1f6907",
+          "lfs_size_bytes": 588756614,
+          "logical_split": "train",
+          "size_bytes": 588756614
+        },
+        {
+          "config": "default",
+          "git_blob_oid": "6a1b9b38d31ca025cbf06192a3dfd66067eb7571",
+          "immutable_path": "default/partial-train/0005.parquet",
+          "lfs_sha256": "9ab4d07d379720a9b18e7e3a060a948e2338b7aa338e9534a12d52fbc4fd8e2e",
+          "lfs_size_bytes": 321273724,
+          "logical_split": "train",
+          "size_bytes": 321273724
+        },
+        {
+          "config": "default",
+          "git_blob_oid": "3e86263f595fae38387a938ec882417649c2bbd4",
+          "immutable_path": "default/partial-validation/0000.parquet",
+          "lfs_sha256": "81680529564d4ead1c0e3859509a62d86c7126c32afc95dce6bd98e729e491ef",
+          "lfs_size_bytes": 10803864,
+          "logical_split": "validation",
+          "size_bytes": 10803864
+        }
+      ],
+      "partial": true,
+      "pending": [],
+      "selected_splits": [
+        "train",
+        "validation"
+      ],
+      "source_revision": "c021754c8e01c5b1cc83a1f549c1f97fbbb756b8"
+    }
+  },
+  "schema": "recurquant.experiment013.parquet-materializations.v1"
+}

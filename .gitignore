@@ -9,6 +9,7 @@ __pycache__/
 .pytest-of-*/
 .pytest/
 .ruff_cache/
+.cache/
 .coverage
 htmlcov/
 dist/

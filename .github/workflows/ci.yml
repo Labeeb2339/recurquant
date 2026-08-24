@@ -31,24 +31,24 @@ jobs:
           python-version: "3.11"
           version: "0.11.31"
       - name: Install
-        run: uv pip install --system -e ".[dev,eval]"
+        run: uv sync --frozen --all-extras
       - name: Verify frozen MBPP confirmation
         run: |
-          recurquant verify-confirmation \
+          uv run --frozen recurquant verify-confirmation \
             evidence/mbpp-v02-confirmation.json \
             evidence/mbpp-v02-confirmation-manifest.json \
             --expect-artifact-sha256 70394c419298fc872cdd08e8aec12d17d5a56aa20f7d3c9f09fe8fdbf26c6ba9 \
             --expect-artifact-evidence-sha256 2a652df92f99fa81f785244d966829e909d31f200e5a1520b76e6b46fb45d3e0
       - name: Verify frozen StateLease Stage-A record
         run: >-
-          recurquant verify-statelease-stage-a
+          uv run --frozen recurquant verify-statelease-stage-a
           evidence/experiment012-statelease-stage-a-666.json
       - name: Lint
-        run: ruff check .
+        run: uv run --frozen ruff check .
       - name: Test
-        run: pytest
+        run: uv run --frozen pytest
       - name: Check generated README assets
-        run: python scripts/generate_readme_assets.py --check
+        run: uv run --frozen python scripts/generate_readme_assets.py --check
 
   package:
     name: Build wheel and sdist

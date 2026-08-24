@@ -38,10 +38,10 @@ from recurquant.qwen35 import (
     create_qwen35_right_rht_query_ema_exact_budget_cache,
     create_qwen35_statelease_cache,
     experiment010_statelease_effective_plan_sha256,
+    experiment012_statelease_h5_plan,
 )
 from recurquant.row_policy import (
     ExactBudgetRowPlan,
-    RowLocation,
     select_rows_exact_budget,
 )
 from recurquant.statelease import replay_gated_delta_state
@@ -112,6 +112,11 @@ SOURCE_IDENTITY_PATHS = (
     "src/recurquant/confirmation.py",
     "src/recurquant/evaluation.py",
     "src/recurquant/evidence.py",
+    "src/recurquant/experiment013_calibration_api.py",
+    "src/recurquant/experiment013_parquet.py",
+    "src/recurquant/experiment013_qwen35_adapter.py",
+    "src/recurquant/experiment013_source.py",
+    "src/recurquant/experiment013_stage_a.py",
     "src/recurquant/finite_difference.py",
     "src/recurquant/fisher_sensitivity.py",
     "src/recurquant/horizon.py",
@@ -132,6 +137,9 @@ SOURCE_IDENTITY_PATHS = (
     "src/recurquant/rht.py",
     "src/recurquant/row_policy.py",
     "src/recurquant/signals.py",
+    "src/recurquant/static_q468.py",
+    "src/recurquant/static_q468_cache.py",
+    "src/recurquant/static_q468_calibration.py",
     "src/recurquant/statelease.py",
     "src/recurquant/statelease_artifact.py",
     "src/recurquant/statelease_baselines.py",
@@ -296,30 +304,7 @@ def _frozen_config() -> Qwen3_5TextConfig:
 
 
 def _frozen_plan() -> ExactBudgetRowPlan:
-    rows = tuple(
-        RowLocation(
-            layer_index=layer_index,
-            head_index=flat_index // 128,
-            row_index=flat_index % 128,
-        )
-        for layer_index, quota in EXPERIMENT010_STATELEASE_LAYER_QUOTAS.items()
-        for flat_index in range(quota)
-    )
-    plan = ExactBudgetRowPlan(
-        low_bits=4,
-        high_bits=8,
-        group_size=128,
-        scale_bits=16,
-        total_groups=36_864,
-        mask_bytes=4_608,
-        promotion_increment_bytes=64,
-        target_resident_bytes=2_564_096,
-        resident_bytes=2_564_096,
-        high_precision_rows=rows,
-        score_shapes=tuple(
-            (layer_index, 16, 128) for layer_index in EXPERIMENT010_STATELEASE_LAYER_QUOTAS
-        ),
-    )
+    plan = experiment012_statelease_h5_plan()
     if (
         experiment010_statelease_effective_plan_sha256(plan)
         != EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256

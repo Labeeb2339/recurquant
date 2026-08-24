@@ -281,6 +281,21 @@ This recomputes the metrics, storage contracts, and eight gate decisions
 offline. See the [result note](research/EXPERIMENT_012_STAGE_A_RESULT.md) for
 the full method table, storage breakdown, gate outcomes, and limits.
 
+The current `main` branch can also run that exact frozen StateLease-H5 row plan
+through the pinned model as an interactive smoke test:
+
+```bash
+recurquant qwen35 --policy statelease-h5 --device auto --max-new-tokens 16
+```
+
+This path reconstructs and authenticates all 1,976 promoted row identities,
+attaches the causal `Qwen35StateLeaseObserver` for the complete forward loop,
+and reports the full `3,454,664`-byte resident footprint: packed checkpoint
+(including its precision mask), query EMA, and replay capacity. It is a batch-one eager
+correctness/demo path. Its output is not new Experiment 012 or Stage-B evidence,
+and it does not support a fused-kernel, latency, peak-memory, or breakthrough
+claim.
+
 ## Scope
 
 The supported public surface is deliberately narrow:
@@ -306,12 +321,13 @@ beat all three same-byte random placements.
 
 That's one measured case study, not proof of novelty or general superiority.
 Q-Mamba already studies 4-bit persistent Mamba2 states, Quamba2 quantizes
-cached SSM states, and other mixed-precision and replay systems overlap parts
-of this design space. Experiment 009 adds a positive 32-task development result
-for a known right-RHT codec composed with CQER-32 — it isn't a new confirmation
-or evidence that Hadamard quantization is new. RecurQuant has no fused packed
-kernel or measured speed claim. So I don't present it as a breakthrough, a
-whole-model memory reduction, or a cross-model result. See the
+cached SSM states, SGLang compresses idle Mamba/GDN prefix checkpoints to INT8,
+and other mixed-precision, replay, and fused GDN systems overlap parts of this
+design space. Experiment 009 adds a positive 32-task development result for a
+known right-RHT codec composed with CQER-32 — it isn't a new confirmation or
+evidence that Hadamard quantization is new. RecurQuant has no fused packed
+StateLease kernel or measured speed claim. So I don't present it as a
+breakthrough, a whole-model memory reduction, or a cross-model result. See the
 [limits note](research/CLAIM_BOUNDARY.md) and
 [prior-art review](research/PRIOR_ART.md) for the exact comparison.
 
@@ -346,4 +362,4 @@ Reproducible compatibility reports, model-family adapters, and work toward a
 fused packed recurrent kernel are all welcome. Open an
 [issue](https://github.com/Labeeb2339/recurquant/issues) with a minimal
 reproducer and `cache.storage_summary()`; don't include access tokens, private
-prompts, or auth files.
+prompts, or authentication files.

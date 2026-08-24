@@ -2,7 +2,7 @@
 
 ## v0.3 experimental track
 
-Last updated: 2026-08-02
+Last updated: 2026-08-25
 
 Experiment 005 stopped before holdout after its frozen real-storage-boundary
 sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
@@ -115,7 +115,75 @@ prior art through Nemotron 3 Ultra and ReplaySSM. Even a future protocol pass
 would not by itself support a first, novelty, speed, deployment,
 state-of-the-art, or breakthrough claim.
 
-In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
+Experiment 013 remains scientifically unresolved and has no accepted static
+RHT-Q468 result.
+Its ninth replacement H0 was
+`6d0130d2b30f1b6bad24d926570fc91c586d7651`, tagged
+`experiment013-h0-6d0130d`. Exact-commit GitHub CI run `32748769745` passed all
+five jobs. Identity capture and promotion succeeded, the schema-v5 frozen
+identity file SHA-256 was
+`ec75fd101f7e5ab9bb8312a6adda0376590f4ebf7e760891db3c3bf51fcc581f`,
+and the identity-only direct child produced H1
+`09d970e0423f5b37e34a53ab6c59b47fa0d558a6`. Authenticated model staging then
+published exactly three single-link regular files totalling 1,746,996,407
+bytes.
+
+The chain's one permitted Fisher H=1 smoke loaded that model and completed its
+inner one-sequence computation: 132 tokens and 16/16 Fisher steps. The official
+invocation nevertheless returned 1 after both child and host scratch
+postconditions reported residue. The scratch was then removed, so its exact
+former inventory is unavailable; a separate diagnostic reproduced creation of
+an empty `torch\inductor` cache directory.
+The output contains a canonical report and old completion marker, with file
+SHA-256 values
+`73b044d2895fcd7c3419dfdd86ae2e2b0e792a535992ce5822115d56de46ac2d`
+and `c6eb5ebf54bb06f7914cfa8380d2b34496ca8a3dea12564853613c75bf4ec703`.
+They are failed-attempt incident evidence only: they do not authorize full
+calibration and are neither positive nor negative method evidence. No current
+scratch survived cleanup.
+
+The incident also proved that v15 published the report and marker before outer
+cleanup and reauthentication, while the downstream gate authenticated only
+those bytes. The current working tree implements the runner-v16 custody repair,
+but it is not frozen or authorizing until committed in a clean H0 and verified
+by exact-commit CI. The child publishes candidate outputs only; after return 0,
+every postcondition, owned-root cleanup, and final reauthentication, the host
+publishes a v2 marker and canonical `RUN_LAUNCH_FINALIZATION.json` last. Full
+calibration requires the prior-smoke finalization receipt; Stage-A authorization
+requires both the smoke and full-run finalization receipts. Full calibration
+binds the exact prior-smoke receipt in both its report and finalization receipt.
+Each smoke and full receipt also binds the SHA-256 of
+its normalized absolute output-directory path, so copying the same bytes to a
+different directory cannot authorize the next stage.
+
+Scratch policy v4 permits only exact confined private-cache roots and ordinary
+single-link descendants; links, reparse points, unexpected roots, and scratch-
+local Hub/datasets endpoints remain fatal. Pycache remains exactly empty. A
+scratch or pycache root that disappears before identity-checked cleanup is now
+fatal rather than accepted as already clean. Run outputs are disjoint from the
+authenticated runtime, repository, model, cache, RULER, manifest, identity,
+capture, and prior-smoke roots; Stage-A authorization output is likewise
+disjoint from the repository and every finalized calibration evidence path.
+Windows device/extended and UNC output spellings are rejected, filesystem
+identities supplement lexical containment against mapped aliases, and Stage-A
+publication revalidates its snapshotted parent and staging identity before
+rename or recursive cleanup.
+Runtime-manifest schema advances to v7, run-report schema to v4, and Stage-A
+calibration authorization to v2. Calibration identity v5, Stage-A identity v6,
+all 160 records, scientific contracts, metrics, budgets, and gates are
+unchanged.
+
+Existing ninth-chain artifacts are preserved. Every ninth-chain namespace,
+whether populated or still absent, is retired and non-authorizing, with no
+retry, copying, adoption, renaming, or rebinding. The next gate
+is focused, full, package, and exact-commit CI verification of a clean v16
+descendant, followed by a fresh tenth H0 and entirely new H0-scoped source,
+runtime, model-metadata, identity-input, provenance, cache, model, and output
+paths. The new identity must pass the frozen exact six-pointer diff before a
+new identity-only H1, model root, or single Fisher smoke is authorized. See
+[`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
+
+In parallel, the repository now contains a reference physical Q4/Q6/Q8
 packer and an exact dynamic-programming allocator. Its corrected two-bit
 metadata contract provides 3,808 marginal precision steps—not 3,952 rows—at
 the same `2,564,096` state bytes. It is not yet cache-integrated or

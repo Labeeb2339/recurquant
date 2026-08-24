@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import zlib
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -13,6 +16,7 @@ import transformers
 from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
+from .evidence import canonical_json_bytes
 from .packed_cache import (
     AdaptiveMixedPackedRecurrentStateCache,
     CoraMixedPackedRecurrentStateCache,
@@ -23,7 +27,7 @@ from .packed_cache import (
     RightRhtQueryEmaMixedPackedRecurrentStateCache,
 )
 from .quantization import QuantizationSpec, RoundingMode
-from .row_policy import ExactBudgetRowPlan
+from .row_policy import ExactBudgetRowPlan, RowLocation
 from .statelease_baselines import (
     FixedReplayMode,
     FixedReplayRecurrentStateCache,
@@ -66,6 +70,36 @@ EXPERIMENT010_STATELEASE_LAYER_QUOTAS: dict[int, int] = {
 }
 EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256 = (
     "6b7d8f6b7a4b1142f0363bf3387fa20f8d3e3b0656c4367680f84d76ee528640"
+)
+EXPERIMENT012_STATELEASE_H5_EXACT_ROW_PLAN_SHA256 = (
+    "018382fd7d946a58d7d91f02d5c710a1295a20086790311399e163ce28205da9"
+)
+EXPERIMENT012_STATELEASE_H5_RESIDENT_BYTES = 3_454_664
+_EXPERIMENT012_STATELEASE_H5_SCORE_SHAPES = tuple(
+    (layer_index, 16, 128) for layer_index in EXPERIMENT010_STATELEASE_LAYER_QUOTAS
+)
+_EXPERIMENT012_STATELEASE_H5_MASK_ZLIB_B64 = (
+    "eNrVV0FslEUUfjM7u86WtU7XWjcGzWwpsCE1qcZAJVVna7EViC64B6MYV+xBJSE9qiQyWxddK5K2chDiYSmaGGIC"
+    "xhP20hqMED3UmBiDB6MED14QJSFWTX0z/7+7///3320FovgO+8//z8yb9773vTdvAfyiWXVEvZ+5/SXKeQog+Ilp"
+    "HP528qnzF6YfePfCxXN/7D63sMG3OcodbVS4nwW8LMdyJ0tkn948CIdzhVUvHfpu/vjvb5/65NEXPzy796vn7DFg"
+    "NLP6yXgawae0uhQaCXIIZAezi6oGayhChC5Mv3N075MXF+anL5//6K+Fb8zMqJ1ni9wxx5QPiD7YGoc8sLVMr6QV"
+    "eYt8b5zlNgkC5U54w93Q7gWDeMY/937cOTd/4OGdu858/2vh3vty8vXefFzD+0TtL27sh29fnSU6nZrqzhCxHaAl"
+    "ADf8eXzPY5cH79/x0+c/TO9ZePO22exE6fHuSD4/OROJHiFvgSAaD+QIHUNH1ps9yt1rnqyyjfYr2a/zjJ3IwSGP"
+    "d0HRdk5zjB5XSZnruTHNiV2rMD6Sm/DIdtYJrQmgD+r4B5m2NaqE2hiJ4DoRS8IT2zm+D3E4IajqoikoA52dLH6Z"
+    "bpcwDiorpQMOdQmAFt7toBW7VQKlTBJR5AWQDJIzIylBaJrGuNRqRvGKQshF+s6Dz/cMjF1asXuDvDQ60Rrvg5nx"
+    "eE90O/B1XVW1zO+Y8L4w0YLvqYwAFQUhIQPM8GYIDH+EZabZLrPE0unpY8PnR0qlI4UT+3u+PvOKgdRiouuQ+Y+U"
+    "qKACj4iCeVmPyPXFQOYsLahL0RBhtRBETXiU5ho0PbY4WFQbfu/T1lMZ38QKXXcAnzpFjOqJcrwaeglJq5YE+BiU"
+    "yaJoOTpOM8NtIKWwrvkS+2BlR/4XPbG1lUQxGVIymCQDO0WbIquGWJmxmY4a9WrSRyulYf7F+AuHM0OijScaua4W"
+    "pY9oZHLQHcU9FL4dRse2zLESH4Ob+0GxCUIgmyMJIKivg60hiRRCpRBeE+tes90crfVKCZJ4Esf1j1NDf232OHM5"
+    "j/8YJSKoKYlCtaYB0g+NJsxmCXE0RSG34C6AOcIgDaq/LAiWREE9rAkTDkuKBN7CfSARy506MiqkRjsLb+gln+Kj"
+    "H8dFl4/akyft9VCws1AtoDZFbI7U1jMI9YMEDA0Gt26WauCaqKetdtBgEEi28He/+jDWozn7s7pzI+9QQhyIx0mL"
+    "eAZU2p7442sYLufsVPWOUVBmHkM1b5pKDfxpHlXuqhfmGmJL6zO+MQoxySfbuartGDBmRoCamwCNFAYdJktw1cIh"
+    "5o4i6MuKxQvKVbNkaFBp1JAqyoqCg8ynrL2qCqSD5joDLU0R96aJQmm1qX5ZvJY5dxy2hnDMWuHF9AolZzXeY4bJ"
+    "QG0NZ5JPuuz5CpGmmeXk6jWXze0CLxjhVPfFBnQaElSDx5alUTRqBmogBIFJ+Mq307TQnAq7fBvkeVWm8FLB2qyE"
+    "Gs26luh6M+J+sezCktUmeWg+OA5nslWHmd+BAd+OuGOS8NXyf0Ok5a1Qlay5OlpMhvoCoJcEq3Hb5lQ8vZz1jK+G"
+    "03hOWVS27YvgLlJjOV521gCtGFEQWo50FD9Tx8zPMEmbtjOY6Y1mfNd2wXmM2A4zWDA9JVeG5COcdhs2tE1gz6aV"
+    "s4nqa1H8GteBZsnToFG5JpLSswkBYqTYhQ3LuLoKTWwJ85uKWk5BUQ1meQDj/6KMXifiVizZxpqCKpdoef43Ihd1"
+    "Pv/gfmJNiHhdcugKjJrZley+KTm4dgv+0X622HPVJnRhsbDNrFDY2FJoXJBDCfg3odf5HQ=="
 )
 
 
@@ -406,7 +440,11 @@ def create_qwen35_right_rht_query_ema_exact_budget_cache(
 def experiment010_statelease_effective_plan_sha256(
     plan: ExactBudgetRowPlan,
 ) -> str:
-    """Hash every plan field that can affect the frozen StateLease codec."""
+    """Hash codec/storage fields plus per-layer promotion quotas.
+
+    This historical Experiment 010 digest does not bind exact row identities;
+    use the Experiment 012 exact-plan digest when individual rows matter.
+    """
 
     if not isinstance(plan, ExactBudgetRowPlan):
         raise TypeError("plan must be an ExactBudgetRowPlan")
@@ -433,7 +471,19 @@ def experiment010_statelease_effective_plan_sha256(
     return hashlib.sha256(payload).hexdigest()
 
 
+def _exact_statelease_plan_sha256(plan: ExactBudgetRowPlan) -> str:
+    if type(plan) is not ExactBudgetRowPlan or any(
+        type(location) is not RowLocation for location in plan.high_precision_rows
+    ):
+        raise TypeError("plan must be an exact ExactBudgetRowPlan with exact RowLocation entries")
+    return hashlib.sha256(canonical_json_bytes(asdict(plan))).hexdigest()
+
+
 def _validate_experiment010_statelease_plan(plan: ExactBudgetRowPlan) -> None:
+    if type(plan) is not ExactBudgetRowPlan or any(
+        type(location) is not RowLocation for location in plan.high_precision_rows
+    ):
+        raise TypeError("plan must be an exact ExactBudgetRowPlan with exact RowLocation entries")
     expected_shapes = tuple(
         (layer_index, 16, 128) for layer_index in EXPERIMENT010_STATELEASE_LAYER_QUOTAS
     )
@@ -481,6 +531,66 @@ def _validate_experiment010_statelease_plan(plan: ExactBudgetRowPlan) -> None:
     digest = experiment010_statelease_effective_plan_sha256(plan)
     if digest != EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256:
         raise ValueError("plan does not match the frozen Experiment 010 effective-plan hash")
+    exact_digest = _exact_statelease_plan_sha256(plan)
+    if exact_digest != EXPERIMENT012_STATELEASE_H5_EXACT_ROW_PLAN_SHA256:
+        raise ValueError(
+            "plan does not match the exact frozen Experiment 012 StateLease-H5 row identity"
+        )
+
+
+def experiment012_statelease_h5_plan() -> ExactBudgetRowPlan:
+    """Return the exact row-identity plan used by the Experiment 012 H5 screen.
+
+    The embedded payload is the 36,864-bit layer-major promotion mask derived
+    from the committed Experiment 009 identity that Experiment 012 reused. The
+    complete reconstructed dataclass is authenticated against the exact plan
+    SHA-256 recorded by the independently verified Stage-A artifact; matching
+    only per-layer quotas is deliberately insufficient.
+    """
+
+    try:
+        compressed = base64.b64decode(
+            _EXPERIMENT012_STATELEASE_H5_MASK_ZLIB_B64,
+            validate=True,
+        )
+        packed_mask = zlib.decompress(compressed)
+    except (ValueError, zlib.error) as error:
+        raise RuntimeError("the built-in StateLease-H5 row mask is malformed") from error
+    if len(packed_mask) != 4_608:
+        raise RuntimeError("the built-in StateLease-H5 row mask has the wrong byte count")
+
+    rows: list[RowLocation] = []
+    layer_mask_bytes = 16 * 128 // 8
+    for layer_offset, (layer_index, heads, row_count) in enumerate(
+        _EXPERIMENT012_STATELEASE_H5_SCORE_SHAPES
+    ):
+        start = layer_offset * layer_mask_bytes
+        layer_mask = packed_mask[start : start + layer_mask_bytes]
+        for flat_index in range(heads * row_count):
+            if layer_mask[flat_index // 8] & (1 << (flat_index % 8)):
+                rows.append(
+                    RowLocation(
+                        layer_index=layer_index,
+                        head_index=flat_index // row_count,
+                        row_index=flat_index % row_count,
+                    )
+                )
+
+    plan = ExactBudgetRowPlan(
+        low_bits=4,
+        high_bits=8,
+        group_size=128,
+        scale_bits=16,
+        total_groups=36_864,
+        mask_bytes=4_608,
+        promotion_increment_bytes=64,
+        target_resident_bytes=2_564_096,
+        resident_bytes=2_564_096,
+        high_precision_rows=tuple(rows),
+        score_shapes=_EXPERIMENT012_STATELEASE_H5_SCORE_SHAPES,
+    )
+    _validate_experiment010_statelease_plan(plan)
+    return plan
 
 
 def create_qwen35_statelease_cache(
@@ -536,6 +646,26 @@ def create_qwen35_experiment010_statelease_cache(
         record_evidence=record_evidence,
         selection_method=STATELEASE_SELECTION_METHOD,
         experiment_identity_sha256=EXPERIMENT010_STATELEASE_EFFECTIVE_PLAN_SHA256,
+    )
+
+
+def create_qwen35_experiment012_statelease_h5_cache(
+    model_or_config: Qwen35Source,
+    *,
+    record_evidence: bool = False,
+) -> StateLeaseRecurrentStateCache:
+    """Create the exact frozen StateLease-H5 cache used by Experiment 012.
+
+    This convenience factory embeds and authenticates every promoted row, so
+    installed-wheel users do not need an external selector artifact. It makes
+    the already evaluated one-task policy runnable; it does not broaden that
+    screen into Stage-B, cross-model, latency, or deployment evidence.
+    """
+
+    return create_qwen35_experiment010_statelease_cache(
+        model_or_config,
+        plan=experiment012_statelease_h5_plan(),
+        record_evidence=record_evidence,
     )
 
 
