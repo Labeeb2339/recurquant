@@ -54,6 +54,7 @@ SPEC.loader.exec_module(capture)
 resolver = capture.resolver
 FIXTURE_GIT_EXECUTABLE = experiment013_source.authenticate_git_executable().path
 FIXTURE_BINDING_ARTIFACT = b"verified-fixture-binding-artifact"
+FIXTURE_FROZEN_CALIBRATION_IDENTITY_ARTIFACT = b"verified-fixture-calibration-identity"
 FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT = b"verified-fixture-capture-provenance"
 FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256 = capture.sha256_bytes(
     FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT
@@ -245,6 +246,21 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
             for item in capture.required_ruler_receipts()
         },
     )
+    fixture_ruler_generation_manifest_file_sha256 = capture.sha256_bytes(
+        FakeSource().ruler_generation_manifest_bytes()
+    )
+    fixture_binding_prefix = FIXTURE_BINDING_ARTIFACT + b":"
+
+    def fixture_binding_manifest_sha256(data: bytes) -> str:
+        if data == FIXTURE_BINDING_ARTIFACT:
+            return fixture_ruler_generation_manifest_file_sha256
+        if data.startswith(fixture_binding_prefix):
+            return capture._require_sha256(
+                data[len(fixture_binding_prefix) :].decode("ascii"),
+                context="fixture RULER generation manifest file SHA-256",
+            )
+        raise ValueError("not a fixture Stage-A binding")
+
     strict_execution_decoder = capture._validate_execution_binding_artifacts
     strict_execution_authenticator = capture._authenticate_execution_binding_artifacts
 
@@ -302,13 +318,59 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
         authenticate_execution,
     )
     strict_binding_decoder = resolver.deserialize_stage_a_calibration_binding_artifact
+    strict_calibration_identity_decoder = resolver.deserialize_frozen_calibration_identity_artifact
+    fixture_calibration_identity: object | None = None
+
+    def decode_calibration_identity(
+        data: bytes,
+        *,
+        expected_file_sha256: str | None = None,
+    ) -> object:
+        nonlocal fixture_calibration_identity
+        if data != FIXTURE_FROZEN_CALIBRATION_IDENTITY_ARTIFACT:
+            return strict_calibration_identity_decoder(
+                data,
+                expected_file_sha256=expected_file_sha256,
+            )
+        if expected_file_sha256 is not None and expected_file_sha256 != capture.sha256_bytes(data):
+            raise ValueError("fixture calibration identity differs from its explicit SHA-256")
+        if fixture_calibration_identity is None:
+            source = FakeSource()
+            fixture_calibration_identity = SimpleNamespace(
+                records=tuple(
+                    {
+                        "family": "ruler",
+                        "ruler_category": item["category"],
+                        "config": item["config"],
+                        "configured_length": item["configured_length"],
+                        "seed": item["seed"],
+                        "generator_receipt_sha256": capture.sha256_bytes(
+                            source.ruler_receipt_bytes(
+                                category=item["category"],
+                                config=item["config"],
+                                configured_length=item["configured_length"],
+                                seed=item["seed"],
+                            )
+                        ),
+                    }
+                    for item in capture.required_ruler_receipts()
+                    if item["phase"] == "calibration"
+                )
+            )
+        return fixture_calibration_identity
+
+    monkeypatch.setattr(
+        resolver,
+        "deserialize_frozen_calibration_identity_artifact",
+        decode_calibration_identity,
+    )
 
     def decode_binding(
         data: bytes,
         *,
         expected_file_sha256: str | None = None,
     ) -> object:
-        if data == FIXTURE_BINDING_ARTIFACT:
+        if data == FIXTURE_BINDING_ARTIFACT or data.startswith(fixture_binding_prefix):
             if expected_file_sha256 is not None and expected_file_sha256 != capture.sha256_bytes(
                 data
             ):
@@ -322,6 +384,10 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
                     field: capture.sha256_bytes(payload)
                     for field, payload in sorted(FIXTURE_EXECUTION_ARTIFACTS.items())
                 },
+                calibration_dependencies={
+                    "frozen_identity_artifact": FIXTURE_FROZEN_CALIBRATION_IDENTITY_ARTIFACT,
+                },
+                ruler_generation_manifest_file_sha256=(fixture_binding_manifest_sha256(data)),
             )
         return strict_binding_decoder(
             data,
@@ -352,13 +418,18 @@ def _bind_fixture_generator_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
                 expected_identity_input_file_sha256=expected_identity_input_file_sha256,
             )
         assert expected_file_sha256 == FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256
-        assert calibration_binding_artifact == FIXTURE_BINDING_ARTIFACT
+        assert calibration_binding_artifact == FIXTURE_BINDING_ARTIFACT or (
+            calibration_binding_artifact.startswith(fixture_binding_prefix)
+        )
         if expected_identity_input_file_sha256 is not None:
             latest_identity_input_sha256 = expected_identity_input_file_sha256
         assert latest_identity_input_sha256 is not None
         return SimpleNamespace(
             file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
             identity_input_file_sha256=latest_identity_input_sha256,
+            ruler_generation_manifest_file_sha256=(
+                fixture_binding_manifest_sha256(calibration_binding_artifact)
+            ),
         )
 
     monkeypatch.setattr(
@@ -766,8 +837,23 @@ def test_ruler_runtime_manifest_rejects_boolean_numeric_startup_attestation() ->
         capture._normalize_ruler_runtime_manifest(manifest)
 
 
-def _binding() -> bytes:
-    return FIXTURE_BINDING_ARTIFACT
+def _binding(ruler_generation_manifest_file_sha256: str | None = None) -> bytes:
+    if ruler_generation_manifest_file_sha256 is None:
+        return FIXTURE_BINDING_ARTIFACT
+    return (
+        FIXTURE_BINDING_ARTIFACT
+        + b":"
+        + capture._require_sha256(
+            ruler_generation_manifest_file_sha256,
+            context="fixture RULER generation manifest file SHA-256",
+        ).encode("ascii")
+    )
+
+
+def _binding_for_source(source: FakeSource) -> bytes:
+    manifest_sha256 = capture.sha256_bytes(source.ruler_generation_manifest_bytes())
+    source.accesses.clear()
+    return _binding(manifest_sha256)
 
 
 def _stage_a_capture_provenance_kwargs() -> dict[str, object]:
@@ -779,23 +865,28 @@ def _stage_a_capture_provenance_kwargs() -> dict[str, object]:
     }
 
 
-def _frozen_stage_a_identity(source: FakeSource | None = None) -> bytes:
+def _frozen_stage_a_identity(
+    source: FakeSource | None = None,
+    *,
+    calibration_binding: bytes | None = None,
+) -> bytes:
+    binding = _binding() if calibration_binding is None else calibration_binding
     captured = capture.capture_identity_input(
         phase="stage_a",
         source=FakeSource() if source is None else source,
-        calibration_binding=_binding(),
+        calibration_binding=binding,
     )
     candidate = resolver.build_candidate(
         captured,
         expected_revisions=resolver.FROZEN_DATASET_REVISIONS,
-        calibration_binding_artifact=_binding(),
+        calibration_binding_artifact=binding,
         **_stage_a_capture_provenance_kwargs(),
     )
     candidate_bytes = resolver.canonical_json_bytes(candidate)
     frozen = resolver.promote_candidate(
         candidate,
         candidate_file_sha256=resolver.sha256_bytes(candidate_bytes),
-        calibration_binding_artifact=_binding(),
+        calibration_binding_artifact=binding,
         **_stage_a_capture_provenance_kwargs(),
     )
     return resolver.canonical_json_bytes(frozen)
@@ -866,7 +957,15 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
         first, expected_revisions=resolver.FROZEN_DATASET_REVISIONS
     )
     assert candidate["evidence"]["record_count"] == 160
-    assert capture.CAPTURE_VERSION == resolver.RESOLVER_VERSION == 7
+    assert capture.CAPTURE_VERSION == resolver.RESOLVER_VERSION == 9
+    assert capture.RULER_FORMATTER_FROZEN_CAPTURE_VERSION == 6
+    ruler_dataset = next(item for item in first["datasets"] if item["key"] == "ruler")
+    assert ruler_dataset["formatter_sha256"] == (
+        "50d896b551a28e63096adc51727a24e5723903be8dd8a32c221d7c6c6c42ff3f"
+    )
+    assert ruler_dataset["canonical_id_manifest_sha256"] == (
+        "83cc661a8393c491d403c81b702b4f206abb64ee6080c368a5267c93edc45946"
+    )
     assert first["schema"] == "recurquant.experiment013.identity-input.v5"
     assert candidate["evidence"]["identity_schema"] == (
         "recurquant.experiment013.identity-candidate.v5"
@@ -982,7 +1081,7 @@ def test_calibration_leaves_stage_a_ruler_embedded_values_uninterpreted(
         capture.capture_identity_input(
             phase="stage_a",
             source=stage_a_source,
-            calibration_binding=_binding(),
+            calibration_binding=_binding(capture.sha256_bytes(manifest_bytes)),
         )
     assert stage_a_source.receipt_reads
     assert stage_a_source.receipt_reads <= stage_a_filenames
@@ -1028,6 +1127,56 @@ def test_stage_a_capture_reads_only_stage_a_ruler_receipts() -> None:
 
     assert captured["phase"] == "stage_a"
     assert source.receipt_reads == expected
+
+
+def _stage_a_manifest_mismatch_source() -> Any:
+    manifest = json.loads(FakeSource().ruler_generation_manifest_bytes())
+    manifest["receipts"][0]["sha256"] = "0" * 64
+    manifest_bytes = capture.canonical_json_bytes(manifest)
+
+    class ManifestMismatchSource(FakeSource):
+        def __init__(self) -> None:
+            super().__init__()
+            self.receipt_body_reads = 0
+
+        def ruler_generation_manifest_bytes(self) -> bytes:
+            return manifest_bytes
+
+        def ruler_receipt_bytes(
+            self, *, category: str, config: str, configured_length: int, seed: int
+        ) -> bytes:
+            self.receipt_body_reads += 1
+            raise AssertionError("manifest mismatch must precede protected receipt access")
+
+    return ManifestMismatchSource()
+
+
+def test_stage_a_capture_rejects_cross_manifest_before_receipt_body_access() -> None:
+    source = _stage_a_manifest_mismatch_source()
+
+    with pytest.raises(ValueError, match="generation manifest differs from authenticated custody"):
+        capture.capture_identity_input(
+            phase="stage_a",
+            source=source,
+            calibration_binding=_binding(),
+        )
+
+    assert source.receipt_body_reads == 0
+
+
+def test_stage_a_materialization_rejects_cross_manifest_before_receipt_body_access() -> None:
+    frozen_bytes = _frozen_stage_a_identity()
+    source = _stage_a_manifest_mismatch_source()
+
+    with pytest.raises(ValueError, match="generation manifest differs from authenticated custody"):
+        capture.materialize_stage_a_identity_sequences(
+            source=source,
+            frozen_stage_a_identity_artifact=frozen_bytes,
+            calibration_binding_artifact=_binding(),
+            **_stage_a_capture_provenance_kwargs(),
+        )
+
+    assert source.receipt_body_reads == 0
 
 
 def test_execution_artifacts_are_authenticated_before_and_after_all_data_access(
@@ -1614,19 +1763,19 @@ finally:
         timeout=120,
     )
     assert isolated.returncode == 0, isolated.stdout + isolated.stderr
-    assert json.loads(isolated.stdout) == {
-        "status": "real_binding_verified_without_torch"
-    }
+    assert json.loads(isolated.stdout) == {"status": "real_binding_verified_without_torch"}
 
     core_bytes = resolver.build_stage_a_calibration_core_binding_artifact(**core_dependencies)
     core = resolver.deserialize_stage_a_calibration_core_binding_artifact(core_bytes)
     authorization_bytes = b"verified-post-calibration-authorization"
+    ruler_generation_manifest_file_sha256 = _hash("fixture-ruler-generation-manifest")
     authorization = SimpleNamespace(
         binding=dict(core.binding),
         calibration_dependencies=core_dependencies,
         authorization_dependencies={},
         execution_bindings=dict(identity.execution_bindings),
         source_commit="f" * 40,
+        ruler_generation_manifest_file_sha256=(ruler_generation_manifest_file_sha256),
         file_sha256=resolver.sha256_bytes(authorization_bytes),
     )
     with patch.object(
@@ -1641,6 +1790,14 @@ finally:
         normalized = capture._normalize_calibration_binding(binding_bytes)
 
     assert normalized == verified.binding
+    assert resolver.STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION == 5
+    assert json.loads(binding_bytes)["schema_version"] == 5
+    assert "ruler_generation_manifest_file_sha256" not in verified.binding
+    assert verified.ruler_generation_manifest_file_sha256 == (ruler_generation_manifest_file_sha256)
+    assert (
+        json.loads(binding_bytes)["evidence"]["ruler_generation_manifest_file_sha256"]
+        == ruler_generation_manifest_file_sha256
+    )
     assert verified.binding == {
         "calibration_authorization_file_sha256": resolver.sha256_bytes(authorization_bytes),
         "calibration_identity_file_sha256": identity.file_sha256,
@@ -1851,15 +2008,16 @@ def test_stage_a_materialization_accepts_exact_two_token_target() -> None:
     source = FakeSource()
     source.receipt_mutator = lambda receipt: (
         receipt.update({"outputs": ["xy"]})
-        if receipt["config"] == "qa_1" and receipt["seed"] == 2_343
+        if receipt["config"] == "qa_1" and receipt["seed"] == 2_344
         else None
     )
-    frozen_bytes = _frozen_stage_a_identity(source)
+    binding = _binding_for_source(source)
+    frozen_bytes = _frozen_stage_a_identity(source, calibration_binding=binding)
 
     materialized = capture.materialize_stage_a_identity_sequences(
         source=source,
         frozen_stage_a_identity_artifact=frozen_bytes,
-        calibration_binding_artifact=_binding(),
+        calibration_binding_artifact=binding,
         **_stage_a_capture_provenance_kwargs(),
     )
 
@@ -2022,7 +2180,7 @@ def test_ruler_receipt_required_output_cardinality_and_uniqueness_fail_closed() 
         category="retrieval",
         config="niah_multiquery",
         configured_length=4_096,
-        seed=2_343,
+        seed=2_344,
     )
     receipt["outputs"] = ["only-one"]
     with pytest.raises(ValueError, match="exactly 4 required outputs"):
@@ -2031,7 +2189,7 @@ def test_ruler_receipt_required_output_cardinality_and_uniqueness_fail_closed() 
             category="retrieval",
             config="niah_multiquery",
             configured_length=4_096,
-            seed=2_343,
+            seed=2_344,
         )
 
     receipt["outputs"] = ["same"] * 4
@@ -2041,7 +2199,7 @@ def test_ruler_receipt_required_output_cardinality_and_uniqueness_fail_closed() 
             category="retrieval",
             config="niah_multiquery",
             configured_length=4_096,
-            seed=2_343,
+            seed=2_344,
         )
 
 
@@ -2091,7 +2249,7 @@ def test_ruler_receipt_replays_frozen_task_semantics(
         category=category,
         config=config,
         configured_length=4_096,
-        seed=2_343,
+        seed=2_344,
     )
     mutate(receipt)
 
@@ -2101,7 +2259,7 @@ def test_ruler_receipt_replays_frozen_task_semantics(
             category=category,
             config=config,
             configured_length=4_096,
-            seed=2_343,
+            seed=2_344,
         )
 
 
@@ -2110,7 +2268,7 @@ def test_ruler_receipt_rejects_boolean_sample_index() -> None:
         category="retrieval",
         config="niah_multiquery",
         configured_length=4_096,
-        seed=2_343,
+        seed=2_344,
     )
     receipt["sample_index"] = False
 
@@ -2120,7 +2278,7 @@ def test_ruler_receipt_rejects_boolean_sample_index() -> None:
             category="retrieval",
             config="niah_multiquery",
             configured_length=4_096,
-            seed=2_343,
+            seed=2_344,
         )
 
 
@@ -2131,7 +2289,7 @@ def test_ruler_raw_row_rejects_boolean_numeric_fields(field: str) -> None:
         category="retrieval",
         config="niah_multiquery",
         configured_length=4_096,
-        seed=2_343,
+        seed=2_344,
     )
     row = json.loads(source._raw_row(receipt))
     row[field] = False
@@ -2207,11 +2365,10 @@ def test_stage_a_ruler_requires_two_continuation_tokens() -> None:
     source.receipt_mutator = lambda receipt: (
         receipt.update({"outputs": ["x"]}) if receipt["config"] == "qa_1" else None
     )
+    binding = _binding_for_source(source)
 
     with pytest.raises(ValueError, match="continuation must contain at least two tokens"):
-        capture.capture_identity_input(
-            phase="stage_a", source=source, calibration_binding=_binding()
-        )
+        capture.capture_identity_input(phase="stage_a", source=source, calibration_binding=binding)
 
 
 def test_stage_a_humaneval_requires_two_continuation_tokens() -> None:
@@ -2407,6 +2564,16 @@ def test_ruler_receipt_category_drift_fails_closed() -> None:
         capture.capture_identity_input(phase="calibration", source=source)
 
 
+def test_ruler_receipt_hash_is_checked_before_json_decode() -> None:
+    source = FakeSource()
+    frozen_manifest = source.ruler_generation_manifest_bytes()
+    source.ruler_generation_manifest_bytes = lambda: frozen_manifest  # type: ignore[method-assign]
+    source.ruler_receipt_bytes = lambda **_kwargs: b"not-json"  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="receipt file identity drifted"):
+        capture.capture_identity_input(phase="calibration", source=source)
+
+
 def test_ruler_generator_source_tamper_is_rejected() -> None:
     source = FakeSource()
     path = next(path for path in source.generator_files if path != "scripts/synthetic.yaml")
@@ -2565,6 +2732,7 @@ def test_stage_a_authorization_execution_mismatch_fails_before_source_access(
                 key: _hash(f"binding-{key}") for key in sorted(resolver.CALIBRATION_BINDING_FIELDS)
             },
             execution_bindings=wrong,
+            ruler_generation_manifest_file_sha256=_hash("fixture-ruler-generation-manifest"),
         ),
     )
 
@@ -2983,10 +3151,11 @@ def test_required_ruler_receipt_inventory_is_exact_and_unique() -> None:
     assert len({item["filename"] for item in receipts}) == 20
     assert sum(item["phase"] == "calibration" for item in receipts) == 16
     assert len(stage_a_receipts) == 4
-    assert {item["seed"] for item in stage_a_receipts} == {2343}
+    assert {item["seed"] for item in stage_a_receipts} == {2344}
     assert all("__s2339.json" not in item["filename"] for item in stage_a_receipts)
+    assert all("__s2343.json" not in item["filename"] for item in receipts)
     assert receipts[0]["filename"] == ("retrieval__niah_multiquery__l2048__s12339.json")
-    assert receipts[-1]["filename"] == ("question_answering__qa_1__l4096__s2343.json")
+    assert receipts[-1]["filename"] == ("question_answering__qa_1__l4096__s2344.json")
 
 
 def _parquet_bytes(columns: dict[str, list[str]]) -> bytes:
@@ -3069,6 +3238,7 @@ def _fixture_stage_a_input_bundle(
     bundle_root = tmp_path / "stage-a-input-bundle"
     bundle_root.mkdir()
     records: list[dict[str, Any]] = []
+    ruler_source = FakeSource()
     capture._bundle_add_object(
         bundle_root,
         records,
@@ -3111,7 +3281,7 @@ def _fixture_stage_a_input_bundle(
         source_id=resolver.RULER_SOURCE_ID,
         revision=resolver.RULER_REVISION,
         logical_path="generation-manifest.json",
-        payload=b"fixture generation manifest bytes\n",
+        payload=ruler_source.ruler_generation_manifest_bytes(),
     )
     for item in capture.required_ruler_receipts():
         filename = str(item["filename"])
@@ -3122,7 +3292,12 @@ def _fixture_stage_a_input_bundle(
             source_id=resolver.RULER_SOURCE_ID,
             revision=resolver.RULER_REVISION,
             logical_path=filename,
-            payload=f"fixture opaque receipt {filename}\n".encode(),
+            payload=ruler_source.ruler_receipt_bytes(
+                category=item["category"],
+                config=item["config"],
+                configured_length=item["configured_length"],
+                seed=item["seed"],
+            ),
         )
     snapshots: list[dict[str, Any]] = []
     parquet_logicals: dict[str, str] = {}
@@ -3200,6 +3375,219 @@ def _authenticate_fixture_bundle(fixture: SimpleNamespace) -> Any:
         execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
         **_stage_a_capture_provenance_kwargs(),
     )
+
+
+def test_stage_a_bundle_rejects_cross_manifest_before_receipt_object_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    decode_binding = resolver.deserialize_stage_a_calibration_binding_artifact
+
+    def decode_binding_with_different_manifest(data: bytes, **kwargs: object) -> object:
+        verified = decode_binding(data, **kwargs)
+        return SimpleNamespace(
+            **{
+                **vars(verified),
+                "ruler_generation_manifest_file_sha256": "f" * 64,
+            }
+        )
+
+    monkeypatch.setattr(
+        resolver,
+        "deserialize_stage_a_calibration_binding_artifact",
+        decode_binding_with_different_manifest,
+    )
+    reads: list[str] = []
+    object_bytes = capture.AuthenticatedStageAInputBundle.object_bytes
+
+    def tracked_object_bytes(
+        bundle: capture.AuthenticatedStageAInputBundle,
+        role: str,
+        logical_path: str,
+    ) -> bytes:
+        reads.append(role)
+        return object_bytes(bundle, role, logical_path)
+
+    monkeypatch.setattr(
+        capture.AuthenticatedStageAInputBundle,
+        "object_bytes",
+        tracked_object_bytes,
+    )
+
+    with pytest.raises(ValueError, match="manifest differs from calibration custody"):
+        _authenticate_fixture_bundle(fixture)
+
+    assert reads == ["ruler_generation_manifest"]
+
+
+def test_stage_a_stager_rejects_cross_manifest_before_receipt_file_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ruler_root = tmp_path / "ruler-receipts"
+    ruler_root.mkdir()
+    (ruler_root / "generation-manifest.json").write_bytes(b"different manifest\n")
+    for item in capture.required_ruler_receipts():
+        (ruler_root / str(item["filename"])).write_bytes(b"opaque receipt\n")
+    reads: list[str] = []
+    stable_file_bytes = capture._bundle_stable_file_bytes
+
+    def tracked_stable_file_bytes(path: Path, *, context: str) -> bytes:
+        reads.append(Path(path).name)
+        return stable_file_bytes(path, context=context)
+
+    monkeypatch.setattr(capture, "_bundle_stable_file_bytes", tracked_stable_file_bytes)
+
+    with pytest.raises(ValueError, match="stager RULER manifest differs"):
+        capture.stage_stage_a_input_bundle(
+            bundle_root=tmp_path / "staged-bundle",
+            cache_dir=tmp_path / "cache",
+            ruler_receipt_dir=ruler_root,
+            frozen_stage_a_identity_artifact=_frozen_stage_a_identity(),
+            calibration_binding_artifact=_binding(),
+            execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+            runtime_authentication_context=FIXTURE_RUNTIME_CONTEXT,
+            **_stage_a_capture_provenance_kwargs(),
+        )
+
+    assert reads == ["generation-manifest.json"]
+
+
+def test_stage_a_bundle_rejects_self_rechained_wrong_receipt_without_decoding_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    manifest = json.loads(fixture.manifest_path.read_bytes())
+    record = next(item for item in manifest["objects"] if item["role"] == "ruler_receipt")
+    old_relative = str(record["relative_path"])
+    wrong_payload = b"opaque receipt bytes from a different generation manifest\n"
+    wrong_sha256 = capture.sha256_bytes(wrong_payload)
+    record["relative_path"] = f"objects/{wrong_sha256}"
+    record["sha256"] = wrong_sha256
+    record["size_bytes"] = len(wrong_payload)
+    (fixture.root / record["relative_path"]).write_bytes(wrong_payload)
+    if sum(item["relative_path"] == old_relative for item in manifest["objects"]) == 0:
+        (fixture.root / old_relative).unlink()
+    fixture.manifest_path.write_bytes(capture.canonical_json_bytes(manifest))
+
+    strict_json = capture._strict_json
+
+    def reject_wrong_receipt_decode(data: bytes, *, context: str) -> dict[str, Any]:
+        if data == wrong_payload:
+            raise AssertionError("wrong opaque RULER receipt was semantically decoded")
+        return strict_json(data, context=context)
+
+    monkeypatch.setattr(capture, "_strict_json", reject_wrong_receipt_decode)
+    with pytest.raises(ValueError, match="receipt differs from authenticated identity"):
+        _authenticate_fixture_bundle(fixture)
+
+
+def test_stage_a_bundle_authenticates_receipts_without_semantic_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture_stage_a_input_bundle(tmp_path, monkeypatch)
+    manifest = json.loads(fixture.manifest_path.read_bytes())
+    receipt_payloads = {
+        (fixture.root / str(item["relative_path"])).read_bytes()
+        for item in manifest["objects"]
+        if item["role"] == "ruler_receipt"
+    }
+    assert len(receipt_payloads) == 20
+    strict_json = capture._strict_json
+
+    def reject_receipt_decode(data: bytes, *, context: str) -> dict[str, Any]:
+        if data in receipt_payloads:
+            raise AssertionError("opaque RULER receipt was semantically decoded")
+        return strict_json(data, context=context)
+
+    monkeypatch.setattr(capture, "_strict_json", reject_receipt_decode)
+    authenticated = _authenticate_fixture_bundle(fixture)
+
+    assert authenticated.manifest_file_sha256 == capture.sha256_bytes(
+        fixture.manifest_path.read_bytes()
+    )
+
+
+def test_opaque_ruler_receipt_snapshot_reads_each_authenticated_body_once() -> None:
+    source = FakeSource()
+    payloads = {
+        str(item["filename"]): source.ruler_receipt_bytes(
+            category=item["category"],
+            config=item["config"],
+            configured_length=item["configured_length"],
+            seed=item["seed"],
+        )
+        for item in capture.required_ruler_receipts()
+    }
+    expected = {name: capture.sha256_bytes(payload) for name, payload in payloads.items()}
+    reads: list[str] = []
+
+    def read_once(filename: str) -> bytes:
+        reads.append(filename)
+        payload = payloads[filename]
+        payloads[filename] = b"changed after the authenticated read\n"
+        return payload
+
+    frozen = capture._bundle_read_authoritative_ruler_receipts(
+        expected_sha256=expected,
+        reader=read_once,
+        context="synthetic opaque stager",
+    )
+
+    assert reads == [str(item["filename"]) for item in capture.required_ruler_receipts()]
+    assert len(reads) == len(set(reads)) == 20
+    assert all(capture.sha256_bytes(frozen[name]) == expected[name] for name in expected)
+
+
+def test_stage_a_stager_rejects_wrong_receipt_before_network_or_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = FakeSource()
+    ruler_root = tmp_path / "ruler-receipts"
+    ruler_root.mkdir()
+    (ruler_root / "generation-manifest.json").write_bytes(source.ruler_generation_manifest_bytes())
+    wrong_filename = str(capture.required_ruler_receipts()[0]["filename"])
+    wrong_payload = b"opaque receipt bytes from a different generation manifest\n"
+    for item in capture.required_ruler_receipts():
+        filename = str(item["filename"])
+        payload = (
+            wrong_payload
+            if filename == wrong_filename
+            else source.ruler_receipt_bytes(
+                category=item["category"],
+                config=item["config"],
+                configured_length=item["configured_length"],
+                seed=item["seed"],
+            )
+        )
+        (ruler_root / filename).write_bytes(payload)
+    strict_json = capture._strict_json
+
+    def reject_wrong_receipt_decode(data: bytes, *, context: str) -> dict[str, Any]:
+        if data == wrong_payload:
+            raise AssertionError("wrong opaque RULER receipt was semantically decoded")
+        return strict_json(data, context=context)
+
+    def reject_network(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("opaque stager reached network before receipt authentication")
+
+    monkeypatch.setattr(capture, "_strict_json", reject_wrong_receipt_decode)
+    monkeypatch.setattr(capture.urllib.request, "urlopen", reject_network)
+    with pytest.raises(ValueError, match="receipt differs from authenticated identity"):
+        capture.stage_stage_a_input_bundle(
+            bundle_root=tmp_path / "staged-bundle",
+            cache_dir=tmp_path / "cache",
+            ruler_receipt_dir=ruler_root,
+            frozen_stage_a_identity_artifact=_frozen_stage_a_identity(),
+            calibration_binding_artifact=_binding(),
+            execution_binding_artifacts=FIXTURE_EXECUTION_ARTIFACTS,
+            runtime_authentication_context=FIXTURE_RUNTIME_CONTEXT,
+            **_stage_a_capture_provenance_kwargs(),
+        )
 
 
 def test_stage_a_bundle_authenticates_both_lfs_pointer_and_payload_identities(

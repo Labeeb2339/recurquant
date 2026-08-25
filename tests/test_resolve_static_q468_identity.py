@@ -56,6 +56,18 @@ FIXTURE_EXECUTION_BINDINGS = {
         resolver.PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256
     ),
 }
+FIXTURE_RULER_GENERATION_MANIFEST_FILE_SHA256 = resolver.sha256_bytes(b"ruler-generation-manifest")
+
+
+@pytest.fixture(autouse=True)
+def _freeze_fixture_ruler_generation_manifest_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        resolver,
+        "RULER_GENERATION_MANIFEST_FILE_SHA256",
+        FIXTURE_RULER_GENERATION_MANIFEST_FILE_SHA256,
+    )
 
 
 def _hash(label: str) -> str:
@@ -770,6 +782,7 @@ def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace
         "fixture-fisher-h1-smoke-output-directory"
     )
     identity_input_manifest_sha256 = _hash("identity-input-manifest")
+    ruler_generation_manifest_file_sha256 = _hash("ruler-generation-manifest")
     source_manifest = _authorization_source_manifest(fixture.source_commit_h0)
     runtime_manifest, origins = _authorization_runtime_manifest()
     model_manifest = _authorization_model_manifest()
@@ -811,6 +824,7 @@ def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace
             "identity_input_file_sha256": identity_input_manifest_sha256,
             "phase": "calibration",
             "publication_contract": resolver.CALIBRATION_CAPTURE_PUBLICATION_CONTRACT,
+            "ruler_generation_manifest_file_sha256": (ruler_generation_manifest_file_sha256),
             "runner_revision": resolver.CALIBRATION_RUNNER_REVISION,
             "schema_version": resolver.CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION,
             "source_commit": fixture.source_commit_h0,
@@ -917,6 +931,7 @@ def _authorization_fixture(fixture: SimpleNamespace) -> Iterator[SimpleNamespace
         model_manifest=model_manifest,
         runtime_manifest=runtime_manifest,
         source_manifest=source_manifest,
+        ruler_generation_manifest_file_sha256=(ruler_generation_manifest_file_sha256),
         calibration_output_directory_absolute_path_sha256=(
             calibration_output_directory_absolute_path_sha256
         ),
@@ -1022,6 +1037,7 @@ def _finalized_stage_a_capture_receipt_fixture(
         "identity_input_file_sha256": identity_input_file_sha256,
         "phase": "stage_a",
         "publication_contract": resolver.STAGE_A_CAPTURE_PUBLICATION_CONTRACT,
+        "ruler_generation_manifest_file_sha256": (binding.ruler_generation_manifest_file_sha256),
         "runner_revision": resolver.CALIBRATION_RUNNER_REVISION,
         "schema_version": resolver.STAGE_A_CAPTURE_PROVENANCE_SCHEMA_VERSION,
         "source_commit": fixture.source_commit_h0,
@@ -1257,11 +1273,14 @@ def _build_candidate(source: dict[str, Any]) -> dict[str, Any]:
     if source.get("phase") != "stage_a":
         return resolver.build_candidate(source, expected_revisions=REVISIONS)
     verified = SimpleNamespace(
-        binding=dict(FIXTURE_BINDING), execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS)
+        binding=dict(FIXTURE_BINDING),
+        execution_bindings=dict(FIXTURE_EXECUTION_BINDINGS),
+        ruler_generation_manifest_file_sha256=(FIXTURE_RULER_GENERATION_MANIFEST_FILE_SHA256),
     )
     verified_capture = SimpleNamespace(
         file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
         identity_input_file_sha256=resolver.sha256_bytes(resolver.canonical_json_bytes(source)),
+        ruler_generation_manifest_file_sha256=(FIXTURE_RULER_GENERATION_MANIFEST_FILE_SHA256),
     )
     with (
         patch.object(
@@ -1295,6 +1314,7 @@ def _fixture_verified_stage_a_capture(source: Mapping[str, Any]) -> SimpleNamesp
     return SimpleNamespace(
         file_sha256=FIXTURE_STAGE_A_CAPTURE_PROVENANCE_RECEIPT_SHA256,
         identity_input_file_sha256=resolver.sha256_bytes(resolver.canonical_json_bytes(source)),
+        ruler_generation_manifest_file_sha256=(FIXTURE_RULER_GENERATION_MANIFEST_FILE_SHA256),
     )
 
 
@@ -1776,7 +1796,7 @@ def test_stage_a_core_binding_rejects_v2_missing_extra_and_dependency_tamper() -
             )
 
 
-def test_post_calibration_authorization_and_v4_binding_round_trip() -> None:
+def test_post_calibration_authorization_and_v5_binding_round_trip() -> None:
     with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
         verified_authorization = resolver.deserialize_stage_a_calibration_authorization_artifact(
             authorization.artifact
@@ -1787,13 +1807,19 @@ def test_post_calibration_authorization_and_v4_binding_round_trip() -> None:
         verified_binding = resolver.deserialize_stage_a_calibration_binding_artifact(binding_bytes)
 
     authorization_document = json.loads(authorization.artifact)
+    capture_document = json.loads(authorization.receipt)
     smoke_document = json.loads(authorization.smoke)
     full_document = json.loads(authorization.full_report)
     document = json.loads(binding_bytes)
-    assert resolver.STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION == 2
-    assert resolver.STAGE_A_CALIBRATION_AUTHORIZATION_REVISION.endswith("-v2")
-    assert authorization_document["schema_version"] == 2
-    assert authorization_document["evidence"]["artifact_revision"].endswith("-v2")
+    assert resolver.STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION == 3
+    assert resolver.STAGE_A_CALIBRATION_AUTHORIZATION_REVISION.endswith("-v3")
+    assert authorization_document["schema_version"] == 3
+    assert authorization_document["evidence"]["artifact_revision"].endswith("-v3")
+    assert resolver.CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION == 3
+    assert capture_document["schema_version"] == 3
+    assert capture_document["ruler_generation_manifest_file_sha256"] == (
+        authorization.ruler_generation_manifest_file_sha256
+    )
     assert set(authorization_document["evidence"]["dependencies_base64"]) == (
         resolver.CALIBRATION_AUTHORIZATION_DEPENDENCY_NAMES
     )
@@ -1826,19 +1852,76 @@ def test_post_calibration_authorization_and_v4_binding_round_trip() -> None:
     }
     assert resolver.FISHER_H1_SMOKE_COMPLETE_BYTES.endswith(b"launch-finalized-v2\n")
     assert resolver.CALIBRATION_COMPLETE_BYTES.endswith(b"launch-finalized-v2\n")
-    assert resolver.STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION == 4
-    assert document["schema_version"] == 4
-    assert document["evidence"]["artifact_revision"].endswith("-v4")
+    assert resolver.STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION == 5
+    assert document["schema_version"] == 5
+    assert document["evidence"]["artifact_revision"].endswith("-v5")
     assert set(document["evidence"]["dependencies_base64"]) == {
         "calibration_authorization_artifact"
     }
     assert verified_authorization.authorized_output_file_sha256 == authorization.output_hashes
     assert verified_authorization.source_commit == fixture.source_commit_h0
+    assert verified_authorization.ruler_generation_manifest_file_sha256 == (
+        authorization.ruler_generation_manifest_file_sha256
+    )
+    assert (
+        authorization_document["evidence"]["bindings"]["ruler_generation_manifest_file_sha256"]
+        == authorization.ruler_generation_manifest_file_sha256
+    )
     assert set(verified_binding.binding) == resolver.CALIBRATION_BINDING_FIELDS
+    assert "ruler_generation_manifest_file_sha256" not in verified_binding.binding
+    assert document["evidence"]["ruler_generation_manifest_file_sha256"] == (
+        authorization.ruler_generation_manifest_file_sha256
+    )
+    assert verified_binding.ruler_generation_manifest_file_sha256 == (
+        authorization.ruler_generation_manifest_file_sha256
+    )
     assert verified_binding.binding["calibration_authorization_file_sha256"] == (
         resolver.sha256_bytes(authorization.artifact)
     )
     assert dict(verified_binding.calibration_dependencies) == fixture.dependencies
+
+
+def test_authorization_and_binding_reject_legacy_schemas_and_manifest_rebinding() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        binding_bytes = resolver.build_stage_a_calibration_binding_artifact(
+            calibration_authorization_artifact=authorization.artifact
+        )
+
+        legacy_authorization = json.loads(authorization.artifact)
+        legacy_authorization["schema_version"] = 2
+        legacy_authorization["evidence"]["artifact_revision"] = (
+            "experiment-013-stage-a-calibration-authorization-v2"
+        )
+        with pytest.raises(ValueError, match="kind or schema drifted"):
+            resolver.deserialize_stage_a_calibration_authorization_artifact(
+                _reauthenticated_binding_bytes(legacy_authorization)
+            )
+
+        rebound_authorization = json.loads(authorization.artifact)
+        rebound_authorization["evidence"]["bindings"]["ruler_generation_manifest_file_sha256"] = (
+            "0" * 64
+        )
+        with pytest.raises(ValueError, match="custody bindings drifted"):
+            resolver.deserialize_stage_a_calibration_authorization_artifact(
+                _reauthenticated_binding_bytes(rebound_authorization)
+            )
+
+        legacy_binding = json.loads(binding_bytes)
+        legacy_binding["schema_version"] = 4
+        legacy_binding["evidence"]["artifact_revision"] = (
+            "experiment-013-stage-a-calibration-binding-v4"
+        )
+        with pytest.raises(ValueError, match="kind or schema drifted"):
+            resolver.deserialize_stage_a_calibration_binding_artifact(
+                _reauthenticated_binding_bytes(legacy_binding)
+            )
+
+        rebound_binding = json.loads(binding_bytes)
+        rebound_binding["evidence"]["ruler_generation_manifest_file_sha256"] = "0" * 64
+        with pytest.raises(ValueError, match="RULER manifest differs from its authorization"):
+            resolver.deserialize_stage_a_calibration_binding_artifact(
+                _reauthenticated_binding_bytes(rebound_binding)
+            )
 
 
 def test_finalized_stage_a_capture_provenance_round_trips_exact_flat_contract() -> None:
@@ -1863,18 +1946,26 @@ def test_finalized_stage_a_capture_provenance_round_trips_exact_flat_contract() 
         "identity_input_file_sha256",
         "phase",
         "publication_contract",
+        "ruler_generation_manifest_file_sha256",
         "runner_revision",
         "schema_version",
         "source_commit",
         "status",
     }
-    assert capture.document["capture_version"] == 7
+    assert capture.document["capture_version"] == 9
+    assert capture.document["schema_version"] == 2
+    assert capture.document["ruler_generation_manifest_file_sha256"] == (
+        capture.binding.ruler_generation_manifest_file_sha256
+    )
     assert capture.document["runner_revision"] == resolver.CALIBRATION_RUNNER_REVISION
     assert verified.file_sha256 == capture.receipt_sha256
     assert verified.identity_input_file_sha256 == capture.identity_input_file_sha256
     assert verified.calibration_binding_file_sha256 == resolver.sha256_bytes(capture.binding_bytes)
     assert verified.calibration_authorization_file_sha256 == (
         capture.binding.authorization_file_sha256
+    )
+    assert verified.ruler_generation_manifest_file_sha256 == (
+        capture.binding.ruler_generation_manifest_file_sha256
     )
     assert dict(verified.execution_bindings) == dict(capture.binding.execution_bindings)
 
@@ -1890,6 +1981,7 @@ def test_finalized_stage_a_capture_provenance_round_trips_exact_flat_contract() 
         ("identity_input", "binds a different identity input"),
         ("binding", "binds a different calibration binding"),
         ("authorization", "binds a different embedded authorization"),
+        ("ruler_manifest", "binds a different RULER manifest"),
         ("execution", "execution bindings drifted"),
         ("capture_path", "source path drifted"),
         ("capture_sha", "source differs from the repository manifest"),
@@ -1920,6 +2012,8 @@ def test_finalized_stage_a_capture_provenance_rejects_rehashed_forgery(
             document["calibration_binding_file_sha256"] = "0" * 64
         elif mutation == "authorization":
             document["calibration_authorization_file_sha256"] = "0" * 64
+        elif mutation == "ruler_manifest":
+            document["ruler_generation_manifest_file_sha256"] = "0" * 64
         elif mutation == "execution":
             document["execution_bindings"]["model_file_manifest_file_sha256"] = "0" * 64
         elif mutation == "capture_path":
@@ -2163,6 +2257,43 @@ def test_authorization_rejects_rehashed_capture_provenance_forgery(mutation: str
         )
         with pytest.raises(ValueError, match=message):
             resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+def test_authorization_requires_manifest_custody_in_calibration_provenance() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        receipt = json.loads(authorization.receipt)
+        del receipt["ruler_generation_manifest_file_sha256"]
+        kwargs = _rechain_authorization_receipt(
+            authorization, resolver.canonical_json_bytes(receipt)
+        )
+
+        with pytest.raises(ValueError, match="fields drifted"):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+def test_authorization_rejects_rechained_manifest_outside_source_anchor() -> None:
+    with _binding_v3_fixture() as fixture, _authorization_fixture(fixture) as authorization:
+        receipt = json.loads(authorization.receipt)
+        receipt["ruler_generation_manifest_file_sha256"] = "f" * 64
+        kwargs = _rechain_authorization_receipt(
+            authorization,
+            resolver.canonical_json_bytes(receipt),
+        )
+
+        with pytest.raises(ValueError, match="different source-frozen RULER manifest"):
+            resolver.build_stage_a_calibration_authorization_artifact(**kwargs)
+
+
+def test_g0_cannot_authorize_stage_a_without_source_frozen_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resolver, "RULER_GENERATION_MANIFEST_FILE_SHA256", None)
+    with (
+        _binding_v3_fixture() as fixture,
+        pytest.raises(ValueError, match="not frozen in this source commit"),
+        _authorization_fixture(fixture),
+    ):
+        pytest.fail("G0 unexpectedly authorized Stage A")
 
 
 def test_authorization_rejects_q48_h0_and_allocation_drift() -> None:
@@ -2715,7 +2846,9 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
         ),
     ):
         assert resolver.main([*base_args, "--output", str(candidate_path)]) == 0
-        candidate_hash = resolver.sha256_bytes(candidate_path.read_bytes())
+        candidate_bytes = candidate_path.read_bytes()
+        candidate = json.loads(candidate_bytes)
+        candidate_hash = resolver.sha256_bytes(candidate_bytes)
         frozen_path = tmp_path / "frozen" / "stage-a-identity.json"
         assert (
             resolver.main(
@@ -2738,6 +2871,13 @@ def test_candidate_requires_quarantine_then_exact_hash_promotion(tmp_path: Path)
         )
     frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
     assert frozen["evidence"]["status"] == "frozen"
+    assert resolver.STAGE_A_IDENTITY_SCHEMA_VERSION == 6
+    assert resolver.STAGE_A_CANDIDATE_SCHEMA.endswith(".v6")
+    assert resolver.STAGE_A_FROZEN_SCHEMA.endswith(".v6")
+    assert candidate["evidence"]["schema_version"] == 6
+    assert candidate["evidence"]["identity_schema"] == resolver.STAGE_A_CANDIDATE_SCHEMA
+    assert frozen["evidence"]["schema_version"] == 6
+    assert frozen["evidence"]["identity_schema"] == resolver.STAGE_A_FROZEN_SCHEMA
     assert frozen["evidence"]["promotion"]["candidate_file_sha256"] == candidate_hash
     assert frozen["evidence"]["model_contracts"]["weights_loaded"] is False
 

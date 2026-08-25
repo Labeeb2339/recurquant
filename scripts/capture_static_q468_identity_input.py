@@ -27,7 +27,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
@@ -61,7 +61,13 @@ else:
         raise
 
 # Procedure version.  The resolver-compatible identity field sets remain v5.
-CAPTURE_VERSION: Final = 7
+CAPTURE_VERSION: Final = 9
+# Frozen legacy field inside the RULER formatter-v2 fingerprint.  This value
+# records the capture epoch in which the unchanged prompt/target serialization
+# was frozen; it is not the live capture procedure version.  Keeping these
+# version domains separate prevents custody-only capture changes from silently
+# changing the scientific formatter commitment.
+RULER_FORMATTER_FROZEN_CAPTURE_VERSION: Final = 6
 RUNTIME_AUTHENTICATION_CONTEXT_FIELDS: Final = frozenset(
     {
         "base_runtime_root",
@@ -375,8 +381,8 @@ RULER_COMMAND_MANIFEST_SHA256_BY_FILENAME: Final = {
     "aggregation__fwe__l4096__s12339.json": (
         "49f19c6045484e1c584657fb57412f1fbd1945d6cfcca6504a666b344765a0d0"
     ),
-    "aggregation__fwe__l4096__s2343.json": (
-        "613477e4edc91064f120c728683858bd79c4f7c3c7c359f0010215b5adb01f48"
+    "aggregation__fwe__l4096__s2344.json": (
+        "39aa60129ed248a6b722cf83c51b6a1a1784982824f167727fe2657a96612568"
     ),
     "multi_hop_tracing__vt__l2048__s12339.json": (
         "9d253ced1f09e593fc1cffff0f035604685f54acb0f4dc0080d5f920f9a65993"
@@ -390,8 +396,8 @@ RULER_COMMAND_MANIFEST_SHA256_BY_FILENAME: Final = {
     "multi_hop_tracing__vt__l4096__s12340.json": (
         "93ee5ec2be6fe5ac4bde20d82f32a1e9f46ec4008aab2b4d9c035b813255dae5"
     ),
-    "multi_hop_tracing__vt__l4096__s2343.json": (
-        "9d2038bbc19723b27af364b870a14ed4f516272db83df13dc0e8b524b9a44bff"
+    "multi_hop_tracing__vt__l4096__s2344.json": (
+        "320e4832d9b346087e4094262a5ec18606422badca4d201658a0e2f94bd1cae5"
     ),
     "question_answering__qa_1__l2048__s12339.json": (
         "12cc42446211811efe8e525e3fa8f68306338b7cb15901e4bc6c037563505bea"
@@ -399,8 +405,8 @@ RULER_COMMAND_MANIFEST_SHA256_BY_FILENAME: Final = {
     "question_answering__qa_1__l4096__s12339.json": (
         "ff9623b65bd1fa8285c9078bcc861a7ceefe9ca6b6bfe470dae6c2cc08a6de83"
     ),
-    "question_answering__qa_1__l4096__s2343.json": (
-        "c0b5591282d51a94280aedafecf3c31400e9fc3423011bc4cedd6ce26e719663"
+    "question_answering__qa_1__l4096__s2344.json": (
+        "f058521c0d729e6596f3cbda4f308d1c29c4d015a89ac5e783548af4f6cea183"
     ),
     "question_answering__qa_2__l2048__s12340.json": (
         "402b92a2c76288d37b819683a1e5e83e8a5bd95c60143d958e0b027e74975997"
@@ -414,8 +420,8 @@ RULER_COMMAND_MANIFEST_SHA256_BY_FILENAME: Final = {
     "retrieval__niah_multiquery__l2048__s12339.json": (
         "61b77e3475cdf72fed65e7d28d97151dcbb0a9b728cf40756e634371be99009d"
     ),
-    "retrieval__niah_multiquery__l4096__s2343.json": (
-        "4f33fdcdf1902c17988ecce5cc344d5feffa3e99d6a948a98e4a4a0ccce51252"
+    "retrieval__niah_multiquery__l4096__s2344.json": (
+        "e45f31c8e697f0468836ba3635ac4d3c2116c2ac05d6866544d28626a8bedbb7"
     ),
     "retrieval__niah_multivalue__l4096__s12340.json": (
         "d791dcf45a923a7d8aafc5cf2d9dda3b039878288556307bf75023a338c0b6f8"
@@ -772,7 +778,7 @@ class MaterializedStageASequence:
     """One authenticated Stage-A identity record and its exact token sequence.
 
     The record is the content-redacted capture projection authenticated by a
-    promoted resolver-v7 Stage-A artifact.  Raw source rows, formatted prompts,
+    promoted resolver-v9 Stage-A artifact.  Raw source rows, formatted prompts,
     targets, and receipt bodies are never retained on this object.
     """
 
@@ -924,7 +930,7 @@ class MaterializedStageASequence:
 
 @dataclass(frozen=True, slots=True)
 class StageAIdentityMaterialization:
-    """Twelve content-redacted sequences authenticated by a frozen v5 identity."""
+    """Twelve content-redacted sequences authenticated by a frozen v6 identity."""
 
     sequences: tuple[MaterializedStageASequence, ...]
     tokenizer_manifest_sha256: str
@@ -1986,10 +1992,20 @@ def _verify_complete_ruler_bundle(
     *,
     phase: str,
     tokenizer_material: TokenizerMaterial,
+    expected_generation_manifest_file_sha256: str | None = None,
 ) -> VerifiedRulerBundle:
     if phase not in resolver.ALLOWED_PHASES:
         raise ValueError(f"unsupported RULER verification phase: {phase!r}")
     raw_manifest = source.ruler_generation_manifest_bytes()
+    generation_manifest_sha256 = sha256_bytes(raw_manifest)
+    if expected_generation_manifest_file_sha256 is not None and (
+        generation_manifest_sha256
+        != _require_sha256(
+            expected_generation_manifest_file_sha256,
+            context="expected RULER generation manifest file SHA-256",
+        )
+    ):
+        raise ValueError("RULER generation manifest differs from authenticated custody")
     manifest = _strict_json(raw_manifest, context="RULER generation manifest")
     if canonical_json_bytes(manifest) != raw_manifest:
         raise ValueError("RULER generation manifest is not canonical JSON")
@@ -2126,6 +2142,10 @@ def _verify_complete_ruler_bundle(
             configured_length=int(expected["configured_length"]),
             seed=int(expected["seed"]),
         )
+        if result["sha256"] != sha256_bytes(receipt_bytes) or result["size_bytes"] != len(
+            receipt_bytes
+        ):
+            raise ValueError(f"RULER receipt file identity drifted: {filename}")
         receipt_value = _strict_json(receipt_bytes, context=f"RULER receipt {filename}")
         if canonical_json_bytes(receipt_value) != receipt_bytes:
             raise ValueError(f"RULER receipt is not canonical: {filename}")
@@ -2138,11 +2158,7 @@ def _verify_complete_ruler_bundle(
         )
         if receipt != receipt_value:
             raise ValueError(f"RULER receipt normalization drifted: {filename}")
-        if (
-            result["sha256"] != sha256_bytes(receipt_bytes)
-            or result["size_bytes"] != len(receipt_bytes)
-            or result["generator_reported_length"] != receipt["generator_reported_length"]
-        ):
+        if result["generator_reported_length"] != receipt["generator_reported_length"]:
             raise ValueError(f"RULER receipt file identity drifted: {filename}")
         command = result["command_manifest"]
         if not isinstance(command, Mapping):
@@ -2226,7 +2242,7 @@ def _verify_complete_ruler_bundle(
     return VerifiedRulerBundle(
         receipts=verified,
         generator_manifest=tuple(generator_manifest),
-        generation_manifest_sha256=sha256_bytes(raw_manifest),
+        generation_manifest_sha256=generation_manifest_sha256,
     )
 
 
@@ -2463,7 +2479,7 @@ def _capture_ruler(
     identity_manifest_hash = sha256_bytes(canonical_json_bytes(inventory))
     formatter = {
         "id": "recurquant.ruler-teacher-forced-target.v2",
-        "capture_version": CAPTURE_VERSION,
+        "capture_version": RULER_FORMATTER_FROZEN_CAPTURE_VERSION,
         "prompt": "input + answer_prefix",
         "prompt_add_special_tokens": False,
         "stage_a_target": {
@@ -2988,6 +3004,7 @@ def _capture_identity_input_with_tokens(
     calibration_binding: bytes | None = None,
     execution_binding_artifacts: Mapping[str, bytes] | None = None,
     runtime_authentication_context: Mapping[str, object] | None = None,
+    expected_ruler_generation_manifest_file_sha256: str | None = None,
     collect_tokens: bool,
 ) -> tuple[dict[str, Any], TokenCaptureSink]:
     """Run the sole capture flow, optionally retaining formatter token IDs."""
@@ -3012,6 +3029,24 @@ def _capture_identity_input_with_tokens(
         )
         normalized_calibration_binding = dict(verified_calibration_binding.binding)
         authorized_execution_bindings = dict(verified_calibration_binding.execution_bindings)
+        binding_manifest_sha256 = verified_calibration_binding.ruler_generation_manifest_file_sha256
+        if (
+            expected_ruler_generation_manifest_file_sha256 is not None
+            and _require_sha256(
+                expected_ruler_generation_manifest_file_sha256,
+                context="expected RULER generation manifest file SHA-256",
+            )
+            != binding_manifest_sha256
+        ):
+            raise ValueError(
+                "Stage-A caller and calibration binding name different RULER manifests"
+            )
+        expected_ruler_generation_manifest_file_sha256 = binding_manifest_sha256
+    elif expected_ruler_generation_manifest_file_sha256 is not None:
+        expected_ruler_generation_manifest_file_sha256 = _require_sha256(
+            expected_ruler_generation_manifest_file_sha256,
+            context="expected RULER generation manifest file SHA-256",
+        )
 
     if runtime_authentication_context is None:
         runtime_provider = getattr(source, "runtime_authentication_context", None)
@@ -3053,6 +3088,9 @@ def _capture_identity_input_with_tokens(
             source,
             phase=phase,
             tokenizer_material=material,
+            expected_generation_manifest_file_sha256=(
+                expected_ruler_generation_manifest_file_sha256
+            ),
         )
         token_sink: TokenCaptureSink | None = {} if collect_tokens else None
         mbpp_records, mbpp_manifest_hash = _capture_mbpp(
@@ -3135,6 +3173,7 @@ def capture_identity_input(
     calibration_binding: bytes | None = None,
     execution_binding_artifacts: Mapping[str, bytes] | None = None,
     runtime_authentication_context: Mapping[str, object] | None = None,
+    expected_ruler_generation_manifest_file_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Capture one deterministic calibration or Stage-A resolver input."""
 
@@ -3144,6 +3183,9 @@ def capture_identity_input(
         calibration_binding=calibration_binding,
         execution_binding_artifacts=execution_binding_artifacts,
         runtime_authentication_context=runtime_authentication_context,
+        expected_ruler_generation_manifest_file_sha256=(
+            expected_ruler_generation_manifest_file_sha256
+        ),
         collect_tokens=False,
     )
     return result
@@ -3208,7 +3250,7 @@ def materialize_stage_a_identity_sequences(
 ) -> StageAIdentityMaterialization:
     """Authenticate and materialize the exact twelve frozen Stage-A sequences.
 
-    The promoted resolver-v7 artifact and its complete calibration binding are
+    The promoted resolver-v9 artifact and its complete calibration binding are
     authenticated before any data source is touched.  The canonical capture is
     then replayed once with token retention, and every content-redacted record
     must equal the corresponding authenticated frozen record byte for byte.
@@ -3221,12 +3263,12 @@ def materialize_stage_a_identity_sequences(
     if not isinstance(calibration_binding_artifact, bytes):
         raise TypeError("Stage-A calibration binding artifact must be bytes")
     if (
-        CAPTURE_VERSION != 7
-        or resolver.RESOLVER_VERSION != 7
+        CAPTURE_VERSION != 9
+        or resolver.RESOLVER_VERSION != 9
         or resolver.INPUT_SCHEMA != "recurquant.experiment013.identity-input.v5"
         or resolver.STAGE_A_FROZEN_SCHEMA != "recurquant.experiment013.identity-frozen.v6"
     ):
-        raise RuntimeError("Stage-A materialization requires the resolver-v7 identity contract")
+        raise RuntimeError("Stage-A materialization requires the resolver-v9 identity contract")
 
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_stage_a_identity_artifact,
@@ -4102,6 +4144,87 @@ def _bundle_expected_parquet_files() -> tuple[tuple[Any, Any], ...]:
     return tuple(selected)
 
 
+def _bundle_authoritative_ruler_receipt_sha256(
+    *,
+    verified_binding: object,
+    frozen_stage_a_identity: object,
+) -> Mapping[str, str]:
+    """Derive all 20 opaque receipt hashes from already authenticated identities."""
+
+    calibration_dependencies = getattr(verified_binding, "calibration_dependencies", None)
+    if not isinstance(calibration_dependencies, Mapping):
+        raise ValueError("Stage-A calibration binding lacks authenticated dependencies")
+    calibration_identity_bytes = calibration_dependencies.get("frozen_identity_artifact")
+    if not isinstance(calibration_identity_bytes, bytes):
+        raise ValueError("Stage-A calibration binding lacks its frozen calibration identity")
+    calibration_identity = resolver.deserialize_frozen_calibration_identity_artifact(
+        calibration_identity_bytes
+    )
+    calibration_records = getattr(calibration_identity, "records", None)
+    stage_a_records = getattr(frozen_stage_a_identity, "records", None)
+    if not isinstance(calibration_records, tuple) or not isinstance(stage_a_records, tuple):
+        raise ValueError("authenticated RULER identity records are unavailable")
+
+    required = {str(item["filename"]): item for item in required_ruler_receipts()}
+    if len(required) != 20:
+        raise RuntimeError("frozen RULER receipt schedule is not exact")
+    hashes: dict[str, str] = {}
+    for phase, records in (("calibration", calibration_records), ("stage_a", stage_a_records)):
+        for raw in records:
+            if not isinstance(raw, Mapping) or raw.get("family") != "ruler":
+                continue
+            category = _require_string(
+                raw.get("ruler_category"), context=f"{phase} RULER receipt category"
+            )
+            config = _require_string(raw.get("config"), context=f"{phase} RULER receipt config")
+            configured_length = _require_int(
+                raw.get("configured_length"),
+                context=f"{phase} RULER configured length",
+                minimum=1,
+            )
+            seed = _require_int(raw.get("seed"), context=f"{phase} RULER receipt seed", minimum=0)
+            filename = ruler_receipt_filename(
+                category=category,
+                config=config,
+                configured_length=configured_length,
+                seed=seed,
+            )
+            schedule = required.get(filename)
+            if schedule is None or schedule["phase"] != phase or filename in hashes:
+                raise ValueError("authenticated RULER receipt identity inventory drifted")
+            hashes[filename] = _require_sha256(
+                raw.get("generator_receipt_sha256"),
+                context=f"authenticated RULER receipt {filename} SHA-256",
+            )
+    if set(hashes) != set(required):
+        raise ValueError("authenticated identities do not commit to all 20 RULER receipts")
+    return MappingProxyType(dict(sorted(hashes.items())))
+
+
+def _bundle_read_authoritative_ruler_receipts(
+    *,
+    expected_sha256: Mapping[str, str],
+    reader: Callable[[str], bytes],
+    context: str,
+) -> Mapping[str, bytes]:
+    """Read each opaque receipt once and authenticate its bytes without decoding it."""
+
+    required_names = tuple(str(item["filename"]) for item in required_ruler_receipts())
+    if set(expected_sha256) != set(required_names) or len(required_names) != 20:
+        raise ValueError("authoritative RULER receipt hash inventory is incomplete")
+    payloads: dict[str, bytes] = {}
+    for filename in required_names:
+        payload = reader(filename)
+        if not isinstance(payload, bytes) or not payload:
+            raise ValueError(f"{context} RULER receipt bytes are unavailable: {filename}")
+        if sha256_bytes(payload) != expected_sha256[filename]:
+            raise ValueError(
+                f"{context} RULER receipt differs from authenticated identity: {filename}"
+            )
+        payloads[filename] = bytes(payload)
+    return MappingProxyType(payloads)
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedStageAInputBundle:
     root: Path
@@ -4146,6 +4269,9 @@ def authenticate_stage_a_input_bundle(
         raise TypeError("frozen Stage-A identity artifact must be bytes")
     if not isinstance(calibration_binding_artifact, bytes):
         raise TypeError("Stage-A calibration binding artifact must be bytes")
+    verified_binding = resolver.deserialize_stage_a_calibration_binding_artifact(
+        calibration_binding_artifact
+    )
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_stage_a_identity_artifact,
         calibration_binding_artifact=calibration_binding_artifact,
@@ -4153,6 +4279,10 @@ def authenticate_stage_a_input_bundle(
         expected_stage_a_capture_provenance_receipt_sha256=(
             expected_stage_a_capture_provenance_receipt_sha256
         ),
+    )
+    authoritative_ruler_receipt_sha256 = _bundle_authoritative_ruler_receipt_sha256(
+        verified_binding=verified_binding,
+        frozen_stage_a_identity=frozen,
     )
     expected_bindings = _validate_execution_binding_artifacts(execution_binding_artifacts)
     if dict(frozen.execution_bindings) != expected_bindings:
@@ -4255,6 +4385,23 @@ def authenticate_stage_a_input_bundle(
     )
 
     expected_records: dict[tuple[str, str], dict[str, Any]] = {}
+    generation_manifest = bundle.object_bytes(
+        "ruler_generation_manifest",
+        "generation-manifest.json",
+    )
+    if sha256_bytes(generation_manifest) != (
+        verified_binding.ruler_generation_manifest_file_sha256
+    ):
+        raise ValueError("Stage-A input bundle RULER manifest differs from calibration custody")
+    expected_records[("ruler_generation_manifest", "generation-manifest.json")] = (
+        _bundle_expected_object_record(
+            role="ruler_generation_manifest",
+            source_id=resolver.RULER_SOURCE_ID,
+            revision=resolver.RULER_REVISION,
+            logical_path="generation-manifest.json",
+            payload=generation_manifest,
+        )
+    )
     model_bytes = bundle.object_bytes("model_hub_manifest", "model-file-manifest.json")
     if model_bytes != execution_binding_artifacts["model_file_manifest_file_sha256"]:
         raise ValueError("Stage-A bundle model Hub attestation differs from the frozen manifest")
@@ -4291,22 +4438,14 @@ def authenticate_stage_a_input_bundle(
             payload=payload,
             git_blob_oid=git_blob_oid,
         )
-    generation_manifest = bundle.object_bytes(
-        "ruler_generation_manifest",
-        "generation-manifest.json",
-    )
-    expected_records[("ruler_generation_manifest", "generation-manifest.json")] = (
-        _bundle_expected_object_record(
-            role="ruler_generation_manifest",
-            source_id=resolver.RULER_SOURCE_ID,
-            revision=resolver.RULER_REVISION,
-            logical_path="generation-manifest.json",
-            payload=generation_manifest,
-        )
+    ruler_receipt_payloads = _bundle_read_authoritative_ruler_receipts(
+        expected_sha256=authoritative_ruler_receipt_sha256,
+        reader=lambda filename: bundle.object_bytes("ruler_receipt", filename),
+        context="Stage-A input bundle",
     )
     for item in required_ruler_receipts():
         filename = str(item["filename"])
-        payload = bundle.object_bytes("ruler_receipt", filename)
+        payload = ruler_receipt_payloads[filename]
         expected_records[("ruler_receipt", filename)] = _bundle_expected_object_record(
             role="ruler_receipt",
             source_id=resolver.RULER_SOURCE_ID,
@@ -4385,6 +4524,9 @@ def stage_stage_a_input_bundle(
     if _bundle_path_within(destination, cache) or _bundle_path_within(cache, destination):
         raise ValueError("Stage-A input bundle and shared Hub cache must not be nested")
     ruler_root = _bundle_safe_directory(ruler_receipt_dir, create=False)
+    verified_binding = resolver.deserialize_stage_a_calibration_binding_artifact(
+        calibration_binding_artifact
+    )
     frozen = resolver.deserialize_frozen_stage_a_identity_artifact(
         frozen_stage_a_identity_artifact,
         calibration_binding_artifact=calibration_binding_artifact,
@@ -4393,9 +4535,34 @@ def stage_stage_a_input_bundle(
             expected_stage_a_capture_provenance_receipt_sha256
         ),
     )
+    authoritative_ruler_receipt_sha256 = _bundle_authoritative_ruler_receipt_sha256(
+        verified_binding=verified_binding,
+        frozen_stage_a_identity=frozen,
+    )
     expected_execution_bindings = _validate_execution_binding_artifacts(execution_binding_artifacts)
     if dict(frozen.execution_bindings) != expected_execution_bindings:
         raise ValueError("opaque stager inputs differ from the frozen Stage-A identity")
+    ruler_inventory = _verify_live_ruler_receipt_inventory(ruler_root)
+    generation_manifest = _bundle_stable_file_bytes(
+        ruler_inventory["generation-manifest.json"],
+        context="RULER generation manifest for opaque staging",
+    )
+    if sha256_bytes(generation_manifest) != (
+        verified_binding.ruler_generation_manifest_file_sha256
+    ):
+        raise ValueError("opaque stager RULER manifest differs from calibration custody")
+
+    def read_live_ruler_receipt(filename: str) -> bytes:
+        return _bundle_stable_file_bytes(
+            ruler_inventory[filename],
+            context=f"RULER receipt {filename} for opaque staging",
+        )
+
+    ruler_receipt_payloads = _bundle_read_authoritative_ruler_receipts(
+        expected_sha256=authoritative_ruler_receipt_sha256,
+        reader=read_live_ruler_receipt,
+        context="opaque stager",
+    )
     tokenizer_files = _bundle_tokenizer_files(frozen_stage_a_identity_artifact)
     runtime_context = _normalize_runtime_authentication_context(runtime_authentication_context)
     authentication = _authenticate_execution_binding_artifacts(
@@ -4558,10 +4725,6 @@ def stage_stage_a_input_bundle(
                     payload=payload,
                     git_blob_oid=git_blob_oid,
                 )
-            generation_manifest = _bundle_stable_file_bytes(
-                ruler_root / "generation-manifest.json",
-                context="RULER generation manifest for opaque staging",
-            )
             _bundle_add_object(
                 staging_root,
                 records,
@@ -4573,10 +4736,7 @@ def stage_stage_a_input_bundle(
             )
             for item in required_ruler_receipts():
                 filename = str(item["filename"])
-                payload = _bundle_stable_file_bytes(
-                    ruler_root / filename,
-                    context=f"RULER receipt {filename} for opaque staging",
-                )
+                payload = ruler_receipt_payloads[filename]
                 _bundle_add_object(
                     staging_root,
                     records,

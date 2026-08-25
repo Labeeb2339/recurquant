@@ -41,7 +41,11 @@ STAGE_A_FROZEN_SCHEMA: Final = "recurquant.experiment013.identity-frozen.v6"
 STAGE_A_IDENTITY_SCHEMA_VERSION: Final = 6
 ARTIFACT_KIND: Final = "recurquant_static_rht_q468_identity"
 # Procedure version.  The identity field sets remain the published v5 contract.
-RESOLVER_VERSION: Final = 7
+RESOLVER_VERSION: Final = 9
+# G0 deliberately leaves this unset so no calibration chain can authorize
+# Stage A before the fresh complete RULER bundle exists.  The direct-descendant
+# final H0 freezes the same whole-manifest digest here and in the sealed runner.
+RULER_GENERATION_MANIFEST_FILE_SHA256: Final[str | None] = None
 PARQUET_MATERIALIZATION_MANIFEST_FILE_SHA256: Final = (
     "ee5628e50e5d3516fd79077542d355fd915455ac0e53128d372f4177ad63d39c"
 )
@@ -176,10 +180,10 @@ RULER_CALIBRATION_SCHEDULE: Final = (
     ("question_answering", "qa_2", 4_096, 12_340),
 )
 RULER_STAGE_A_SCHEDULE: Final = (
-    ("retrieval", "niah_multiquery", 4_096, 2_343),
-    ("multi_hop_tracing", "vt", 4_096, 2_343),
-    ("aggregation", "fwe", 4_096, 2_343),
-    ("question_answering", "qa_1", 4_096, 2_343),
+    ("retrieval", "niah_multiquery", 4_096, 2_344),
+    ("multi_hop_tracing", "vt", 4_096, 2_344),
+    ("aggregation", "fwe", 4_096, 2_344),
+    ("question_answering", "qa_1", 4_096, 2_344),
 )
 
 CLAIM_BOUNDARY: Final = (
@@ -316,8 +320,8 @@ FROZEN_RECORD_FIELDS: Final = RECORD_FIELDS | {
     "anchor_positions_sha256",
 }
 STAGE_A_BINDING_ARTIFACT_KIND: Final = "recurquant_experiment013_stage_a_calibration_binding"
-STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION: Final = 4
-STAGE_A_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibration-binding-v4"
+STAGE_A_BINDING_ARTIFACT_SCHEMA_VERSION: Final = 5
+STAGE_A_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibration-binding-v5"
 STAGE_A_CORE_BINDING_ARTIFACT_KIND: Final = (
     "recurquant_experiment013_stage_a_calibration_core_binding"
 )
@@ -326,14 +330,14 @@ STAGE_A_CORE_BINDING_ARTIFACT_REVISION: Final = "experiment-013-stage-a-calibrat
 STAGE_A_CALIBRATION_AUTHORIZATION_ARTIFACT_KIND: Final = (
     "recurquant_experiment013_stage_a_calibration_authorization"
 )
-STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION: Final = 2
+STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA_VERSION: Final = 3
 STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
-    "experiment-013-stage-a-calibration-authorization-v2"
+    "experiment-013-stage-a-calibration-authorization-v3"
 )
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 CALIBRATION_RUN_REPORT_SCHEMA_VERSION: Final = 4
-CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
+CALIBRATION_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v19"
 CALIBRATION_RUN_LAUNCH_FINALIZATION_KIND: Final = (
     "recurquant_experiment013_calibration_run_launch_finalization"
 )
@@ -346,8 +350,8 @@ CALIBRATION_RUN_LAUNCH_FINALIZATION_FILENAME: Final = "RUN_LAUNCH_FINALIZATION.j
 CALIBRATION_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
-CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION: Final = 2
-CALIBRATION_CAPTURE_VERSION: Final = 7
+CALIBRATION_CAPTURE_PROVENANCE_SCHEMA_VERSION: Final = 3
+CALIBRATION_CAPTURE_VERSION: Final = 9
 CALIBRATION_CAPTURE_PROVENANCE_STATUS: Final = (
     "captured_under_authenticated_runtime_and_launcher_finalized"
 )
@@ -357,7 +361,7 @@ CALIBRATION_CAPTURE_PUBLICATION_CONTRACT: Final = (
 STAGE_A_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_stage_a_identity_capture_provenance"
 )
-STAGE_A_CAPTURE_PROVENANCE_SCHEMA_VERSION: Final = 1
+STAGE_A_CAPTURE_PROVENANCE_SCHEMA_VERSION: Final = 2
 STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
     "captured_under_authenticated_runtime_and_launcher_finalized"
 )
@@ -2019,6 +2023,7 @@ class StageACaptureProvenanceReceipt:
     identity_input_file_sha256: str
     calibration_binding_file_sha256: str
     calibration_authorization_file_sha256: str
+    ruler_generation_manifest_file_sha256: str
     source_commit: str
     execution_bindings: Mapping[str, str]
 
@@ -2059,6 +2064,7 @@ class StageACalibrationBindingArtifact:
     calibration_dependencies: Mapping[str, bytes]
     authorization_dependencies: Mapping[str, bytes]
     authorization_file_sha256: str
+    ruler_generation_manifest_file_sha256: str
     execution_bindings: Mapping[str, str]
     source_commit: str
     canonical_evidence_sha256: str
@@ -2086,7 +2092,7 @@ class StageACalibrationBindingArtifact:
 
 @dataclass(frozen=True, slots=True)
 class StageACalibrationAuthorizationArtifact:
-    """Verified authorization over one finalized runner-v17 calibration chain."""
+    """Verified authorization over one finalized runner-v19 calibration chain."""
 
     binding: Mapping[str, str]
     calibration_dependencies: Mapping[str, bytes]
@@ -2095,6 +2101,7 @@ class StageACalibrationAuthorizationArtifact:
     execution_bindings: Mapping[str, str]
     source_commit: str
     identity_input_manifest_sha256: str
+    ruler_generation_manifest_file_sha256: str
     canonical_evidence_sha256: str
     file_sha256: str
 
@@ -2729,11 +2736,9 @@ def _derive_stage_a_calibration_binding(
         if steps not in allocations:
             raise ValueError(f"official score artifact is missing exact K{steps}")
         allocation_codes, allocation_hash = allocations[steps]
-        if (
-            policy.code_map_sha256 != allocation_hash
-            or policy.precision_codes().reshape(-1).tobytes(order="C")
-            != allocation_codes.reshape(-1).tobytes(order="C")
-        ):
+        if policy.code_map_sha256 != allocation_hash or policy.precision_codes().reshape(
+            -1
+        ).tobytes(order="C") != allocation_codes.reshape(-1).tobytes(order="C"):
             raise ValueError(f"policy {method_id} code map differs from exact allocation")
     if policy27030.source_commit != policy29334.source_commit:
         raise ValueError("K27030 and K29334 policies must share one source commit")
@@ -3669,6 +3674,7 @@ def _deserialize_capture_provenance_receipt(
                 "identity_input_file_sha256",
                 "phase",
                 "publication_contract",
+                "ruler_generation_manifest_file_sha256",
                 "runner_revision",
                 "schema_version",
                 "source_commit",
@@ -3696,6 +3702,17 @@ def _deserialize_capture_provenance_receipt(
         root["identity_input_file_sha256"],
         context="capture provenance identity input SHA-256",
     )
+    ruler_generation_manifest_file_sha256 = require_sha256(
+        root["ruler_generation_manifest_file_sha256"],
+        context="capture provenance RULER generation manifest SHA-256",
+    )
+    expected_ruler_generation_manifest_file_sha256 = RULER_GENERATION_MANIFEST_FILE_SHA256
+    if not isinstance(expected_ruler_generation_manifest_file_sha256, str) or (
+        re.fullmatch(r"[0-9a-f]{64}", expected_ruler_generation_manifest_file_sha256) is None
+    ):
+        raise ValueError("RULER generation manifest SHA-256 is not frozen in this source commit")
+    if ruler_generation_manifest_file_sha256 != expected_ruler_generation_manifest_file_sha256:
+        raise ValueError("capture provenance binds a different source-frozen RULER manifest")
     _validate_execution_bindings(root["execution_bindings"])
     _validate_capture_provenance_source_runtime(
         root,
@@ -4362,6 +4379,10 @@ def _derive_stage_a_calibration_authorization(
         or capture["execution_bindings"] != execution_bindings
     ):
         raise ValueError("capture provenance receipt differs from H0/identity bindings")
+    ruler_generation_manifest_file_sha256 = require_sha256(
+        capture["ruler_generation_manifest_file_sha256"],
+        context="calibration capture RULER generation manifest SHA-256",
+    )
 
     _deserialize_calibration_run_launch_finalization(
         dependencies["fisher_h1_smoke_launch_finalization"],
@@ -4423,6 +4444,7 @@ def _derive_stage_a_calibration_authorization(
         ),
         "frozen_calibration_identity_file_sha256": identity.file_sha256,
         "identity_input_manifest_sha256": identity_input_manifest_sha256,
+        "ruler_generation_manifest_file_sha256": ruler_generation_manifest_file_sha256,
         "source_commit": source_commit,
         "static_q48_policy_file_sha256": sha256_bytes(dependencies["static_q48_policy_artifact"]),
     }
@@ -4451,7 +4473,7 @@ def build_stage_a_calibration_authorization_artifact(
     expected_calibration_output_directory_absolute_path_sha256: str,
     expected_fisher_h1_smoke_output_directory_absolute_path_sha256: str,
 ) -> bytes:
-    """Authorize Stage A only after the complete runner-v17 chain is finalized."""
+    """Authorize Stage A only after the complete runner-v19 chain is finalized."""
 
     dependencies = {
         "calibration_complete_marker": calibration_complete_marker,
@@ -4617,6 +4639,9 @@ def deserialize_stage_a_calibration_authorization_artifact(
         execution_bindings=dict(execution_bindings),
         source_commit=str(bindings["source_commit"]),
         identity_input_manifest_sha256=str(bindings["identity_input_manifest_sha256"]),
+        ruler_generation_manifest_file_sha256=str(
+            bindings["ruler_generation_manifest_file_sha256"]
+        ),
         canonical_evidence_sha256=canonical_evidence_sha256,
         file_sha256=file_sha256,
     )
@@ -4646,6 +4671,9 @@ def build_stage_a_calibration_binding_artifact(
             )
         },
         "dependency_file_sha256": dependency_hashes,
+        "ruler_generation_manifest_file_sha256": (
+            authorization.ruler_generation_manifest_file_sha256
+        ),
     }
     document = {
         "artifact_kind": STAGE_A_BINDING_ARTIFACT_KIND,
@@ -4687,7 +4715,13 @@ def deserialize_stage_a_calibration_binding_artifact(
     require_exact_fields(
         evidence,
         frozenset(
-            {"artifact_revision", "binding", "dependencies_base64", "dependency_file_sha256"}
+            {
+                "artifact_revision",
+                "binding",
+                "dependencies_base64",
+                "dependency_file_sha256",
+                "ruler_generation_manifest_file_sha256",
+            }
         ),
         context="Stage-A binding evidence",
     )
@@ -4716,6 +4750,12 @@ def deserialize_stage_a_calibration_binding_artifact(
         authorization_bytes,
         expected_file_sha256=authorization_hash,
     )
+    ruler_generation_manifest_file_sha256 = require_sha256(
+        evidence["ruler_generation_manifest_file_sha256"],
+        context="Stage-A binding RULER generation manifest SHA-256",
+    )
+    if ruler_generation_manifest_file_sha256 != authorization.ruler_generation_manifest_file_sha256:
+        raise ValueError("Stage-A binding RULER manifest differs from its authorization")
     binding = dict(authorization.binding)
     binding["calibration_authorization_file_sha256"] = authorization_hash
     if evidence["binding"] != binding:
@@ -4726,6 +4766,7 @@ def deserialize_stage_a_calibration_binding_artifact(
         calibration_dependencies=dict(authorization.calibration_dependencies),
         authorization_dependencies=dict(authorization.authorization_dependencies),
         authorization_file_sha256=authorization_hash,
+        ruler_generation_manifest_file_sha256=ruler_generation_manifest_file_sha256,
         execution_bindings=dict(authorization.execution_bindings),
         source_commit=authorization.source_commit,
         canonical_evidence_sha256=canonical_evidence_sha256,
@@ -4771,6 +4812,7 @@ def deserialize_stage_a_capture_provenance_receipt(
                 "identity_input_file_sha256",
                 "phase",
                 "publication_contract",
+                "ruler_generation_manifest_file_sha256",
                 "runner_revision",
                 "schema_version",
                 "source_commit",
@@ -4822,6 +4864,12 @@ def deserialize_stage_a_capture_provenance_receipt(
     )
     if calibration_authorization_file_sha256 != binding.authorization_file_sha256:
         raise ValueError("Stage-A capture provenance binds a different embedded authorization")
+    ruler_generation_manifest_file_sha256 = require_sha256(
+        root["ruler_generation_manifest_file_sha256"],
+        context="Stage-A capture provenance RULER generation manifest SHA-256",
+    )
+    if ruler_generation_manifest_file_sha256 != binding.ruler_generation_manifest_file_sha256:
+        raise ValueError("Stage-A capture provenance binds a different RULER manifest")
     execution_bindings = _validate_execution_bindings(root["execution_bindings"])
     if dict(root["execution_bindings"]) != execution_bindings or execution_bindings != dict(
         binding.execution_bindings
@@ -4850,6 +4898,7 @@ def deserialize_stage_a_capture_provenance_receipt(
         identity_input_file_sha256=identity_input_file_sha256,
         calibration_binding_file_sha256=calibration_binding_file_sha256,
         calibration_authorization_file_sha256=calibration_authorization_file_sha256,
+        ruler_generation_manifest_file_sha256=ruler_generation_manifest_file_sha256,
         source_commit=source_commit,
         execution_bindings=execution_bindings,
     )

@@ -50,6 +50,28 @@ def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+SYNTHETIC_RULER_GENERATION_MANIFEST_BYTES = b"fixture generation manifest\n"
+SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256 = digest(SYNTHETIC_RULER_GENERATION_MANIFEST_BYTES)
+
+
+@pytest.fixture(autouse=True)
+def _freeze_synthetic_ruler_generation_manifest_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Give synthetic tests an explicit post-generation manifest authority."""
+
+    monkeypatch.setattr(
+        runner,
+        "RULER_GENERATION_MANIFEST_FILE_SHA256",
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256,
+    )
+    monkeypatch.setattr(
+        identity_resolver,
+        "RULER_GENERATION_MANIFEST_FILE_SHA256",
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256,
+    )
+
+
 def token_sequence_manifest_digest(records: Sequence[Mapping[str, object]]) -> str:
     commitments = [
         {
@@ -607,6 +629,7 @@ def capture_provenance_receipt_document(
     capture_source_sha256: str,
     identity_input_manifest_sha256: str,
     source_commit: str,
+    ruler_generation_manifest_file_sha256: str = (SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256),
 ) -> dict[str, object]:
     return {
         "artifact_kind": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND,
@@ -632,6 +655,7 @@ def capture_provenance_receipt_document(
         "publication_contract": (
             runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
         ),
+        "ruler_generation_manifest_file_sha256": (ruler_generation_manifest_file_sha256),
         "runner_revision": runner.RUNNER_REVISION,
         "schema_version": runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA,
         "source_commit": source_commit,
@@ -739,6 +763,7 @@ def prepared_fake_sealed_capture(
                     "calibration_identity_file_sha256",
                     "calibration_score_artifact_file_sha256",
                     "comparator_score_artifact_file_sha256",
+                    "ruler_generation_manifest_file_sha256",
                     "split_half_stability_artifact_file_sha256",
                     "static_fisher_k29334_policy_file_sha256",
                     "static_k27030_policy_file_sha256",
@@ -749,6 +774,9 @@ def prepared_fake_sealed_capture(
             start=1,
         )
     }
+    binding_values["ruler_generation_manifest_file_sha256"] = (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256
+    )
     binding_bytes = b"authenticated Stage-A calibration binding\n"
     binding_path = tmp_path / "stage-a-calibration-binding.json"
     if stage_a:
@@ -854,11 +882,15 @@ def prepared_fake_sealed_capture(
 
     resolver_module = SimpleNamespace(
         CALIBRATION_RUNNER_REVISION=runner.RUNNER_REVISION,
+        RULER_GENERATION_MANIFEST_FILE_SHA256=(SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256),
         deserialize_stage_a_calibration_binding_artifact=lambda data, **kwargs: (
             SimpleNamespace(
                 authorization_file_sha256=binding_values["calibration_authorization_file_sha256"],
                 binding=binding_values,
                 execution_bindings=bindings,
+                ruler_generation_manifest_file_sha256=(
+                    SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256
+                ),
                 source_commit="4" * 40,
             )
             if data == binding_bytes and kwargs == {"expected_file_sha256": digest(binding_bytes)}
@@ -873,6 +905,24 @@ def prepared_fake_sealed_capture(
         during_capture = observations.get("during_capture")
         if callable(during_capture):
             during_capture()
+        capture_source = kwargs["source"]
+        generation_reader = capture_source.ruler_generation_manifest_bytes
+        receipt_reader = capture_source.ruler_receipt_bytes
+        observations["captured_generation_manifest_bytes"] = generation_reader()
+        selected = next(
+            item
+            for item in required_ruler
+            if item["phase"] == ("stage_a" if stage_a else "calibration")
+        )
+        observations["captured_phase_receipt_bytes"] = receipt_reader(
+            category=selected["category"],
+            config=selected["config"],
+            configured_length=selected["configured_length"],
+            seed=selected["seed"],
+        )
+        after_capture_reads = observations.get("after_capture_reads")
+        if callable(after_capture_reads):
+            after_capture_reads()
         result = {
             "datasets": {},
             "execution_bindings": bindings,
@@ -910,7 +960,7 @@ def prepared_fake_sealed_capture(
         )
         ruler_payloads[key] = f"fixture receipt {filename}\n".encode()
         ruler_filenames[key] = filename
-    generation_manifest_bytes = b"fixture generation manifest\n"
+    generation_manifest_bytes = SYNTHETIC_RULER_GENERATION_MANIFEST_BYTES
     observations["required_ruler"] = tuple(required_ruler)
     observations["ruler_payloads"] = ruler_payloads
     observations["generation_manifest_bytes"] = generation_manifest_bytes
@@ -1020,11 +1070,6 @@ def prepared_fake_sealed_capture(
         "CALIBRATION_IDENTITY_HIDDEN_AVAILABILITY_MODULES",
         ("never_present_capture_model_runtime",),
     )
-    monkeypatch.setattr(
-        runner,
-        "RULER_GENERATION_MANIFEST_FILE_SHA256",
-        digest(generation_manifest_bytes),
-    )
     authenticated = SimpleNamespace(manifest_file_sha256=manifest.file_sha256)
     return arguments, authenticated, manifest, runtime_context, observations
 
@@ -1033,13 +1078,13 @@ def origins_by_module(origins: Sequence[Mapping[str, object]]) -> dict[str, Mapp
     return {str(item["module"]): item for item in origins}
 
 
-def test_capture_custody_constants_are_frozen_at_v17_v7() -> None:
-    assert runner.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v17"
-    assert runner.CALIBRATION_IDENTITY_CAPTURE_VERSION == 7
-    assert (
-        runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE
-        == "recurquant.static_q468_artifact_contract"
-    )
+def test_capture_custody_constants_are_frozen_at_v19_v9() -> None:
+    assert runner.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v19"
+    assert runner.CALIBRATION_IDENTITY_CAPTURE_VERSION == 9
+    assert runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA == 3
+    assert runner.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA == 2
+    assert runner.STAGE_A_CALIBRATION_BINDING_SCHEMA == 5
+    assert runner.STATIC_Q468_ARTIFACT_CONTRACT_MODULE == "recurquant.static_q468_artifact_contract"
     assert runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH == (
         "src/recurquant/static_q468_artifact_contract.py"
     )
@@ -1078,6 +1123,7 @@ def test_capture_provenance_receipt_rejects_replaced_source_manifest(
         "module-path",
         "excluded-policy",
         "publication-contract",
+        "ruler-manifest",
         "schema-v1",
         "status",
     ],
@@ -1105,6 +1151,8 @@ def test_capture_provenance_receipt_rejects_every_custody_drift(
         receipt["excluded_runtime_modules"] = ["setuptools"]
     elif mutation == "publication-contract":
         receipt["publication_contract"] = "child-published-before-host-cleanup"
+    elif mutation == "ruler-manifest":
+        receipt["ruler_generation_manifest_file_sha256"] = "2" * 64
     elif mutation == "schema-v1":
         receipt["schema_version"] = 1
     else:
@@ -1266,6 +1314,9 @@ def test_sealed_capture_emits_receipt_candidate_without_publishing_it(
     assert receipt["publication_contract"] == (
         runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
     )
+    assert receipt["ruler_generation_manifest_file_sha256"] == (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256
+    )
     assert receipt["status"] == runner.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS
     assert observations["runtime_authentications"] == 2
     assert observations["source_verifications"] == 3
@@ -1291,6 +1342,14 @@ def test_sealed_capture_emits_receipt_candidate_without_publishing_it(
     assert isinstance(capture_kwargs, dict)
     assert capture_kwargs["phase"] == "calibration"
     assert capture_kwargs["calibration_binding"] is None
+    assert isinstance(capture_kwargs["source"], runner._ImmutablePhaseRulerSource)
+    assert capture_kwargs["source"] is not live_source
+    assert capture_kwargs["expected_ruler_generation_manifest_file_sha256"] == (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256
+    )
+    assert observations["captured_generation_manifest_bytes"] == (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_BYTES
+    )
     assert "model_root" not in capture_kwargs
     assert "adapter" not in capture_kwargs
     runtime_authentication_context = capture_kwargs["runtime_authentication_context"]
@@ -1341,12 +1400,18 @@ def test_sealed_stage_a_capture_authenticates_binding_and_emits_only_candidate(
     assert receipt["schema_version"] == runner.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
     assert receipt["phase"] == "stage_a"
     assert receipt["identity_input_file_sha256"] == digest(identity_bytes)
+    assert receipt["ruler_generation_manifest_file_sha256"] == (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256
+    )
     assert receipt["calibration_binding_file_sha256"] == digest(
         (tmp_path / "stage-a-calibration-binding.json").read_bytes()
     )
     capture_kwargs = observations["capture_kwargs"]
     assert isinstance(capture_kwargs, dict)
     assert capture_kwargs["phase"] == "stage_a"
+    assert capture_kwargs["expected_ruler_generation_manifest_file_sha256"] == (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256
+    )
     assert (
         capture_kwargs["calibration_binding"]
         == (tmp_path / "stage-a-calibration-binding.json").read_bytes()
@@ -1364,6 +1429,48 @@ def test_sealed_stage_a_capture_authenticates_binding_and_emits_only_candidate(
         "generation-manifest.json",
         *stage_a_names,
     ]
+
+
+@pytest.mark.parametrize(
+    ("anchor", "message"),
+    [
+        (None, "not frozen in this source commit"),
+        ("not-a-sha256", "not frozen in this source commit"),
+        ("0" * 64, "generation manifest file SHA-256 drifted"),
+    ],
+)
+def test_sealed_capture_requires_exact_post_generation_manifest_anchor(
+    anchor: str | None,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch)
+    )
+    monkeypatch.setattr(runner, "RULER_GENERATION_MANIFEST_FILE_SHA256", anchor)
+    resolver_module = observations["resolver_module"]
+    assert isinstance(resolver_module, SimpleNamespace)
+    resolver_module.RULER_GENERATION_MANIFEST_FILE_SHA256 = anchor
+
+    with (
+        isolated_sealed_capture_modules(),
+        pytest.raises(runner.CalibrationRunError, match=message),
+    ):
+        runner._sealed_capture_calibration_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=tmp_path / "python.exe",
+        )
+
+    assert "capture_kwargs" not in observations
+    assert observations["ruler_reads"] == ["generation-manifest.json"]
+    assert not (tmp_path / "identity-input.json").exists()
+    assert not (tmp_path / "capture-provenance.json").exists()
+    assert capsys.readouterr().out == ""
 
 
 def test_sealed_capture_rejects_preloaded_artifact_contract_before_exact_loading(
@@ -1464,6 +1571,62 @@ def test_sealed_capture_rejects_phase_scoped_ruler_file_mutation(
     assert capsys.readouterr().out == ""
 
 
+def test_sealed_capture_uses_immutable_ruler_bytes_across_aba_swap_and_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch)
+    )
+    required_ruler = observations["required_ruler"]
+    payloads = observations["ruler_payloads"]
+    assert isinstance(required_ruler, tuple)
+    assert isinstance(payloads, dict)
+    selected = next(item for item in required_ruler if item["phase"] == "calibration")
+    key = (
+        selected["category"],
+        selected["config"],
+        selected["configured_length"],
+        selected["seed"],
+    )
+    original_receipt = payloads[key]
+
+    def swap_live_bytes() -> None:
+        observations["generation_manifest_bytes"] = b"transient manifest substitution\n"
+        payloads[key] = b"transient receipt substitution\n"
+
+    def restore_live_bytes() -> None:
+        observations["generation_manifest_bytes"] = SYNTHETIC_RULER_GENERATION_MANIFEST_BYTES
+        payloads[key] = original_receipt
+
+    observations["during_capture"] = swap_live_bytes
+    observations["after_capture_reads"] = restore_live_bytes
+
+    with isolated_sealed_capture_modules():
+        assert (
+            runner._sealed_capture_calibration_identity(
+                arguments,
+                manifest=manifest,
+                runtime_context=runtime_context,
+                authenticated_runtime=authenticated,
+                interpreter_path=tmp_path / "python.exe",
+            )
+            == 0
+        )
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["ruler_generation_manifest_file_sha256"] == (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_FILE_SHA256
+    )
+    assert observations["captured_generation_manifest_bytes"] == (
+        SYNTHETIC_RULER_GENERATION_MANIFEST_BYTES
+    )
+    assert observations["captured_phase_receipt_bytes"] == original_receipt
+    assert observations["generation_manifest_bytes"] == (SYNTHETIC_RULER_GENERATION_MANIFEST_BYTES)
+    assert payloads[key] == original_receipt
+
+
 def test_sealed_capture_does_not_open_or_hash_other_phase_ruler_bodies(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1527,6 +1690,52 @@ def test_sealed_stage_a_capture_rejects_binding_digest_before_live_source(
             authenticated_runtime=authenticated,
             interpreter_path=tmp_path / "python.exe",
         )
+    assert "capture_kwargs" not in observations
+    assert not (tmp_path / "identity-input.json").exists()
+    assert not (tmp_path / "capture-provenance.json").exists()
+
+
+def test_sealed_stage_a_capture_rejects_cross_manifest_binding_before_ruler_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments, authenticated, manifest, runtime_context, observations = (
+        prepared_fake_sealed_capture(tmp_path, monkeypatch, stage_a=True)
+    )
+    resolver_module = observations["resolver_module"]
+    assert isinstance(resolver_module, SimpleNamespace)
+    deserialize = resolver_module.deserialize_stage_a_calibration_binding_artifact
+
+    def deserialize_with_different_manifest(data: bytes, **kwargs: object) -> SimpleNamespace:
+        verified = deserialize(data, **kwargs)
+        return SimpleNamespace(
+            **{
+                **vars(verified),
+                "ruler_generation_manifest_file_sha256": "f" * 64,
+            }
+        )
+
+    resolver_module.deserialize_stage_a_calibration_binding_artifact = (
+        deserialize_with_different_manifest
+    )
+
+    with (
+        isolated_sealed_capture_modules(),
+        pytest.raises(
+            runner.CalibrationRunError,
+            match="calibration custody differs from the source-frozen RULER manifest",
+        ),
+    ):
+        runner._sealed_capture_stage_a_identity(
+            arguments,
+            manifest=manifest,
+            runtime_context=runtime_context,
+            authenticated_runtime=authenticated,
+            interpreter_path=tmp_path / "python.exe",
+        )
+
+    assert observations["ruler_reads"] == []
+    assert "live_source" not in observations
     assert "capture_kwargs" not in observations
     assert not (tmp_path / "identity-input.json").exists()
     assert not (tmp_path / "capture-provenance.json").exists()
@@ -3565,7 +3774,7 @@ def test_authorization_resolver_path_swap_executes_no_unauthenticated_code(
             },
             runner.IDENTITY_RESOLVER_SOURCE_PATH: {
                 "raw_sha256": digest(authenticated_bytes),
-            }
+            },
         },
     )
     stable_read = runner._read_stable_regular_bytes
@@ -3655,13 +3864,14 @@ def test_forged_authorization_resolver_is_rejected_before_output_publication(
         entries={
             runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: {
                 "raw_sha256": digest(
-                    (SCRIPT.parents[1] / runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH)
-                    .read_bytes()
+                    (
+                        SCRIPT.parents[1] / runner.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH
+                    ).read_bytes()
                 ),
             },
             runner.IDENTITY_RESOLVER_SOURCE_PATH: {
                 "raw_sha256": "0" * 64,
-            }
+            },
         },
     )
     monkeypatch.setattr(runner, "_read_stable_regular_bytes", read_fixture_or_source)

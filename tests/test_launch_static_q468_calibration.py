@@ -186,8 +186,13 @@ def _full_runner_arguments(
     return arguments
 
 
-def test_v17_runtime_report_marker_and_scratch_contract_constants() -> None:
-    assert launcher.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v17"
+def test_v19_runtime_report_marker_and_scratch_contract_constants() -> None:
+    assert launcher.RUNNER_REVISION == "experiment-013-static-q468-calibration-runner-v19"
+    assert launcher.CALIBRATION_IDENTITY_CAPTURE_VERSION == 9
+    assert launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA == 3
+    assert launcher.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA == 2
+    assert launcher.STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA == 3
+    assert launcher.STAGE_A_CALIBRATION_BINDING_SCHEMA == 5
     assert launcher.RUNTIME_MANIFEST_SCHEMA == 7
     assert launcher.RUN_REPORT_SCHEMA == 4
     assert launcher.FISHER_SMOKE_COMPLETE_BYTES == (
@@ -311,7 +316,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     )
     capture_source_path = _write(
         repository / launcher.CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH,
-        b"CAPTURE_VERSION = 7\n",
+        b"CAPTURE_VERSION = 9\n",
     )
     source_payload = {
         "git_executable": {
@@ -357,6 +362,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     parquet_path = _write(artifacts / "parquet.json", b'{"parquet":"fixture"}\n')
     ruler_receipt_dir = tmp_path / "ruler-receipts"
     ruler_receipt_dir.mkdir()
+    ruler_generation_manifest_file_sha256 = _sha256(b"fixture RULER generation manifest\n")
     bindings = {
         "calibration_runtime_manifest_file_sha256": _sha256(runtime_path.read_bytes()),
         "model_file_manifest_file_sha256": _sha256(model_path.read_bytes()),
@@ -384,6 +390,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
     receipt_bytes = _capture_candidate(
         {
             "bindings": bindings,
+            "ruler_generation_manifest_file_sha256": (ruler_generation_manifest_file_sha256),
             "runtime_manifest": runtime,
             "source_manifest": {
                 "paths": [
@@ -460,6 +467,7 @@ def _sealed_fixture(tmp_path: Path) -> dict[str, Any]:
         "capture_provenance_receipt_bytes": receipt_bytes,
         "capture_provenance_receipt_path": receipt_path,
         "ruler_receipt_dir": ruler_receipt_dir,
+        "ruler_generation_manifest_file_sha256": ruler_generation_manifest_file_sha256,
         "runner_arguments": runner_arguments,
         "runtime_manifest": runtime,
         "runtime_path": runtime_path,
@@ -491,6 +499,9 @@ def _stage_a_binding_bytes(fixture: dict[str, Any]) -> tuple[bytes, str]:
             "fisher_h1_smoke_report_file_sha256": "4" * 64,
             "frozen_calibration_identity_file_sha256": "5" * 64,
             "identity_input_manifest_sha256": "6" * 64,
+            "ruler_generation_manifest_file_sha256": fixture[
+                "ruler_generation_manifest_file_sha256"
+            ],
             "source_commit": fixture["source_manifest"]["source_commit"],
             "static_q48_policy_file_sha256": "7" * 64,
         },
@@ -523,6 +534,7 @@ def _stage_a_binding_bytes(fixture: dict[str, Any]) -> tuple[bytes, str]:
             )
         },
         "dependency_file_sha256": {"calibration_authorization_artifact": authorization_sha256},
+        "ruler_generation_manifest_file_sha256": fixture["ruler_generation_manifest_file_sha256"],
     }
     return (
         launcher._canonical_json_bytes(
@@ -658,6 +670,7 @@ def _capture_candidate(fixture: dict[str, Any], identity_bytes: bytes) -> bytes:
         "publication_contract": (
             launcher.CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT
         ),
+        "ruler_generation_manifest_file_sha256": fixture["ruler_generation_manifest_file_sha256"],
         "runner_revision": launcher.RUNNER_REVISION,
         "schema_version": (
             launcher.STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
@@ -1252,7 +1265,7 @@ def test_capture_candidate_rejects_text_translation_and_trailing_bytes(
             )
 
 
-def test_stage_a_capture_candidate_binds_v4_authorization_and_exact_chain(
+def test_stage_a_capture_candidate_binds_v5_binding_v3_authorization_and_exact_chain(
     tmp_path: Path,
 ) -> None:
     fixture = _capture_fixture(tmp_path, stage_a=True)
@@ -1277,6 +1290,7 @@ def test_stage_a_capture_candidate_binds_v4_authorization_and_exact_chain(
     for field in (
         "calibration_binding_file_sha256",
         "calibration_authorization_file_sha256",
+        "ruler_generation_manifest_file_sha256",
     ):
         tampered = json.loads(candidate)
         tampered[field] = "0" * 64
@@ -1290,6 +1304,26 @@ def test_stage_a_capture_candidate_binds_v4_authorization_and_exact_chain(
                 phase="stage_a",
                 stage_a_binding_envelope=envelope,
             )
+
+
+def test_stage_a_capture_rejects_binding_authorization_ruler_manifest_mismatch(
+    tmp_path: Path,
+) -> None:
+    fixture = _capture_fixture(tmp_path, stage_a=True)
+    binding = json.loads(fixture["stage_a_binding_bytes"])
+    binding["evidence"]["ruler_generation_manifest_file_sha256"] = _sha256(
+        b"different fixture RULER generation manifest\n"
+    )
+    binding["canonical_evidence_sha256"] = _sha256(
+        launcher._canonical_json_bytes(binding["evidence"])
+    )
+    mutated = launcher._canonical_json_bytes(binding)
+
+    with pytest.raises(launcher.SealedLaunchError, match="different RULER manifests"):
+        launcher._parse_stage_a_calibration_binding_envelope(
+            mutated,
+            expected_file_sha256=_sha256(mutated),
+        )
 
 
 def test_stage_a_capture_rejects_non_sha256_path_custody_binding(tmp_path: Path) -> None:
@@ -1329,7 +1363,7 @@ def test_stage_a_capture_rejects_binding_downgrade_before_subprocess(
 ) -> None:
     fixture = _capture_fixture(tmp_path, stage_a=True)
     binding = json.loads(fixture["stage_a_binding_bytes"])
-    binding["schema_version"] = 3
+    binding["schema_version"] = 4
     downgraded = launcher._canonical_json_bytes(binding)
     fixture["stage_a_binding_path"].write_bytes(downgraded)
     expected_index = (
@@ -1397,7 +1431,7 @@ def test_capture_candidate_rejects_every_finalization_drift(
     elif mutation == "publication-contract":
         candidate["publication_contract"] = "child-published-before-cleanup"
     elif mutation == "runner-revision":
-        candidate["runner_revision"] = "experiment-013-static-q468-calibration-runner-v7"
+        candidate["runner_revision"] = "experiment-013-static-q468-calibration-runner-v18"
     elif mutation == "schema-v1":
         candidate["schema_version"] = 1
     elif mutation == "source-commit":
@@ -2500,7 +2534,7 @@ def test_launch_requires_finalized_capture_provenance_before_subprocess(
     ("field", "value"),
     [
         ("schema_version", 1),
-        ("runner_revision", "experiment-013-static-q468-calibration-runner-v8"),
+        ("runner_revision", "experiment-013-static-q468-calibration-runner-v18"),
         ("status", "captured_under_authenticated_runtime"),
         ("source_commit", "b" * 40),
     ],

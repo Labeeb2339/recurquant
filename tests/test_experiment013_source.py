@@ -159,10 +159,37 @@ def test_stage_a_runner_required_source_paths_are_frozen() -> None:
     assert isinstance(stage_a_required, frozenset)
     assert stage_a_required <= set(EXPERIMENT013_SOURCE_PATHS)
     assert module.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH in stage_a_required
-    assert module.RUNNER_REVISION == "experiment-013-static-q468-stage-a-runner-v6"
+    assert module.RUNNER_REVISION == "experiment-013-static-q468-stage-a-runner-v8"
     assert (
         module.STAGE_A_CAPTURE_RUNNER_REVISION
-        == "experiment-013-static-q468-calibration-runner-v17"
+        == "experiment-013-static-q468-calibration-runner-v19"
+    )
+
+
+def test_runner_and_resolver_share_one_g0_or_final_h0_ruler_manifest_anchor() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    def anchor(relative: str) -> object:
+        tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        assignments = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "RULER_GENERATION_MANIFEST_FILE_SHA256"
+        ]
+        assert len(assignments) == 1
+        assignment = assignments[0]
+        assert assignment.value is not None
+        return ast.literal_eval(assignment.value)
+
+    runner_anchor = anchor("scripts/run_static_q468_calibration.py")
+    resolver_anchor = anchor("scripts/resolve_static_q468_identity.py")
+    assert runner_anchor == resolver_anchor
+    assert runner_anchor is None or (
+        isinstance(runner_anchor, str)
+        and len(runner_anchor) == 64
+        and set(runner_anchor) <= set("0123456789abcdef")
     )
 
 

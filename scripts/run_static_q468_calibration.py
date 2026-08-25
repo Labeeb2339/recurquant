@@ -40,7 +40,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path, PurePosixPath
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import Any, Final, Protocol, cast
 
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[1]
@@ -60,9 +60,7 @@ CALIBRATION_IDENTITY_CAPTURE_PARQUET_MODULE: Final = "recurquant.experiment013_p
 STATIC_Q468_ARTIFACT_CONTRACT_MODULE: Final = "recurquant.static_q468_artifact_contract"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 PARQUET_SOURCE_PATH: Final = "src/recurquant/experiment013_parquet.py"
-STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: Final = (
-    "src/recurquant/static_q468_artifact_contract.py"
-)
+STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: Final = "src/recurquant/static_q468_artifact_contract.py"
 AUTHORIZATION_IDENTITY_RESOLVER_MODULE: Final = (
     "_recurquant_experiment013_identity_resolver_for_authorization"
 )
@@ -79,7 +77,7 @@ CANONICAL_ADAPTER_SPEC: Final = "recurquant.experiment013_qwen35_adapter:create_
 CANONICAL_ADAPTER_MODULE: Final = "recurquant.experiment013_qwen35_adapter"
 CANONICAL_ADAPTER_PATH: Final = "src/recurquant/experiment013_qwen35_adapter.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v19"
 FROZEN_IDENTITY_SCHEMA_VERSION: Final = 5
 FISHER_BOUNDARY_SCHEMA: Final = "recurquant.experiment013.fisher-boundary.v1"
 FISHER_BOUNDARY_NAMESPACE: Final = b"recurquant.experiment013.fisher-boundary.v1\0"
@@ -107,21 +105,21 @@ MODEL_STAGING_AUTHORIZATION_SCHEMA: Final = 2
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
-CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 2
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 3
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS: Final = (
     "captured_under_authenticated_runtime_and_launcher_finalized"
 )
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 7
+CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 9
 CALIBRATION_IDENTITY_INPUT_SCHEMA: Final = "recurquant.experiment013.identity-input.v5"
 STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_stage_a_identity_capture_provenance"
 )
-STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 1
-STAGE_A_CALIBRATION_BINDING_SCHEMA: Final = 4
-STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibration-binding-v4"
+STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 2
+STAGE_A_CALIBRATION_BINDING_SCHEMA: Final = 5
+STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibration-binding-v5"
 MODEL_STAGING_PATHS_KIND: Final = "recurquant_experiment013_model_staging_paths_verification"
 MODEL_STAGING_PATHS_SCHEMA: Final = 1
 RUNTIME_MANIFEST_KIND: Final = "recurquant_experiment013_calibration_runtime_manifest"
@@ -224,27 +222,28 @@ RULER_RECEIPT_DIRECTORY_FILENAMES: Final = (
     "aggregation__cwe__l4096__s12340.json",
     "aggregation__fwe__l2048__s12339.json",
     "aggregation__fwe__l4096__s12339.json",
-    "aggregation__fwe__l4096__s2343.json",
+    "aggregation__fwe__l4096__s2344.json",
     "generation-manifest.json",
     "multi_hop_tracing__vt__l2048__s12339.json",
     "multi_hop_tracing__vt__l2048__s12340.json",
     "multi_hop_tracing__vt__l4096__s12339.json",
     "multi_hop_tracing__vt__l4096__s12340.json",
-    "multi_hop_tracing__vt__l4096__s2343.json",
+    "multi_hop_tracing__vt__l4096__s2344.json",
     "question_answering__qa_1__l2048__s12339.json",
     "question_answering__qa_1__l4096__s12339.json",
-    "question_answering__qa_1__l4096__s2343.json",
+    "question_answering__qa_1__l4096__s2344.json",
     "question_answering__qa_2__l2048__s12340.json",
     "question_answering__qa_2__l4096__s12340.json",
     "retrieval__niah_multikey_2__l2048__s12340.json",
     "retrieval__niah_multiquery__l2048__s12339.json",
-    "retrieval__niah_multiquery__l4096__s2343.json",
+    "retrieval__niah_multiquery__l4096__s2344.json",
     "retrieval__niah_multivalue__l4096__s12340.json",
     "retrieval__niah_single_1__l4096__s12339.json",
 )
-RULER_GENERATION_MANIFEST_FILE_SHA256: Final = (
-    "979f91848b6c0692160419c3e5e9ee555aa94d9e7add3092067f003ea0543e80"
-)
+# Deliberately unavailable in the pre-generation authority commit.  The exact
+# fresh manifest digest is frozen here only by the post-generation final H0;
+# official identity capture fails closed while this value is ``None``.
+RULER_GENERATION_MANIFEST_FILE_SHA256: Final[str | None] = None
 CALIBRATION_IDENTITY_CRITICAL_MODULE_DISTRIBUTIONS: Final = {
     "datasets": "datasets",
     "fsspec": "fsspec",
@@ -1998,6 +1997,7 @@ def _authenticate_calibration_identity_capture_provenance_bytes_unchecked(
             "identity_input_file_sha256",
             "phase",
             "publication_contract",
+            "ruler_generation_manifest_file_sha256",
             "runner_revision",
             "schema_version",
             "source_commit",
@@ -2038,6 +2038,22 @@ def _authenticate_calibration_identity_capture_provenance_bytes_unchecked(
         context="expected capture provenance identity input SHA-256",
     ):
         raise CalibrationRunError("capture provenance binds a different identity input")
+    expected_ruler_manifest_sha256 = RULER_GENERATION_MANIFEST_FILE_SHA256
+    if (
+        not isinstance(expected_ruler_manifest_sha256, str)
+        or _SHA256_RE.fullmatch(expected_ruler_manifest_sha256) is None
+    ):
+        raise CalibrationRunError(
+            "RULER generation manifest SHA-256 is not frozen in this source commit"
+        )
+    if (
+        _sha256(
+            root["ruler_generation_manifest_file_sha256"],
+            context="capture provenance RULER generation manifest SHA-256",
+        )
+        != expected_ruler_manifest_sha256
+    ):
+        raise CalibrationRunError("capture provenance binds a different RULER manifest")
 
     expected_binding_values = {
         "calibration_runtime_manifest_file_sha256": expected_bindings.runtime_manifest_file_sha256,
@@ -7766,17 +7782,97 @@ class _CalibrationIdentityImportIsolation:
                 add_note(str(error))
 
 
+RulerFileSnapshotMetadata = tuple[
+    tuple[str, ...],
+    tuple[str, int],
+    tuple[tuple[str, str, int], ...],
+]
+
+
+class _ImmutablePhaseRulerSource:
+    """Delegate all sources except RULER, whose permitted bytes are frozen once."""
+
+    __slots__ = ("_delegate", "_generation_manifest", "_receipts")
+
+    def __init__(
+        self,
+        *,
+        delegate: object,
+        generation_manifest: bytes,
+        receipts: Mapping[tuple[str, str, int, int], bytes],
+    ) -> None:
+        self._delegate = delegate
+        self._generation_manifest = bytes(generation_manifest)
+        self._receipts = MappingProxyType(
+            {identity: bytes(payload) for identity, payload in receipts.items()}
+        )
+
+    def _call(self, name: str, *args: object, **kwargs: object) -> object:
+        provider = getattr(self._delegate, name, None)
+        if not callable(provider):
+            raise CalibrationRunError(f"capture source provider is unavailable: {name}")
+        return provider(*args, **kwargs)
+
+    def source_heads(self) -> object:
+        return self._call("source_heads")
+
+    def tokenizer_material(self) -> object:
+        return self._call("tokenizer_material")
+
+    def mbpp_train_rows(self) -> object:
+        return self._call("mbpp_train_rows")
+
+    def pg19_projection(self, split: str) -> object:
+        return self._call("pg19_projection", split)
+
+    def pg19_row(self, split: str, *, offset: int, expected_url: str) -> object:
+        return self._call(
+            "pg19_row",
+            split,
+            offset=offset,
+            expected_url=expected_url,
+        )
+
+    def ruler_generator_files(self) -> object:
+        return self._call("ruler_generator_files")
+
+    def humaneval_projection(self) -> object:
+        return self._call("humaneval_projection")
+
+    def humaneval_row(self, *, offset: int, expected_task_id: str) -> object:
+        return self._call(
+            "humaneval_row",
+            offset=offset,
+            expected_task_id=expected_task_id,
+        )
+
+    def ruler_generation_manifest_bytes(self) -> bytes:
+        return self._generation_manifest
+
+    def ruler_receipt_bytes(
+        self,
+        *,
+        category: str,
+        config: str,
+        configured_length: int,
+        seed: int,
+    ) -> bytes:
+        identity = (category, config, configured_length, seed)
+        try:
+            return self._receipts[identity]
+        except KeyError as error:
+            raise CalibrationRunError(
+                "capture attempted a RULER receipt outside its immutable phase snapshot"
+            ) from error
+
+
 def _snapshot_phase_ruler_file_metadata(
     *,
     capture_module: ModuleType,
     live_source: object,
     phase: str,
-) -> tuple[
-    tuple[str, ...],
-    tuple[str, int],
-    tuple[tuple[str, str, int], ...],
-]:
-    """Hash only the generation manifest and this phase's receipt bodies."""
+) -> tuple[_ImmutablePhaseRulerSource, RulerFileSnapshotMetadata]:
+    """Freeze the exact manifest and permitted phase bodies into immutable bytes."""
 
     if phase not in {"calibration", "stage_a"}:
         raise CalibrationRunError("RULER metadata snapshot phase is invalid")
@@ -7852,10 +7948,19 @@ def _snapshot_phase_ruler_file_metadata(
     if not isinstance(generation_bytes, bytes) or not generation_bytes:
         raise CalibrationRunError("RULER generation manifest bytes are unavailable")
     generation_sha256 = sha256_bytes(generation_bytes)
-    if generation_sha256 != RULER_GENERATION_MANIFEST_FILE_SHA256:
+    expected_generation_sha256 = RULER_GENERATION_MANIFEST_FILE_SHA256
+    if (
+        not isinstance(expected_generation_sha256, str)
+        or _SHA256_RE.fullmatch(expected_generation_sha256) is None
+    ):
+        raise CalibrationRunError(
+            "RULER generation manifest SHA-256 is not frozen in this source commit"
+        )
+    if generation_sha256 != expected_generation_sha256:
         raise CalibrationRunError("RULER generation manifest file SHA-256 drifted")
 
     receipt_records: list[tuple[str, str, int]] = []
+    receipt_payloads: dict[tuple[str, str, int, int], bytes] = {}
     for item in phase_items:
         receipt_bytes = receipt_reader(
             category=str(item["category"]),
@@ -7865,6 +7970,13 @@ def _snapshot_phase_ruler_file_metadata(
         )
         if not isinstance(receipt_bytes, bytes) or not receipt_bytes:
             raise CalibrationRunError("RULER phase receipt bytes are unavailable")
+        identity = (
+            str(item["category"]),
+            str(item["config"]),
+            int(item["configured_length"]),
+            int(item["seed"]),
+        )
+        receipt_payloads[identity] = receipt_bytes
         receipt_records.append(
             (
                 str(item["filename"]),
@@ -7872,7 +7984,19 @@ def _snapshot_phase_ruler_file_metadata(
                 len(receipt_bytes),
             )
         )
-    return names, (generation_sha256, len(generation_bytes)), tuple(receipt_records)
+    metadata: RulerFileSnapshotMetadata = (
+        names,
+        (generation_sha256, len(generation_bytes)),
+        tuple(receipt_records),
+    )
+    return (
+        _ImmutablePhaseRulerSource(
+            delegate=live_source,
+            generation_manifest=generation_bytes,
+            receipts=receipt_payloads,
+        ),
+        metadata,
+    )
 
 
 def _assert_capture_forbidden_modules_absent() -> None:
@@ -8082,6 +8206,7 @@ def _sealed_capture_identity(
     origins: list[dict[str, object]] | None = None
     normalized_calibration_binding: dict[str, str] | None = None
     calibration_authorization_sha256: str | None = None
+    expected_stage_a_ruler_manifest_sha256: str | None = None
     preexisting_policy_modules = frozenset(sys.modules)
     try:
         sys.meta_path.insert(0, blocker)
@@ -8121,6 +8246,17 @@ def _sealed_capture_identity(
         )
         if getattr(resolver_module, "CALIBRATION_RUNNER_REVISION", None) != RUNNER_REVISION:
             raise CalibrationRunError("authenticated identity resolver runner revision drifted")
+        if (
+            getattr(
+                resolver_module,
+                "RULER_GENERATION_MANIFEST_FILE_SHA256",
+                object(),
+            )
+            != RULER_GENERATION_MANIFEST_FILE_SHA256
+        ):
+            raise CalibrationRunError(
+                "authenticated identity resolver RULER manifest anchor drifted"
+            )
         if phase == "stage_a":
             assert binding_bytes is not None
             assert binding_sha256 is not None
@@ -8135,6 +8271,9 @@ def _sealed_capture_identity(
                 ) from error
             normalized_calibration_binding = dict(verified_binding.binding)
             calibration_authorization_sha256 = str(verified_binding.authorization_file_sha256)
+            expected_stage_a_ruler_manifest_sha256 = str(
+                verified_binding.ruler_generation_manifest_file_sha256
+            )
             if verified_binding.source_commit != requested_commit:
                 raise CalibrationRunError(
                     "Stage-A calibration authorization source commit differs from H0"
@@ -8142,6 +8281,18 @@ def _sealed_capture_identity(
             if dict(verified_binding.execution_bindings) != bindings:
                 raise CalibrationRunError(
                     "Stage-A calibration authorization execution bindings differ from capture"
+                )
+            source_ruler_manifest_sha256 = RULER_GENERATION_MANIFEST_FILE_SHA256
+            if (
+                not isinstance(source_ruler_manifest_sha256, str)
+                or _SHA256_RE.fullmatch(source_ruler_manifest_sha256) is None
+            ):
+                raise CalibrationRunError(
+                    "RULER generation manifest SHA-256 is not frozen in this source commit"
+                )
+            if expected_stage_a_ruler_manifest_sha256 != source_ruler_manifest_sha256:
+                raise CalibrationRunError(
+                    "Stage-A calibration custody differs from the source-frozen RULER manifest"
                 )
         capture_module = _load_exact_source_module(
             CALIBRATION_IDENTITY_CAPTURE_MODULE,
@@ -8165,14 +8316,21 @@ def _sealed_capture_identity(
             cache_dir=capture_hub_cache_root,
             ruler_receipt_dir=ruler_receipt_dir,
         )
-        ruler_file_snapshot = _snapshot_phase_ruler_file_metadata(
+        immutable_ruler_source, ruler_file_snapshot = _snapshot_phase_ruler_file_metadata(
             capture_module=capture_module,
             live_source=live_source,
             phase=phase,
         )
+        ruler_generation_manifest_sha256 = ruler_file_snapshot[1][0]
+        if phase == "stage_a":
+            assert expected_stage_a_ruler_manifest_sha256 is not None
+            if expected_stage_a_ruler_manifest_sha256 != ruler_generation_manifest_sha256:
+                raise CalibrationRunError(
+                    "Stage-A RULER generation manifest differs from calibration custody"
+                )
         captured = capture_module.capture_identity_input(
             phase=phase,
-            source=live_source,
+            source=immutable_ruler_source,
             calibration_binding=binding_bytes,
             execution_binding_artifacts=artifact_bytes,
             runtime_authentication_context={
@@ -8182,8 +8340,9 @@ def _sealed_capture_identity(
                 "package_runtime_roots": dict(runtime_context.package_roots),
                 "package_import_paths": dict(runtime_context.package_import_paths),
             },
+            expected_ruler_generation_manifest_file_sha256=(ruler_generation_manifest_sha256),
         )
-        repeated_ruler_file_snapshot = _snapshot_phase_ruler_file_metadata(
+        _repeated_ruler_source, repeated_ruler_file_snapshot = _snapshot_phase_ruler_file_metadata(
             capture_module=capture_module,
             live_source=live_source,
             phase=phase,
@@ -8310,6 +8469,7 @@ def _sealed_capture_identity(
             "identity_input_file_sha256": sha256_bytes(payload),
             "phase": phase,
             "publication_contract": (CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT),
+            "ruler_generation_manifest_file_sha256": ruler_generation_manifest_sha256,
             "runner_revision": RUNNER_REVISION,
             "schema_version": (
                 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA
@@ -8699,12 +8859,24 @@ def _load_authorization_identity_resolver(
             entry=contract_entry,
         )
         namespace.static_q468_artifact_contract = artifact_contract
-        return _load_exact_source_module(
+        resolver = _load_exact_source_module(
             AUTHORIZATION_IDENTITY_RESOLVER_MODULE,
             IDENTITY_RESOLVER_SOURCE_PATH,
             repository_root=REPOSITORY_ROOT,
             entry=resolver_entry,
         )
+        if (
+            getattr(
+                resolver,
+                "RULER_GENERATION_MANIFEST_FILE_SHA256",
+                object(),
+            )
+            != RULER_GENERATION_MANIFEST_FILE_SHA256
+        ):
+            raise CalibrationRunError(
+                "calibration authorization resolver RULER manifest anchor drifted"
+            )
+        return resolver
     except BaseException:
         for name in reversed(AUTHORIZATION_EXACT_MODULE_NAMES):
             sys.modules.pop(name, None)

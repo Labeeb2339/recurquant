@@ -98,6 +98,7 @@ def _capture_receipt_bytes(
     capture_source_sha256: str | None = None,
     identity_input_sha256: str | None = None,
     authorization_sha256: str | None = None,
+    ruler_generation_manifest_sha256: str | None = None,
 ) -> bytes:
     return stage_a.canonical_json_bytes(
         {
@@ -110,15 +111,18 @@ def _capture_receipt_bytes(
                 "path": stage_a.CAPTURE_SOURCE_PATH,
                 "sha256": capture_source_sha256 or _digest("capture-source"),
             },
-            "capture_version": 7,
+            "capture_version": 9,
             "critical_module_origins": [],
             "excluded_runtime_modules": ["pkg_resources", "setuptools"],
             "execution_bindings": dict(execution_bindings),
             "identity_input_file_sha256": identity_input_sha256 or _digest("identity-input"),
             "phase": "stage_a",
             "publication_contract": stage_a.STAGE_A_CAPTURE_PUBLICATION_CONTRACT,
+            "ruler_generation_manifest_file_sha256": (
+                ruler_generation_manifest_sha256 or _digest("ruler-generation-manifest")
+            ),
             "runner_revision": stage_a.STAGE_A_CAPTURE_RUNNER_REVISION,
-            "schema_version": 1,
+            "schema_version": 2,
             "source_commit": source_commit,
             "status": stage_a.STAGE_A_CAPTURE_PROVENANCE_STATUS,
         }
@@ -161,15 +165,14 @@ def _runtime_namespace() -> Any:
 
 
 def test_bootstrap_requires_promoted_v6_and_exact_forward_formula() -> None:
-    assert stage_a.RUNNER_REVISION == "experiment-013-static-q468-stage-a-runner-v6"
+    assert stage_a.RUNNER_REVISION == "experiment-013-static-q468-stage-a-runner-v8"
+    assert stage_a.IDENTITY_SCHEMA_VERSION == 6
+    assert stage_a.BINDING_SCHEMA_VERSION == 5
     assert (
         stage_a.STAGE_A_CAPTURE_RUNNER_REVISION
-        == "experiment-013-static-q468-calibration-runner-v17"
+        == "experiment-013-static-q468-calibration-runner-v19"
     )
-    assert (
-        stage_a.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH
-        in stage_a.REQUIRED_SOURCE_PATHS
-    )
+    assert stage_a.STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH in stage_a.REQUIRED_SOURCE_PATHS
     decoded = _bootstrap()
     assert decoded.expected_forward_count == 9 * 12 * 2
     assert set(decoded.execution_bindings) == stage_a.EXECUTION_BINDING_FIELDS
@@ -180,7 +183,7 @@ def test_bootstrap_requires_promoted_v6_and_exact_forward_formula() -> None:
     root["canonical_evidence_sha256"] = stage_a.sha256_bytes(
         stage_a.canonical_json_bytes(root["evidence"])
     )
-    with pytest.raises(stage_a.StageAError, match="promoted resolver-v7"):
+    with pytest.raises(stage_a.StageAError, match="promoted resolver-v9"):
         stage_a.bootstrap_stage_a_identity(stage_a.canonical_json_bytes(root))
 
 
@@ -206,11 +209,13 @@ def test_bootstrap_accepts_exact_finalized_stage_a_capture_receipt_and_rejects_c
         identity=identity,
         expected_source_commit="1" * 40,
     )
-    assert decoded["capture_version"] == 7
+    assert decoded["capture_version"] == 9
+    assert decoded["schema_version"] == 2
+    assert decoded["ruler_generation_manifest_file_sha256"] == _digest("ruler-generation-manifest")
     assert decoded["runner_revision"] == stage_a.STAGE_A_CAPTURE_RUNNER_REVISION
 
     mutations = (
-        ("capture_version", 5, "finalized envelope"),
+        ("capture_version", 8, "finalized envelope"),
         ("identity_input_file_sha256", _digest("other-input"), "different identity input"),
         ("calibration_binding_file_sha256", _digest("other-binding"), "different calibration"),
     )
@@ -315,7 +320,7 @@ def test_legacy_v5_identity_fails_before_binding_receipt_or_provider_access(
         "_load_exact_module",
         lambda *_args, **_kwargs: pytest.fail("provider modules must not be loaded"),
     )
-    with pytest.raises(stage_a.StageAError, match="promoted resolver-v7"):
+    with pytest.raises(stage_a.StageAError, match="promoted resolver-v9"):
         stage_a.authenticate_production(
             SimpleNamespace(frozen_identity_path=identity_path),
             require_input_bundle=False,

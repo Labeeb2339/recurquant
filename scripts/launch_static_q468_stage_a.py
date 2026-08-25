@@ -41,7 +41,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v19"
 BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
 _BOUND_ARTIFACT_OPTIONS: Final = {
@@ -253,7 +253,7 @@ def _parse_identity_custody(
         or evidence.get("identity_only") is not True
         or evidence.get("promotion_required") is not False
     ):
-        raise SealedStageALaunchError("identity is not a promoted Stage-A resolver-v7 artifact")
+        raise SealedStageALaunchError("identity is not a promoted Stage-A resolver-v9 artifact")
     promotion = evidence.get("promotion")
     if not isinstance(promotion, dict):
         raise SealedStageALaunchError("Stage-A identity lacks explicit promotion")
@@ -350,6 +350,7 @@ def _parse_stage_a_capture_provenance_receipt(
             "identity_input_file_sha256",
             "phase",
             "publication_contract",
+            "ruler_generation_manifest_file_sha256",
             "runner_revision",
             "schema_version",
             "source_commit",
@@ -362,9 +363,9 @@ def _parse_stage_a_capture_provenance_receipt(
     if (
         root.get("artifact_kind") != STAGE_A_CAPTURE_PROVENANCE_KIND
         or type(root.get("schema_version")) is not int
-        or root.get("schema_version") != 1
+        or root.get("schema_version") != 2
         or type(root.get("capture_version")) is not int
-        or root.get("capture_version") != 7
+        or root.get("capture_version") != 9
         or root.get("runner_revision") != STAGE_A_CAPTURE_RUNNER_REVISION
         or root.get("phase") != "stage_a"
         or root.get("status") != STAGE_A_CAPTURE_PROVENANCE_STATUS
@@ -393,6 +394,10 @@ def _parse_stage_a_capture_provenance_receipt(
         raise SealedStageALaunchError(
             "Stage-A capture provenance binds a different calibration authorization"
         )
+    _sha256(
+        root.get("ruler_generation_manifest_file_sha256"),
+        context="capture RULER generation manifest SHA-256",
+    )
     execution = root.get("execution_bindings")
     if not isinstance(execution, Mapping):
         raise SealedStageALaunchError("Stage-A capture provenance execution bindings are missing")
@@ -683,15 +688,16 @@ def _stage_a_receipt(options, bindings):
         "calibration_binding_file_sha256", "capture_source", "capture_version",
         "critical_module_origins", "excluded_runtime_modules", "execution_bindings",
         "identity_input_file_sha256", "phase", "publication_contract",
-        "runner_revision", "schema_version", "source_commit", "status"},
+        "ruler_generation_manifest_file_sha256", "runner_revision", "schema_version",
+        "source_commit", "status"},
         "Stage-A capture provenance receipt")
     if (_canonical(root) != data
             or root.get("artifact_kind")
             != "recurquant_experiment013_stage_a_identity_capture_provenance"
-            or type(root.get("schema_version")) is not int or root.get("schema_version") != 1
-            or type(root.get("capture_version")) is not int or root.get("capture_version") != 7
+            or type(root.get("schema_version")) is not int or root.get("schema_version") != 2
+            or type(root.get("capture_version")) is not int or root.get("capture_version") != 9
             or root.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v17"
+            != "experiment-013-static-q468-calibration-runner-v19"
             or root.get("phase") != "stage_a"
             or root.get("status")
             != "captured_under_authenticated_runtime_and_launcher_finalized"
@@ -707,6 +713,8 @@ def _stage_a_receipt(options, bindings):
                 "capture authorization SHA-256")
             != _stage_a_calibration_authorization_sha256):
         _fail("Stage-A capture provenance custody bindings drifted")
+    _digest(root.get("ruler_generation_manifest_file_sha256"),
+        "capture RULER generation manifest SHA-256")
     receipt_bindings = root.get("execution_bindings")
     if not isinstance(receipt_bindings, dict):
         _fail("Stage-A capture provenance execution bindings are missing")

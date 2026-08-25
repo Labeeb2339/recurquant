@@ -117,70 +117,66 @@ state-of-the-art, or breakthrough claim.
 
 Experiment 013 remains scientifically unresolved and has no accepted static
 RHT-Q468 result.
-Its ninth replacement H0 was
-`6d0130d2b30f1b6bad24d926570fc91c586d7651`, tagged
-`experiment013-h0-6d0130d`. Exact-commit GitHub CI run `32748769745` passed all
-five jobs. Identity capture and promotion succeeded, the schema-v5 frozen
-identity file SHA-256 was
-`ec75fd101f7e5ab9bb8312a6adda0376590f4ebf7e760891db3c3bf51fcc581f`,
-and the identity-only direct child produced H1
-`09d970e0423f5b37e34a53ab6c59b47fa0d558a6`. Authenticated model staging then
-published exactly three single-link regular files totalling 1,746,996,407
-bytes.
+The tenth replacement chain at H0
+`a5188a0b3e7bc3ab9ab2a27a639cac26d93030bd` and H1
+`874e586bda98602cc712a543a071a0047df38659` completed authenticated model
+staging, its one Fisher H=1 smoke, full calibration, and post-calibration
+Stage-A authorization. Its first sealed Stage-A identity capture then failed
+closed before live source or model construction because recursive binding
+verification attempted to import Torch inside the metadata-only isolation
+boundary. That entire chain is retired; its successful calibration is custody
+history, not an accepted static-Q468 result.
 
-The chain's one permitted Fisher H=1 smoke loaded that model and completed its
-inner one-sequence computation: 132 tokens and 16/16 Fisher steps. The official
-invocation nevertheless returned 1 after both child and host scratch
-postconditions reported residue. The scratch was then removed, so its exact
-former inventory is unavailable; a separate diagnostic reproduced creation of
-an empty `torch\inductor` cache directory.
-The output contains a canonical report and old completion marker, with file
-SHA-256 values
-`73b044d2895fcd7c3419dfdd86ae2e2b0e792a535992ce5822115d56de46ac2d`
-and `c6eb5ebf54bb06f7914cfa8380d2b34496ca8a3dea12564853613c75bf4ec703`.
-They are failed-attempt incident evidence only: they do not authorize full
-calibration and are neither positive nor negative method evidence. No current
-scratch survived cleanup.
+The Torch-free metadata repair produced eleventh replacement H0
+`5626879cd8fafe422d85e1c3abb7fe46262ce57d`, tagged
+`experiment013-h0-5626879`. GitHub Actions run `32791176375` passed all five
+jobs. Its only calibration identity capture completed without model weights,
+and candidate and promoted-format publication succeeded. The mandatory
+pre-H1 comparison nevertheless rejected the result because the RULER formatter
+SHA-256 changed outside the allowed pointer set. The formatter fingerprint had
+accidentally reused the live capture-procedure version, so the security-only
+v6-to-v7 change altered a purported scientific commitment. No H1 was created,
+no model was staged, and the chain is retired and non-authorizing.
 
-The incident also proved that v15 published the report and marker before outer
-cleanup and reauthentication, while the downstream gate authenticated only
-those bytes. The current working tree implements the runner-v16 custody repair,
-but it is not frozen or authorizing until committed in a clean H0 and verified
-by exact-commit CI. The child publishes candidate outputs only; after return 0,
-every postcondition, owned-root cleanup, and final reauthentication, the host
-publishes a v2 marker and canonical `RUN_LAUNCH_FINALIZATION.json` last. Full
-calibration requires the prior-smoke finalization receipt; Stage-A authorization
-requires both the smoke and full-run finalization receipts. Full calibration
-binds the exact prior-smoke receipt in both its report and finalization receipt.
-Each smoke and full receipt also binds the SHA-256 of
-its normalized absolute output-directory path, so copying the same bytes to a
-different directory cannot authorize the next stage.
+During root-cause analysis, an automated read-only process also decoded the
+four protected seed-2,343 Stage-A RULER receipt bodies and constructed their
+formatter targets. It printed no content and ran no model or metric, but the
+access occurred outside the sealed Stage-A capture. Those four receipts and
+every complete bundle containing them are conservatively retired. Seed 2,344
+was selected before replacement generation as the sole new Stage-A seed.
 
-Scratch policy v4 permits only exact confined private-cache roots and ordinary
-single-link descendants; links, reparse points, unexpected roots, and scratch-
-local Hub/datasets endpoints remain fatal. Pycache remains exactly empty. A
-scratch or pycache root that disappears before identity-checked cleanup is now
-fatal rather than accepted as already clean. Run outputs are disjoint from the
-authenticated runtime, repository, model, cache, RULER, manifest, identity,
-capture, and prior-smoke roots; Stage-A authorization output is likewise
-disjoint from the repository and every finalized calibration evidence path.
-Windows device/extended and UNC output spellings are rejected, filesystem
-identities supplement lexical containment against mapped aliases, and Stage-A
-publication revalidates its snapshotted parent and staging identity before
-rename or recursive cleanup.
-Runtime-manifest schema advances to v7, run-report schema to v4, and Stage-A
-calibration authorization to v2. Calibration identity v5, Stage-A identity v6,
-all 160 records, scientific contracts, metrics, budgets, and gates are
-unchanged.
+An initial v18/v8/v7 repair draft removed the retired bundle digest, but a
+pre-commit adversarial review found cross-phase manifest substitution and
+swap/restore gaps. No commit or artifact was published under that rejected
+draft. The current working tree instead implements runner v19,
+capture/resolver v9, sealed Stage-A runner v8, the procedure-independent frozen
+formatter epoch, seed 2,344, and explicit manifest custody through calibration
+provenance v3, authorization v3, binding v5 and Stage-A provenance v2. Opaque
+Stage-A bundle custody now also rederives the exact 16 calibration and four
+Stage-A receipt hashes from authenticated frozen identities, reads each body
+once without semantic decoding, and rejects substitutions before network work
+or the one-run reservation.
 
-Existing ninth-chain artifacts are preserved. Every ninth-chain namespace,
-whether populated or still absent, is retired and non-authorizing, with no
-retry, copying, adoption, renaming, or rebinding. The next gate
-is focused, full, package, and exact-commit CI verification of a clean v16
-descendant, followed by a fresh tenth H0 and entirely new H0-scoped source,
-runtime, model-metadata, identity-input, provenance, cache, model, and output
-paths. The new identity must pass the frozen exact six-pointer diff before a
-new identity-only H1, model root, or single Fisher smoke is authorized. See
+The chain now has two gates. A non-authorizing G0 source commit keeps both the
+runner and resolver manifest anchors unset, so official identity capture and
+Stage-A authorization fail closed. After clean tests, package gates and
+exact-commit CI, its generator may run exactly once from a clean detached
+worktree at the published G0 tag and create one fresh 20-receipt bundle in new
+roots. Failure or interruption retires those roots; resume and retry are not
+allowed. A direct descendant final H0 must make only the two identical anchor
+substitutions, freezing that bundle's exact whole-manifest SHA-256 before any
+official capture. Capture consumes an immutable phase-scoped snapshot, so a
+live A-to-B-to-A swap cannot affect consumed bytes; persistent changes are
+separately detected. Final H0 is not authorizing until its own focused, full,
+package and exact-commit CI gates pass and it is tagged.
+
+A fresh calibration identity must retain all 160 calibration records
+byte-for-byte and differ from the last valid retired identity only at the
+source/procedure/promotion bindings and the two deterministic RULER
+schedule/bundle commitments. No protected Stage-A receipt may be inspected
+outside its eventual sealed capture. No Stage-A evaluation, model staging,
+quality result, deployment conclusion, novelty claim, or breakthrough claim is
+currently authorized. See
 [`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
 
 In parallel, the repository now contains a reference physical Q4/Q6/Q8

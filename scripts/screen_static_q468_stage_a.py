@@ -2,7 +2,7 @@
 """Authenticated one-run Experiment 013 Stage-A falsification screen.
 
 This evaluator is intentionally fail closed.  It authenticates the promoted
-resolver-v7 Stage-A identity, its finalized capture provenance, the embedded
+resolver-v9 Stage-A identity, its finalized capture provenance, the embedded
 eight-dependency calibration binding, the
 split-half pass, the complete H0 source inventory, the sealed runtime, the
 model tree, and the checked-in Parquet identity before reserving the one run.
@@ -45,11 +45,9 @@ CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RESOLVER_SOURCE_PATH: Final = "scripts/resolve_static_q468_identity.py"
 SOURCE_MODULE_PATH: Final = "src/recurquant/experiment013_source.py"
 STAGE_A_GATE_MODULE_PATH: Final = "src/recurquant/experiment013_stage_a.py"
-STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: Final = (
-    "src/recurquant/static_q468_artifact_contract.py"
-)
+STATIC_Q468_ARTIFACT_CONTRACT_SOURCE_PATH: Final = "src/recurquant/static_q468_artifact_contract.py"
 
-RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v6"
+RUNNER_REVISION: Final = "experiment-013-static-q468-stage-a-runner-v8"
 ATTEMPT_SCHEMA: Final = "recurquant.experiment013.stage-a-attempt.v3"
 IDENTITY_ATTEMPT_LOCK_SCHEMA: Final = "recurquant.experiment013.stage-a-identity-attempt-lock.v4"
 IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
@@ -83,7 +81,7 @@ IDENTITY_ATTEMPT_LOCK_FIELDS: Final = frozenset(
 EXECUTION_ARTIFACT_KIND: Final = "recurquant_experiment013_stage_a_execution"
 EXECUTION_ARTIFACT_SCHEMA: Final = 4
 IDENTITY_SCHEMA_VERSION: Final = 6
-BINDING_SCHEMA_VERSION: Final = 4
+BINDING_SCHEMA_VERSION: Final = 5
 STAGE_A_CAPTURE_PROVENANCE_EVIDENCE_FIELD: Final = "stage_a_capture_provenance_receipt_file_sha256"
 STAGE_A_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_stage_a_identity_capture_provenance"
@@ -94,7 +92,7 @@ STAGE_A_CAPTURE_PROVENANCE_STATUS: Final = (
 STAGE_A_CAPTURE_PUBLICATION_CONTRACT: Final = (
     "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
 )
-STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
+STAGE_A_CAPTURE_RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v19"
 ONE_RUN_MARKER: Final = "RecurQuant-One-Run: experiment013-stage-a-v1"
 CLAIM_BOUNDARY: Final = (
     "Stage A is a falsification screen only. Passage is not confirmation, selector "
@@ -584,7 +582,7 @@ def bootstrap_stage_a_identity(data: bytes) -> BootstrapIdentity:
         or evidence.get("identity_only") is not True
         or evidence.get("promotion_required") is not False
     ):
-        raise StageAError("identity is not the promoted resolver-v7 Stage-A artifact")
+        raise StageAError("identity is not the promoted resolver-v9 Stage-A artifact")
     promotion = evidence.get("promotion")
     if not isinstance(promotion, dict):
         raise StageAError("Stage-A identity lacks an explicit promotion")
@@ -713,6 +711,7 @@ def bootstrap_stage_a_capture_provenance_receipt(
             "identity_input_file_sha256",
             "phase",
             "publication_contract",
+            "ruler_generation_manifest_file_sha256",
             "runner_revision",
             "schema_version",
             "source_commit",
@@ -725,9 +724,9 @@ def bootstrap_stage_a_capture_provenance_receipt(
     if (
         root.get("artifact_kind") != STAGE_A_CAPTURE_PROVENANCE_KIND
         or type(root.get("schema_version")) is not int
-        or root.get("schema_version") != 1
+        or root.get("schema_version") != 2
         or type(root.get("capture_version")) is not int
-        or root.get("capture_version") != 7
+        or root.get("capture_version") != 9
         or root.get("runner_revision") != STAGE_A_CAPTURE_RUNNER_REVISION
         or root.get("phase") != "stage_a"
         or root.get("status") != STAGE_A_CAPTURE_PROVENANCE_STATUS
@@ -762,6 +761,10 @@ def bootstrap_stage_a_capture_provenance_receipt(
         != identity.calibration_binding["calibration_authorization_file_sha256"]
     ):
         raise StageAError("Stage-A capture provenance binds a different authorization")
+    _require_sha256(
+        root.get("ruler_generation_manifest_file_sha256"),
+        context="Stage-A capture provenance RULER generation manifest SHA-256",
+    )
     execution = root.get("execution_bindings")
     if not isinstance(execution, Mapping):
         raise StageAError("Stage-A capture provenance execution bindings are missing")
@@ -955,7 +958,7 @@ def _load_exact_module(
 
 
 def _decode_binding_dependencies(binding: object) -> dict[str, bytes]:
-    """Use only dependencies released by the resolver's v4 authorization verifier."""
+    """Use only dependencies released by authorization v3 and binding v5."""
 
     raw = getattr(binding, "calibration_dependencies", None)
     if not isinstance(raw, Mapping) or set(raw) != BINDING_DEPENDENCY_NAMES:

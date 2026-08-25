@@ -82,6 +82,7 @@ def _capture_receipt(
     capture_source_sha256: str,
     identity_input_sha256: str | None = None,
     authorization_sha256: str | None = None,
+    ruler_generation_manifest_sha256: str | None = None,
 ) -> bytes:
     return launcher._canonical_json_bytes(
         {
@@ -94,15 +95,18 @@ def _capture_receipt(
                 "path": "scripts/capture_static_q468_identity_input.py",
                 "sha256": capture_source_sha256,
             },
-            "capture_version": 7,
+            "capture_version": 9,
             "critical_module_origins": [],
             "excluded_runtime_modules": ["pkg_resources", "setuptools"],
             "execution_bindings": dict(bindings),
             "identity_input_file_sha256": identity_input_sha256 or _digest("identity-input"),
             "phase": "stage_a",
             "publication_contract": launcher.STAGE_A_CAPTURE_PUBLICATION_CONTRACT,
+            "ruler_generation_manifest_file_sha256": (
+                ruler_generation_manifest_sha256 or _digest("ruler-generation-manifest")
+            ),
             "runner_revision": launcher.STAGE_A_CAPTURE_RUNNER_REVISION,
-            "schema_version": 1,
+            "schema_version": 2,
             "source_commit": "2" * 40,
             "status": launcher.STAGE_A_CAPTURE_PROVENANCE_STATUS,
         }
@@ -437,6 +441,11 @@ def _embedded_bootstrap_fixture(tmp_path: Path) -> dict[str, Any]:
 
 
 def test_identity_parser_accepts_only_promoted_stage_a_v6() -> None:
+    assert launcher.IDENTITY_SCHEMA == 6
+    assert (
+        launcher.STAGE_A_CAPTURE_RUNNER_REVISION
+        == "experiment-013-static-q468-calibration-runner-v19"
+    )
     bindings = {name: _digest(name) for name in launcher._BOUND_ARTIFACT_OPTIONS}
     assert launcher._parse_identity(_identity(bindings)) == {
         name: bindings[name] for name in sorted(bindings)
@@ -454,7 +463,7 @@ def test_identity_parser_accepts_only_promoted_stage_a_v6() -> None:
     legacy["canonical_evidence_sha256"] = _digest(
         launcher._canonical_json_bytes(legacy["evidence"])
     )
-    with pytest.raises(launcher.SealedStageALaunchError, match="resolver-v7"):
+    with pytest.raises(launcher.SealedStageALaunchError, match="resolver-v9"):
         launcher._parse_identity(launcher._canonical_json_bytes(legacy))
 
 
@@ -542,7 +551,7 @@ def test_bound_artifacts_are_checked_before_runner_load(tmp_path: Path) -> None:
         "model": model,
         "parquet": parquet,
         "source": source,
-        "binding": b"binding-v3",
+        "binding": b"binding-v5",
     }
     paths = {name: tmp_path / f"{name}.json" for name in files}
     paths["root"] = tmp_path
@@ -618,7 +627,10 @@ def test_bootstrap_derivation_switches_schema_phase_runner_and_keeps_isolation()
     assert "isolated != 1" in bootstrap
     assert "no_site != 1" in bootstrap
     assert "dont_write_bytecode != 1" in bootstrap
-    assert "experiment-013-static-q468-calibration-runner-v17" in bootstrap
+    assert 'root.get("schema_version") != 2' in bootstrap
+    assert 'root.get("capture_version") != 9' in bootstrap
+    assert "ruler_generation_manifest_file_sha256" in bootstrap
+    assert "experiment-013-static-q468-calibration-runner-v19" in bootstrap
     assert "_hf_hub_cache = _cache_root" in bootstrap
     assert (
         "allowlisted-private-scratch-roots-plus-explicit-dataset-and-phase-hub-roots-v4"

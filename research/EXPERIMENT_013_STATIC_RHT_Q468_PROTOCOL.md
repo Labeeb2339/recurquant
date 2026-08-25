@@ -2044,6 +2044,263 @@ candidate, promotion, identity-authorization commit, model evaluation, quality
 conclusion, deployment, adoption, novelty, state-of-the-art, or breakthrough
 claim is authorized.
 
+Thirtieth replacement-H0 formatter-domain and protected-RULER-custody
+amendment candidate: 2026-08-25. Source commit
+`5626879cd8fafe422d85e1c3abb7fe46262ce57d` and lightweight tag
+`experiment013-h0-5626879` became the eleventh replacement H0 after the
+focused and full clean-tree suites, package gates, and exact GitHub Actions run
+`32791176375` passed all five jobs. Its repository-source-manifest file SHA-256
+was
+`2c6d48f1bcc1069636ce7eedc59b433a3e728291666f98bba58cfa4bc7e34844`,
+with canonical self-hash
+`b1cc18cc72417aad990aa56427b02e79a8675ff8ba5e52e394059d89d0d1f3ff`.
+Its fresh calibration-runtime and metadata-only model-manifest file SHA-256
+values were respectively
+`95092677bcc4245c2ffe1d6dbbe83f39f411cb10d012efa61f1e3bc9378b4f36`
+and
+`586d9c7e520f3bbd99ecef30663bf07d283eb14622475c58891becd8e033b05c`.
+These were prerequisite and custody facts, not scientific results.
+
+The sole official sealed metadata-only calibration-identity capture completed
+with `model_weights_loaded=false`. It published a 288,838-byte schema-v5
+identity input with file SHA-256
+`ae8bb9a88bd5ffaa6926d68544f65b938053ba44655bb325cfae6cba7317039d`
+and a launcher-finalized 3,281-byte schema-v2 capture-provenance receipt with
+file SHA-256
+`702aabdf007284906ed932daa5c7832245adc6c17999af5144d5a3ca388b11ca`.
+Two resolver dry runs agreed. The one candidate publication had file SHA-256
+`5506d0979f762dc1a08f97efaa743de44120093cecf8f25a5ab063e841d2bb12`
+and canonical-evidence SHA-256
+`ddd32d1d73af47e4bf78cb8311dc5dbf5e4efa81750bc7229046fd476a05e9a4`.
+The one promoted-format publication had file SHA-256
+`60518f3e312b08798ec10e7eb07fe1ccdbc90e31984f2ba9fef240c133cdce37`
+and canonical-evidence SHA-256
+`798f425a58c450ae4efa4e9e8b4a9e4ea62a8eb236a19e5c0ade356a064d2800`.
+
+The mandatory pre-H1 comparison against the last valid retired identity,
+file SHA-256
+`17b2aa18840a040883e74cb1f2ac17ad152aee3865e4d1537bbec59670099697`,
+then failed closed. Its complete changed-pointer set was:
+
+```text
+/canonical_evidence_sha256
+/evidence/datasets/2/formatter_sha256
+/evidence/execution_bindings/repository_source_manifest_file_sha256
+/evidence/promotion/candidate_canonical_evidence_sha256
+/evidence/promotion/candidate_file_sha256
+/evidence/resolver_version
+/evidence/source_manifest_sha256
+```
+
+The sole out-of-allowlist pointer was the RULER formatter SHA-256. It changed
+from the established calibration value
+`4f797cbca4dfbe802c47dc5b238111b629f1497e46c84ea116d06319012016b6`
+to
+`368b546bff6902c679204a2cfd41aa4358282e0d9078b523ea2940cc70b08c70`.
+All 160 records and content-manifest SHA-256
+`ee72483a8f8b4370c9e667e4287747e5bc358aeb0265a58167140f4e780a7b29`
+remained byte-identical. The drift arose because the RULER formatter-v2 hash
+preimage reused the live `CAPTURE_VERSION` field. Advancing the capture
+procedure from v6 to v7 for the Torch-free Stage-A verification repair
+therefore changed a scientific formatter commitment even though the formatter,
+records, tokenizer, receipts and dataset content did not change. This is a
+deterministic version-domain defect, not a dataset, model, calibration,
+quantization, quality or infrastructure result.
+
+No H1 was created. No identity bytes were committed, no model was staged or
+opened, and no Fisher smoke, full calibration, Stage-A authorization, Stage-A
+identity, evaluation or quality result exists under this chain. H0
+`5626879cd8fafe422d85e1c3abb7fe46262ce57d`, its tag, every source/runtime/model
+manifest, cache, input, provenance receipt, candidate and promoted-format
+artifact, and every populated or absent downstream namespace are retired and
+non-authorizing. They must be preserved as historical evidence and may not be
+retried, edited, copied, renamed, adopted, committed as H1, substituted or
+rebound.
+
+During the post-failure root-cause audit, an automated read-only process then
+improperly JSON-decoded the four protected seed-2,343 Stage-A receipt bodies and
+passed them through the Stage-A RULER formatter with a synthetic token encoder.
+The process constructed prompts and targets and emitted only derived formatter
+hashes; it did not print source text, prompts, targets or outputs, open any raw
+sibling file, decode the generation manifest's raw-validation base64, load a
+model, or calculate a quality value. Nevertheless, semantic access occurred
+outside the authorized sealed Stage-A capture. The following four receipts,
+their seed-2,343 identities, and every complete generation manifest or bundle
+containing them are therefore exposed, retired and inadmissible for future
+Stage-A custody:
+
+```text
+retrieval__niah_multiquery__l4096__s2343.json
+multi_hop_tracing__vt__l4096__s2343.json
+aggregation__fwe__l4096__s2343.json
+question_answering__qa_1__l4096__s2343.json
+```
+
+Seed 2,344 is selected now, before replacement generation or content access,
+solely because it is the first integer after the exposed seed 2,343 and remains
+outside the reserved Stage-B grid 2,339 through 2,342. The four replacement
+Stage-A identities are exactly:
+
+```text
+retrieval / niah_multiquery / length 4096 / seed 2344
+multi_hop_tracing / vt / length 4096 / seed 2344
+aggregation / fwe / length 4096 / seed 2344
+question_answering / qa_1 / length 4096 / seed 2344
+```
+
+Their canonical command-manifest SHA-256 values, computed before generation
+from the unchanged authenticated RULER argv launcher, are respectively
+`e45f31c8e697f0468836ba3635ac4d3c2116c2ac05d6866544d28626a8bedbb7`,
+`320e4832d9b346087e4094262a5ec18606422badca4d201658a0e2f94bd1cae5`,
+`39aa60129ed248a6b722cf83c51b6a1a1784982824f167727fe2657a96612568`,
+and
+`f058521c0d729e6596f3cbda4f308d1c29c4d015a89ac5e783548af4f6cea183`.
+There is no alternate seed, config, task, length, retry-selected value or
+fallback. If any seed-2,344 receipt fails generation, length, semantic or
+custody verification, stop and amend before another attempt.
+
+A first repair draft advanced runner/capture/resolver/Stage A only to
+v18/v8/v8/v7 and removed the retired bundle's fixed manifest digest. An
+adversarial pre-commit audit rejected that design. A canonical manifest that
+authenticates itself does not establish which manifest this experiment
+authorized, so a coherent manifest A could be used for calibration and a
+different coherent manifest B for Stage A. Reading the live filesystem before
+and after capture also left an A-to-B-to-A swap/restore window. No commit, tag,
+identity, model access, or protected Stage-A access was published under that
+draft.
+
+The accepted repair advances the calibration runner from v17 to v19, capture
+and resolver procedures together from v7 to v9, and the sealed Stage-A runner
+from v6 to v8. The RULER formatter-v2 preimage retains its historical
+serialized `"capture_version": 6`, now explicitly named the frozen formatter
+epoch rather than the live capture procedure version. Capture-procedure
+changes alone must not alter that field. The authenticated RULER argv launcher
+remains v7 and generation-manifest schema remains v2 because their code and
+field sets do not change. Calibration identity schema v5, Stage-A identity
+schema v6, core-binding schema/revision v3, runtime-manifest schema v7 and
+run-report schema v4 remain unchanged. Calibration capture provenance advances
+from schema v2 to v3, Stage-A capture provenance from v1 to v2, calibration
+authorization from schema/revision v2 to v3, and the final Stage-A binding from
+schema/revision v4 to v5 so the newly authorized manifest digest has an exact
+custody path.
+
+The replacement uses two commits with different authority. The first is a
+non-authorizing RULER generation authority, G0. G0 freezes the exact 20-item
+seed-2,344 schedule, all command-manifest hashes, launcher source and revision,
+generator Git blobs, runtime requirements, static inputs, capture semantics and
+formatter epoch, but deliberately sets the identically named
+`RULER_GENERATION_MANIFEST_FILE_SHA256` constants in both the sealed runner and
+resolver to `None`. Under G0, official
+calibration and Stage-A identity capture must fail before any phase receipt is
+read, Stage-A authorization must fail, and no identity or receipt may be
+published. Only the authenticated generator is authorized. G0 must pass
+focused tests, the full clean-tree suite, lint, package gates and exact-commit
+five-job CI before it receives a clearly non-authorizing
+`experiment013-ruler-g0-<short-sha>` tag.
+
+Only that tagged G0 may generate one fresh exact 20-receipt bundle under new,
+no-overwrite receipt and raw roots. Generation must run from a separate clean,
+detached worktree whose HEAD equals the published G0 tag before and after the
+process. The generator manifest binds its launcher and generation inputs but
+does not itself attest the RecurQuant G0 commit, so the exact tag/HEAD and clean
+worktree checks are mandatory procedural custody evidence. Invoke the generator
+once, without `--receipt`; do not use its supported partial, resume, orphan
+cleanup or completed-batch replay paths for this experiment. A nonzero exit,
+interruption or partial batch retires those roots permanently and requires a
+protocol amendment before any new attempt. It may not be rerun against them.
+
+The 16 public calibration receipts must reproduce their prior canonical bytes;
+the four protected receipts must use only seed 2,344. No person or audit process
+may open, decode, format, preview, print, or otherwise semantically inspect a
+new protected receipt body, raw sibling, or the complete generation manifest,
+which embeds protected raw-validation payloads. The generator's final canonical
+success line contains only completion state, path, manifest SHA-256 and receipt
+count; only its digest/count may enter ordinary evidence. Opaque whole-file
+hashing is permitted, but parsing the manifest is not. Absolute local paths may
+not be published.
+
+The direct descendant final H0 must then replace both `None` anchors atomically
+with exactly that same whole-file SHA-256. Its parent must be exactly G0; the
+runner and resolver anchor substitutions must be the only post-G0 source
+changes. The generator launcher, capture module, formatter, receipt schedule,
+command hashes, requirements and tests must be byte-identical to G0. Final-H0
+official capture first verifies the source-frozen anchor against the live
+manifest before it reads any phase receipt. It then freezes the manifest bytes
+and only the permitted phase's receipt bytes into an immutable in-memory source
+and gives that source, not the live filesystem, to the capture procedure. An
+A-to-B-to-A live-file swap is therefore not claimed to be detected; it is
+rendered unable to alter the bytes consumed by that capture. A persistent
+change is still detected by the post-capture live reread and stops publication.
+
+The verified manifest SHA-256 is recorded in calibration capture-provenance
+schema v3, rederived into calibration-authorization v3, copied as separate
+evidence in Stage-A binding v5, and required again by Stage-A capture
+provenance v2. It is intentionally not added to the unchanged calibration
+binding field set nested in identity schema v6. Before any protected Stage-A
+receipt body is read, the Stage-A runner and capture module require the live
+manifest digest, both source-frozen anchors, and the calibration-authorized
+digest to be identical. Resolver and launcher checks then rederive the same
+equality from the embedded authorization and binding. This closes calibration-manifest A versus
+Stage-A-manifest B substitution without pretending that a self-authenticating
+manifest is its own experiment authorization.
+
+Regressions must bind seed 2,344 across resolver schedules, required filenames,
+sealed-run inventories and all four command hashes; prove the formatter epoch
+is independent from live capture procedure v9; pin an exact synthetic
+formatter digest so field removal or recoupling fails; prove a missing,
+malformed or unequal G0/H0 manifest anchor fails before receipt access or
+publication; prove capture consumes the immutable A bytes during an A-to-B-to-A
+swap; prove Stage-A manifest B is rejected before protected receipt reads when
+calibration authorized A; prove a coherently rehashed provenance/report chain
+cannot authorize a digest outside the resolver's source anchor; prove receipt
+hash and size are authenticated before JSON decoding; prove an outer input
+bundle cannot self-rechain a foreign receipt body because all 16 calibration
+and four Stage-A receipt hashes are rederived from the authenticated frozen
+identities; prove opaque staging reads and freezes each authenticated receipt
+exactly once before network work; and cover manifest-digest removal or mutation
+in both authorization and binding envelopes. All existing protected-read,
+phase-read-blindness, complete-bundle, import-isolation and canonical-output
+tests remain mandatory. The exposed seed-2,343 filenames must be absent from
+every active required inventory. Historical protocol prose and preserved
+evidence may still name them.
+
+Only after the final-H0 implementation, focused suites, full clean-tree suite,
+lint, package gates and exact-commit five-job CI pass may that clean descendant
+be tagged as the twelfth replacement H0. The old complete bundle and manifest
+may verify historical evidence but may not be supplied to the new chain. Final
+H0 must use fresh no-overwrite source, runtime, model-metadata, cache,
+calibration-input, receipt, candidate and promotion namespaces. Its promoted
+calibration identity must compare directly to identity file SHA-256
+`17b2aa18840a040883e74cb1f2ac17ad152aee3865e4d1537bbec59670099697`,
+not either failed v7 artifact. Every one of the 160 calibration records,
+content-manifest hash, tokenizer commitment, model contract, split assignment,
+token span, Fisher boundary, quantization policy, metric and statistical gate
+must remain byte-identical. Differences are permitted only within this exact
+superset:
+
+```text
+/canonical_evidence_sha256
+/evidence/datasets/2/canonical_id_manifest_sha256
+/evidence/datasets/2/formatter_sha256
+/evidence/execution_bindings/calibration_runtime_manifest_file_sha256
+/evidence/execution_bindings/repository_source_manifest_file_sha256
+/evidence/promotion/candidate_canonical_evidence_sha256
+/evidence/promotion/candidate_file_sha256
+/evidence/resolver_version
+/evidence/source_manifest_sha256
+```
+
+The RULER canonical-ID and formatter pointers must change only as the
+deterministic consequence of the pre-bound seed-2,344 schedule and new complete
+generation manifest. Resolver version must change exactly from 6 to 9. A
+byte-identical fresh runtime may leave its allowed pointer unchanged. Any other
+changed pointer stops the chain. Only after the frozen-identity contract passes
+may the promoted bytes become the sole direct-child H1 tree change. Model
+staging, protected access, smoke, calibration, Stage-A authorization and the
+one permitted new sealed Stage-A capture remain forbidden until their preceding
+gates pass. Nothing in this amendment is quality, adoption, novelty,
+state-of-the-art, deployment or breakthrough evidence.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the
@@ -2600,7 +2857,7 @@ Stage A contains exactly 12 examples:
   prefill tokens followed by 128 continuation tokens, of which 127 predictions
   are exposed to the committed quantized cache;
 - four RULER category representatives at configured length 4,096 and recovery
-  seed 2,343: `niah_multiquery`, `vt`, `fwe`, and `qa_1`, using each
+  seed 2,344: `niah_multiquery`, `vt`, `fwe`, and `qa_1`, using each
   identity-bound teacher-forced target derived from the official references;
   and
 - the first four SHA-ranked HumanEval+ canonical IDs, using at most the first
@@ -2913,6 +3170,15 @@ authenticates that bundle, binds its manifest SHA-256 into the seal and durable
 evidence chain, and materializes Stage-A content only after reservation from
 the local bundle. A Python socket audit guard makes attempted network access in
 that offline child fatal.
+
+The stager and offline authenticator independently derive the authoritative
+receipt hashes from the already authenticated identities: 16 from the frozen
+calibration identity embedded in binding v5 and four from frozen Stage-A
+identity v6. Each receipt body is read exactly once as opaque bytes, checked
+against that 20-file authority, and frozen before later copying or use. The
+outer bundle manifest is therefore not allowed to authenticate substituted
+receipt bytes merely by rehashing itself. A mismatch is rejected without
+decoding the receipt body and before pre-seal smoke or the one-run reservation.
 
 Both children use the authenticated staged interpreter and package roots bound
 by runtime-manifest v7, run with a launcher-owned scratch directory as cwd,

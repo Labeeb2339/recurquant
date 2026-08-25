@@ -36,7 +36,7 @@ BASE_RUNTIME_ROOT_NAME: Final = "base-runtime"
 RUNNER_SOURCE_PATH: Final = "scripts/run_static_q468_calibration.py"
 CALIBRATION_IDENTITY_CAPTURE_SOURCE_PATH: Final = "scripts/capture_static_q468_identity_input.py"
 RUNNER_MODULE_NAME: Final = "_recurquant_experiment013_sealed_runner"
-RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v17"
+RUNNER_REVISION: Final = "experiment-013-static-q468-calibration-runner-v19"
 RUN_REPORT_KIND: Final = "recurquant_experiment013_calibration_run"
 RUN_REPORT_SCHEMA: Final = 4
 RUN_LAUNCH_FINALIZATION_KIND: Final = "recurquant_experiment013_calibration_run_launch_finalization"
@@ -49,8 +49,8 @@ RUN_LAUNCH_FINALIZATION_PUBLICATION_CONTRACT: Final = (
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_calibration_identity_capture_provenance"
 )
-CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 2
-CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 7
+CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 3
+CALIBRATION_IDENTITY_CAPTURE_VERSION: Final = 9
 CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_STATUS: Final = (
     "captured_under_authenticated_runtime_and_launcher_finalized"
 )
@@ -60,16 +60,16 @@ CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_PUBLICATION_CONTRACT: Final = (
 STAGE_A_IDENTITY_CAPTURE_PROVENANCE_KIND: Final = (
     "recurquant_experiment013_stage_a_identity_capture_provenance"
 )
-STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 1
+STAGE_A_IDENTITY_CAPTURE_PROVENANCE_SCHEMA: Final = 2
 STAGE_A_CALIBRATION_BINDING_KIND: Final = "recurquant_experiment013_stage_a_calibration_binding"
-STAGE_A_CALIBRATION_BINDING_SCHEMA: Final = 4
-STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibration-binding-v4"
+STAGE_A_CALIBRATION_BINDING_SCHEMA: Final = 5
+STAGE_A_CALIBRATION_BINDING_REVISION: Final = "experiment-013-stage-a-calibration-binding-v5"
 STAGE_A_CALIBRATION_AUTHORIZATION_KIND: Final = (
     "recurquant_experiment013_stage_a_calibration_authorization"
 )
-STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA: Final = 2
+STAGE_A_CALIBRATION_AUTHORIZATION_SCHEMA: Final = 3
 STAGE_A_CALIBRATION_AUTHORIZATION_REVISION: Final = (
-    "experiment-013-stage-a-calibration-authorization-v2"
+    "experiment-013-stage-a-calibration-authorization-v3"
 )
 STAGE_A_CALIBRATION_AUTHORIZATION_STATUS: Final = "authorized_for_stage_a"
 CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES: Final = (
@@ -344,7 +344,7 @@ def _parse_stage_a_calibration_binding_envelope(
     *,
     expected_file_sha256: str,
 ) -> dict[str, object]:
-    """Bootstrap the exact v4 envelope; the sealed child rederives the full chain."""
+    """Bootstrap the exact v5 envelope; the sealed child rederives the full chain."""
 
     actual = _sha256_bytes(data)
     if actual != _sha256(expected_file_sha256, context="expected Stage-A binding SHA-256"):
@@ -368,7 +368,13 @@ def _parse_stage_a_calibration_binding_envelope(
         raise SealedLaunchError("Stage-A calibration binding evidence is missing")
     _exact_fields(
         evidence,
-        {"artifact_revision", "binding", "dependencies_base64", "dependency_file_sha256"},
+        {
+            "artifact_revision",
+            "binding",
+            "dependencies_base64",
+            "dependency_file_sha256",
+            "ruler_generation_manifest_file_sha256",
+        },
         context="Stage-A calibration binding evidence",
     )
     if evidence["artifact_revision"] != STAGE_A_CALIBRATION_BINDING_REVISION:
@@ -402,6 +408,10 @@ def _parse_stage_a_calibration_binding_envelope(
         raise SealedLaunchError("Stage-A calibration authorization bytes differ from their hash")
     if binding["calibration_authorization_file_sha256"] != authorization_sha256:
         raise SealedLaunchError("Stage-A binding carries a different authorization hash")
+    ruler_generation_manifest_file_sha256 = _sha256(
+        evidence["ruler_generation_manifest_file_sha256"],
+        context="Stage-A binding RULER generation manifest SHA-256",
+    )
     authorization = _strict_json(authorization_bytes, context="Stage-A calibration authorization")
     _exact_fields(
         authorization,
@@ -458,6 +468,7 @@ def _parse_stage_a_calibration_binding_envelope(
             "fisher_h1_smoke_report_file_sha256",
             "frozen_calibration_identity_file_sha256",
             "identity_input_manifest_sha256",
+            "ruler_generation_manifest_file_sha256",
             "source_commit",
             "static_q48_policy_file_sha256",
         },
@@ -465,6 +476,8 @@ def _parse_stage_a_calibration_binding_envelope(
     )
     for name in sorted(set(custody) - {"execution_bindings", "source_commit"}):
         _sha256(custody[name], context=f"Stage-A authorization custody {name}")
+    if custody["ruler_generation_manifest_file_sha256"] != (ruler_generation_manifest_file_sha256):
+        raise SealedLaunchError("Stage-A binding and authorization name different RULER manifests")
     execution_bindings = custody.get("execution_bindings")
     if not isinstance(execution_bindings, dict):
         raise SealedLaunchError("Stage-A authorization execution bindings are missing")
@@ -484,6 +497,7 @@ def _parse_stage_a_calibration_binding_envelope(
         "authorization_file_sha256": authorization_sha256,
         "execution_bindings": normalized_execution,
         "file_sha256": actual,
+        "ruler_generation_manifest_file_sha256": ruler_generation_manifest_file_sha256,
         "source_commit": source_commit,
     }
 
@@ -1384,7 +1398,7 @@ def _acquire_executable_custody(
     git_executable: Path,
     runtime_manifest: Mapping[str, object],
 ) -> _HeldExecutableCustody:
-    """Acquire and verify the platform launch handles bound by runtime schema v6."""
+    """Acquire and verify the platform launch handles bound by runtime schema v7."""
 
     machine = runtime_manifest.get("machine")
     if not isinstance(machine, dict) or not isinstance(machine.get("system"), str):
@@ -2114,6 +2128,7 @@ def _verify_capture_provenance_envelope(runner_options: Mapping[str, str]) -> st
             "identity_input_file_sha256",
             "phase",
             "publication_contract",
+            "ruler_generation_manifest_file_sha256",
             "runner_revision",
             "schema_version",
             "source_commit",
@@ -2123,6 +2138,10 @@ def _verify_capture_provenance_envelope(runner_options: Mapping[str, str]) -> st
     )
     if _canonical_json_bytes(root) != receipt_bytes:
         raise SealedLaunchError("capture provenance receipt is not canonical JSON")
+    _sha256(
+        root["ruler_generation_manifest_file_sha256"],
+        context="capture provenance RULER generation manifest SHA-256",
+    )
     if (
         root["artifact_kind"] != CALIBRATION_IDENTITY_CAPTURE_PROVENANCE_KIND
         or type(root["schema_version"]) is not int
@@ -2412,6 +2431,7 @@ def _validate_capture_provenance_candidate(
         "identity_input_file_sha256",
         "phase",
         "publication_contract",
+        "ruler_generation_manifest_file_sha256",
         "runner_revision",
         "schema_version",
         "source_commit",
@@ -2469,8 +2489,21 @@ def _validate_capture_provenance_candidate(
             != stage_a_binding_envelope["authorization_file_sha256"]
         ):
             raise SealedLaunchError("capture provenance Stage-A authorization drifted")
+        if (
+            _sha256(
+                root["ruler_generation_manifest_file_sha256"],
+                context="capture provenance RULER generation manifest SHA-256",
+            )
+            != stage_a_binding_envelope["ruler_generation_manifest_file_sha256"]
+        ):
+            raise SealedLaunchError("capture provenance Stage-A RULER manifest drifted")
     elif stage_a_binding_envelope is not None:
         raise SealedLaunchError("calibration capture cannot carry a Stage-A binding envelope")
+    else:
+        _sha256(
+            root["ruler_generation_manifest_file_sha256"],
+            context="capture provenance RULER generation manifest SHA-256",
+        )
     if root["excluded_runtime_modules"] != list(CALIBRATION_IDENTITY_EXCLUDED_RUNTIME_MODULES):
         raise SealedLaunchError("capture provenance candidate exclusion policy drifted")
     if root["source_commit"] != source_manifest["source_commit"]:
@@ -3633,18 +3666,21 @@ def _smoke(options):
         "artifact_kind", "capture_source", "capture_version",
         "critical_module_origins", "excluded_runtime_modules",
         "execution_bindings", "identity_input_file_sha256", "phase",
-        "publication_contract", "runner_revision", "schema_version",
+        "publication_contract", "ruler_generation_manifest_file_sha256",
+        "runner_revision", "schema_version",
         "source_commit", "status",
     }, "capture provenance receipt")
+    _digest(receipt_root["ruler_generation_manifest_file_sha256"],
+            "capture provenance RULER generation manifest SHA-256")
     if (_canonical(receipt_root) != receipt
             or receipt_root["artifact_kind"]
             != "recurquant_experiment013_calibration_identity_capture_provenance"
             or type(receipt_root["schema_version"]) is not int
-            or receipt_root["schema_version"] != 2
+            or receipt_root["schema_version"] != 3
             or type(receipt_root["capture_version"]) is not int
-            or receipt_root["capture_version"] != 7
+            or receipt_root["capture_version"] != 9
             or receipt_root["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v17"
+            != "experiment-013-static-q468-calibration-runner-v19"
             or receipt_root["phase"] != "calibration"
             or receipt_root["publication_contract"]
             != "sealed-host-no-overwrite-after-postconditions-and-owned-root-cleanup-v1"
@@ -3684,7 +3720,7 @@ def _smoke(options):
             or not isinstance(evidence, dict)
             or evidence.get("status") != "fisher_h1_smoke_passed"
             or evidence.get("runner_revision")
-            != "experiment-013-static-q468-calibration-runner-v17"
+            != "experiment-013-static-q468-calibration-runner-v19"
             or evidence.get("prerequisites") != {
                 "capture_provenance_receipt_file_sha256": receipt_sha256,
                 "fisher_h1_smoke_launch_finalization_file_sha256": None,
@@ -3719,7 +3755,7 @@ def _smoke(options):
             or type(finalization["schema_version"]) is not int
             or finalization["schema_version"] != 1
             or finalization["runner_revision"]
-            != "experiment-013-static-q468-calibration-runner-v17"
+            != "experiment-013-static-q468-calibration-runner-v19"
             or finalization["mode"] != "fisher_h1_smoke"
             or finalization["status"] != "fisher_h1_smoke_launcher_finalized"
             or finalization["publication_contract"]
