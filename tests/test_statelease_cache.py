@@ -16,10 +16,10 @@ from recurquant.qwen35 import (
     create_qwen35_experiment010_statelease_cache,
     create_qwen35_statelease_cache,
     experiment010_statelease_effective_plan_sha256,
+    experiment012_statelease_h5_plan,
 )
 from recurquant.row_policy import (
     ExactBudgetRowPlan,
-    RowLocation,
     select_rows_exact_budget,
 )
 from recurquant.statelease import (
@@ -55,30 +55,7 @@ def _plan(promotions: int = 5) -> ExactBudgetRowPlan:
 
 
 def _experiment010_plan() -> ExactBudgetRowPlan:
-    rows = tuple(
-        RowLocation(
-            layer_index=layer_index,
-            head_index=flat_index // 128,
-            row_index=flat_index % 128,
-        )
-        for layer_index, quota in EXPERIMENT010_STATELEASE_LAYER_QUOTAS.items()
-        for flat_index in range(quota)
-    )
-    return ExactBudgetRowPlan(
-        low_bits=4,
-        high_bits=8,
-        group_size=128,
-        scale_bits=16,
-        total_groups=36_864,
-        mask_bytes=4_608,
-        promotion_increment_bytes=64,
-        target_resident_bytes=2_564_096,
-        resident_bytes=2_564_096,
-        high_precision_rows=rows,
-        score_shapes=tuple(
-            (layer_index, 16, 128) for layer_index in EXPERIMENT010_STATELEASE_LAYER_QUOTAS
-        ),
-    )
+    return experiment012_statelease_h5_plan()
 
 
 def _cache(

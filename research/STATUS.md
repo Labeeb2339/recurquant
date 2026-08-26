@@ -2,7 +2,7 @@
 
 ## v0.3 experimental track
 
-Last updated: 2026-08-02
+Last updated: 2026-08-25
 
 Experiment 005 stopped before holdout after its frozen real-storage-boundary
 sign gate achieved `13/16 = 0.8125`, below the required `0.95`. Its permanent
@@ -115,7 +115,114 @@ prior art through Nemotron 3 Ultra and ReplaySSM. Even a future protocol pass
 would not by itself support a first, novelty, speed, deployment,
 state-of-the-art, or breakthrough claim.
 
-In parallel, the repository now contains a correctness-first physical Q4/Q6/Q8
+Experiment 013 remains scientifically unresolved and has no accepted static
+RHT-Q468 result.
+The tenth replacement chain at H0
+`a5188a0b3e7bc3ab9ab2a27a639cac26d93030bd` and H1
+`874e586bda98602cc712a543a071a0047df38659` completed authenticated model
+staging, its one Fisher H=1 smoke, full calibration, and post-calibration
+Stage-A authorization. Its first sealed Stage-A identity capture then failed
+closed before live source or model construction because recursive binding
+verification attempted to import Torch inside the metadata-only isolation
+boundary. That entire chain is retired; its successful calibration is custody
+history, not an accepted static-Q468 result.
+
+The Torch-free metadata repair produced eleventh replacement H0
+`5626879cd8fafe422d85e1c3abb7fe46262ce57d`, tagged
+`experiment013-h0-5626879`. GitHub Actions run `32791176375` passed all five
+jobs. Its only calibration identity capture completed without model weights,
+and candidate and promoted-format publication succeeded. The mandatory
+pre-H1 comparison nevertheless rejected the result because the RULER formatter
+SHA-256 changed outside the allowed pointer set. The formatter fingerprint had
+accidentally reused the live capture-procedure version, so the security-only
+v6-to-v7 change altered a purported scientific commitment. No H1 was created,
+no model was staged, and the chain is retired and non-authorizing.
+
+During root-cause analysis, an automated read-only process also decoded the
+four protected seed-2,343 Stage-A RULER receipt bodies and constructed their
+formatter targets. It printed no content and ran no model or metric, but the
+access occurred outside the sealed Stage-A capture. Those four receipts and
+every complete bundle containing them are conservatively retired. Seed 2,344
+was selected before replacement generation as the sole new Stage-A seed.
+
+An initial v18/v8/v7 repair draft removed the retired bundle digest, but a
+pre-commit adversarial review found cross-phase manifest substitution and
+swap/restore gaps. No commit or artifact was published under that rejected
+draft. The current working tree instead implements runner v19,
+capture/resolver v9, sealed Stage-A runner v8, the procedure-independent frozen
+formatter epoch, seed 2,344, and explicit manifest custody through calibration
+provenance v3, authorization v3, binding v5 and Stage-A provenance v2. Opaque
+Stage-A bundle custody now also rederives the exact 16 calibration and four
+Stage-A receipt hashes from authenticated frozen identities, reads each body
+once without semantic decoding, and rejects substitutions before network work
+or the one-run reservation.
+
+The first published non-authorizing RULER-generation G0 was commit
+`117d01be08c8ad69509d2589f41ec564afea933a`, tagged
+`experiment013-ruler-g0-117d01b`. Its full local, cross-platform and package
+gates passed, and exact-commit GitHub Actions run `32921056529` passed all five
+jobs. Both source-frozen generation-manifest anchors remained `None`; G0 never
+authorized H0, identity capture, model access, calibration or Stage A.
+
+The official G0 generator was invoked exactly once from its clean detached tag
+worktree into fresh no-overwrite roots. It terminated with exit code zero,
+reported 20 receipts, and reported whole generation-manifest SHA-256
+`a6a00aa7a0f0abb86c2f8ff7dce5822a7d184ed11b75ce435c36a3ca3ef6e378`.
+A body-blind audit confirmed the exact 20-filename inventory and protected seed
+2,344, but zero of the 16 public receipt hashes matched the pre-existing
+canonical public baseline. The raw and receipt roots are preserved and
+permanently retired. There is no H0 anchor authorization and no retry, resume,
+copy, rename, adoption or rebinding from that bundle.
+
+No protected receipt body or protected raw sibling was opened, decoded,
+formatted, previewed, printed or semantically inspected. The complete
+generation manifest was read only as opaque bytes for its whole-file hash and
+was not parsed, decoded or semantically inspected. Protected files were checked
+only by names, counts, types and byte sizes; their contents remain semantically
+unobserved and their body digests remain uncomputed. This is an
+execution-contract incident, not a RULER, model, quantization or quality result.
+
+The exact and sole root cause was the authenticated raw identity of
+`requirements/experiment013-ruler.txt`. The canonical public receipts bind its
+798-byte LF identity with SHA-256
+`86564a39944372099e5d4495d8adf5ef4e629ec8200503a99031ad9436f32f20`;
+G0 bound an otherwise semantically identical 838-byte CRLF identity with
+SHA-256
+`0f058010181c8fa0e28ff1174a931197e1afef6a9a419b99505777dcf7e28804`.
+All 37 pins and every other authenticated generation input were unchanged.
+The prior amendment's choice of CRLF as canonical therefore contradicted its
+own requirement that all 16 public receipts reproduce their existing bytes.
+
+The successor remains in development and is not yet G0. It must restore and
+cross-platform-enforce the exact 798-byte LF requirements file; pin the exact
+filename, canonical hash and canonical byte size for all 16 public receipts;
+add a source-frozen public-only canary harness and its test, advancing the
+explicit frozen source inventory from 54 to 56 paths; and pass full local,
+cross-platform, lint, package/wheel/sdist and exact five-job CI gates before a
+fresh non-authorizing tag. From a clean detached worktree at that tag, with its
+tag, status and complete source manifest authenticated before and after, the
+canary may use the generator's partial mode only for the exact 16 public
+receipts in disposable fresh roots, before any official roots exist. A durable
+outer reservation consumes the G0's one attempt before process creation, so an
+early failure or different root name cannot become a retry. Any canary failure
+retires those roots and blocks an official attempt under that G0.
+Passing roots are also preserved and retired from reuse. Only an outer zero
+exit, empty stderr, and exact canonical safe success record whose hash and root
+inventory are recorded in the private project note may authorize one fresh
+exact 20-receipt official attempt, with the four protected receipts still fixed
+at seed 2,344. Canary or official output may never be used to select or revise
+an expected public hash or size.
+
+A future fresh calibration identity must retain all 160 calibration records
+byte-for-byte and differ from the last valid retired identity only at the
+source/procedure/promotion bindings and the two deterministic RULER
+schedule/bundle commitments. No protected Stage-A receipt may be inspected
+outside its eventual sealed capture. No Stage-A evaluation, model staging,
+quality result, deployment conclusion, novelty claim, or breakthrough claim is
+currently authorized. See
+[`EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md`](EXPERIMENT_013_STATIC_RHT_Q468_PROTOCOL.md).
+
+In parallel, the repository now contains a reference physical Q4/Q6/Q8
 packer and an exact dynamic-programming allocator. Its corrected two-bit
 metadata contract provides 3,808 marginal precision steps—not 3,952 rows—at
 the same `2,564,096` state bytes. It is not yet cache-integrated or

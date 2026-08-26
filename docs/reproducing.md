@@ -74,14 +74,14 @@ FP16 scales, and nearest rounding.
 
 ```powershell
 .venv\Scripts\python.exe -m recurquant.cli qwen35 `
-  --device cuda `
+  --device auto `
   --max-new-tokens 32 `
   --prompt "Explain recurrent-state quantization in two sentences."
 ```
 
 ```bash
 .venv/bin/python -m recurquant.cli qwen35 \
-  --device cuda \
+  --device auto \
   --max-new-tokens 32 \
   --prompt "Explain recurrent-state quantization in two sentences."
 ```
@@ -99,6 +99,40 @@ attention on one materialized device, and every forward must run inside
 `torch.inference_mode()` or `torch.no_grad()`. See
 [`compatibility.md`](compatibility.md) for unsupported generation and runtime
 modes.
+
+### Run the exact StateLease-H5 policy
+
+Install the current branch rather than the older `v0.2.0a1` tag, then select
+the frozen Experiment 012 policy explicitly:
+
+```powershell
+.venv\Scripts\python.exe -m recurquant.cli qwen35 `
+  --policy statelease-h5 `
+  --device cuda `
+  --max-new-tokens 16 `
+  --json
+```
+
+```bash
+.venv/bin/python -m recurquant.cli qwen35 \
+  --policy statelease-h5 \
+  --device cuda \
+  --max-new-tokens 16 \
+  --json
+```
+
+The factory authenticates the complete 1,976-row Experiment 012 precision
+identity, not only its per-layer quotas. The command keeps
+`Qwen35StateLeaseObserver` active across prefill and decode, then reports
+boundary choices, committed observations, checkpoint bytes, and the complete
+`3,454,664`-byte resident footprint. For application code, pair
+`create_qwen35_experiment012_statelease_h5_cache(model)` with
+`Qwen35StateLeaseObserver(model, caches=[cache])` around the entire model-call
+sequence.
+
+This is an interactive batch-one eager smoke path. It does not create a new
+experiment artifact, rerun Experiment 012, satisfy its unopened Stage-B
+protocol, measure peak accelerator memory, or establish kernel speed.
 
 ## 2. Reproduce the development evidence
 
@@ -372,6 +406,7 @@ all eight gate decisions without importing the experiment runner:
   evidence/experiment012-statelease-stage-a-666.json
 ```
 
-No StateLease Stage-B command is published yet. Experiment 012's protocol
-requires a new three-workload identity and a genuine StateLease evaluator before
-any model-backed Stage-B run.
+The installed `qwen35 --policy statelease-h5` command above is a model-backed
+interactive smoke, not a Stage-B evaluator. No StateLease Stage-B command is
+published yet. Experiment 012's protocol requires a new three-workload identity
+and a genuine StateLease evaluator before any Stage-B evidence run.

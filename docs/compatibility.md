@@ -29,7 +29,9 @@ development record remains available in
 implementation. Both default to the frozen v0.2 mixed policy: model layer 0 at
 INT8 and every other recurrent layer at INT4, with group size 128 and FP16
 scales. `--policy uniform-int4-stress` is retained only for reproducing the
-uniform INT4 stress baseline.
+uniform INT4 stress baseline. On the current branch,
+`--policy statelease-h5` selects the exact Experiment 012 row identity and keeps
+the causal StateLease observer active across prefill and decode.
 
 The command downloads the pinned model and tokenizer unless
 `--local-files-only` is supplied. It performs manual greedy decoding; the
@@ -61,6 +63,17 @@ path and reported 2,564,096 resident bytes, 18,874,368 FP32-reference bytes, a
 1,048,576-byte largest single state materialization, and physical reduction
 realized. This is a functional integration check, not a quality or latency
 benchmark.
+
+The StateLease-H5 installed-path smoke used the same pinned model revision,
+Python `3.11.15`, PyTorch `2.13.0+cpu`, Transformers `5.14.1`, and eager CPU
+decoding. A two-token continuation completed with all 18 layers observed, 36
+committed observations, and 18 checkpoints. An eight-token continuation also
+exercised the controller: 144 committed observations, 18 c4 decisions, and 36
+checkpoints. Both runs reported exactly `3,454,664` resident bytes including the
+packed checkpoint (which includes its precision mask), query EMA, and replay
+capacity. These are functional
+integration checks only; they are not CUDA validation, new Experiment 012
+evidence, or latency/quality benchmarks.
 
 The following paths are unsupported or not yet validated:
 

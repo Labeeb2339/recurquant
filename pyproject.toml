@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -63,7 +63,7 @@ recurquant = "recurquant.cli:main"
 packages = ["src/recurquant"]
 
 [tool.pytest.ini_options]
-addopts = "-q --basetemp ./.pytest-ci"
+addopts = "-q --basetemp ../.pytest-recurquant"
 testpaths = ["tests"]
 
 [tool.ruff]

@@ -3128,33 +3128,9 @@ def test_reachable_storage_closure_accepts_declared_empty_zero_storage_component
 def _exact_geometry_config_and_plan() -> tuple[object, object]:
     from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 
-    from recurquant.qwen35 import EXPERIMENT010_STATELEASE_LAYER_QUOTAS
-    from recurquant.row_policy import ExactBudgetRowPlan, RowLocation
+    from recurquant.qwen35 import experiment012_statelease_h5_plan
 
-    rows = tuple(
-        RowLocation(
-            layer_index=layer_index,
-            head_index=flat_index // 128,
-            row_index=flat_index % 128,
-        )
-        for layer_index, quota in EXPERIMENT010_STATELEASE_LAYER_QUOTAS.items()
-        for flat_index in range(quota)
-    )
-    plan = ExactBudgetRowPlan(
-        low_bits=4,
-        high_bits=8,
-        group_size=128,
-        scale_bits=16,
-        total_groups=36_864,
-        mask_bytes=4_608,
-        promotion_increment_bytes=64,
-        target_resident_bytes=2_564_096,
-        resident_bytes=2_564_096,
-        high_precision_rows=rows,
-        score_shapes=tuple(
-            (layer_index, 16, 128) for layer_index in EXPERIMENT010_STATELEASE_LAYER_QUOTAS
-        ),
-    )
+    plan = experiment012_statelease_h5_plan()
     linear = set(stage_a.LINEAR_LAYER_INDICES)
     config = Qwen3_5TextConfig(
         vocab_size=128,
@@ -3365,10 +3341,20 @@ def test_statelease_attestation_rejects_within_layer_row_swap_hidden_by_quota_ha
     from recurquant.row_policy import RowLocation
 
     config, expected_plan = _exact_geometry_config_and_plan()
-    original = RowLocation(layer_index=0, head_index=0, row_index=0)
-    replacement = RowLocation(layer_index=0, head_index=15, row_index=127)
-    assert original in expected_plan.high_precision_rows
-    assert replacement not in expected_plan.high_precision_rows
+    original = next(
+        location for location in expected_plan.high_precision_rows if location.layer_index == 0
+    )
+    occupied = {
+        (location.head_index, location.row_index)
+        for location in expected_plan.high_precision_rows
+        if location.layer_index == 0
+    }
+    replacement = next(
+        RowLocation(layer_index=0, head_index=head_index, row_index=row_index)
+        for head_index in range(16)
+        for row_index in range(128)
+        if (head_index, row_index) not in occupied
+    )
     swapped_rows = tuple(
         sorted(
             replacement if location == original else location
@@ -3380,27 +3366,21 @@ def test_statelease_attestation_rejects_within_layer_row_swap_hidden_by_quota_ha
         experiment010_statelease_effective_plan_sha256(expected_plan)
     )
     assert swapped_plan != expected_plan
-    if method == STATELEASE_METHOD:
-        cache = create_qwen35_experiment010_statelease_cache(
-            config,
-            plan=swapped_plan,
-        )
-    else:
-        cache = create_qwen35_experiment010_fixed_replay_cache(
-            config,
-            plan=swapped_plan,
-            mode=method,
-        )
-
-    with pytest.raises(RuntimeError, match="exact row-plan identity drifted"):
-        stage_a._statelease_candidate_tensors(
-            cache,
-            method=method,
-            expected_plan=expected_plan,
-        )
+    with pytest.raises(ValueError, match="exact frozen Experiment 012"):
+        if method == STATELEASE_METHOD:
+            create_qwen35_experiment010_statelease_cache(
+                config,
+                plan=swapped_plan,
+            )
+        else:
+            create_qwen35_experiment010_fixed_replay_cache(
+                config,
+                plan=swapped_plan,
+                mode=method,
+            )
 
 
-def test_statelease_attestation_rejects_layer_group_identity_drift() -> None:
+def test_statelease_attestation_rejects_same_quota_within_layer_group_swap() -> None:
     from recurquant.qwen35 import create_qwen35_experiment010_statelease_cache
 
     config, plan = _exact_geometry_config_and_plan()
@@ -3410,7 +3390,8 @@ def test_statelease_attestation_rejects_layer_group_identity_drift() -> None:
     )
     layer_index, layer = next(cache.statelease_layers())
     groups = list(layer.high_precision_group_indices)
-    groups[0] = 2_047
+    replacement = next(group for group in range(16 * 128) if group not in groups)
+    groups[0] = replacement
     layer.high_precision_group_indices = tuple(sorted(groups))
 
     with pytest.raises(
