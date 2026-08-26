@@ -2214,6 +2214,16 @@ with SHA-256
 The rejected candidate remains non-authorizing: it receives no tag and may not
 generate receipts.
 
+Local successor `cb6c5650e1c60fc263d80b2a16df66e22ac7caef` repaired the
+RULER blob and passed 2,116 tests with 28 skips, but a direct repository-source
+capture exposed the sole remaining raw/tree mismatch among the 54 frozen source
+paths: `requirements/experiment013-calibration.txt`. That local candidate is
+also rejected and was not pushed or tagged. Its successor must preserve the
+existing 1,441-byte LF Git blob and 54 pinned distributions, explicitly force
+LF materialization, regress SHA-256
+`b2095940bc5a3e916a35821209ce47f631695e834c9ff00129f6e7c761d05061`,
+and pass a real root source capture before repeating all G0 gates.
+
 Only that tagged G0 may generate one fresh exact 20-receipt bundle under new,
 no-overwrite receipt and raw roots. Generation must run from a separate clean,
 detached worktree whose HEAD equals the published G0 tag before and after the

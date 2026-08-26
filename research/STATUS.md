@@ -181,6 +181,14 @@ Committed, indexed and materialized bytes must therefore remain identical on
 every platform. The rejected commit has no tag, authorized no generation, and
 the replacement candidate must repeat every G0 gate before it can be tagged.
 
+Local successor `cb6c5650e1c60fc263d80b2a16df66e22ac7caef` then passed the
+full 2,144-test collection, but the real repository-source capture found the
+only remaining raw/tree mismatch among its 54 frozen paths in the calibration
+requirements file. It is likewise rejected and was not pushed or tagged. The
+next candidate freezes that file to its existing 1,441-byte LF Git blob without
+changing any of its 54 distribution pins, and must pass direct source capture
+plus every focused, full, lint, package and CI gate again.
+
 A fresh calibration identity must retain all 160 calibration records
 byte-for-byte and differ from the last valid retired identity only at the
 source/procedure/promotion bindings and the two deterministic RULER

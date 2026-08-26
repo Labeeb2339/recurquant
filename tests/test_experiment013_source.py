@@ -193,6 +193,28 @@ def test_runner_and_resolver_share_one_g0_or_final_h0_ruler_manifest_anchor() ->
     )
 
 
+def test_calibration_requirements_materialize_as_frozen_lf_blob() -> None:
+    root = Path(__file__).resolve().parents[1]
+    relative = "requirements/experiment013-calibration.txt"
+    payload = (root / relative).read_bytes()
+
+    assert len(payload) == 1441
+    assert hashlib.sha256(payload).hexdigest() == (
+        "b2095940bc5a3e916a35821209ce47f631695e834c9ff00129f6e7c761d05061"
+    )
+    assert payload.count(b"\n") == 59
+    assert b"\r" not in payload
+    raw_oid = _git(root, "hash-object", "--no-filters", "--", relative)
+    assert raw_oid == "10c31dab66651830a0e44ca3d9808a6158b9fbff"
+    assert _git(root, "hash-object", "--", relative) == raw_oid
+    assert _git(root, "rev-parse", f"HEAD:{relative}") == raw_oid
+    assert _git(root, "rev-parse", f":{relative}") == raw_oid
+    assert _git(root, "check-attr", "text", "eol", "--", relative).splitlines() == [
+        f"{relative}: text: set",
+        f"{relative}: eol: lf",
+    ]
+
+
 def test_capture_is_portable_complete_and_allows_ignored_artifacts(tmp_path: Path) -> None:
     root = _init_repository(tmp_path / "repository")
     _write(root / "artifacts" / "ignored-result.json", "{}\n")

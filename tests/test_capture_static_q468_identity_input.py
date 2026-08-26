@@ -1016,6 +1016,10 @@ def test_ruler_requirements_materialize_as_frozen_crlf_bytes() -> None:
     assert git_output("hash-object", "--", relative) == raw_oid
     assert git_output("rev-parse", f"HEAD:{relative}") == raw_oid
     assert git_output("rev-parse", f":{relative}") == raw_oid
+    assert git_output("check-attr", "text", "whitespace", "--", relative).splitlines() == [
+        f"{relative}: text: unset",
+        f"{relative}: whitespace: cr-at-eol",
+    ]
 
 
 @pytest.mark.parametrize(
