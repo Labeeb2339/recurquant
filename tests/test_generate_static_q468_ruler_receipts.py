@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -16,6 +17,12 @@ assert SPEC is not None and SPEC.loader is not None
 ruler = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ruler
 SPEC.loader.exec_module(ruler)
+
+
+def test_generator_source_remains_the_prior_receipt_authority() -> None:
+    assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == (
+        "3a8b2291db0162cf76e08f3a021e6c80551d4ab38ac3c0f0009f6290a46c2a63"
+    )
 
 
 class WhitespaceTokenizer:

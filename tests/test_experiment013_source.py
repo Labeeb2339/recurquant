@@ -81,6 +81,7 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
         "scripts/resolve_static_q468_identity.py",
         "scripts/run_static_q468_calibration.py",
         "scripts/screen_static_q468_stage_a.py",
+        "scripts/verify_static_q468_ruler_public_canary.py",
         "requirements/experiment013-ruler.txt",
         "src/recurquant/cache.py",
         "src/recurquant/static_q468_artifact_contract.py",
@@ -102,6 +103,7 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
         "tests/test_static_q468.py",
         "tests/test_static_q468_cache.py",
         "tests/test_static_q468_calibration.py",
+        "tests/test_verify_static_q468_ruler_public_canary.py",
         "tests/test_experiment013_calibration_api.py",
         "tests/test_experiment013_parquet.py",
         "tests/test_experiment013_qwen35_adapter.py",
@@ -110,6 +112,7 @@ def test_frozen_inventory_covers_all_experiment013_surfaces_without_hash_constan
     }
 
     assert required <= set(EXPERIMENT013_SOURCE_PATHS)
+    assert len(EXPERIMENT013_SOURCE_PATHS) == 56
     assert tuple(sorted(EXPERIMENT013_SOURCE_PATHS)) == EXPERIMENT013_SOURCE_PATHS
     assert len(set(EXPERIMENT013_SOURCE_PATHS)) == len(EXPERIMENT013_SOURCE_PATHS)
     source = Path(__file__).resolve().parents[1] / "src" / "recurquant" / "experiment013_source.py"

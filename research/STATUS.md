@@ -157,39 +157,63 @@ Stage-A receipt hashes from authenticated frozen identities, reads each body
 once without semantic decoding, and rejects substitutions before network work
 or the one-run reservation.
 
-The chain now has two gates. A non-authorizing G0 source commit keeps both the
-runner and resolver manifest anchors unset, so official identity capture and
-Stage-A authorization fail closed. After clean tests, package gates and
-exact-commit CI, its generator may run exactly once from a clean detached
-worktree at the published G0 tag and create one fresh 20-receipt bundle in new
-roots. Failure or interruption retires those roots; resume and retry are not
-allowed. A direct descendant final H0 must make only the two identical anchor
-substitutions, freezing that bundle's exact whole-manifest SHA-256 before any
-official capture. Capture consumes an immutable phase-scoped snapshot, so a
-live A-to-B-to-A swap cannot affect consumed bytes; persistent changes are
-separately detected. Final H0 is not authorizing until its own focused, full,
-package and exact-commit CI gates pass and it is tagged.
+The first published non-authorizing RULER-generation G0 was commit
+`117d01be08c8ad69509d2589f41ec564afea933a`, tagged
+`experiment013-ruler-g0-117d01b`. Its full local, cross-platform and package
+gates passed, and exact-commit GitHub Actions run `32921056529` passed all five
+jobs. Both source-frozen generation-manifest anchors remained `None`; G0 never
+authorized H0, identity capture, model access, calibration or Stage A.
 
-The first G0 candidate,
-`2cd83c944bdd0cb570a8abdee2d01520ae92cb41`, is rejected. Its local gates and
-four CI packaging/wheel jobs passed, but Linux CI run `32918458848` exposed a
-cross-platform raw-byte mismatch in the protocol-bound RULER requirements file:
-Windows materialized 838 CRLF bytes while Linux materialized 798 LF bytes. The
-repair keeps all 37 package pins unchanged while storing the prior canonical
-838 CRLF runtime bytes verbatim in Git and marking only that file unfiltered.
-Committed, indexed and materialized bytes must therefore remain identical on
-every platform. The rejected commit has no tag, authorized no generation, and
-the replacement candidate must repeat every G0 gate before it can be tagged.
+The official G0 generator was invoked exactly once from its clean detached tag
+worktree into fresh no-overwrite roots. It terminated with exit code zero,
+reported 20 receipts, and reported whole generation-manifest SHA-256
+`a6a00aa7a0f0abb86c2f8ff7dce5822a7d184ed11b75ce435c36a3ca3ef6e378`.
+A body-blind audit confirmed the exact 20-filename inventory and protected seed
+2,344, but zero of the 16 public receipt hashes matched the pre-existing
+canonical public baseline. The raw and receipt roots are preserved and
+permanently retired. There is no H0 anchor authorization and no retry, resume,
+copy, rename, adoption or rebinding from that bundle.
 
-Local successor `cb6c5650e1c60fc263d80b2a16df66e22ac7caef` then passed the
-full 2,144-test collection, but the real repository-source capture found the
-only remaining raw/tree mismatch among its 54 frozen paths in the calibration
-requirements file. It is likewise rejected and was not pushed or tagged. The
-next candidate freezes that file to its existing 1,441-byte LF Git blob without
-changing any of its 54 distribution pins, and must pass direct source capture
-plus every focused, full, lint, package and CI gate again.
+No protected receipt body or protected raw sibling was opened, decoded,
+formatted, previewed, printed or semantically inspected. The complete
+generation manifest was read only as opaque bytes for its whole-file hash and
+was not parsed, decoded or semantically inspected. Protected files were checked
+only by names, counts, types and byte sizes; their contents remain semantically
+unobserved and their body digests remain uncomputed. This is an
+execution-contract incident, not a RULER, model, quantization or quality result.
 
-A fresh calibration identity must retain all 160 calibration records
+The exact and sole root cause was the authenticated raw identity of
+`requirements/experiment013-ruler.txt`. The canonical public receipts bind its
+798-byte LF identity with SHA-256
+`86564a39944372099e5d4495d8adf5ef4e629ec8200503a99031ad9436f32f20`;
+G0 bound an otherwise semantically identical 838-byte CRLF identity with
+SHA-256
+`0f058010181c8fa0e28ff1174a931197e1afef6a9a419b99505777dcf7e28804`.
+All 37 pins and every other authenticated generation input were unchanged.
+The prior amendment's choice of CRLF as canonical therefore contradicted its
+own requirement that all 16 public receipts reproduce their existing bytes.
+
+The successor remains in development and is not yet G0. It must restore and
+cross-platform-enforce the exact 798-byte LF requirements file; pin the exact
+filename, canonical hash and canonical byte size for all 16 public receipts;
+add a source-frozen public-only canary harness and its test, advancing the
+explicit frozen source inventory from 54 to 56 paths; and pass full local,
+cross-platform, lint, package/wheel/sdist and exact five-job CI gates before a
+fresh non-authorizing tag. From a clean detached worktree at that tag, with its
+tag, status and complete source manifest authenticated before and after, the
+canary may use the generator's partial mode only for the exact 16 public
+receipts in disposable fresh roots, before any official roots exist. A durable
+outer reservation consumes the G0's one attempt before process creation, so an
+early failure or different root name cannot become a retry. Any canary failure
+retires those roots and blocks an official attempt under that G0.
+Passing roots are also preserved and retired from reuse. Only an outer zero
+exit, empty stderr, and exact canonical safe success record whose hash and root
+inventory are recorded in the private project note may authorize one fresh
+exact 20-receipt official attempt, with the four protected receipts still fixed
+at seed 2,344. Canary or official output may never be used to select or revise
+an expected public hash or size.
+
+A future fresh calibration identity must retain all 160 calibration records
 byte-for-byte and differ from the last valid retired identity only at the
 source/procedure/promotion bindings and the two deterministic RULER
 schedule/bundle commitments. No protected Stage-A receipt may be inspected

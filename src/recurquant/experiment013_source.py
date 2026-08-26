@@ -45,6 +45,7 @@ EXPERIMENT013_SOURCE_PATHS: tuple[str, ...] = tuple(
             "scripts/resolve_static_q468_identity.py",
             "scripts/run_static_q468_calibration.py",
             "scripts/screen_static_q468_stage_a.py",
+            "scripts/verify_static_q468_ruler_public_canary.py",
             "src/recurquant/cache.py",
             "src/recurquant/evidence.py",
             "src/recurquant/experiment013_calibration_api.py",
@@ -87,6 +88,7 @@ EXPERIMENT013_SOURCE_PATHS: tuple[str, ...] = tuple(
             "tests/test_static_q468.py",
             "tests/test_static_q468_cache.py",
             "tests/test_static_q468_calibration.py",
+            "tests/test_verify_static_q468_ruler_public_canary.py",
         }
     )
 )

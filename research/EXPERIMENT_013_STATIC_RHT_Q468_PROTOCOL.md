@@ -2327,6 +2327,116 @@ one permitted new sealed Stage-A capture remain forbidden until their preceding
 gates pass. Nothing in this amendment is quality, adoption, novelty,
 state-of-the-art, deployment or breakthrough evidence.
 
+Thirty-first replacement-G0 RULER byte-identity and public-canary amendment:
+2026-08-26. This is the latest controlling amendment wherever it conflicts
+with the Thirtieth amendment's RULER-requirements byte policy or its ban on
+all pre-official partial generation. Commit
+`117d01be08c8ad69509d2589f41ec564afea933a` and lightweight tag
+`experiment013-ruler-g0-117d01b` became the first published non-authorizing G0
+after the full local, cross-platform, package and exact-commit five-job GitHub
+Actions gates passed. Both generation-manifest anchors remained `None`, so
+this G0 authorized only its generator and never authorized official identity
+capture, H0, H1, model access, calibration or Stage A.
+
+The G0 official generator was invoked exactly once from a clean detached
+worktree at that tag, using fresh no-overwrite raw and receipt roots. It
+terminated with exit code zero and its final canonical completion line reported
+20 receipts and whole generation-manifest SHA-256
+`a6a00aa7a0f0abb86c2f8ff7dce5822a7d184ed11b75ce435c36a3ca3ef6e378`.
+A body-blind audit found the exact required filename inventory, including only
+seed 2,344 for the four protected filenames, but zero of the 16 public receipt
+whole-file hashes matched the pre-existing canonical public baseline. Exit zero
+therefore proves only that the generator completed its batch; it does not make
+the bundle protocol-valid. Both roots are preserved and permanently retired.
+There is no retry, resume, copy, rename, adoption, rebinding or final-H0 anchor
+authorization from that attempt.
+
+The protected receipt bodies and their raw sibling files were not opened,
+decoded, formatted, previewed, printed or semantically inspected. The complete
+generation manifest was read only as opaque bytes to compute its whole-file
+hash; it was not parsed, decoded or semantically inspected. Protected receipts
+and raw siblings were checked only by names, counts, types and byte sizes. Their
+contents remain semantically unobserved and their body digests remain
+uncomputed, but the complete failed bundle containing them is retired with its
+roots.
+
+The public-only root-cause comparison found exactly one changed authenticated
+generation input. The 16 canonical public receipts had been generated with
+`requirements/experiment013-ruler.txt` as 798 LF bytes with SHA-256
+`86564a39944372099e5d4495d8adf5ef4e629ec8200503a99031ad9436f32f20`.
+G0 instead authenticated 838 CRLF bytes with SHA-256
+`0f058010181c8fa0e28ff1174a931197e1afef6a9a419b99505777dcf7e28804`.
+The 37 package pins and all other authenticated generation inputs were
+unchanged. Because the raw requirements bytes are part of every receipt's
+authenticated provenance, the line-ending-only change deterministically
+changed all 16 public receipt bytes. The Thirtieth amendment's instruction to
+make the 838-byte CRLF file canonical was therefore inconsistent with its
+simultaneous requirement that the 16 public receipts reproduce their prior
+canonical bytes. This amendment resolves that contradiction in favor of the
+pre-existing public receipt identities: the successor must restore the exact
+798-byte LF file and SHA-256 above. No semantic package change is authorized.
+
+A successor may become a new non-authorizing G0 only after all of the following
+are committed and pass before a new tag is published:
+
+- the exact 798-byte LF RULER requirements identity is enforced in the Git
+  blob, index, Windows and Linux worktrees, direct repository-source capture,
+  and regression tests;
+- an immutable 16-row public-baseline table pins every required public receipt
+  filename, canonical whole-file SHA-256 and canonical byte size from the
+  already authenticated pre-existing calibration evidence, and tests reject
+  any missing, extra, reordered or changed row;
+- a public-only canary harness is source-frozen and tested so it can invoke the
+  generator's partial mode for exactly those 16 public receipts, never a
+  protected receipt, and can compare only their opaque bytes with the pinned
+  hashes and sizes; the harness and its tests advance the explicit frozen
+  repository-source inventory from 54 to 56 paths; and
+- focused and full local suites, direct source capture, clean cross-platform
+  materialization checks, lint, package/wheel/sdist gates and exact-commit
+  five-job CI all pass at the candidate commit.
+
+Only the newly tagged successor G0 may run the canary, from a separate clean
+detached worktree whose HEAD equals that tag before and after the process. The
+tag binding, clean status and complete 56-path repository-source manifest must
+be authenticated both before and after the child process; the canary's compact
+success record is not standalone proof of G0 custody. Before process creation,
+an outer one-shot reservation must durably bind the G0 commit, tag, exact argv,
+and all four absent canary and official roots. Publishing that reservation
+consumes the G0's sole canary attempt even if the child process never starts or
+never creates a root; a different root name cannot authorize a retry. The
+canary must use fresh, disposable, no-overwrite raw and receipt roots while the
+official raw and receipt roots are still absent. Its one permitted partial-mode
+invocation,
+with exactly 16 repeated `--receipt` arguments, is a narrow exception to the
+earlier partial-generation ban and is limited to the exact public schedule. A
+nonzero exit, interruption, incomplete or extra inventory, input drift, or any
+hash or size mismatch permanently retires the canary roots, rejects that G0's
+generation authority, and requires a new source commit and fully requalified
+G0 before another canary. Passing canary roots are likewise preserved and
+retired from reuse. Canary output may not be copied, promoted, renamed, rebound
+or used as any part of an official bundle.
+
+Only a fully passing canary authorizes one official invocation from the same
+clean detached successor-G0 tag into separate fresh, absent, no-overwrite raw
+and receipt roots. Before official generation, the outer canary process must
+have exited zero with empty stderr and exactly one canonical
+`recurquant.experiment013.ruler-public-canary-success.v1` stdout record binding
+the frozen receipt count and allowlist aggregate. That safe record, its
+whole-file hash, the outer reservation and exit receipt, both official-root
+absence results, and the preserved retired canary-root inventory must be
+entered in the canonical private project note. The official invocation must
+generate
+the exact 20-receipt schedule at once without `--receipt`; the four protected
+receipts remain fixed at seed 2,344. The original one-shot failure and
+retirement rules apply to those official roots. Expected public hashes and
+sizes must be committed before both canary and official generation. Neither
+output may be used to select, revise, relax or adopt an expected value, and no
+post-hoc or adaptive hash adoption is permitted. A final H0 remains forbidden
+unless the new official attempt itself completes and independently passes the
+full body-blind inventory, digest, public-baseline, custody and stability gates.
+Nothing in this amendment or the failed attempt is a model, quality,
+quantization, deployment, novelty, state-of-the-art or breakthrough result.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the

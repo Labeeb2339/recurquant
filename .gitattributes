@@ -6,4 +6,4 @@
 *.json text eol=lf
 *.svg text eol=lf
 requirements/experiment013-calibration.txt text eol=lf
-requirements/experiment013-ruler.txt -text whitespace=cr-at-eol
+requirements/experiment013-ruler.txt text eol=lf

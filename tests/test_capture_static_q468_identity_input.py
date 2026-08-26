@@ -961,7 +961,7 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
     assert capture.RULER_FORMATTER_FROZEN_CAPTURE_VERSION == 6
     ruler_dataset = next(item for item in first["datasets"] if item["key"] == "ruler")
     assert ruler_dataset["formatter_sha256"] == (
-        "50d896b551a28e63096adc51727a24e5723903be8dd8a32c221d7c6c6c42ff3f"
+        "3cbafb2059def071b4f7133fd693f1d389d28425f9b3c079638ef4d08d2b51cd"
     )
     assert ruler_dataset["canonical_id_manifest_sha256"] == (
         "83cc661a8393c491d403c81b702b4f206abb64ee6080c368a5267c93edc45946"
@@ -991,7 +991,7 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
     )
 
 
-def test_ruler_requirements_materialize_as_frozen_crlf_bytes() -> None:
+def test_ruler_requirements_materialize_as_frozen_lf_bytes() -> None:
     payload = capture.RULER_REQUIREMENTS_PATH.read_bytes()
 
     def git_output(*arguments: str) -> str:
@@ -1002,23 +1002,71 @@ def test_ruler_requirements_materialize_as_frozen_crlf_bytes() -> None:
             text=True,
         ).stdout.strip()
 
-    assert len(payload) == 838
+    assert len(payload) == 798
     assert capture.sha256_bytes(payload) == (
-        "0f058010181c8fa0e28ff1174a931197e1afef6a9a419b99505777dcf7e28804"
+        "86564a39944372099e5d4495d8adf5ef4e629ec8200503a99031ad9436f32f20"
     )
-    assert payload.count(b"\r\n") == 40
-    without_crlf = payload.replace(b"\r\n", b"")
-    assert b"\r" not in without_crlf
-    assert b"\n" not in without_crlf
+    assert payload.count(b"\n") == 40
+    assert b"\r" not in payload
     relative = "requirements/experiment013-ruler.txt"
     raw_oid = git_output("hash-object", "--no-filters", "--", relative)
-    assert raw_oid == "d2d30b8994bed276f0161ddfcce2eb4305fc881e"
+    assert raw_oid == "680c107636cc27be06652b2cfea18e0c0b82df0b"
     assert git_output("hash-object", "--", relative) == raw_oid
     assert git_output("rev-parse", f"HEAD:{relative}") == raw_oid
     assert git_output("rev-parse", f":{relative}") == raw_oid
-    assert git_output("check-attr", "text", "whitespace", "--", relative).splitlines() == [
-        f"{relative}: text: unset",
-        f"{relative}: whitespace: cr-at-eol",
+    assert git_output("check-attr", "text", "eol", "--", relative).splitlines() == [
+        f"{relative}: text: set",
+        f"{relative}: eol: lf",
+    ]
+
+
+@pytest.mark.parametrize("autocrlf", ["false", "true"])
+def test_ruler_requirements_clone_bytes_are_portable(tmp_path: Path, autocrlf: str) -> None:
+    clone = tmp_path / f"autocrlf-{autocrlf}"
+    process = subprocess.run(
+        [
+            str(FIXTURE_GIT_EXECUTABLE),
+            "-c",
+            f"core.autocrlf={autocrlf}",
+            "clone",
+            "--no-hardlinks",
+            "--quiet",
+            str(REPOSITORY_ROOT),
+            str(clone),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == 0, process.stderr or process.stdout
+
+    relative = "requirements/experiment013-ruler.txt"
+    payload = (clone / relative).read_bytes()
+    assert len(payload) == 798
+    assert capture.sha256_bytes(payload) == (
+        "86564a39944372099e5d4495d8adf5ef4e629ec8200503a99031ad9436f32f20"
+    )
+    assert payload.count(b"\n") == 40
+    assert b"\r" not in payload
+
+    def clone_git(*arguments: str) -> str:
+        result = subprocess.run(
+            [str(FIXTURE_GIT_EXECUTABLE), "-C", str(clone), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    raw_oid = clone_git("hash-object", "--no-filters", "--", relative)
+    assert raw_oid == "680c107636cc27be06652b2cfea18e0c0b82df0b"
+    assert clone_git("hash-object", "--", relative) == raw_oid
+    assert clone_git("rev-parse", f"HEAD:{relative}") == raw_oid
+    assert clone_git("rev-parse", f":{relative}") == raw_oid
+    assert clone_git("status", "--porcelain=v1", "--untracked-files=all") == ""
+    assert clone_git("check-attr", "text", "eol", "--", relative).splitlines() == [
+        f"{relative}: text: set",
+        f"{relative}: eol: lf",
     ]
 
 
