@@ -2437,6 +2437,35 @@ full body-blind inventory, digest, public-baseline, custody and stability gates.
 Nothing in this amendment or the failed attempt is a model, quality,
 quantization, deployment, novelty, state-of-the-art or breakthrough result.
 
+Thirty-second replacement-G0 canonical-stdout byte amendment: 2026-08-26. The
+sealed preflight of lightweight tag `experiment013-ruler-g0-de43236` rejected
+that candidate before the outer reservation, root creation, or process launch.
+Its success path constructed canonical LF-terminated JSON bytes, decoded them,
+and emitted the resulting text with `print`. Under the exact Windows CPython,
+text stdout translated the final LF to CRLF at the OS pipe/file boundary. The
+intended canonical record was 174 bytes with SHA-256
+`42d42af93655a9e9d0c41e151b7d086f85552b1ef6d4f7e0c52d8a8ba7254a5b`;
+the reproduced redirected record was 175 bytes with SHA-256
+`59a86e0536d058945873e1acf5cc129e49d8b469ba939164e19802ae77620153`.
+The prior string-capture regression compared normalized text and therefore did
+not authenticate the OS-byte boundary.
+
+No canary reservation, canary root, official root, canary or generator child,
+receipt, or generation exists under that tag, so its sole canary attempt was
+not consumed. The isolated diagnostic byte probe did not invoke either harness.
+The immutable tag and detached worktree remain preserved as preflight-rejected
+evidence and may not be moved, reused, or invoked. A replacement source commit
+must write `_canonical_json_bytes(success)` directly through binary stdout,
+flush it, require an exact complete write, and fail closed when that byte sink
+is unavailable. An isolated subprocess regression must authenticate the exact
+174 stdout bytes, their whole-file SHA-256, the single LF terminator, empty
+stderr, and zero exit at the real OS pipe boundary. The generator source,
+16-row public allowlist, protected identities, receipt schedules, and four-root
+custody rules remain unchanged. Focused and full local suites, direct and
+cross-platform 56-path source capture, lint, evidence, package, wheel/sdist and
+exact five-job CI gates must all pass at the new commit before a new immutable
+successor G0 tag may be published or any outer reservation may exist.
+
 ## Question
 
 Can a calibration-frozen, static Q4/Q6/Q8 recurrent-state layout satisfy the

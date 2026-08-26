@@ -178,6 +178,22 @@ def _canonical_json_bytes(value: object) -> bytes:
     )
 
 
+def _emit_canonical_stdout(value: object) -> None:
+    """Write canonical bytes without platform newline translation."""
+
+    data = _canonical_json_bytes(value)
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        raise PublicCanaryError("stdout has no binary buffer")
+    try:
+        written = stream.write(data)
+        stream.flush()
+    except (OSError, ValueError) as exc:
+        raise PublicCanaryError("canonical stdout could not be written") from exc
+    if written != len(data):
+        raise PublicCanaryError("canonical stdout write was incomplete")
+
+
 def _allowlist_aggregate(receipts: Sequence[PublicReceipt]) -> str:
     payload = [
         {
@@ -744,7 +760,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "receipt_count": TRUSTED_PUBLIC_RECEIPT_COUNT,
         "aggregate_sha256": TRUSTED_PUBLIC_AGGREGATE_SHA256,
     }
-    print(_canonical_json_bytes(success).decode("utf-8"), end="", flush=True)
+    _emit_canonical_stdout(success)
     return 0
 
 

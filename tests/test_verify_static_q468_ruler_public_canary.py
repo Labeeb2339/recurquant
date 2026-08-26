@@ -8,6 +8,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -151,6 +152,97 @@ def test_trusted_public_allowlist_is_exact_and_has_no_protected_schedule() -> No
         for receipt in canary.PUBLIC_RECEIPTS
         for token in ("protected", "s2343", "s2344")
     )
+
+
+def test_canonical_success_record_is_exact_at_os_pipe_boundary() -> None:
+    success = {
+        "schema": canary.SUCCESS_SCHEMA,
+        "receipt_count": canary.TRUSTED_PUBLIC_RECEIPT_COUNT,
+        "aggregate_sha256": canary.TRUSTED_PUBLIC_AGGREGATE_SHA256,
+    }
+    expected = canary._canonical_json_bytes(success)
+    code = "\n".join(
+        (
+            "import importlib.util",
+            "import pathlib",
+            "import sys",
+            f"path = pathlib.Path({str(SCRIPT)!r})",
+            "spec = importlib.util.spec_from_file_location('canary_pipe_probe', path)",
+            "module = importlib.util.module_from_spec(spec)",
+            "sys.modules[spec.name] = module",
+            "spec.loader.exec_module(module)",
+            f"module._emit_canonical_stdout({success!r})",
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-X", "utf8", "-c", code],
+        check=False,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == b""
+    assert result.stdout == expected
+    assert len(result.stdout) == 174
+    assert _sha256(result.stdout) == (
+        "42d42af93655a9e9d0c41e151b7d086f85552b1ef6d4f7e0c52d8a8ba7254a5b"
+    )
+    assert result.stdout.endswith(b"}\n")
+    assert not result.stdout.endswith(b"}\r\n")
+
+
+def test_canonical_stdout_fails_closed_without_complete_binary_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(canary, "sys", SimpleNamespace(stdout=object()))
+    with pytest.raises(canary.PublicCanaryError, match="no binary buffer"):
+        canary._emit_canonical_stdout({"status": "fixture"})
+
+    class IncompleteBuffer:
+        def write(self, data: bytes) -> int:
+            return len(data) - 1
+
+        def flush(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        canary,
+        "sys",
+        SimpleNamespace(stdout=SimpleNamespace(buffer=IncompleteBuffer())),
+    )
+    with pytest.raises(canary.PublicCanaryError, match="write was incomplete"):
+        canary._emit_canonical_stdout({"status": "fixture"})
+
+    class BrokenBuffer:
+        def write(self, _data: bytes) -> int:
+            raise OSError("fixture failure")
+
+        def flush(self) -> None:  # pragma: no cover - write fails first
+            raise AssertionError("must not flush")
+
+    monkeypatch.setattr(
+        canary,
+        "sys",
+        SimpleNamespace(stdout=SimpleNamespace(buffer=BrokenBuffer())),
+    )
+    with pytest.raises(canary.PublicCanaryError, match="could not be written"):
+        canary._emit_canonical_stdout({"status": "fixture"})
+
+    class BrokenFlushBuffer:
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+        def flush(self) -> None:
+            raise OSError("fixture flush failure")
+
+    monkeypatch.setattr(
+        canary,
+        "sys",
+        SimpleNamespace(stdout=SimpleNamespace(buffer=BrokenFlushBuffer())),
+    )
+    with pytest.raises(canary.PublicCanaryError, match="could not be written"):
+        canary._emit_canonical_stdout({"status": "fixture"})
 
 
 def test_success_invokes_one_exact_partial_schedule_and_emits_safe_summary(
