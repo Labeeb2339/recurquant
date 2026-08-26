@@ -5,3 +5,4 @@
 *.md text eol=lf
 *.json text eol=lf
 *.svg text eol=lf
+requirements/experiment013-ruler.txt -text whitespace=cr-at-eol

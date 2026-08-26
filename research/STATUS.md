@@ -170,6 +170,17 @@ live A-to-B-to-A swap cannot affect consumed bytes; persistent changes are
 separately detected. Final H0 is not authorizing until its own focused, full,
 package and exact-commit CI gates pass and it is tagged.
 
+The first G0 candidate,
+`2cd83c944bdd0cb570a8abdee2d01520ae92cb41`, is rejected. Its local gates and
+four CI packaging/wheel jobs passed, but Linux CI run `32918458848` exposed a
+cross-platform raw-byte mismatch in the protocol-bound RULER requirements file:
+Windows materialized 838 CRLF bytes while Linux materialized 798 LF bytes. The
+repair keeps all 37 package pins unchanged while storing the prior canonical
+838 CRLF runtime bytes verbatim in Git and marking only that file unfiltered.
+Committed, indexed and materialized bytes must therefore remain identical on
+every platform. The rejected commit has no tag, authorized no generation, and
+the replacement candidate must repeat every G0 gate before it can be tagged.
+
 A fresh calibration identity must retain all 160 calibration records
 byte-for-byte and differ from the last valid retired identity only at the
 source/procedure/promotion bindings and the two deterministic RULER

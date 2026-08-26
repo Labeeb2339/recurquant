@@ -991,6 +991,33 @@ def test_calibration_capture_is_deterministic_and_resolver_compatible() -> None:
     )
 
 
+def test_ruler_requirements_materialize_as_frozen_crlf_bytes() -> None:
+    payload = capture.RULER_REQUIREMENTS_PATH.read_bytes()
+
+    def git_output(*arguments: str) -> str:
+        return subprocess.run(
+            [str(FIXTURE_GIT_EXECUTABLE), "-C", str(REPOSITORY_ROOT), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    assert len(payload) == 838
+    assert capture.sha256_bytes(payload) == (
+        "0f058010181c8fa0e28ff1174a931197e1afef6a9a419b99505777dcf7e28804"
+    )
+    assert payload.count(b"\r\n") == 40
+    without_crlf = payload.replace(b"\r\n", b"")
+    assert b"\r" not in without_crlf
+    assert b"\n" not in without_crlf
+    relative = "requirements/experiment013-ruler.txt"
+    raw_oid = git_output("hash-object", "--no-filters", "--", relative)
+    assert raw_oid == "d2d30b8994bed276f0161ddfcce2eb4305fc881e"
+    assert git_output("hash-object", "--", relative) == raw_oid
+    assert git_output("rev-parse", f"HEAD:{relative}") == raw_oid
+    assert git_output("rev-parse", f":{relative}") == raw_oid
+
+
 @pytest.mark.parametrize(
     ("protected_field", "protected_value", "stage_a_error"),
     [

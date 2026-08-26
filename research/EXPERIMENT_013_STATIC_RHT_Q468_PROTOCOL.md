@@ -2198,6 +2198,22 @@ focused tests, the full clean-tree suite, lint, package gates and exact-commit
 five-job CI before it receives a clearly non-authorizing
 `experiment013-ruler-g0-<short-sha>` tag.
 
+Candidate `2cd83c944bdd0cb570a8abdee2d01520ae92cb41` completed the
+local gates and was pushed for exact-head CI, but is rejected as G0. GitHub
+Actions run `32918458848` passed the build and all three wheel-import jobs, then
+the Linux test job exposed that `requirements/experiment013-ruler.txt`
+materialized as 838 CRLF bytes on Windows and 798 LF bytes on Linux. Because the
+requirements file's raw byte length and SHA-256 are deliberately included in
+the generation authority, a platform-specific formatter commitment is not
+acceptable. The repair leaves all 37 package pins and semantic lines unchanged,
+but intentionally replaces the normalized LF Git blob with the already
+canonical runtime bytes and marks this one file unfiltered. Its committed,
+indexed and materialized identities must all be the same 838-byte CRLF blob,
+with SHA-256
+`0f058010181c8fa0e28ff1174a931197e1afef6a9a419b99505777dcf7e28804`.
+The rejected candidate remains non-authorizing: it receives no tag and may not
+generate receipts.
+
 Only that tagged G0 may generate one fresh exact 20-receipt bundle under new,
 no-overwrite receipt and raw roots. Generation must run from a separate clean,
 detached worktree whose HEAD equals the published G0 tag before and after the
